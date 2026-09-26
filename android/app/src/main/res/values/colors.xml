@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="mimi_primary">#4FD1C5</color>
+    <color name="mimi_bg">#0F1420</color>
+    <color name="mimi_surface">#161C2C</color>
+    <color name="mimi_text">#E8ECF4</color>
+    <color name="mimi_muted">#8A93A6</color>
+</resources>

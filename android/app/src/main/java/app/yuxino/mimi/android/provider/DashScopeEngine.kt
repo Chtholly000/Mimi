@@ -1,0 +1,221 @@
+package app.yuxino.mimi.android.provider
+
+import android.util.Base64
+import android.util.Log
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+
+/**
+ * DashScope unified realtime endpoint (qwen3.5-livetranslate-flash-realtime).
+ *
+ * Wire protocol mirrors mimi's src-tauri/src/core/protocols/live_translate.rs:
+ *   up   session.update { modalities:["text"], sample_rate:16000,
+ *                         input_audio_format:"pcm", input_audio_transcription, translation }
+ *   up   input_audio_buffer.append { audio: base64(pcm16le mono 16k) }
+ *   up   session.finish
+ *   down session.created/updated/finished,
+ *        conversation.item.input_audio_transcription.text/.completed,
+ *        response.text.text/.done, response.audio_transcript.text/.done, error
+ */
+class DashScopeEngine(private val listener: EngineListener) : ProviderEngine {
+    override val sampleRateHz: Int = 16_000
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .pingInterval(20, TimeUnit.SECONDS)
+        .build()
+
+    private var webSocket: WebSocket? = null
+    private val sessionReady = AtomicBoolean(false)
+    private val stopped = AtomicBoolean(false)
+    private val audioBuffer = java.io.ByteArrayOutputStream()
+    private var sourceLang: String = "auto"
+    private var targetLang: String = "zh"
+    private var model: String = MODEL
+    private var hotwords: Map<String, String> = emptyMap()
+
+    override fun setHotwords(words: Map<String, String>) {
+        hotwords = words
+    }
+
+    override fun start(
+        apiKey: String,
+        sourceLang: String,
+        targetLang: String,
+        customBaseUrl: String,
+        customModel: String,
+    ) {
+        this.sourceLang = sourceLang
+        this.targetLang = targetLang
+        model = customModel.trim().ifEmpty { MODEL }
+        val url = resolveEndpoint(customBaseUrl)
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $apiKey")
+            .build()
+        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(ws: WebSocket, response: Response) {
+                listener.onLog("已连接 DashScope，正在配置会话…")
+                ws.send(buildSessionUpdate().toString())
+            }
+
+            override fun onMessage(ws: WebSocket, text: String) {
+                handleServerEvent(JSONObject(text))
+            }
+
+            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+                if (stopped.get()) return
+                Log.w(TAG, "ws failure", t)
+                listener.onError(
+                    "transport_error",
+                    "连接失败: ${t.message ?: "DashScope connection failed"}",
+                )
+                sessionReady.set(false)
+            }
+
+            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                listener.onLog("连接已关闭 ($code)")
+                sessionReady.set(false)
+                listener.onClosed()
+            }
+        })
+    }
+
+    override fun sendAudio(pcm16Mono: ByteArray) {
+        if (!sessionReady.get()) return
+        synchronized(audioBuffer) {
+            audioBuffer.write(pcm16Mono)
+            val data = audioBuffer.toByteArray()
+            val frameBytes = 3200 // 100 ms of 16 kHz mono PCM16
+            var offset = 0
+            while (offset + frameBytes <= data.size) {
+                val frame = data.copyOfRange(offset, offset + frameBytes)
+                webSocket?.send(encodeAudioAppend(frame).toString())
+                offset += frameBytes
+            }
+            if (offset > 0) {
+                audioBuffer.reset()
+                audioBuffer.write(data, offset, data.size - offset)
+            }
+        }
+    }
+
+    override fun stop() {
+        stopped.set(true)
+        try {
+            webSocket?.send(buildFinish().toString())
+            webSocket?.close(1000, "bye")
+        } catch (_: Exception) {
+        }
+        sessionReady.set(false)
+    }
+
+    private fun resolveEndpoint(customBaseUrl: String): String {
+        val custom = normalizeWebSocketUrl(customBaseUrl)
+        val base = if (customBaseUrl.isBlank()) DASHSCOPE_REALTIME_WS else custom
+        return if (base.contains("?")) {
+            if (base.contains("model=")) base else "$base&model=$model"
+        } else {
+            "$base?model=$model"
+        }
+    }
+
+    private fun buildSessionUpdate(): JSONObject {
+        val transcription = JSONObject().put("model", ASR_MODEL)
+        if (sourceLang != "auto") {
+            transcription.put("language", sourceLang)
+        }
+        val translation = JSONObject().put("language", targetLang)
+        if (hotwords.isNotEmpty()) {
+            val phrases = JSONObject()
+            for ((term, weight) in hotwords) {
+                phrases.put(term, weight.toDoubleOrNull() ?: 1)
+            }
+            translation.put("corpus", JSONObject().put("phrases", phrases))
+        }
+        val session = JSONObject()
+            .put("modalities", org.json.JSONArray(listOf("text")))
+            .put("sample_rate", 16_000)
+            .put("input_audio_format", "pcm")
+            .put("input_audio_transcription", transcription)
+            .put("translation", translation)
+        return JSONObject()
+            .put("event_id", "setup_" + System.nanoTime())
+            .put("type", "session.update")
+            .put("session", session)
+    }
+
+    private fun encodeAudioAppend(pcm: ByteArray): JSONObject {
+        val audio = Base64.encodeToString(pcm, Base64.NO_WRAP)
+        return JSONObject()
+            .put("event_id", "audio_" + System.nanoTime())
+            .put("type", "input_audio_buffer.append")
+            .put("audio", audio)
+    }
+
+    private fun buildFinish(): JSONObject {
+        return JSONObject()
+            .put("event_id", "finish_" + System.nanoTime())
+            .put("type", "session.finish")
+    }
+
+    private fun handleServerEvent(json: JSONObject) {
+        when (json.optString("type")) {
+            "session.created" -> Unit
+            "session.updated" -> {
+                sessionReady.set(true)
+                listener.onSessionReady()
+            }
+            "session.finished" -> {
+                sessionReady.set(false)
+                listener.onClosed()
+            }
+            "conversation.item.input_audio_transcription.text" -> {
+                listener.onSourceDraft(combinedText(json), json.optString("language", null))
+            }
+            "conversation.item.input_audio_transcription.completed" -> {
+                listener.onSourceFinal(
+                    json.optString("transcript").trim(),
+                    json.optString("language", null),
+                )
+            }
+            "response.text.text", "response.audio_transcript.text" -> {
+                listener.onTranslationDraft(combinedText(json))
+            }
+            "response.text.done" -> {
+                listener.onTranslationFinal(json.optString("text").trim())
+            }
+            "response.audio_transcript.done" -> {
+                listener.onTranslationFinal(json.optString("transcript").trim())
+            }
+            "error" -> {
+                val error = json.optJSONObject("error")
+                listener.onError(
+                    error?.optString("code") ?: "unknown_error",
+                    error?.optString("message") ?: "DashScope returned an unknown error.",
+                )
+            }
+        }
+    }
+
+    /** The server's combined preview representation: confirmed text + tentative stash. */
+    private fun combinedText(json: JSONObject): String {
+        val confirmed = json.optString("text")
+        val tentative = json.optString("stash")
+        return (confirmed + tentative).trim()
+    }
+
+    companion object {
+        private const val TAG = "DashScopeEngine"
+        const val DASHSCOPE_REALTIME_WS = "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+        const val MODEL = "qwen3.5-livetranslate-flash-realtime"
+        const val ASR_MODEL = "qwen3-asr-flash-realtime"
+    }
+}
