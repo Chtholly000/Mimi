@@ -7,6 +7,13 @@
     · <a href="https://github.com/yuxino/mimi/releases/latest"><strong>下载最新版</strong></a>
     · <a href="README.md">English</a>
   </p>
+  <p>
+    <a href="https://github.com/yuxino/mimi/releases/latest"><img src="https://img.shields.io/github/v/release/yuxino/mimi?logo=github&amp;logoColor=white&amp;style=flat-square&amp;labelColor=202020&amp;color=555" alt="最新版本"></a>
+    <a href="https://github.com/yuxino/mimi/releases/latest"><img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-555?style=flat-square&amp;labelColor=202020&amp;color=555" alt="桌面平台：macOS、Windows、Linux"></a>
+    <a href="android/README.md"><img src="https://img.shields.io/badge/mobile-Android-555?style=flat-square&amp;labelColor=202020&amp;color=555" alt="Android 版本与说明"></a>
+    <a href="https://github.com/yuxino/mimi/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/yuxino/mimi/ci.yml?branch=main&amp;event=push&amp;label=CI&amp;style=flat-square&amp;labelColor=202020&amp;color=555" alt="main 分支 CI 状态"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/yuxino/mimi?style=flat-square&amp;labelColor=202020&amp;color=555" alt="MIT 许可证"></a>
+  </p>
 </div>
 
 Mimi 为电脑上播放的电影、直播、网课和游戏显示实时悬浮字幕。你选择的云服务会识别系统音频，或将其翻译成简体中文、英语、日语；可用语言和模式随服务商而异。`mimi` 在日语中意为“耳朵”。
