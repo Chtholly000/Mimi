@@ -3,7 +3,7 @@
 Native Android version of [mimi](../README.md) — live subtitles and
 translation for system audio. Pure Kotlin (no Tauri), single module.
 
-[Download Android 1.5.1](https://github.com/yuxino/mimi/releases/tag/android-v1.5.1)
+[Download Android](https://github.com/yuxino/mimi/releases/latest)
 
 > Android is packaged separately from mimi desktop releases. It reads the
 > same provider wire protocols as the desktop app (`src-tauri/src/core/protocols`)
@@ -85,10 +85,13 @@ non-debug certificate. It writes `release/mimi_<version>_android.apk` and
 For GitHub publishing, configure repository secrets `ANDROID_KEYSTORE_BASE64`
 (base64 of that same keystore), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`
 and `ANDROID_KEY_PASSWORD`, plus repository variable
-`ANDROID_SIGNING_CERT_SHA256`. Run `android-release` on main, or push an
-`android-v<version>` tag. All assets are attached to a draft before it is
-published; existing releases are never overwritten. Android tags do not trigger
-desktop packaging and are not marked as the repository's latest release.
+`ANDROID_SIGNING_CERT_SHA256`. Push a shared `v<version>` tag after staging the
+signed macOS assets as documented in `docs/development/macos-release-signing.md`.
+The main release workflow calls `android-release` to test, lint, sign and verify
+an APK, then waits for Android and every desktop package before publishing one
+complete release. Android's `versionName` must match the desktop version; its
+APK is included in the shared `SHA256SUMS.txt`. Existing public assets are never
+overwritten. The reusable Android workflow cannot publish a separate release.
 
 Keep the signing key and its backup outside Git. Use the same key for future
 updates. Debug installations have a different signature and must be uninstalled

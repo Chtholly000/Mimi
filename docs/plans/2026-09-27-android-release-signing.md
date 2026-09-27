@@ -11,10 +11,14 @@ package/version with debugging disabled, aligns it, signs with an existing key
 and verifies the pinned certificate and alignment before exposing the output.
 It never generates a key or falls back to debug signing.
 
-Publishing uses independent android-v* tags or a manual main branch run. All
-verified assets are uploaded into a draft before publishing, so immutable
-releases are complete when locked. Desktop tags, assets and latest-release
-selection are unchanged. Existing releases fail closed.
+From v1.5.2, publishing uses the shared v* tag and one release for Android and
+all desktop platforms. The reusable Android workflow only produces a verified
+signed APK artifact. The main publisher waits for it and all desktop builds,
+requires the APK in its exact asset inventory, includes it in SHA256SUMS.txt,
+and uploads everything to the same draft before immutable publication.
+Android versionName must equal the desktop version; versionCode increases for
+updates. Existing releases fail closed. The desktop updater remains limited to
+its four supported desktop targets; Android users install the same-key APK.
 
 The first release requires a backed-up Android keystore, four repository secrets
 documented in android/README.md, and its public certificate SHA-256 variable.

@@ -93,7 +93,7 @@ previews the recognized original while a translation is pending.
 
 ## Thanks
 
-Special thanks to [@yebuwudong](https://github.com/yebuwudong) for contributing the native [Android port in PR #37](https://github.com/yuxino/mimi/pull/37). [Download Android 1.5.1](https://github.com/yuxino/mimi/releases/tag/android-v1.5.1); see its [setup and verification notes](android/README.md).
+Special thanks to [@yebuwudong](https://github.com/yebuwudong) for contributing the native [Android port in PR #37](https://github.com/yuxino/mimi/pull/37). [Download Android](https://github.com/yuxino/mimi/releases/latest); see its [setup and verification notes](android/README.md).
 
 ## Community links
 

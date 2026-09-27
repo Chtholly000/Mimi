@@ -260,6 +260,9 @@ jobs:
             const tauri = require("./src-tauri/tauri.conf.json").version;
             const cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8")
               .match(/^version = "([^"]+)"/m)?.[1];
+            const android = fs.readFileSync("android/version.properties", "utf8")
+              .match(/^versionName=(.+)$/m)?.[1];
+            if (android !== pkg) throw new Error(`Android ${android} must match desktop ${pkg}`);
             const expected = `v${pkg}`;
             if (process.env.RELEASE_TAG !== expected || packageLock !== pkg || tauri !== pkg || cargo !== pkg) {
               throw new Error(`release versions disagree: tag=${process.env.RELEASE_TAG}, package=${pkg}, packageLock=${packageLock}, tauri=${tauri}, cargo=${cargo}`);
@@ -553,12 +556,17 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # This is the only job that publishes a release. It runs only after all
-  # platform packages pass their structural and digest checks.
+  release-android:
+    if: ${{ github.ref_type == 'tag' }}
+    needs: [release-preflight]
+    uses: ./.github/workflows/android-release.yml
+    secrets: inherit
+
+  # Publish once, only after Android and every desktop package are verified.
   publish-release:
     if: ${{ github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
-    needs: [release-macos, release-windows, release-linux, windows-arm64]
+    needs: [release-macos, release-windows, release-linux, release-android, windows-arm64]
     permissions:
       actions: read
       contents: write
@@ -593,6 +601,7 @@ jobs:
             "mimi_${version}_amd64.deb"
             "mimi_${version}_amd64.AppImage"
             "mimi_${version}_amd64.AppImage.sig"
+            "mimi_${version}_android.apk"
           )
           mapfile -t actual_names < <(printf '%s\n' "${assets[@]##*/}" | sort)
           mapfile -t expected_names < <(printf '%s\n' "${expected_names[@]}" | sort)
@@ -652,6 +661,7 @@ jobs:
               "mimi_${version}_amd64.deb" \
               "mimi_${version}_amd64.AppImage" \
               "mimi_${version}_amd64.AppImage.sig" \
+              "mimi_${version}_android.apk" \
               latest.json > SHA256SUMS.txt
           )
 

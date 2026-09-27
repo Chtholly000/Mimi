@@ -8,7 +8,8 @@ public key in `src-tauri/tauri.conf.json`.
 
 ## Prepare
 
-1. Update all version files and `docs/releases/vVERSION.md` on `main`. Release
+1. Update all version files, including Android `versionName` and its increasing
+   `versionCode`, and `docs/releases/vVERSION.md` on `main`. Release
    notes must contain `## English` followed by `## 中文`, covering the same
    changes and limits. For the first fixed-signed release, explain the possible
    one-time recording grant, unsigned-by-Apple/not-notarized status, and separate
@@ -77,7 +78,9 @@ macOS authorization services do not respond, the disposable VM is discarded
 when the job ends. No private code-signing key is imported,
 and user machines are not asked to change certificate trust. Windows still
 builds in CI. Only the final publish
-job may publish the draft after both platforms pass. Read back the published
+job may publish the draft only after macOS, Windows, Linux and the signed Android
+APK pass. The APK shares this release and its checksum list; do not create an
+`android-v*` release. Read back the published
 assets, digests and `latest.json`; a local build alone does not establish a
 working public update.
 

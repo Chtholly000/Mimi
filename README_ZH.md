@@ -90,7 +90,7 @@ macOS 使用 **⌘⇧B**，Windows/Linux 使用 **Ctrl+Shift+B** 快速切换，
 
 ## 特别感谢
 
-特别感谢 [@yebuwudong](https://github.com/yebuwudong) 在 [PR #37](https://github.com/yuxino/mimi/pull/37) 中贡献原生 Android 版本。[下载 Android 1.5.1](https://github.com/yuxino/mimi/releases/tag/android-v1.5.1)，配置方式和已验证范围见 [Android 说明](android/README.md)。
+特别感谢 [@yebuwudong](https://github.com/yebuwudong) 在 [PR #37](https://github.com/yuxino/mimi/pull/37) 中贡献原生 Android 版本。[下载 Android](https://github.com/yuxino/mimi/releases/latest)，配置方式和已验证范围见 [Android 说明](android/README.md)。
 
 ## 社区友链
 
