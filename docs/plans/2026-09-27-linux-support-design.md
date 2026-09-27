@@ -17,7 +17,11 @@ startup and cancellation without a blocking read that can strand shutdown.
 One worker owns the PulseAudio context, stream, and mainloop. Resolve the
 default sink and verify its monitor belongs to that sink before connecting.
 Never connect to an unspecified/default recording source. The server converts
-to provider PCM16LE mono at 16 or 24 kHz. Capture remains pinned to that output;
+to provider PCM16LE mono at 16 or 24 kHz. Assemble native peek fragments into
+fixed 20 ms frames before the existing 20-slot send queue; small fragments
+must not shorten its audio-duration budget. Keep less than one frame pending
+and drop that tail on stop/cancellation rather than padding or waiting. Keep
+the 250 ms native-fragment limit and distinguish oversized-fragment diagnostics. Capture remains pinned to that output;
 users restart after changing devices. Pause stops capture and resume starts a fresh worker; stop cancels the
 worker, and fatal errors use the existing sanitized capture-failure channel.
 

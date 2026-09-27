@@ -12,6 +12,7 @@ use crate::audio::send_pipeline::{AudioIngress, AudioIngressError};
 use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureError, SystemAudioCaptureFailure,
 };
+use crate::pipeline_log;
 use libpulse_binding as pulse;
 use pulse::callbacks::ListResult;
 use pulse::context::{Context, FlagSet as ContextFlags, State as ContextState};
@@ -297,6 +298,9 @@ impl PulseCapture {
         ingress: &AudioIngress,
         failure_tx: &CaptureFailureSender,
     ) -> Result<(), SystemAudioCaptureFailure> {
+        // Each capture owns its partial frame. Stop/cancellation drops less
+        // than 20 ms without waiting, padding, or carrying it into a restart.
+        let mut frames = PcmFrameAssembler::new(self.chunk_bytes, self.max_buffer_bytes);
         while !control.cancelled.load(Ordering::SeqCst) && !failure_tx.has_reported() {
             if !matches!(self.mainloop.iterate(false), IterateResult::Success(_))
                 || self.context.get_state() != ContextState::Ready
@@ -315,24 +319,14 @@ impl PulseCapture {
                     .map_err(|_| SystemAudioCaptureFailure::NativeStopped)?
                 {
                     PeekResult::Empty => break,
-                    PeekResult::Data(data) => forward_fragment(
-                        Some(data),
-                        data.len(),
-                        self.chunk_bytes,
-                        self.max_buffer_bytes,
-                        control,
-                        ingress,
-                    ),
+                    PeekResult::Data(data) => {
+                        frames.forward_fragment(Some(data), data.len(), control, ingress)
+                    }
                     // A PulseAudio hole is missing/silent audio, never an
                     // initialized data buffer that may be copied blindly.
-                    PeekResult::Hole(bytes) => forward_fragment(
-                        None,
-                        bytes,
-                        self.chunk_bytes,
-                        self.max_buffer_bytes,
-                        control,
-                        ingress,
-                    ),
+                    PeekResult::Hole(bytes) => {
+                        frames.forward_fragment(None, bytes, control, ingress)
+                    }
                 };
                 self.stream
                     .discard()
@@ -458,37 +452,79 @@ fn valid_device_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('\0')
 }
 
-/// Split server fragments into at most 20 ms buffers before entering the
-/// existing bounded queue. Reject an oversized fragment before allocating.
-fn forward_fragment(
-    data: Option<&[u8]>,
-    bytes: usize,
+/// PulseAudio's peek boundaries need not match the requested fragment size.
+/// Assemble complete 20 ms frames so tiny native fragments do not consume
+/// extra slots in the bounded send queue. Keep at most one partial frame.
+struct PcmFrameAssembler {
+    pending: Vec<u8>,
     chunk_bytes: usize,
     max_buffer_bytes: usize,
-    control: &WorkerControl,
-    ingress: &AudioIngress,
-) -> Result<bool, SystemAudioCaptureFailure> {
-    if bytes > max_buffer_bytes {
-        return Err(SystemAudioCaptureFailure::Backpressure);
+}
+
+impl PcmFrameAssembler {
+    fn new(chunk_bytes: usize, max_buffer_bytes: usize) -> Self {
+        Self {
+            pending: Vec::with_capacity(chunk_bytes),
+            chunk_bytes,
+            max_buffer_bytes,
+        }
     }
-    if !bytes.is_multiple_of(2) {
-        return Err(SystemAudioCaptureFailure::AudioProcessingFailed);
-    }
-    for offset in (0..bytes).step_by(chunk_bytes) {
+
+    fn forward_fragment(
+        &mut self,
+        data: Option<&[u8]>,
+        bytes: usize,
+        control: &WorkerControl,
+        ingress: &AudioIngress,
+    ) -> Result<bool, SystemAudioCaptureFailure> {
         if control.cancelled.load(Ordering::SeqCst) {
+            self.pending.clear();
             return Ok(false);
         }
-        let end = (offset + chunk_bytes).min(bytes);
-        let pcm = data.map_or_else(|| vec![0; end - offset], |data| data[offset..end].to_vec());
-        match ingress.try_send(pcm) {
-            Ok(()) => {}
-            Err(AudioIngressError::Backpressure) => {
-                return Err(SystemAudioCaptureFailure::Backpressure);
-            }
-            Err(AudioIngressError::Closed) => return Ok(false),
+        // Reject an oversized fragment before copying or allocating for it.
+        if bytes > self.max_buffer_bytes {
+            pipeline_log!(
+                "capture oversized fragment bytes={} maxBytes={}",
+                bytes,
+                self.max_buffer_bytes
+            );
+            return Err(SystemAudioCaptureFailure::Backpressure);
         }
+        if !bytes.is_multiple_of(2) {
+            return Err(SystemAudioCaptureFailure::AudioProcessingFailed);
+        }
+        let mut offset = 0;
+        while offset < bytes {
+            if control.cancelled.load(Ordering::SeqCst) {
+                self.pending.clear();
+                return Ok(false);
+            }
+            let count = (self.chunk_bytes - self.pending.len()).min(bytes - offset);
+            match data {
+                Some(data) => self
+                    .pending
+                    .extend_from_slice(&data[offset..offset + count]),
+                None => self.pending.resize(self.pending.len() + count, 0),
+            }
+            offset += count;
+            if self.pending.len() == self.chunk_bytes {
+                if control.cancelled.load(Ordering::SeqCst) {
+                    self.pending.clear();
+                    return Ok(false);
+                }
+                let pcm =
+                    std::mem::replace(&mut self.pending, Vec::with_capacity(self.chunk_bytes));
+                match ingress.try_send(pcm) {
+                    Ok(()) => {}
+                    Err(AudioIngressError::Backpressure) => {
+                        return Err(SystemAudioCaptureFailure::Backpressure);
+                    }
+                    Err(AudioIngressError::Closed) => return Ok(false),
+                }
+            }
+        }
+        Ok(true)
     }
-    Ok(true)
 }
 
 #[cfg(test)]
@@ -553,46 +589,140 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fragments_and_holes_are_bounded_pcm_without_losing_sample_bytes() {
+    async fn tiny_fragments_use_audio_duration_instead_of_native_fragment_count() {
+        for rate in [16_000, 24_000] {
+            let (pipeline, mut rx) = recording_pipeline();
+            let ingress = pipeline.ingress().unwrap();
+            let control = WorkerControl::default();
+            let chunk_bytes = rate * 2 * FRAGMENT_MS / 1000;
+            let mut frames = PcmFrameAssembler::new(chunk_bytes, rate * 2 * MAX_BUFFER_MS / 1000);
+            let pcm: Vec<u8> = (0..chunk_bytes * 10)
+                .map(|index| (index % 251) as u8)
+                .collect();
+            // Forty 5 ms fragments arrive before the sender can run. They
+            // need ten queue slots, not forty, and retain every sample.
+            for fragment in pcm.chunks(chunk_bytes / 4) {
+                assert!(frames
+                    .forward_fragment(Some(fragment), fragment.len(), &control, &ingress)
+                    .unwrap());
+                assert!(frames.pending.len() < chunk_bytes);
+            }
+            assert!(frames.pending.is_empty());
+            assert!(pipeline.finish(Duration::from_secs(1)).await);
+            let mut actual = Vec::new();
+            while let Ok(frame) = rx.try_recv() {
+                assert_eq!(frame.len(), chunk_bytes);
+                actual.extend(frame);
+            }
+            assert_eq!(actual, pcm);
+        }
+    }
+
+    #[tokio::test]
+    async fn frames_preserve_sample_order_across_data_fragments_and_holes() {
         let (pipeline, mut rx) = recording_pipeline();
         let ingress = pipeline.ingress().unwrap();
         let control = WorkerControl::default();
-        let pcm: Vec<u8> = (0..10).collect();
-        assert!(forward_fragment(Some(&pcm), pcm.len(), 4, 16, &control, &ingress).unwrap());
-        assert!(forward_fragment(None, 6, 4, 16, &control, &ingress).unwrap());
+        let mut frames = PcmFrameAssembler::new(8, 32);
+        let pcm: Vec<u8> = (0..18).collect();
+        assert!(frames
+            .forward_fragment(Some(&pcm[..6]), 6, &control, &ingress)
+            .unwrap());
+        assert!(frames
+            .forward_fragment(None, 6, &control, &ingress)
+            .unwrap());
+        assert!(frames
+            .forward_fragment(Some(&pcm[6..16]), 10, &control, &ingress)
+            .unwrap());
+        assert_eq!(frames.pending, pcm[10..16]);
+        assert!(frames
+            .forward_fragment(Some(&pcm[16..]), 2, &control, &ingress)
+            .unwrap());
+        assert!(frames.pending.is_empty());
         assert!(pipeline.finish(Duration::from_secs(1)).await);
-        assert_eq!(rx.recv().await.unwrap(), vec![0, 1, 2, 3]);
-        assert_eq!(rx.recv().await.unwrap(), vec![4, 5, 6, 7]);
-        assert_eq!(rx.recv().await.unwrap(), vec![8, 9]);
-        assert_eq!(rx.recv().await.unwrap(), vec![0; 4]);
-        assert_eq!(rx.recv().await.unwrap(), vec![0; 2]);
+        assert_eq!(rx.recv().await.unwrap(), vec![0, 1, 2, 3, 4, 5, 0, 0]);
+        assert_eq!(rx.recv().await.unwrap(), vec![0, 0, 0, 0, 6, 7, 8, 9]);
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            vec![10, 11, 12, 13, 14, 15, 16, 17]
+        );
         assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
-    async fn oversized_misaligned_cancelled_and_backpressured_audio_is_rejected() {
+    async fn oversized_and_misaligned_fragments_are_rejected_before_copying() {
         let (pipeline, mut rx) = recording_pipeline();
         let ingress = pipeline.ingress().unwrap();
         let control = WorkerControl::default();
+        let mut frames = PcmFrameAssembler::new(4, 16);
+        assert!(frames
+            .forward_fragment(Some(&[4, 5]), 2, &control, &ingress)
+            .unwrap());
         assert_eq!(
-            forward_fragment(None, 18, 4, 16, &control, &ingress),
+            frames.forward_fragment(None, 18, &control, &ingress),
             Err(SystemAudioCaptureFailure::Backpressure)
         );
         assert_eq!(
-            forward_fragment(None, 3, 4, 16, &control, &ingress),
+            frames.forward_fragment(None, 3, &control, &ingress),
             Err(SystemAudioCaptureFailure::AudioProcessingFailed)
         );
-        control.cancelled.store(true, Ordering::SeqCst);
-        assert!(!forward_fragment(None, 4, 4, 16, &control, &ingress).unwrap());
+        assert_eq!(frames.pending, vec![4, 5]);
+        assert!(pipeline.finish(Duration::from_secs(1)).await);
         assert!(rx.try_recv().is_err());
-        control.cancelled.store(false, Ordering::SeqCst);
-        // There is no await here, so the pipeline worker cannot drain its
-        // 20 slots on this current-thread test runtime.
+    }
+
+    #[tokio::test]
+    async fn partial_frames_are_discarded_on_stop_or_cancellation_and_never_reused() {
+        for cancelled in [false, true] {
+            let (pipeline, mut rx) = recording_pipeline();
+            let ingress = pipeline.ingress().unwrap();
+            let control = WorkerControl::default();
+            let mut frames = PcmFrameAssembler::new(4, 16);
+            assert!(frames
+                .forward_fragment(Some(&[98, 99]), 2, &control, &ingress)
+                .unwrap());
+            if cancelled {
+                control.cancelled.store(true, Ordering::SeqCst);
+                assert!(!frames
+                    .forward_fragment(None, 4, &control, &ingress)
+                    .unwrap());
+                assert!(frames.pending.is_empty());
+            }
+            // The native run owns the assembler; every exit drops its tail.
+            drop(frames);
+            let control = WorkerControl::default();
+            let mut restarted = PcmFrameAssembler::new(4, 16);
+            assert!(restarted
+                .forward_fragment(Some(&[1, 2, 3, 4]), 4, &control, &ingress)
+                .unwrap());
+            assert!(pipeline.finish(Duration::from_secs(1)).await);
+            assert_eq!(rx.recv().await.unwrap(), vec![1, 2, 3, 4]);
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_frames_still_fail_when_the_twenty_slot_queue_is_full() {
+        let (pipeline, _rx) = recording_pipeline();
+        let ingress = pipeline.ingress().unwrap();
+        let control = WorkerControl::default();
+        let mut frames = PcmFrameAssembler::new(640, 8_000);
+        // No await: the current-thread sender cannot drain these 400 ms.
+        for _ in 0..20 {
+            assert!(frames
+                .forward_fragment(None, 640, &control, &ingress)
+                .unwrap());
+        }
+        assert!(frames
+            .forward_fragment(None, 320, &control, &ingress)
+            .unwrap());
         assert_eq!(
-            forward_fragment(None, 84, 4, 100, &control, &ingress),
+            frames.forward_fragment(None, 320, &control, &ingress),
             Err(SystemAudioCaptureFailure::Backpressure)
         );
-        assert!(!forward_fragment(None, 4, 4, 16, &control, &ingress).unwrap());
+        assert!(!frames
+            .forward_fragment(None, 640, &control, &ingress)
+            .unwrap());
         pipeline.stop();
     }
 
@@ -697,7 +827,7 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(6), async {
                 let mut window = Vec::new();
                 while let Some(pcm) = rx.recv().await {
-                    assert!(pcm.len() <= rate as usize * 2 * FRAGMENT_MS / 1000);
+                    assert_eq!(pcm.len(), rate as usize * 2 * FRAGMENT_MS / 1000);
                     assert!(pcm.len().is_multiple_of(2));
                     window.extend(pcm);
                     if window.len() >= rate as usize / 2 {
