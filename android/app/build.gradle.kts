@@ -3,6 +3,18 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+val appVersion = java.util.Properties().apply {
+    rootProject.file("version.properties").inputStream().use { load(it) }
+}
+val releaseVersionName = requireNotNull(appVersion.getProperty("versionName"))
+require(releaseVersionName.matches(Regex("[0-9]+\\.[0-9]+\\.[0-9]+"))) {
+    "version.properties must contain a numeric versionName (major.minor.patch)"
+}
+val releaseVersionCode = requireNotNull(appVersion.getProperty("versionCode")?.toIntOrNull())
+require(releaseVersionCode in 1..2100000000) {
+    "version.properties must contain a positive Android versionCode"
+}
+
 android {
     namespace = "app.yuxino.mimi.android"
     compileSdk = 35
@@ -11,13 +23,14 @@ android {
         applicationId = "app.yuxino.mimi.android"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = releaseVersionCode
+        versionName = releaseVersionName
         testInstrumentationRunner = "app.yuxino.mimi.android.UiSmokeInstrumentation"
     }
 
     buildTypes {
         release {
+            isDebuggable = false
             isMinifyEnabled = false
         }
     }
