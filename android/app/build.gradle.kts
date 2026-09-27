@@ -1,9 +1,11 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
 
-val appVersion = java.util.Properties().apply {
+val appVersion = Properties().apply {
     rootProject.file("version.properties").inputStream().use { load(it) }
 }
 val releaseVersionName = requireNotNull(appVersion.getProperty("versionName"))

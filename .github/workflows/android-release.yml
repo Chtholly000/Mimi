@@ -71,6 +71,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="$ANDROID_RELEASE_TAG"
+          if [[ "$GITHUB_REF_TYPE" != tag ]] && git ls-remote --exit-code origin "refs/tags/$tag" >/dev/null; then
+            echo '::error::Android tag already exists. Run from that tag or choose a new version.'
+            exit 1
+          fi
           if gh release view "$tag" --json isDraft >/dev/null 2>&1; then
             echo '::error::This Android release already exists; refusing to replace its assets. Bump the version for a new release.'
             exit 1
