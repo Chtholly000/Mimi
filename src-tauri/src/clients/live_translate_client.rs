@@ -1,15 +1,17 @@
 //! Live-translate WebSocket client (`qwen3.5-livetranslate-flash-realtime`).
 
 use crate::clients::provider_events::ProviderEventSender;
+use crate::core::diagnostics::milliseconds;
 use crate::core::models::{SourceLanguage, TargetLanguage};
 use crate::core::protocols::live_translate::{
     LiveTranslateEndpoint, LiveTranslateRequestEncoder, LiveTranslateServerEvent,
 };
+use crate::pipeline_log;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio::sync::{watch, Mutex, Notify};
@@ -59,6 +61,50 @@ struct Inner {
     received_session_finished: AtomicBool,
     pong_notify: Notify,
     receive_task: Mutex<Option<JoinHandle<()>>>,
+}
+
+// Keep only monotonic timings and fixed labels. Dropping a send during
+// recovery must still expose which phase was waiting, without logging the
+// message, request, URL, credentials, or transport error.
+struct SendTiming {
+    started_at: Instant,
+    sink_locked_at: Option<Instant>,
+    finished_at: Option<Instant>,
+    outcome: &'static str,
+}
+
+impl SendTiming {
+    fn new(started_at: Instant) -> Self {
+        Self {
+            started_at,
+            sink_locked_at: None,
+            finished_at: None,
+            outcome: "cancelled",
+        }
+    }
+
+    fn slow_phases_at(&self, now: Instant) -> Option<(u64, u64)> {
+        let end = self.finished_at.unwrap_or(now);
+        let lock_ms = milliseconds(self.started_at, self.sink_locked_at.unwrap_or(end));
+        let send_ms = self
+            .sink_locked_at
+            .map_or(0, |start| milliseconds(start, end));
+        (lock_ms > 100 || send_ms > 100).then_some((lock_ms, send_ms))
+    }
+}
+
+impl Drop for SendTiming {
+    fn drop(&mut self) {
+        if let Some((lock_ms, send_ms)) = self.slow_phases_at(Instant::now()) {
+            pipeline_log!(
+                "live translate send slow sinkLockWaitMs={} socketSendMs={} sinkAcquired={} outcome={}",
+                lock_ms,
+                send_ms,
+                self.sink_locked_at.is_some(),
+                self.outcome
+            );
+        }
+    }
 }
 
 /// An async client whose receive loop emits decoded server events onto the
@@ -224,8 +270,10 @@ impl LiveTranslateClient {
     }
 
     async fn send_text(&self, text: String) -> Result<(), LiveTranslateClientError> {
+        let mut timing = SendTiming::new(Instant::now());
         let operation = async {
             let mut sink = self.inner.sink.lock().await;
+            timing.sink_locked_at = Some(Instant::now());
             let Some(sink) = sink.as_mut() else {
                 return Err(LiveTranslateClientError::NotConnected);
             };
@@ -233,9 +281,14 @@ impl LiveTranslateClient {
                 .await
                 .map_err(|_| LiveTranslateClientError::TransportFailure)
         };
-        tokio::time::timeout(SEND_TIMEOUT, operation)
-            .await
-            .map_err(|_| LiveTranslateClientError::TransportFailure)?
+        let result = tokio::time::timeout(SEND_TIMEOUT, operation).await;
+        timing.finished_at = Some(Instant::now());
+        timing.outcome = match &result {
+            Ok(Ok(())) => "sent",
+            Ok(Err(_)) => "failed",
+            Err(_) => "timeout",
+        };
+        result.map_err(|_| LiveTranslateClientError::TransportFailure)?
     }
 }
 
@@ -372,6 +425,35 @@ fn should_report_transport_end(received_session_finished: bool) -> bool {
 mod tests {
     use super::*;
     use crate::clients::provider_events::provider_event_channel;
+
+    #[test]
+    fn interrupted_send_timings_distinguish_lock_wait_from_socket_wait() {
+        let start = Instant::now();
+        let mut timing = SendTiming::new(start);
+        assert_eq!(
+            timing.slow_phases_at(start + Duration::from_millis(250)),
+            Some((250, 0))
+        );
+        timing.sink_locked_at = Some(start + Duration::from_millis(20));
+        assert_eq!(
+            timing.slow_phases_at(start + Duration::from_millis(250)),
+            Some((20, 230))
+        );
+    }
+
+    #[test]
+    fn completed_send_timings_exclude_later_work_and_logs() {
+        let start = Instant::now();
+        let mut timing = SendTiming::new(start);
+        timing.sink_locked_at = Some(start + Duration::from_millis(10));
+        timing.finished_at = Some(start + Duration::from_millis(20));
+        assert_eq!(timing.slow_phases_at(start + Duration::from_secs(5)), None);
+        timing.finished_at = Some(start + Duration::from_millis(240));
+        assert_eq!(
+            timing.slow_phases_at(start + Duration::from_secs(5)),
+            Some((10, 230))
+        );
+    }
 
     fn test_inner() -> Inner {
         Inner {

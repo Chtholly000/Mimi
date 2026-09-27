@@ -131,6 +131,29 @@ mod tests {
     }
 
     #[test]
+    fn frontend_readiness_markers_are_test_only_and_window_scoped() {
+        let directory =
+            std::env::temp_dir().join(format!("mimi-ui-ready-{}", uuid::Uuid::new_v4()));
+        let destination = Some(directory.as_os_str());
+        write_ui_test_frontend_ready(false, "settings", destination).unwrap();
+        write_ui_test_frontend_ready(true, "../outside", destination).unwrap();
+        assert!(!directory.exists());
+
+        write_ui_test_frontend_ready(true, "settings", destination).unwrap();
+        assert_eq!(
+            std::fs::read(directory.join("settings")).unwrap(),
+            b"ready\n"
+        );
+        assert!(!directory.join("overlay").exists());
+        write_ui_test_frontend_ready(true, "overlay", destination).unwrap();
+        assert_eq!(
+            std::fs::read(directory.join("overlay")).unwrap(),
+            b"ready\n"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn settings_payload_is_camel_case_and_write_only() {
         let payload = SettingsSnapshotPayload {
             profiles: vec![ServiceProfilePayload {
@@ -316,6 +339,34 @@ pub fn app_is_ui_test() -> bool {
     std::env::var("MIMI_UI_TEST").as_deref() == Ok("1")
 }
 
+/// A native smoke test must observe a mounted frontend, not just a window title.
+/// Neither the destination nor marker contents can be supplied by the frontend.
+#[tauri::command]
+pub fn app_ui_test_frontend_ready(window: tauri::WebviewWindow) -> Result<(), String> {
+    write_ui_test_frontend_ready(
+        app_is_ui_test(),
+        window.label(),
+        std::env::var_os("MIMI_UI_TEST_FRONTEND_READY_DIR").as_deref(),
+    )
+    .map_err(|_| "Could not write the UI-test readiness marker.".to_string())
+}
+
+fn write_ui_test_frontend_ready(
+    is_ui_test: bool,
+    label: &str,
+    directory: Option<&std::ffi::OsStr>,
+) -> std::io::Result<()> {
+    if !is_ui_test || !matches!(label, "settings" | "overlay") {
+        return Ok(());
+    }
+    if let Some(directory) = directory {
+        let directory = std::path::Path::new(directory);
+        std::fs::create_dir_all(directory)?;
+        std::fs::write(directory.join(label), b"ready\n")?;
+    }
+    Ok(())
+}
+
 /// The Windows ZIP carries this marker beside the executable. It identifies
 /// an extract-and-run copy before Settings can offer an NSIS update.
 #[tauri::command]
@@ -331,6 +382,12 @@ pub fn app_is_portable() -> bool {
     {
         false
     }
+}
+
+/// Tauri can replace an AppImage, but cannot update a package-manager install.
+#[tauri::command]
+pub fn app_is_linux_package() -> bool {
+    cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_none_or(|path| path.is_empty())
 }
 
 /// Opens a single hard-coded release destination. The frontend cannot supply

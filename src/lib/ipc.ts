@@ -68,8 +68,16 @@ export function appIsUiTest(): Promise<boolean> {
   return invoke<boolean>("app_is_ui_test");
 }
 
+export function appUiTestFrontendReady(): Promise<void> {
+  return invoke("app_ui_test_frontend_ready");
+}
+
 export function appIsPortable(): Promise<boolean> {
   return invoke<boolean>("app_is_portable");
+}
+
+export function appIsLinuxPackage(): Promise<boolean> {
+  return invoke<boolean>("app_is_linux_package");
 }
 
 export function appOpenReleases(): Promise<void> {

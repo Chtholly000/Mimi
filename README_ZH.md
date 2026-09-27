@@ -1,7 +1,7 @@
 <div align="center">
   <img src="src-tauri/icons/128x128@2x.png" width="96" alt="mimi">
   <h1>mimi</h1>
-  <p>系统音频实时字幕与翻译，支持 Apple 芯片和 Intel Mac（macOS 13+），以及 Windows x64。</p>
+  <p>系统音频实时字幕与翻译，支持 Apple 芯片和 Intel Mac（macOS 13+），以及 Windows / Linux x86_64。</p>
   <p>
     <a href="https://mimi.yuxino.cn">官网</a>
     · <a href="https://github.com/yuxino/mimi/releases/latest"><strong>下载最新版</strong></a>
@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/342c049c-1bed-44da-b4d2-ba55dad1a49c
 - **实时字幕与翻译** — 采集系统输出音频；输入语言、翻译目标和质量模式随服务商而异。
 - **服务配置** — 保存并切换多套服务配置，无需反复填写凭证。
 - **字幕浮窗** — 支持移动、缩放、收起、暂停、点击穿透和沉浸模式。
-- **应用内更新** — 在设置中检查并安装更新。
+- **版本更新** — macOS、Windows 安装版和 Linux AppImage 可在设置中检查并安装更新；Windows ZIP 和 Linux .deb 提供 Releases 手动更新入口。
 - **会话导出** — 在「设置 → 会话导出」主动开启字幕历史保留或系统音频录制，停止会话后可导出 TXT / WAV。两个开关默认关闭。
 - **设置外观** — 支持浅色、深色和跟随系统。
 - **隐私** — 无需 mimi 账号，不使用麦克风、不录制屏幕；系统音频只发送给当前服务商。内容仅临时留在内存，手动导出才写入文件。关闭开关会清空对应内容，开始新会话或退出会清空全部内容，请提前导出。
@@ -34,20 +34,22 @@ https://github.com/user-attachments/assets/342c049c-1bed-44da-b4d2-ba55dad1a49c
 
 ## 开始使用
 
-1. 从 [Latest Release](https://github.com/yuxino/mimi/releases/latest) 下载 macOS Apple Silicon 或 Intel DMG，或 Windows x64 EXE、MSI、绿色版 ZIP；也可以从源码构建。
+1. 从 [Latest Release](https://github.com/yuxino/mimi/releases/latest) 下载 macOS Apple Silicon 或 Intel DMG，Windows x64 EXE、MSI、绿色版 ZIP，或 Linux x86_64 .deb / AppImage；也可以从源码构建。
 2. 打开「翻译服务」，选择服务商并保存凭证。
 3. 播放内容，从菜单栏/系统托盘的 mimi 图标点击 **开始**；macOS 首次使用时按提示允许「屏幕与系统音频录制」。
 
 需要自备服务商 API 凭证，调用可能产生费用。凭证保存在系统钥匙串中。
 
-安装版更新时，打开 **设置 → 通用 → 版本更新**。Mimi 会显示下载进度，下载完成后可直接安装。
-Windows 安装完成后会重新打开 Mimi；macOS 可点击 **重新启动并完成更新**。
+macOS、Windows 安装版和 Linux AppImage 更新时，打开 **设置 → 通用 → 版本更新**。Mimi 会显示下载进度，下载完成后可直接安装。
+Windows 安装完成后会重新打开 Mimi；macOS 和 Linux AppImage 可点击 **重新启动并完成更新**。
 早于 v1.3.8 的旧版本需要先手动安装一次，之后即可在应用内更新。
 
 ### 平台支持
 
 - **macOS 13+（Apple 芯片和 Intel）**：Apple 芯片选择 `_aarch64.dmg`，Intel 选择 `_x64.dmg`。从 v1.4.4 起提供 Intel 包，已通过构建和签名检查，Intel 实机采集和权限行为仍待验证。提供未经 Apple 公证的 DMG；若首次打开被拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。从旧版本升级时，请留意下方的权限说明。
 - **Windows x64**：提供未签名的预览版 EXE / MSI；从 v1.4.3 起还提供绿色版 ZIP。SmartScreen 可能显示提示。下载 `mimi_<version>_x64-portable.zip` 解压后，直接运行 `mimi.exe`。电脑需已安装 WebView2（Windows 11 通常自带）。ZIP 不会把设置、服务凭证或已导出文件搬到自身目录；它们仍保存在原来的用户目录、系统凭据管理器或用户选择的位置。更新绿色版时，先退出 Mimi，再从 Releases 下载新版 ZIP 替换；绿色版不会运行应用内安装器更新。
+
+- **Linux x86_64 预览版（以 Ubuntu 22.04+ 为基线）**：提供 `.deb` 和 AppImage。需要 PulseAudio 或启用了 `pipewire-pulse` 的 PipeWire、可用的默认输出设备，以及已解锁的 Secret Service 密钥环（例如 GNOME Keyring）。Mimi 只监听输出设备，不采集默认输入或麦克风。切换输出设备后请重新开始会话。建议使用 X11；Wayland 的窗口定位、置顶、点击穿透和全局快捷键可能受桌面环境限制。没有托盘图标时可从设置窗口操作；最小化会继续运行，关闭设置窗口则退出 Mimi。暂不提供 Linux ARM64 安装包。详见 [Linux 安装与验证](docs/development/linux.md)。
 
 ### macOS 更新后重复授权
 

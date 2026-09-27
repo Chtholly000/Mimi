@@ -230,7 +230,7 @@ export function OverlayWindow() {
         className="relative h-full w-full overflow-hidden"
         style={{
           borderRadius: 16,
-          background: "rgba(0,0,0,0.62)",
+          background: "var(--overlay-card-background, rgba(0,0,0,0.62))",
           border: `${borderWidth}px solid ${borderColor}`,
         }}
         onMouseEnter={() => setIsHovering(true)}
@@ -369,7 +369,7 @@ export function OverlayWindow() {
                   fontWeight: 500,
                   color: emptyStateIsError(session)
                     ? "rgba(255,69,58,0.9)"
-                    : "rgba(255,255,255,0.5)",
+                    : "var(--overlay-empty-text, rgba(255,255,255,0.5))",
                   textAlign: settings.subtitleAlignment,
                   padding: "0 24px",
                   whiteSpace: emptyDensity === "minimal" ? "nowrap" : undefined,
@@ -403,7 +403,7 @@ export function OverlayWindow() {
         aria-label={`${I18N.overlay.collapsedAccessibilityPrefix}${phaseLabel}`}
         style={{
           borderRadius: 14,
-          background: "rgba(0,0,0,0.68)",
+          background: "var(--overlay-card-background, rgba(0,0,0,0.68))",
           border: `0.75px solid ${hexToRgba(ACCENT, isHovering ? 0.3 : 0.16)}`,
         }}
         onMouseEnter={() => setIsHovering(true)}

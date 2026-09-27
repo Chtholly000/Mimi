@@ -7,11 +7,11 @@ Thank you for improving mimi. Small, focused pull requests are the easiest to re
 ## 开始之前 / Before you start
 
 1. 不要在 Issue、日志、测试或截图中提交任何服务商的真实 API Key。
-2. Bug 请附上操作系统（macOS / Windows）与版本、复现步骤、预期行为和实际行为。
+2. Bug 请附上操作系统（macOS / Windows / Linux）与版本、复现步骤、预期行为和实际行为。
 3. 较大的功能先创建 Issue，说明使用场景和体验目标。
 
 1. Never commit a real provider API key in issues, logs, tests, or screenshots.
-2. Bug reports should include the operating system (macOS / Windows) and version, reproduction steps, expected behavior, and actual behavior.
+2. Bug reports should include the operating system (macOS / Windows / Linux) and version, reproduction steps, expected behavior, and actual behavior.
 3. Open an issue before a large feature and explain the use case and UX goal.
 
 ## 从源码运行 / Run from source
@@ -24,7 +24,7 @@ Requires Rust 1.88+ and Node.js 20.19.x, 22.13+, or 24+. macOS also needs the Xc
 git clone https://github.com/yuxino/mimi.git
 cd mimi
 npm ci
-npm run tauri:dev        # Windows
+npm run tauri:dev        # Windows / Linux
 ./scripts/dev-app.sh     # macOS
 ```
 
@@ -35,6 +35,10 @@ npm run tauri -- build --config src-tauri/tauri.ci.conf.json -- --locked
 ```
 
 macOS 打包使用 / Package on macOS with `./scripts/package-app.sh`.
+
+Linux 开发环境与安装包构建见 [Linux guide](docs/development/linux.md)。Ubuntu 上先安装 `./scripts/linux-ci-deps.sh` 中列出的依赖，再运行 `npm run tauri:dev`。Linux CI 在独立会话中验证输出监听、Secret Service 和无凭据的 UI 启动。
+
+For Linux dependencies, building, and isolated audio/keyring/UI checks, see the [Linux guide](docs/development/linux.md). Packages are built on Ubuntu 22.04 for x86_64.
 
 ## 本地验证 / Local verification
 
@@ -53,10 +57,10 @@ Before macOS testing or packaging, read [`docs/development/common-regressions.md
 
 ## 平台 / Platforms
 
-- macOS 与 Windows 共用一套代码。平台差异集中在 `src-tauri/src/audio/`（macOS 用 ScreenCaptureKit，Windows 用 WASAPI loopback）与凭证存储（macOS 钥匙串 / Windows 凭据管理器）。
-- Windows 打包请在 Windows 机器上执行；CI 会在 macOS 与 Windows 两个平台运行完整的 Rust 测试与 clippy。
+- macOS、Windows 与 Linux 共用一套代码。平台差异集中在 `src-tauri/src/audio/`（macOS 用 ScreenCaptureKit，Windows 用 WASAPI loopback，Linux 用 PulseAudio / PipeWire-Pulse 输出监听）与凭证存储（macOS 钥匙串 / Windows 凭据管理器 / Linux Secret Service）。
+- Windows 打包请在 Windows 机器上执行；CI 会在 macOS、Windows 与 Linux 三个平台运行完整的 Rust 测试与 clippy。
 
-macOS and Windows share one codebase. Platform differences live in `src-tauri/src/audio/` (ScreenCaptureKit on macOS, WASAPI loopback on Windows) and credential storage (macOS Keychain / Windows Credential Manager). Build the Windows package on a Windows machine; CI runs the full Rust tests and clippy on both platforms.
+macOS, Windows, and Linux share one codebase. Platform differences live in `src-tauri/src/audio/` (ScreenCaptureKit on macOS, WASAPI loopback on Windows, PulseAudio / PipeWire-Pulse output monitors on Linux) and credential storage (macOS Keychain / Windows Credential Manager / Linux Secret Service). Build the Windows package on a Windows machine; CI runs the full Rust tests and clippy on all three platforms.
 
 ## Pull Request
 

@@ -503,6 +503,8 @@ impl OverlayWindowManager {
                     presentation.invalidate();
                 }
                 configure_overlay_window(&window);
+                #[cfg(target_os = "linux")]
+                follow_linux_overlay_on_map(&window);
                 pipeline_log!("overlay window created");
             }
             Err(_) => pipeline_log!("overlay window failed label=create_failed"),
@@ -1374,6 +1376,7 @@ fn desktop_scale_for_frame(
     window.scale_factor().unwrap_or(1.0).max(1.0)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn overlay_frame_from_window(app: &AppHandle) -> Option<OverlayFrame> {
     let window = app.get_webview_window("overlay")?;
     let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
@@ -1388,6 +1391,56 @@ fn overlay_frame_from_window(app: &AppHandle) -> Option<OverlayFrame> {
         width: size.width as f64 / scale,
         height: size.height as f64 / scale,
     })
+}
+
+/// Tao's cached ConfigureNotify geometry can still be (0, 0) when a hidden
+/// GTK window is first mapped. Read the mapped native window on GTK's thread;
+/// never persist the hidden placeholder or anchor controls to that cache.
+#[cfg(target_os = "linux")]
+fn overlay_frame_from_window(app: &AppHandle) -> Option<OverlayFrame> {
+    use gtk::prelude::*;
+    let window = app.get_webview_window("overlay")?;
+    let native_window = window.clone();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    window
+        .run_on_main_thread(move || {
+            let frame = native_window.gtk_window().ok().and_then(|window| {
+                if !window.is_mapped() {
+                    return None;
+                }
+                let (x, y) = window.position();
+                let (width, height) = window.size();
+                Some(OverlayFrame {
+                    x: x as f64,
+                    y: y as f64,
+                    width: width as f64,
+                    height: height as f64,
+                })
+            });
+            let _ = tx.send(frame);
+        })
+        .ok()?;
+    rx.recv().ok().flatten()
+}
+
+#[cfg(target_os = "linux")]
+fn follow_linux_overlay_on_map(window: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+    let native_window = window.clone();
+    let app = window.app_handle().clone();
+    let _ = window.run_on_main_thread(move || {
+        if let Ok(window) = native_window.gtk_window() {
+            window.connect_map_event(move |_, _| {
+                // Wait until GTK has processed the mapping event, without a
+                // timer or a polling loop. Re-read mode so a stop wins races.
+                let app = app.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    OverlayControlWindowManager::follow_overlay(&app);
+                });
+                gtk::glib::Propagation::Proceed
+            });
+        }
+    });
 }
 
 /// Reads native geometry without holding the overlay mutex, then returns only
@@ -2090,11 +2143,30 @@ impl OverlayControlWindowManager {
     pub fn follow_overlay(app: &AppHandle) {
         let mode = Self::mode(app);
         if mode != OverlayControlMode::Hidden {
+            #[cfg(target_os = "linux")]
+            Self::apply_mode(app, mode, false);
+            #[cfg(not(target_os = "linux"))]
             Self::apply_geometry(app, mode);
         }
     }
 
     fn apply_mode(app: &AppHandle, mode: OverlayControlMode, focus: bool) {
+        #[cfg(target_os = "linux")]
+        {
+            let current_app = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                // A geometry debounce or map callback may outlive Stop.
+                // Re-read and apply in one main-thread transaction so stale
+                // follow work cannot show a control after it was hidden.
+                let current = Self::mode(&current_app);
+                Self::apply_mode_now(&current_app, current, focus && current == mode);
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        Self::apply_mode_now(app, mode, focus);
+    }
+
+    fn apply_mode_now(app: &AppHandle, mode: OverlayControlMode, focus: bool) {
         let Some(window) = app.get_webview_window("overlay-control") else {
             return;
         };
@@ -2109,6 +2181,11 @@ impl OverlayControlWindowManager {
         }
 
         let _ = window.emit(OVERLAY_CONTROL_MODE_EVENT, mode);
+        #[cfg(target_os = "linux")]
+        if !Self::apply_geometry(app, mode) {
+            return;
+        }
+        #[cfg(not(target_os = "linux"))]
         Self::apply_geometry(app, mode);
         if !window.is_visible().unwrap_or(false) {
             show_overlay_control_window(app, &window);
@@ -2124,29 +2201,48 @@ impl OverlayControlWindowManager {
         }
     }
 
-    fn apply_geometry(app: &AppHandle, mode: OverlayControlMode) {
+    fn apply_geometry(app: &AppHandle, mode: OverlayControlMode) -> bool {
         let Some(window) = app.get_webview_window("overlay-control") else {
-            return;
+            return false;
         };
         let Some((anchor_x, anchor_y, work_area)) = Self::overlay_anchor(app) else {
-            return;
+            return false;
         };
         let panel_height = app
             .try_state::<OverlayControlState>()
             .map(|state| state.snapshot().1)
             .unwrap_or(Self::DEFAULT_PANEL_HEIGHT);
         let geometry = overlay_control_geometry(mode, anchor_x, anchor_y, panel_height, work_area);
-        set_desktop_size(
-            &window,
-            geometry.width,
-            geometry.height,
-            work_area.coordinate_scale,
-        );
-        set_desktop_position(&window, geometry.x, geometry.y);
+        #[cfg(target_os = "linux")]
+        {
+            use gtk::prelude::*;
+            let native_window = window.clone();
+            let _ = window.run_on_main_thread(move || {
+                if let Ok(window) = native_window.gtk_window() {
+                    // A non-resizable GTK window otherwise retains its
+                    // natural 200px height and intercepts invisible clicks.
+                    window.set_size_request(geometry.width as i32, geometry.height as i32);
+                    window.resize(geometry.width as i32, geometry.height as i32);
+                    window.move_(geometry.x.round() as i32, geometry.y.round() as i32);
+                }
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            set_desktop_size(
+                &window,
+                geometry.width,
+                geometry.height,
+                work_area.coordinate_scale,
+            );
+            set_desktop_position(&window, geometry.x, geometry.y);
+        }
+        true
     }
 
     fn overlay_anchor(app: &AppHandle) -> Option<(f64, f64, LogicalWorkArea)> {
         let overlay = app.get_webview_window("overlay")?;
+        #[cfg(not(target_os = "linux"))]
         let position = overlay.outer_position().ok()?;
         let monitor = overlay
             .current_monitor()
@@ -2156,10 +2252,15 @@ impl OverlayControlWindowManager {
         let work_area = logical_work_area(&monitor);
         #[cfg(target_os = "windows")]
         let (x, y) = (position.x as f64, position.y as f64);
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         let (x, y) = {
             let scale = overlay.scale_factor().unwrap_or(1.0).max(1.0);
             (position.x as f64 / scale, position.y as f64 / scale)
+        };
+        #[cfg(target_os = "linux")]
+        let (x, y) = {
+            let frame = overlay_frame_from_window(app)?;
+            (frame.x, frame.y)
         };
         Some((
             x + work_area.coordinate_distance(Self::ANCHOR_OFFSET_X),

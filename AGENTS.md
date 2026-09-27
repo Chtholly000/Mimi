@@ -2,20 +2,20 @@
 
 ## Project
 
-Mimi is a Tauri v2 desktop app (Rust backend + React/TypeScript frontend) that listens to system audio playing on macOS or Windows and shows live translated subtitles in a floating always-on-top overlay. It supports built-in Alibaba Cloud and OpenAI Realtime service profiles with optional, explicitly enabled session recording and export.
+Mimi is a Tauri v2 desktop app (Rust backend + React/TypeScript frontend) that listens to system audio playing on macOS, Windows, or Linux and shows live translated subtitles in a floating always-on-top overlay. It supports built-in Alibaba Cloud and OpenAI Realtime service profiles with optional, explicitly enabled session recording and export.
 
 Preserve these product constraints:
 
 - Capture system audio only. Do not add microphone capture unless the task explicitly requires it.
 - Subtitle history retention and system-audio recording are off by default. Retain bounded session content in memory only after the user enables its setting; write content only through an explicit export to a user-selected file. Never auto-save content or add microphone capture. Disabling an option clears its in-memory buffer; a new session or app exit clears both.
-- Store API credentials in the OS keychain only (macOS Keychain / Windows Credential Manager via `keyring`). Never add plaintext, source-controlled, or environment-variable credential fallbacks.
+- Store API credentials in the OS keychain only (macOS Keychain / Windows Credential Manager / Linux Secret Service via `keyring`). Never add plaintext, source-controlled, or environment-variable credential fallbacks.
 - Keep diagnostics content-free: timing, counts, language codes, status codes, and sanitized error labels are acceptable; recognized or translated text is not.
 
 ## Repository map
 
 - `src-tauri/src/core/`: UI-independent models, configuration, wire protocols, subtitle assembly, text segmentation, and pipeline diagnostics. Pure Rust, fully unit-tested.
 - `src-tauri/src/clients/`: tokio network clients (Alibaba live translate/Audio 3.0/Qwen-MT pipelines and OpenAI Realtime translation).
-- `src-tauri/src/audio/`: system-audio capture (macOS ScreenCaptureKit via `screen-capture-kit`, Windows WASAPI loopback via `cpal` + `rubato`) and the bounded PCM send pipeline.
+- `src-tauri/src/audio/`: system-audio capture (macOS ScreenCaptureKit via `screen-capture-kit`, Windows WASAPI loopback via `cpal` + `rubato`), Linux PulseAudio / PipeWire-Pulse output monitors, and the bounded PCM send pipeline.
 - `src-tauri/src/session_manager.rs`: session lifecycle — start/stop/pause/resume, language/mode switching, health checks, automatic reconnection, state events.
 - `src-tauri/src/settings_store.rs`: preferences/profile JSON in the app config directory + provider/profile-scoped keychain credential storage.
 - `src-tauri/src/{commands,windows,lib}.rs`: IPC commands, overlay/tray-panel window management, tray/shortcut wiring.
@@ -33,7 +33,7 @@ Preserve these product constraints:
 - `scripts/codesign-identity.sh`: honors an explicit `MIMI_CODESIGN_IDENTITY`; otherwise it selects the exact fingerprint of the unique `mimi Local Development` identity or reports unavailable. macOS packaging and development launch fail closed rather than use ad-hoc signing.
 - `scripts/prepare-macos-release.sh`: prepares public macOS assets on the signing Mac using the certificate pinned in `scripts/macos-release-identity.txt`. Keep the private key local. Tag CI verifies the staged draft assets, source revision, updater signature, and DMG; never restore an ad-hoc fallback. See `docs/development/macos-release-signing.md`.
 - `scripts/verify-macos-install-identity.sh`: compares the complete designated requirement before a formal app is replaced.
-- `.github/workflows/ci.yml`: CI (Rust fmt/clippy/test on macOS and Windows, frontend checks).
+- `.github/workflows/ci.yml`: CI (Rust fmt/clippy/test on macOS, Windows, and Linux, frontend checks).
 
 ## Working agreements
 

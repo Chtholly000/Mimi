@@ -19,12 +19,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-2025]
+        os: [macos-latest, windows-2025, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     env:
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.os == 'macos-latest' && '13.0' || '' }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Install Linux build and smoke-test dependencies
+        if: runner.os == 'Linux'
+        run: ./scripts/linux-ci-deps.sh
 
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
@@ -48,6 +52,14 @@ jobs:
 
       - name: Test
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Test Linux output-monitor capture with real PulseAudio
+        if: runner.os == 'Linux'
+        run: dbus-run-session -- ./scripts/linux-audio-smoke.sh
+
+      - name: Test Linux credential storage with isolated Secret Service
+        if: runner.os == 'Linux'
+        run: ./scripts/linux-keyring-smoke.sh
 
       - name: Check Intel macOS target
         if: runner.os == 'macOS'
@@ -145,16 +157,17 @@ jobs:
         run: npm run build
 
   # Compile macOS without producing an extra branch artifact. Tag builds below
-  # verify maintainer-signed macOS assets and build Windows packages.
+  # verify maintainer-signed macOS assets and build Windows/Linux packages.
   bundle:
     if: ${{ github.ref_type != 'tag' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-2025]
+        os: [macos-latest, windows-2025, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     env:
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.os == 'macos-latest' && '13.0' || '' }}
+      APPIMAGE_EXTRACT_AND_RUN: "1"
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -171,6 +184,10 @@ jobs:
 
       - run: npm ci
 
+      - name: Install Linux build and smoke-test dependencies
+        if: runner.os == 'Linux'
+        run: ./scripts/linux-ci-deps.sh
+
       - name: Compile macOS without a runnable bundle
         if: ${{ matrix.os == 'macos-latest' }}
         run: npm run tauri -- build --no-bundle -- --locked
@@ -179,6 +196,14 @@ jobs:
         if: ${{ matrix.os == 'windows-2025' }}
         with:
           args: --config src-tauri/tauri.ci.conf.json
+
+      - name: Build Linux packages
+        if: runner.os == 'Linux'
+        run: npm run tauri -- build --config src-tauri/tauri.ci.conf.json -- --locked
+
+      - name: Install and smoke-test Linux packages
+        if: runner.os == 'Linux'
+        run: ./scripts/verify-linux-bundles.sh "$(node -p 'require("./package.json").version')"
 
       - name: Smoke launch x64 UI-test app
         if: ${{ matrix.os == 'windows-2025' }}
@@ -203,7 +228,7 @@ jobs:
           ./scripts/windows-ci-smoke.ps1 -ExecutablePath (Join-Path $extracted 'mimi.exe') -ExpectedArchitecture x64
 
       - name: Upload bundles
-        if: ${{ matrix.os == 'windows-2025' }}
+        if: runner.os != 'macOS'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mimi-${{ matrix.os }}
@@ -211,6 +236,8 @@ jobs:
             src-tauri/target/release/bundle/**/*.msi
             src-tauri/target/release/bundle/**/*.exe
             src-tauri/target/release/bundle/portable/*.zip
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
           retention-days: 7
 
@@ -404,6 +431,10 @@ jobs:
 
       - run: npm run tauri -- build -- --locked
 
+      - name: Smoke launch release x64 UI-test app
+        shell: pwsh
+        run: ./scripts/windows-ci-smoke.ps1 -ExecutablePath ./src-tauri/target/release/mimi.exe -ExpectedArchitecture x64
+
       - name: Verify and stage Windows release assets
         shell: pwsh
         run: |
@@ -448,6 +479,15 @@ jobs:
           }
           ./scripts/package-windows-portable.ps1 -ExecutablePath "$env:GITHUB_WORKSPACE/src-tauri/target/release/mimi.exe" -Version $version -OutputDirectory $stagingDir
 
+      - name: Smoke launch extracted release portable x64 app
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $archive = "$env:RUNNER_TEMP/mimi-release-assets/mimi_${version}_x64-portable.zip"
+          $extracted = Join-Path $env:RUNNER_TEMP 'mimi-release-portable-smoke'
+          Expand-Archive -LiteralPath $archive -DestinationPath $extracted -Force
+          ./scripts/windows-ci-smoke.ps1 -ExecutablePath (Join-Path $extracted 'mimi.exe') -ExpectedArchitecture x64
+
       - name: Upload verified Windows release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -456,12 +496,69 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # This is the only job that publishes a release. It runs only after both
+  release-linux:
+    if: ${{ github.ref_type == 'tag' }}
+    runs-on: ubuntu-22.04
+    needs: [rust, msrv, frontend, release-preflight]
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux build and smoke-test dependencies
+        run: ./scripts/linux-ci-deps.sh
+
+      - run: npm ci
+
+      - name: Verify updater signing key is configured
+        run: ': "${TAURI_SIGNING_PRIVATE_KEY:?Updater signing key is missing}"'
+
+      - name: Remove stale Linux package outputs
+        run: rm -rf src-tauri/target/release/bundle/deb src-tauri/target/release/bundle/appimage
+
+      - name: Build signed Linux packages
+        run: npm run tauri -- build -- --locked
+
+      - name: Verify, install, and smoke-test signed Linux packages
+        run: ./scripts/verify-linux-bundles.sh "$(node -p 'require("./package.json").version')" --signed
+
+      - name: Stage verified Linux release assets
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          staging_dir="$RUNNER_TEMP/mimi-release-assets"
+          mkdir -p "$staging_dir"
+          cp "src-tauri/target/release/bundle/deb/mimi_${version}_amd64.deb" \
+            "src-tauri/target/release/bundle/appimage/mimi_${version}_amd64.AppImage" \
+            "src-tauri/target/release/bundle/appimage/mimi_${version}_amd64.AppImage.sig" \
+            "$staging_dir/"
+
+      - name: Upload verified Linux release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mimi-release-linux
+          path: ${{ runner.temp }}/mimi-release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # This is the only job that publishes a release. It runs only after all
   # platform packages pass their structural and digest checks.
   publish-release:
     if: ${{ github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
-    needs: [release-macos, release-windows]
+    needs: [release-macos, release-windows, release-linux, windows-arm64]
     permissions:
       actions: read
       contents: write
@@ -493,6 +590,9 @@ jobs:
             "mimi_${version}_x64_en-US.msi"
             "mimi_${version}_x64_en-US.msi.sig"
             "mimi_${version}_x64-portable.zip"
+            "mimi_${version}_amd64.deb"
+            "mimi_${version}_amd64.AppImage"
+            "mimi_${version}_amd64.AppImage.sig"
           )
           mapfile -t actual_names < <(printf '%s\n' "${assets[@]##*/}" | sort)
           mapfile -t expected_names < <(printf '%s\n' "${expected_names[@]}" | sort)
@@ -549,6 +649,9 @@ jobs:
               "mimi_${version}_x64_en-US.msi" \
               "mimi_${version}_x64_en-US.msi.sig" \
               "mimi_${version}_x64-portable.zip" \
+              "mimi_${version}_amd64.deb" \
+              "mimi_${version}_amd64.AppImage" \
+              "mimi_${version}_amd64.AppImage.sig" \
               latest.json > SHA256SUMS.txt
           )
 

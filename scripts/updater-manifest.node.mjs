@@ -32,7 +32,7 @@ function fixture() {
   return { assetDir, assets };
 }
 
-test("creates a three-platform manifest bound to signed release assets", () => {
+test("creates a four-platform manifest bound to signed release assets", () => {
   const { assetDir, assets } = fixture();
   try {
     const manifest = createUpdaterManifest({
@@ -47,6 +47,7 @@ test("creates a three-platform manifest bound to signed release assets", () => {
     assert.deepEqual(Object.keys(manifest.platforms).sort(), [
       "darwin-aarch64",
       "darwin-x86_64",
+      "linux-x86_64",
       "windows-x86_64",
     ]);
     assert.match(manifest.platforms["darwin-aarch64"].url, /mimi\.app\.tar\.gz$/);
@@ -56,10 +57,34 @@ test("creates a three-platform manifest bound to signed release assets", () => {
       readFileSync(join(assetDir, assets.intelSignature), "utf8"),
     );
     assert.match(manifest.platforms["windows-x86_64"].url, /x64-setup\.exe$/);
+    assert.match(manifest.platforms["linux-x86_64"].url, /amd64\.AppImage$/);
+    assert.equal(
+      manifest.platforms["linux-x86_64"].signature,
+      readFileSync(join(assetDir, assets.linuxAppImageSignature), "utf8"),
+    );
     assert.equal(
       manifest.platforms["darwin-aarch64"].signature,
       readFileSync(join(assetDir, assets.macSignature), "utf8"),
     );
+  } finally {
+    rmSync(assetDir, { recursive: true, force: true });
+  }
+});
+
+test("requires Linux packages and prevents Debian packages from becoming updater payloads", () => {
+  const { assetDir, assets } = fixture();
+  try {
+    const options = { assetDir, version, repository, tag, pubDate, notes: "fixture" };
+    const original = createUpdaterManifest(options);
+    const manifest = structuredClone(original);
+    manifest.platforms["linux-x86_64"].url =
+      `https://github.com/${repository}/releases/download/${tag}/${assets.linuxDeb}`;
+    assert.throws(() => verifyUpdaterManifest({ ...options, manifest }), /does not match its release asset/);
+    manifest.platforms["linux-x86_64"] = original.platforms["linux-x86_64"];
+    delete manifest.platforms["linux-x86_64"];
+    assert.throws(() => verifyUpdaterManifest({ ...options, manifest }), /unexpected updater platforms/);
+    rmSync(join(assetDir, assets.linuxAppImage));
+    assert.throws(() => createUpdaterManifest(options), /ENOENT/);
   } finally {
     rmSync(assetDir, { recursive: true, force: true });
   }
