@@ -23,6 +23,12 @@ worker, and fatal errors use the existing sanitized capture-failure channel.
 
 ## Credentials and desktop
 
+Initialize Xlib threading before Tauri/GTK opens its first display. Reuse Tao's
+already-locked `x11-dl` version as a direct Linux dependency for that early call;
+it does not open a display or select X11 over Wayland. Ubuntu 22.04 native UI
+stress tests reproduced XCB sequence corruption when initialization happened
+too late, and the early call must be verified without preload diagnostics.
+
 The existing keyring v4 compatibility API selects Secret Service on Linux.
 Keep that secure backend and existing profile-scoped entries; fail closed when
 unavailable. No plaintext fallback or microphone capture is added. Retention
@@ -32,6 +38,13 @@ Use a colored tray asset outside macOS. Settings remains accessible at startup
 when the desktop has no tray host. Linux closes to exit rather than hiding an
 unreachable process; minimize Settings to keep subtitles running. Recommend X11; document compositor limits
 for positioning, always-on-top, click-through, and global shortcuts on Wayland.
+
+## Linux presentation
+
+Prefer a consistent installed Noto/desktop UI font across WebKitGTK text and
+form controls. Allow full language labels and credential state to wrap within
+the default Settings width. Use a darker subtitle card and clearer empty-state
+text on Linux while preserving the existing appearance on other platforms.
 
 ## Distribution and proof
 

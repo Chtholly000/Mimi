@@ -45,6 +45,16 @@ export MIMI_UI_TEST_FRONTEND_READY_DIR="$smoke_dir/frontend-ready"
 
 openbox >"$smoke_dir/openbox.log" 2>&1 &
 wm_pid=$!
+wm_ready=0
+for _ in {1..40}; do
+  if ! kill -0 "$wm_pid" 2>/dev/null; then
+    cat "$smoke_dir/openbox.log" >&2
+    exit 1
+  fi
+  if wmctrl -m >/dev/null 2>&1; then wm_ready=1; break; fi
+  sleep 0.25
+done
+[[ "$wm_ready" == 1 ]] || { echo "Openbox did not become ready." >&2; exit 1; }
 if [[ "$executable" == *.AppImage ]]; then
   # Hosted CI may not expose /dev/fuse. This still executes the packaged
   # AppRun and bundled libraries instead of the loose build executable.
@@ -82,7 +92,11 @@ echo "Linux UI smoke passed: both frontends rendered; windows visible; synthetic
 # A desktop without a tray must still have a reliable exit path. Closing
 # Settings exits on Linux; minimizing it is the keep-running action.
 settings_window="$(xdotool search --onlyvisible --name '^mimi UI test settings$' | head -1)"
-xdotool windowactivate --sync "$settings_window" key --clearmodifiers alt+F4
+# Send the window manager's normal close request to Settings directly. An
+# Alt+F4 keypress can reach the overlay if startup changes focus concurrently.
+# Do not use XDestroyWindow: it bypasses the app's CloseRequested handler.
+xprop -id "$settings_window" WM_PROTOCOLS | grep -q WM_DELETE_WINDOW
+wmctrl -ic "$settings_window"
 for _ in {1..20}; do
   if ! kill -0 "$app_pid" 2>/dev/null; then
     wait "$app_pid"
@@ -93,4 +107,7 @@ for _ in {1..20}; do
   sleep 0.25
 done
 echo "Closing Linux Settings did not exit Mimi." >&2
+cat "$smoke_dir/app.log" "$smoke_dir/openbox.log" >&2
+wmctrl -l >&2 || true
+xprop -root _NET_ACTIVE_WINDOW >&2 || true
 exit 1

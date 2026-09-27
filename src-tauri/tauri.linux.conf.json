@@ -4,7 +4,7 @@
     "targets": ["deb", "appimage"],
     "linux": {
       "deb": {
-        "depends": ["libpulse0"],
+        "depends": ["libpulse0", "xdg-utils"],
         "recommends": ["gnome-keyring | kwallet6 | kwalletmanager"]
       }
     }

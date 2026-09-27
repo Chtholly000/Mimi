@@ -386,18 +386,19 @@
 .source-language-button {
   display: inline-flex;
   min-width: 0;
-  height: 36px;
+  min-height: 36px;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 0 9px;
+  padding: 5px 9px;
   border: 1px solid var(--settings-border);
   border-radius: 9px;
   color: var(--settings-text-muted);
   background: var(--settings-control);
   font-size: 12px;
   font-weight: 560;
-  white-space: nowrap;
+  line-height: 1.3;
+  white-space: normal;
 }
 
 .source-language-button.is-selected {
@@ -1403,6 +1404,17 @@
   }
 }
 
+/* Leave room for Linux system fonts and the full English credential state. */
+@media (max-width: 900px) {
+  .active-profile-summary {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .active-profile-summary > .credential-badge {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+}
+
 @media (max-width: 680px) {
   .settings-console {
     grid-template-columns: 144px minmax(0, 1fr);
@@ -1443,13 +1455,6 @@
   }
   .profiles-workspace {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .active-profile-summary {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-  .active-profile-summary > .credential-badge {
-    grid-column: 1 / -1;
-    justify-self: start;
   }
   .active-profile-summary__picker {
     grid-template-columns: minmax(0, 1fr);

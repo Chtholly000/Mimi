@@ -51,7 +51,25 @@ npm run tauri -- build --config src-tauri/tauri.ci.conf.json -- --locked
 The CI config disables updater signing for development bundles. Formal release
 builds use the existing signing key and verify the AppImage signature before
 publishing. CI also exercises generated audio through an isolated null output,
-an isolated Secret Service round trip, and a credential-free Xvfb UI launch.
-These checks do not prove a real provider translation session or every
-GNOME/KDE/Wayland desktop. Physical Linux audio, provider latency, and compositor
-behavior remain separate acceptance checks.
+an isolated Secret Service round trip, and three independent credential-free
+Xvfb launches of each installed package format. Any failed launch stops the
+check; it is not retried into a passing result.
+
+Native validation also runs in an isolated Ubuntu 22.04.5 ARM64 virtual machine:
+PulseAudio 15 and PipeWire 0.3.48 with WirePlumber 0.4.8 both capture a generated
+997 Hz tone through the selected output monitor at 16/24 kHz, including
+stop/restart with an unrelated default input. GNOME Keyring exercises real
+save/read/update/delete operations with a synthetic credential. Locally built
+ARM64 `.deb` and AppImage packages are for this validation only; the public
+release target remains x86_64.
+
+The VM's Openbox X11 desktop uses a compositor for transparent windows. It
+also checks normal installed-app startup, language switching, privacy
+defaults, and the `.deb` update entry. Xlib threading is initialized before
+GTK starts, avoiding an intermittent native startup abort found by this test.
+An installed production-mode build also connected to Alibaba Cloud using an
+isolated Secret Service credential, captured generated English speech from
+the system output, and displayed Chinese translations. This is a functional
+check, not a provider latency benchmark. Physical Linux audio hardware, public
+x86_64 artifacts, and other GNOME/KDE/Wayland compositors remain separate
+acceptance checks.

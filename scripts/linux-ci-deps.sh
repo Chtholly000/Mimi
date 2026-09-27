@@ -8,4 +8,4 @@ sudo apt-get update
 sudo apt-get install --no-install-recommends -y \
   build-essential curl wget file libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
   libayatana-appindicator3-dev librsvg2-dev libpulse-dev libfuse2 \
-  pulseaudio pulseaudio-utils dbus-x11 gnome-keyring xvfb xauth xdotool openbox
+  pulseaudio pulseaudio-utils dbus-x11 gnome-keyring xvfb xauth x11-utils xdotool wmctrl openbox xdg-utils

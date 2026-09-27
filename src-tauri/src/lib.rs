@@ -5,6 +5,8 @@ mod audio;
 mod clients;
 mod commands;
 mod core;
+#[cfg(target_os = "linux")]
+mod linux_startup;
 mod session_export;
 mod session_manager;
 mod settings_store;
@@ -23,6 +25,10 @@ use tauri::{Listener, Manager, WindowEvent};
 
 /// Runs the mimi Tauri application.
 pub fn run() {
+    // Xlib threading must be initialized before GTK opens its display.
+    #[cfg(target_os = "linux")]
+    linux_startup::initialize_x11_threads().expect("Linux window-system initialization failed");
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

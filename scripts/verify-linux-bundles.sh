@@ -19,6 +19,7 @@ appimage="$bundle_dir/appimage/mimi_${version}_amd64.AppImage"
 [[ "$(dpkg-deb --field "$deb" Version)" == "$version" ]]
 [[ "$(dpkg-deb --field "$deb" Architecture)" == amd64 ]]
 dpkg-deb --field "$deb" Depends | tr ',' '\n' | grep -Eq '^ *libpulse0( |$)'
+dpkg-deb --field "$deb" Depends | tr ',' '\n' | grep -Eq '^ *xdg-utils( |$)'
 file "$appimage" | grep -q 'ELF 64-bit.*x86-64'
 
 if [[ "${2:-}" == --signed ]]; then
@@ -29,7 +30,19 @@ if [[ "${2:-}" == --signed ]]; then
 fi
 
 # Install the actual .deb and smoke both package formats independently.
-sudo apt-get install --no-install-recommends -y "$(realpath "$deb")"
-./scripts/linux-ci-smoke.sh /usr/bin/mimi
-./scripts/linux-ci-smoke.sh "$appimage"
+sudo apt-get install --reinstall --no-install-recommends -y "$(realpath "$deb")"
+packaged_binary_sha="$(dpkg-deb --fsys-tarfile "$deb" | tar -xOf - usr/bin/mimi | sha256sum | cut -d ' ' -f1)"
+installed_binary_sha="$(sha256sum /usr/bin/mimi | cut -d ' ' -f1)"
+[[ "$packaged_binary_sha" == "$installed_binary_sha" ]] || {
+  echo "Installed Mimi does not match the package under test." >&2
+  exit 1
+}
+# Xlib thread initialization regressions can be intermittent. Fail on the
+# first failure; these are independent starts, not retries that hide a crash.
+for executable in /usr/bin/mimi "$appimage"; do
+  for attempt in 1 2 3; do
+    echo "Linux native launch $attempt/3: $executable"
+    GDK_SYNCHRONIZE=1 ./scripts/linux-ci-smoke.sh "$executable"
+  done
+done
 echo "Linux packages verified: $deb and $appimage"
