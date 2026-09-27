@@ -2,6 +2,45 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Presentation only; this never changes provider recognition or translation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubtitleDisplayMode {
+    #[default]
+    Translation,
+    Bilingual,
+    Original,
+}
+
+impl SubtitleDisplayMode {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Translation => Self::Bilingual,
+            Self::Bilingual => Self::Original,
+            Self::Original => Self::Translation,
+        }
+    }
+}
+
+#[cfg(test)]
+mod display_mode_tests {
+    use super::SubtitleDisplayMode;
+
+    #[test]
+    fn display_modes_round_trip_and_cycle_in_presentation_order() {
+        let mut mode = SubtitleDisplayMode::default();
+        for value in ["translation", "bilingual", "original"] {
+            assert_eq!(serde_json::to_value(mode).unwrap(), value);
+            assert_eq!(
+                serde_json::from_value::<SubtitleDisplayMode>(value.into()).unwrap(),
+                mode
+            );
+            mode = mode.next();
+        }
+        assert_eq!(mode, SubtitleDisplayMode::default());
+    }
+}
+
 /// The language being recognized in system audio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceLanguage {

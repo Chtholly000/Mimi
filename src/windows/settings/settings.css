@@ -551,27 +551,6 @@
   align-items: center;
 }
 
-.settings-select-wrap > svg {
-  position: absolute;
-  right: 10px;
-  color: var(--settings-text-faint);
-  font-size: 11px;
-  pointer-events: none;
-}
-
-.settings-select {
-  width: 100%;
-  height: 36px;
-  padding: 0 30px 0 10px;
-  appearance: none;
-  border: 1px solid var(--settings-border-strong);
-  border-radius: 7px;
-  color: var(--settings-text);
-  background: var(--settings-control);
-  font-size: 12px;
-  cursor: pointer;
-}
-
 .font-size-control {
   display: grid;
   grid-template-columns: auto minmax(110px, 190px) 26px;
@@ -1089,7 +1068,7 @@
 
   .profile-active-badge,
   .settings-card,
-  .settings-select,
+  .mimi-select__trigger,
   .settings-field input,
   .settings-button--quiet,
   .provider-option {
@@ -1446,7 +1425,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 20px;
+}
+#service-profiles .settings-card__body > .settings-feedback:first-child {
+  margin: 0 0 24px;
 }
 .services-toolbar > span {
   color: var(--settings-text-faint);
@@ -1459,6 +1441,7 @@
   display: flex;
   align-items: stretch;
   border-bottom: 1px solid var(--settings-border);
+  transition: background-color 140ms ease;
 }
 .service-row__main {
   flex: 1;
@@ -1467,15 +1450,14 @@
   grid-template-columns: 38px minmax(0, 1fr) auto;
   gap: 13px;
   align-items: center;
-  padding: 20px 0;
+  padding: 20px 12px;
   border: 0;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
-.service-row__main:hover,
-.service-row__edit:hover {
+.service-row:has(button:not(:disabled):hover) {
   background: var(--settings-selection-soft);
 }
 .service-row__copy {
@@ -1498,12 +1480,19 @@
   justify-items: end;
 }
 .service-row__edit {
-  width: 32px;
-  margin-left: 10px;
+  width: 36px;
+  align-self: center;
+  height: 36px;
+  margin: 0 8px;
   border: 0;
+  border-radius: 7px;
   background: transparent;
   color: var(--settings-text-faint);
   cursor: pointer;
+}
+.service-row__edit:hover:not(:disabled) {
+  color: var(--settings-text);
+  background: var(--settings-selection-soft);
 }
 .service-row button:focus-visible {
   outline: 2px solid var(--settings-text);
@@ -1677,19 +1666,29 @@
 }
 .subtitle-preview__controls {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 20px;
-  padding: 14px 18px 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  padding: 20px 18px 22px;
   border-top: 1px solid var(--settings-border);
 }
 .subtitle-preview__controls .settings-row {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
+  gap: 16px;
 }
-.subtitle-preview__controls .font-size-control {
-  width: 100%;
+.subtitle-preview__controls .settings-row:first-child {
+  grid-template-columns: minmax(0, 1fr);
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--settings-border);
+  gap: 12px;
+}
+.subtitle-preview__controls .settings-row:first-child .settings-row__control {
+  justify-content: flex-start;
+}
+.subtitle-preview__controls .settings-row:first-child .settings-select-wrap {
+  width: 220px;
+  max-width: 100%;
+}
+.subtitle-preview__controls .settings-row__description {
+  max-width: none;
 }
 .subtitle-preview__controls .settings-row__label {
   font-size: 11px;

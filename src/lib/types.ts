@@ -63,6 +63,7 @@ export interface SettingsSnapshot {
   /** 14..20 */
   fontSize: number;
   subtitleAlignment: SubtitleAlignment;
+  subtitleDisplayMode: SubtitleDisplayMode;
   subtitleBlendsWithBackground: boolean;
   isOverlayLocked: boolean;
   /** UI language override; `null` or `system` follows the system language. */
@@ -72,6 +73,7 @@ export interface SettingsSnapshot {
 }
 
 export type UiLanguage = "system" | "zh" | "en" | "ja";
+export type SubtitleDisplayMode = "translation" | "bilingual" | "original";
 export type SubtitleAlignment = "left" | "center" | "right";
 
 export interface SettingsDraft {
@@ -80,6 +82,7 @@ export interface SettingsDraft {
   translationMode?: TranslationMode;
   fontSize?: number;
   subtitleAlignment?: SubtitleAlignment;
+  subtitleDisplayMode?: SubtitleDisplayMode;
   subtitleBlendsWithBackground?: boolean;
   isOverlayLocked?: boolean;
   uiLanguage?: UiLanguage;

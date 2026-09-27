@@ -23,6 +23,7 @@ const BASE_SETTINGS: SettingsSnapshot = {
   translationMode: "highQuality",
   fontSize: 18,
   subtitleAlignment: "center",
+  subtitleDisplayMode: "translation",
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
   uiLanguage: null,

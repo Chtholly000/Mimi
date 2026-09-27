@@ -6,7 +6,7 @@
 
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::ProviderCredentials;
-use crate::core::models::{SourceLanguage, TargetLanguage, TranslationMode};
+use crate::core::models::{SourceLanguage, SubtitleDisplayMode, TargetLanguage, TranslationMode};
 use crate::core::provider::{
     ProviderKind, ProviderPreferences, ServiceProfile, DEFAULT_ALIBABA_PROFILE_ID,
 };
@@ -66,6 +66,7 @@ pub struct Preferences {
     pub translation_mode: TranslationMode,
     pub font_size: f64,
     pub subtitle_alignment: SubtitleAlignment,
+    pub subtitle_display_mode: SubtitleDisplayMode,
     pub subtitle_blends_with_background: bool,
     pub overlay_locked: bool,
     pub overlay_frame: Option<OverlayFrame>,
@@ -85,6 +86,7 @@ impl Default for Preferences {
             translation_mode: TranslationMode::LowLatency,
             font_size: DEFAULT_FONT_SIZE,
             subtitle_alignment: SubtitleAlignment::Center,
+            subtitle_display_mode: SubtitleDisplayMode::Translation,
             subtitle_blends_with_background: false,
             overlay_locked: false,
             overlay_frame: None,
@@ -1981,7 +1983,38 @@ mod tests {
         let preferences: Preferences = serde_json::from_str("{}").unwrap();
 
         assert_eq!(preferences.subtitle_alignment, SubtitleAlignment::Center);
+        assert_eq!(
+            preferences.subtitle_display_mode,
+            SubtitleDisplayMode::Translation
+        );
         assert!(!preferences.subtitle_blends_with_background);
+    }
+
+    #[test]
+    fn display_modes_persist_without_changing_provider_configuration() {
+        let directory = std::env::temp_dir().join(format!(
+            "mimi-display-mode-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.clone(), Box::new(fake.clone()));
+        store
+            .save_api_key(DEFAULT_ALIBABA_PROFILE_ID, "test-key")
+            .unwrap();
+        let original_configuration = store.configuration().unwrap();
+        for mode in [
+            SubtitleDisplayMode::Bilingual,
+            SubtitleDisplayMode::Original,
+            SubtitleDisplayMode::Translation,
+        ] {
+            store
+                .save_preferences_for_active_profile(|prefs| prefs.subtitle_display_mode = mode)
+                .unwrap();
+            assert_eq!(store.configuration().unwrap(), original_configuration);
+            let reloaded = SettingsStore::at_path(directory.clone(), Box::new(fake.clone()));
+            assert_eq!(reloaded.preferences().subtitle_display_mode, mode);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

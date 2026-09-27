@@ -61,6 +61,9 @@ export const Timeline = memo(function Timeline({
       {rows.map((row, index) => {
         const isLast = index === rows.length - 1;
         const distance = rows.length - 1 - index;
+        const latestPairId = rows[rows.length - 1]?.pairId;
+        const isLatestPair = row.pairId !== undefined && row.pairId === latestPairId;
+        const isPairedSource = row.pairId !== undefined && row.kind === "source";
         // Draft rows are the trailing `draft-*` rows of the live preview
         // line (identified by id prefix, never by createdAt — history rows
         // beyond the first segment also carry null timestamps).
@@ -110,11 +113,13 @@ export const Timeline = memo(function Timeline({
               className="block min-w-0"
               style={{
                 textAlign: alignment,
-                fontSize: rowFontSize(index, rows.length, fontSize),
-                fontWeight: isLast ? 500 : 400,
+                fontSize: isLatestPair
+                  ? isPairedSource ? Math.max(12, fontSize * 0.82) : fontSize
+                  : rowFontSize(index, rows.length, fontSize),
+                fontWeight: (isLast || isLatestPair) && !isPairedSource ? 500 : 400,
                 color: isDraftRow
                   ? "rgba(255,255,255,0.72)"
-                  : `rgba(255,255,255,${rowOpacity(distance)})`,
+                  : `rgba(255,255,255,${isLatestPair ? isPairedSource ? 0.72 : 1 : rowOpacity(distance)})`,
                 lineHeight: 1.45,
                 overflowWrap: "break-word",
                 textShadow: blendsWithBackground

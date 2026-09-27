@@ -21,6 +21,8 @@ import {
   type TranslationMode,
 } from "../../lib/types";
 import { sourceLanguageButtonTitle } from "../overlay/overlayModel";
+import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
+import type { SubtitleDisplayMode } from "../../lib/types";
 import { ServiceProfiles } from "./ServiceProfiles";
 import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
@@ -319,11 +321,23 @@ export function SettingsView() {
                         className="subtitle-preview__text"
                         style={{ fontSize: settings.fontSize }}
                       >
-                        <span>{I18N.settings.previewOriginal}</span>
-                        <strong>{I18N.settings.previewTranslation}</strong>
+                        {settings.subtitleDisplayMode !== "translation" && (
+                          <span>{I18N.settings.previewOriginal}</span>
+                        )}
+                        {settings.subtitleDisplayMode !== "original" && (
+                          <strong>{I18N.settings.previewTranslation}</strong>
+                        )}
                       </div>
                     </div>
                     <div className="subtitle-preview__controls">
+                      <SettingsRow label={I18N.settings.subtitleDisplay} description={`${I18N.settings.subtitleDisplayHelp} ${subtitleDisplayShortcut()}`}>
+                        <SettingsSelect
+                          label={I18N.settings.subtitleDisplay}
+                          value={settings.subtitleDisplayMode}
+                          options={SUBTITLE_DISPLAY_OPTIONS}
+                          onChange={(value) => void saveSettings({ subtitleDisplayMode: value as SubtitleDisplayMode })}
+                        />
+                      </SettingsRow>
                       <SettingsRow label={I18N.settings.fontSize}>
                         <div className="font-size-control">
                           <span className="font-size-control__sample" aria-hidden="true">

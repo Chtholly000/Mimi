@@ -82,6 +82,12 @@ Windows 安装完成后会重新打开 Mimi；macOS 和 Linux AppImage 可点击
 
 构建与贡献请参阅 [贡献指南](CONTRIBUTING.md)，安全问题请参阅 [安全政策](SECURITY.md)。
 
+## 字幕显示
+
+在设置、浮窗控制面板或托盘中选择 **仅译文**、**原文＋译文** 或 **仅原文**。
+macOS 使用 **⌘⇧B**，Windows/Linux 使用 **Ctrl+Shift+B** 快速切换，不会中断翻译。
+双语模式成对显示已确认的原文与译文，等待翻译时先预览识别到的原文。
+
 ## 特别感谢
 
 特别感谢 [@yebuwudong](https://github.com/yebuwudong) 在 [PR #37](https://github.com/yuxino/mimi/pull/37) 中贡献原生 Android 版本。[下载 Android 1.5.1](https://github.com/yuxino/mimi/releases/tag/android-v1.5.1)，配置方式和已验证范围见 [Android 说明](android/README.md)。

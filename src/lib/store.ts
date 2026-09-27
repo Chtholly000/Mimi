@@ -90,6 +90,7 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   translationMode: "lowLatency",
   fontSize: 18,
   subtitleAlignment: "center",
+  subtitleDisplayMode: "translation",
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
   uiLanguage: null,

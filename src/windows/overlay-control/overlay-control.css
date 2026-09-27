@@ -395,3 +395,20 @@
     background: Highlight;
   }
 }
+
+.overlay-control-display {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 4px 8px;
+  color: var(--control-text);
+}
+.overlay-control-display > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--control-text-faint);
+}
+.overlay-control-display kbd { font: inherit; }
+.overlay-control-display .mimi-select__trigger { height: 32px; }

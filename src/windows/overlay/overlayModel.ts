@@ -22,6 +22,9 @@ export interface SubtitleRow {
   text: string;
   /** Epoch ms for the first row of a history pair; `null` otherwise. */
   createdAt: number | null;
+  /** Shared only by the two sides of a committed bilingual pair. */
+  pairId?: string;
+  kind?: "source" | "translation";
 }
 
 function isSameLanguageMode(
@@ -181,18 +184,31 @@ export function subtitleSegmentLength(
 export function computeVisibleRows(
   history: SubtitleSnapshot["history"],
   segmentLength: number,
+  displayMode: SettingsSnapshot["subtitleDisplayMode"] = "translation",
+  sourceSegmentLength = segmentLength,
 ): SubtitleRow[] {
   const rows: SubtitleRow[] = [];
 
   for (const pair of history) {
-    const pairSegments = segments(pair.translation, segmentLength);
-    pairSegments.forEach((text, index) => {
-      rows.push({
-        id: `history-${pair.createdAt}-${index}`,
-        text,
-        createdAt: index === 0 ? pair.createdAt : null,
+    const pairId = `history-${pair.createdAt}`;
+    const showSource = displayMode !== "translation" && pair.source.trim() !== "";
+    const showTranslation = displayMode !== "original" &&
+      (!showSource || pair.source.trim() !== pair.translation.trim());
+    const bilingualPair = showSource && showTranslation && pair.translation.trim() !== "";
+    let first = true;
+    const append = (value: string, kind: "source" | "translation", length: number) => {
+      segments(value, length).forEach((text, index) => {
+        rows.push({
+          id: `${pairId}-${kind}-${index}`,
+          text,
+          createdAt: first ? pair.createdAt : null,
+          ...(bilingualPair ? { pairId, kind } : {}),
+        });
+        first = false;
       });
-    });
+    };
+    if (showSource) append(pair.source, "source", sourceSegmentLength);
+    if (showTranslation) append(pair.translation, "translation", segmentLength);
   }
 
   return rows;
@@ -230,7 +246,8 @@ interface LiveSubtitlePreview {
  */
 export function visibleLiveSubtitle(
   subtitles: SubtitleSnapshot,
-  settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage">,
+  settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage"> &
+    Partial<Pick<SettingsSnapshot, "subtitleDisplayMode">>,
   detectedLanguage: string | null,
   isTranslationPending: boolean,
   isTranslationTimedOut: boolean,
@@ -239,11 +256,18 @@ export function visibleLiveSubtitle(
     subtitles.translation,
     subtitles.history,
   );
-  if (translation !== null) {
+  const showSource = settings.subtitleDisplayMode === "original" ||
+    settings.subtitleDisplayMode === "bilingual";
+  // Source/translation snapshots have no shared utterance identity. Only
+  // committed history can form a bilingual pair; preview the recognition
+  // independently until that pair arrives, never attach a stale translation.
+  const bilingualWithoutSource = settings.subtitleDisplayMode === "bilingual" &&
+    subtitles.source.text.trim() === "";
+  if ((!showSource || bilingualWithoutSource) && translation !== null) {
     return { ...translation, kind: "translation" };
   }
 
-  if (!isSameLanguageMode(settings, detectedLanguage)) return null;
+  if (!showSource && !isSameLanguageMode(settings, detectedLanguage)) return null;
 
   const source = subtitles.source;
   if (source.text === "") return null;
@@ -258,7 +282,7 @@ export function visibleLiveSubtitle(
     !isTranslationPending &&
     !isTranslationTimedOut &&
     latestPair?.source === source.text &&
-    currentTranslationMatchesLatestPair;
+    (showSource || currentTranslationMatchesLatestPair);
   if (sourceIsAlreadyCommitted) return null;
 
   return {

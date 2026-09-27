@@ -263,6 +263,12 @@ const OVERLAY_JA = {
 };
 
 const SETTINGS_ZH = {
+  subtitleDisplay: "字幕显示",
+  displayTranslation: "仅译文",
+  displayBilingual: "原文＋译文",
+  displayOriginal: "仅原文",
+  subtitleDisplayHelp: "切换显示方式，不会中断翻译。",
+
   sessionAudioTiming: "WAV 会省略暂停和重连间隙，音频与字幕时间戳不直接对齐。",
   sessionTranscriptTiming: "TXT 时间戳表示字幕确认时距会话开始的时间，并非媒体播放位置。",
   sessionExportBuffers: "本次暂存",
@@ -470,6 +476,12 @@ type SettingsCopy = {
 };
 
 const SETTINGS_EN = {
+  subtitleDisplay: "Subtitle display",
+  displayTranslation: "Translation only",
+  displayBilingual: "Original + translation",
+  displayOriginal: "Original only",
+  subtitleDisplayHelp: "Switch the display without interrupting translation.",
+
   sessionAudioTiming: "WAV omits pauses and reconnect gaps. Its timeline does not directly align with subtitle timestamps.",
   sessionTranscriptTiming: "TXT timestamps mark final confirmation time since session start, not media playback positions.",
   sessionExportBuffers: "This session",
@@ -675,6 +687,12 @@ const SETTINGS_EN = {
 } satisfies SettingsCopy;
 
 const SETTINGS_JA = {
+  subtitleDisplay: "字幕表示",
+  displayTranslation: "翻訳のみ",
+  displayBilingual: "原文＋翻訳",
+  displayOriginal: "原文のみ",
+  subtitleDisplayHelp: "翻訳を中断せずに表示を切り替えます。",
+
   sessionAudioTiming: "WAV は一時停止や再接続中の空白を省くため、字幕のタイムスタンプとは一致しません。",
   sessionTranscriptTiming: "TXT の時刻はセッション開始から字幕確定までの経過時間で、メディアの再生位置ではありません。",
   sessionExportBuffers: "今回の内容",

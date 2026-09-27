@@ -56,15 +56,24 @@ export function OverlayWindow() {
     settings.targetLanguage,
     detectedLanguage,
   );
+  const sourceSegmentLength = subtitleSegmentLength(
+    "original",
+    detectedLanguage ?? (settings.sourceLanguage === "auto" ? null : settings.sourceLanguage),
+  );
   // Recompute rows only when HISTORY changes. The live draft streams at tens
   // of events per second and must not re-run the segmenter over the whole
   // history (that was the main cost during live listening). Rows depend on
   // the history array reference, not the whole subtitles object.
   const rows = useMemo(
-    () => computeVisibleRows(session.subtitles.history, segmentLength),
+    () => computeVisibleRows(
+      session.subtitles.history,
+      segmentLength,
+      settings.subtitleDisplayMode,
+      sourceSegmentLength,
+    ),
     // Keying on the history array reference (plus segmentLength) makes
     // draft churn a no-op here.
-    [session.subtitles.history, segmentLength],
+    [session.subtitles.history, segmentLength, sourceSegmentLength, settings.subtitleDisplayMode],
   );
   // The live preview line is the timeline's LAST row (dimmed with a trailing
   // ellipsis), so it naturally follows history instead of piling up at the
@@ -97,16 +106,17 @@ export function OverlayWindow() {
         ? 180
         : 400,
     liveSubtitle?.kind === "source" ? 750 : 1_500,
-    liveSubtitle?.kind,
+    `${settings.subtitleDisplayMode}-${liveSubtitle?.kind ?? ""}`,
   );
   const hasLiveDraft = draftText !== "" && !liveSubtitle?.isFinal;
   // Full row list: history rows plus the stabilized draft segments as the
   // trailing rows. Rebuilt only when history or the (settled) draft changes.
+  const liveSegmentLength = liveSubtitle?.kind === "source" ? sourceSegmentLength : segmentLength;
   const allRows = useMemo(() => {
     if (draftText === "") {
       return rows;
     }
-    const draftSegments = visibleDraftSegments(draftText, segmentLength, 2);
+    const draftSegments = visibleDraftSegments(draftText, liveSegmentLength, 2);
     return [
       ...rows,
       ...draftSegments.map((text, index) => ({
@@ -115,7 +125,7 @@ export function OverlayWindow() {
         createdAt: null,
       })),
     ];
-  }, [rows, draftText, segmentLength]);
+  }, [rows, draftText, liveSegmentLength]);
   const hasContent = hasSubtitleContent(session.subtitles);
 
   const phaseLabel = OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;

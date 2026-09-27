@@ -6,6 +6,7 @@ import {
 } from "../../lib/types";
 import {
   computeActivityPhaseFromSignals,
+  computeVisibleRows,
   sourceLanguageButtonTitle,
   visibleLiveSubtitle,
 } from "./overlayModel";
@@ -249,4 +250,101 @@ describe("activity phase signals", () => {
       ).toBe(statusKind);
     },
   );
+});
+
+
+describe("subtitle display preference", () => {
+  const pair = { source: "Hello world", translation: "你好世界", createdAt: 1 };
+
+  it("preserves translation-only history and selects original without changing the target", () => {
+    expect(computeVisibleRows([pair], 28).map((row) => row.text)).toEqual(["你好世界"]);
+    expect(computeVisibleRows([pair], 28, "original", 64).map((row) => row.text)).toEqual(["Hello world"]);
+    expect(visibleLiveSubtitle(
+      subtitles({ text: "New source", isFinal: false }, { text: "旧译文", isFinal: false }),
+      { ...settings, subtitleDisplayMode: "original" }, "en", true, false,
+    )).toEqual({ text: "New source", isFinal: false, kind: "source" });
+  });
+
+  it("groups each committed source with its own translation and one timestamp", () => {
+    const rows = computeVisibleRows([pair, { ...pair, source: "Next", translation: "下一句", createdAt: 2 }], 28, "bilingual", 64);
+    expect(rows.map((row) => row.text)).toEqual(["Hello world", "你好世界", "Next", "下一句"]);
+    expect(rows.map((row) => row.createdAt)).toEqual([1, null, 2, null]);
+    expect(rows[0].pairId).toBe(rows[1].pairId);
+    expect(rows[1].pairId).not.toBe(rows[2].pairId);
+  });
+
+  it("does not duplicate same-language or original-target history", () => {
+    const same = { ...pair, translation: pair.source };
+    expect(computeVisibleRows([same], 64, "bilingual", 64).map((row) => row.text)).toEqual([pair.source]);
+  });
+
+  it("keeps sources with empty translations and never substitutes translations for missing originals", () => {
+    expect(computeVisibleRows([{ ...pair, translation: "" }], 28, "bilingual", 64).map((row) => row.text)).toEqual([pair.source]);
+    expect(computeVisibleRows([{ ...pair, source: "" }], 28, "original", 64)).toEqual([]);
+  });
+
+  it("segments both languages independently without losing the pairing", () => {
+    const rows = computeVisibleRows([{ ...pair, source: "a".repeat(130), translation: "你".repeat(60) }], 28, "bilingual", 64);
+    expect(rows.filter((row) => row.kind === "source").map((row) => row.text.length)).toEqual([64, 64, 2]);
+    expect(rows.filter((row) => row.kind === "translation").map((row) => row.text.length)).toEqual([28, 28, 4]);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
+    expect(rows.filter((row) => row.createdAt !== null)).toHaveLength(1);
+  });
+
+  it.each([
+    [true, false],
+    [false, true],
+    [false, false],
+  ])("never pairs new recognition with a stale translation (pending %s, timeout %s)", (pending, timedOut) => {
+    const snapshot = subtitles(
+      { text: "Next source", isFinal: true },
+      { text: pair.translation, isFinal: true },
+      [pair],
+    );
+    expect(visibleLiveSubtitle(snapshot, { ...settings, subtitleDisplayMode: "bilingual" }, "en", pending, timedOut))
+      .toEqual({ text: "Next source", isFinal: true, kind: "source" });
+  });
+
+  it.each(["original", "bilingual"] as const)("removes the %s preview once its pair is committed", (subtitleDisplayMode) => {
+    expect(visibleLiveSubtitle(
+      subtitles({ text: pair.source, isFinal: true }, { text: pair.translation, isFinal: true }, [pair]),
+      { ...settings, subtitleDisplayMode }, "en", false, false,
+    )).toBeNull();
+    expect(visibleLiveSubtitle(
+      subtitles({ text: "", isFinal: false }),
+      { ...settings, subtitleDisplayMode }, "en", false, false,
+    )).toBeNull();
+  });
+});
+
+
+describe("asynchronous bilingual stream arrival", () => {
+  it.each([false, true])("keeps a translation without source visible (final %s)", (isFinal) => {
+    expect(visibleLiveSubtitle(
+      subtitles({ text: "", isFinal: false }, { text: "Available translation", isFinal }),
+      { ...settings, subtitleDisplayMode: "bilingual" }, "en", false, false,
+    )).toEqual({ text: "Available translation", isFinal, kind: "translation" });
+  });
+
+  it.each(["bilingual", "original"] as const)("does not repeat the committed source when the next translation arrives first in %s mode", (subtitleDisplayMode) => {
+    expect(visibleLiveSubtitle(
+      subtitles(
+        { text: "Previous source", isFinal: true },
+        { text: "下一句译文", isFinal: false },
+        [{ source: "Previous source", translation: "上一句译文", createdAt: 1 }],
+      ),
+      { ...settings, subtitleDisplayMode }, "en", false, false,
+    )).toBeNull();
+  });
+
+  it("does not hide an actual repeated source while its translation is pending", () => {
+    expect(visibleLiveSubtitle(
+      subtitles(
+        { text: "Repeated lyric", isFinal: true },
+        { text: "重复歌词", isFinal: true },
+        [{ source: "Repeated lyric", translation: "重复歌词", createdAt: 1 }],
+      ),
+      { ...settings, subtitleDisplayMode: "bilingual" }, "en", true, false,
+    )).toEqual({ text: "Repeated lyric", isFinal: true, kind: "source" });
+  });
 });

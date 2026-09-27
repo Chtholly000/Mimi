@@ -134,6 +134,7 @@ export function OverlayControlWindow() {
         onDismiss={dismiss}
         onSwitchSourceLanguage={switchSourceLanguage}
         onSwitchTranslationMode={switchTranslationMode}
+        onSetSubtitleDisplayMode={(subtitleDisplayMode) => saveSettings({ subtitleDisplayMode })}
         onSetImmersiveMode={(subtitleBlendsWithBackground) =>
           saveSettings({ subtitleBlendsWithBackground })
         }

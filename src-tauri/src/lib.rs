@@ -15,11 +15,15 @@ mod windows;
 mod windows_startup;
 
 use commands::AppState;
+use core::models::SubtitleDisplayMode;
 use session_manager::SessionManager;
 use settings_store::{SettingsStore, DEVELOPMENT_APPLICATION_IDENTIFIER};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
+use tauri::menu::{
+    CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItem, MenuItemBuilder, Submenu,
+    SubmenuBuilder,
+};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Listener, Manager, WindowEvent};
 
@@ -344,6 +348,8 @@ struct NativeMenuLabels {
     toggle_devtools: &'static str,
     settings: &'static str,
     quit: &'static str,
+    subtitle_display: &'static str,
+    display_modes: [&'static str; 3],
 }
 
 #[derive(Clone)]
@@ -352,6 +358,8 @@ struct NativeTrayMenuItems {
     toggle_devtools: Option<MenuItem<tauri::Wry>>,
     settings: MenuItem<tauri::Wry>,
     quit: MenuItem<tauri::Wry>,
+    subtitle_display: Submenu<tauri::Wry>,
+    display_modes: [CheckMenuItem<tauri::Wry>; 3],
 }
 
 fn effective_native_menu_language(
@@ -381,6 +389,8 @@ fn native_menu_labels(language: NativeMenuLanguage) -> NativeMenuLabels {
             toggle_devtools: "打开调试工具",
             settings: "设置…",
             quit: "退出 mimi",
+            subtitle_display: "字幕显示",
+            display_modes: ["仅译文", "原文与译文", "仅原文"],
         },
         NativeMenuLanguage::Japanese => NativeMenuLabels {
             start_subtitles: "字幕を開始",
@@ -388,6 +398,8 @@ fn native_menu_labels(language: NativeMenuLanguage) -> NativeMenuLabels {
             toggle_devtools: "開発者ツールを開く",
             settings: "設定…",
             quit: "mimiを終了",
+            subtitle_display: "字幕表示",
+            display_modes: ["翻訳のみ", "原文と翻訳", "原文のみ"],
         },
         NativeMenuLanguage::English => NativeMenuLabels {
             start_subtitles: "Start Subtitles",
@@ -395,6 +407,12 @@ fn native_menu_labels(language: NativeMenuLanguage) -> NativeMenuLabels {
             toggle_devtools: "Open DevTools",
             settings: "Settings…",
             quit: "Quit mimi",
+            subtitle_display: "Subtitle Display",
+            display_modes: [
+                "Translation Only",
+                "Original and Translation",
+                "Original Only",
+            ],
         },
     }
 }
@@ -497,7 +515,31 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     )
     .build(app)?;
 
-    let mut menu_builder = MenuBuilder::new(app).item(&session_action).separator();
+    let current_mode = app
+        .try_state::<AppState>()
+        .map(|state| state.settings.preferences().subtitle_display_mode)
+        .unwrap_or_default();
+    let translation_item =
+        CheckMenuItemBuilder::with_id("display-translation", labels.display_modes[0])
+            .checked(current_mode == SubtitleDisplayMode::Translation)
+            .build(app)?;
+    let bilingual_item =
+        CheckMenuItemBuilder::with_id("display-bilingual", labels.display_modes[1])
+            .checked(current_mode == SubtitleDisplayMode::Bilingual)
+            .build(app)?;
+    let original_item = CheckMenuItemBuilder::with_id("display-original", labels.display_modes[2])
+        .checked(current_mode == SubtitleDisplayMode::Original)
+        .build(app)?;
+    let display_modes = [translation_item, bilingual_item, original_item];
+    let subtitle_display = SubmenuBuilder::new(app, labels.subtitle_display)
+        .item(&display_modes[0])
+        .item(&display_modes[1])
+        .item(&display_modes[2])
+        .build()?;
+    let mut menu_builder = MenuBuilder::new(app)
+        .item(&session_action)
+        .item(&subtitle_display)
+        .separator();
 
     // Dev builds expose a manual "open inspector" action instead of opening
     // the WebView devtools automatically, so the user decides when to look.
@@ -541,6 +583,25 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                             session.stop().await;
                         } else {
                             let _ = session.start(true).await;
+                        }
+                    });
+                }
+                "display-translation" | "display-bilingual" | "display-original" => {
+                    let mode = match event.id().as_ref() {
+                        "display-bilingual" => SubtitleDisplayMode::Bilingual,
+                        "display-original" => SubtitleDisplayMode::Original,
+                        _ => SubtitleDisplayMode::Translation,
+                    };
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if commands::set_subtitle_display_mode(&app, Some(mode))
+                            .await
+                            .is_err()
+                        {
+                            refresh_native_tray_language(&app);
+                            tracing::warn!(
+                                "subtitle display setting failed label=settings_unavailable"
+                            );
                         }
                     });
                 }
@@ -594,6 +655,8 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         toggle_devtools,
         settings: settings_item,
         quit: quit_item,
+        subtitle_display,
+        display_modes,
     });
 
     // Session broadcasts already cover every start/stop path (native menu,
@@ -641,6 +704,19 @@ pub(crate) fn refresh_native_tray_language(app: &tauri::AppHandle) {
     }
     let _ = items.settings.set_text(labels.settings);
     let _ = items.quit.set_text(labels.quit);
+    let _ = items.subtitle_display.set_text(labels.subtitle_display);
+    let current_mode = app
+        .try_state::<AppState>()
+        .map(|state| state.settings.preferences().subtitle_display_mode)
+        .unwrap_or_default();
+    for ((item, label), mode) in items.display_modes.iter().zip(labels.display_modes).zip([
+        SubtitleDisplayMode::Translation,
+        SubtitleDisplayMode::Bilingual,
+        SubtitleDisplayMode::Original,
+    ]) {
+        let _ = item.set_text(label);
+        let _ = item.set_checked(mode == current_mode);
+    }
 }
 
 fn refresh_native_tray_session_action(app: &tauri::AppHandle, is_active: bool) {
@@ -659,7 +735,7 @@ fn refresh_native_tray_session_action(app: &tauri::AppHandle, is_active: bool) {
     }
 }
 
-/// Registers the global start/stop and Immersive Mode shortcuts. Each action
+/// Registers the global session, Immersive Mode, and subtitle display shortcuts. Each action
 /// owns an independent 500ms debounce so presentation switching never blocks
 /// a session lifecycle action (or vice versa).
 fn setup_global_shortcuts(
@@ -677,6 +753,7 @@ fn setup_global_shortcuts(
     let modifiers = Modifiers::CONTROL | Modifiers::SHIFT;
     let session_shortcut = Shortcut::new(Some(modifiers), Code::Space);
     let immersive_shortcut = Shortcut::new(Some(modifiers), Code::KeyM);
+    let display_shortcut = Shortcut::new(Some(modifiers), Code::KeyB);
 
     let last_trigger = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let session_for_handler = Arc::clone(&session);
@@ -752,6 +829,40 @@ fn setup_global_shortcuts(
             "global immersive shortcut could not be registered: {error} \
              (another app may already own the combination)"
         ),
+    }
+    let display_last_trigger = std::sync::atomic::AtomicU64::new(0);
+    let display_register =
+        app.global_shortcut()
+            .on_shortcut(display_shortcut, move |app, _, event| {
+                if event.state() != ShortcutState::Pressed {
+                    return;
+                }
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let previous = display_last_trigger.load(Ordering::SeqCst);
+                if now_ms.saturating_sub(previous) < 500 {
+                    return;
+                }
+                display_last_trigger.store(now_ms, Ordering::SeqCst);
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if commands::set_subtitle_display_mode(&app, None)
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!(
+                            "subtitle display shortcut failed label=settings_unavailable"
+                        );
+                    }
+                });
+            });
+    match display_register {
+        Ok(()) => tracing::info!("global subtitle display shortcut registered"),
+        Err(error) => {
+            tracing::warn!("global subtitle display shortcut could not be registered: {error}")
+        }
     }
     Ok(())
 }

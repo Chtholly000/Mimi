@@ -1,3 +1,4 @@
+import { Select } from "../../components/Select";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "../../components/Icon";
@@ -22,6 +23,8 @@ import {
   type SourceLanguage,
   type SubtitleAlignment,
 } from "../../lib/types";
+import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
+import type { SubtitleDisplayMode } from "../../lib/types";
 import { sourceLanguageButtonTitle } from "../overlay/overlayModel";
 import {
   actionErrorMessage,
@@ -39,6 +42,7 @@ const TRAY_WINDOW_PADDING = 6;
 type PendingAction =
   | TraySessionAction
   | "language"
+  | "display"
   | "alignment"
   | "blend"
   | "lock"
@@ -243,7 +247,7 @@ export function TrayPanel() {
       </div>
 
       <div className="tray-card" aria-label={I18N.settings.subtitleTitle}>
-        <label className="tray-setting-row tray-setting-row--language">
+        <div className="tray-setting-row tray-setting-row--language">
           <span className="tray-setting-row__icon" aria-hidden="true">
             <Icon name="languages" />
           </span>
@@ -252,27 +256,24 @@ export function TrayPanel() {
             <small>{translationSummary(settings)}</small>
           </span>
           <span className="tray-select-wrap">
-            <select
-              value={settings.sourceLanguage}
+            <Select label={I18N.tray.sourceLanguage} value={settings.sourceLanguage}
               disabled={sourcePickerDisabled}
-              aria-label={I18N.tray.sourceLanguage}
-              onChange={(event) => {
-                const language = event.target.value as SourceLanguage;
-                performAction("language", () =>
-                  switchSourceLanguage(language),
-                );
-              }}
-            >
-              {sourceLanguages.map((language) => (
-                <option key={language} value={language}>
-                  {sourceLanguageButtonTitle(language, chineseIsOriginalOnly)}
-                </option>
-              ))}
-            </select>
-            <Icon name="chevron-down" />
+              options={sourceLanguages.map((language) => ({ value: language, label: sourceLanguageButtonTitle(language, chineseIsOriginalOnly) }))}
+              onChange={(value) => performAction("language", () => switchSourceLanguage(value as SourceLanguage))} />
           </span>
-        </label>
+        </div>
 
+        <span className="tray-card__divider" />
+
+        <div className="tray-setting-row tray-setting-row--display" title={subtitleDisplayShortcut()}>
+          <span className="tray-setting-row__icon" aria-hidden="true"><Icon name="languages" /></span>
+          <span className="tray-setting-row__copy"><span>{I18N.settings.subtitleDisplay}</span></span>
+          <span className="tray-select-wrap">
+            <Select label={I18N.settings.subtitleDisplay} value={settings.subtitleDisplayMode}
+              options={SUBTITLE_DISPLAY_OPTIONS} disabled={anyActionPending}
+              onChange={(value) => performAction("display", () => saveSettings({ subtitleDisplayMode: value as SubtitleDisplayMode }))} />
+          </span>
+        </div>
         <span className="tray-card__divider" />
 
         <div className="tray-setting-row tray-setting-row--alignment">

@@ -2,7 +2,7 @@
 //! documented in docs/plans/2026-08-22-multi-provider-professional-settings-design.md.
 
 use crate::core::credentials::ProviderCredentials;
-use crate::core::models::{SourceLanguage, TargetLanguage, TranslationMode};
+use crate::core::models::{SourceLanguage, SubtitleDisplayMode, TargetLanguage, TranslationMode};
 use crate::core::provider::{ProviderKind, ServiceProfile};
 use crate::session_manager::{SessionManager, SessionStateEvent};
 use crate::settings_store::{CredentialState, SettingsStore, SubtitleAlignment};
@@ -71,6 +71,7 @@ pub struct SettingsSnapshotPayload {
     pub translation_mode: TranslationMode,
     pub font_size: f64,
     pub subtitle_alignment: SubtitleAlignment,
+    pub subtitle_display_mode: SubtitleDisplayMode,
     pub subtitle_blends_with_background: bool,
     #[serde(rename = "isOverlayLocked")]
     pub is_overlay_locked: bool,
@@ -168,6 +169,7 @@ mod tests {
             translation_mode: TranslationMode::HighQuality,
             font_size: 18.0,
             subtitle_alignment: SubtitleAlignment::Center,
+            subtitle_display_mode: SubtitleDisplayMode::Translation,
             subtitle_blends_with_background: false,
             is_overlay_locked: false,
             ui_language: None,
@@ -179,6 +181,7 @@ mod tests {
         assert_eq!(json["profiles"][0]["provider"], "alibabaCloud");
         assert_eq!(json["profiles"][0]["credentialState"], "present");
         assert_eq!(json["subtitleAlignment"], "center");
+        assert_eq!(json["subtitleDisplayMode"], "translation");
         assert_eq!(json["subtitleBlendsWithBackground"], false);
         assert!(json.get("apiKey").is_none());
         assert!(json.get("hasAPIKey").is_none());
@@ -221,6 +224,7 @@ mod tests {
         let visual = SettingsDraft {
             font_size: Some(19.0),
             subtitle_alignment: Some(SubtitleAlignment::Right),
+            subtitle_display_mode: Some(SubtitleDisplayMode::Bilingual),
             subtitle_blends_with_background: Some(true),
             is_overlay_locked: Some(true),
             ui_language: Some("ja".into()),
@@ -276,6 +280,7 @@ impl SettingsSnapshotPayload {
                     translation_mode: prefs.translation_mode,
                     font_size: prefs.font_size,
                     subtitle_alignment: prefs.subtitle_alignment,
+                    subtitle_display_mode: prefs.subtitle_display_mode,
                     subtitle_blends_with_background: prefs.subtitle_blends_with_background,
                     is_overlay_locked: prefs.overlay_locked,
                     ui_language: prefs.ui_language,
@@ -300,6 +305,7 @@ impl SettingsSnapshotPayload {
             translation_mode: prefs.translation_mode,
             font_size: prefs.font_size,
             subtitle_alignment: prefs.subtitle_alignment,
+            subtitle_display_mode: prefs.subtitle_display_mode,
             subtitle_blends_with_background: prefs.subtitle_blends_with_background,
             is_overlay_locked: prefs.overlay_locked,
             ui_language: prefs.ui_language,
@@ -317,6 +323,7 @@ pub struct SettingsDraft {
     pub translation_mode: Option<TranslationMode>,
     pub font_size: Option<f64>,
     pub subtitle_alignment: Option<SubtitleAlignment>,
+    pub subtitle_display_mode: Option<SubtitleDisplayMode>,
     pub subtitle_blends_with_background: Option<bool>,
     pub is_overlay_locked: Option<bool>,
     pub ui_language: Option<String>,
@@ -452,6 +459,7 @@ fn apply_settings_draft_guarded(
         || draft.translation_mode.is_some()
         || draft.font_size.is_some()
         || draft.subtitle_alignment.is_some()
+        || draft.subtitle_display_mode.is_some()
         || draft.subtitle_blends_with_background.is_some()
         || draft.is_overlay_locked.is_some()
         || draft.ui_language.is_some()
@@ -481,6 +489,9 @@ fn apply_settings_draft_guarded(
             }
             if let Some(font_size) = draft.font_size {
                 prefs.font_size = font_size;
+            }
+            if let Some(mode) = draft.subtitle_display_mode {
+                prefs.subtitle_display_mode = mode;
             }
             if let Some(alignment) = draft.subtitle_alignment {
                 prefs.subtitle_alignment = alignment;
@@ -516,7 +527,7 @@ fn apply_settings_draft_guarded(
             preferences.subtitle_blends_with_background,
         );
     }
-    if changes_ui_language {
+    if changes_ui_language || draft.subtitle_display_mode.is_some() {
         crate::refresh_native_tray_language(app);
     }
 
@@ -541,6 +552,28 @@ pub(crate) async fn toggle_immersive_mode(app: &AppHandle) -> Result<(), String>
         &state,
         SettingsDraft {
             subtitle_blends_with_background: Some(enabled),
+            ..SettingsDraft::default()
+        },
+    )?;
+    Ok(())
+}
+
+/// Uses the same persisted, broadcast mutation as settings and tray controls.
+pub(crate) async fn set_subtitle_display_mode(
+    app: &AppHandle,
+    requested: Option<SubtitleDisplayMode>,
+) -> Result<(), String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "Application state is unavailable.".to_string())?;
+    let _lifecycle = state.session.settings_mutation_guard(false).await?;
+    let mode =
+        requested.unwrap_or_else(|| state.settings.preferences().subtitle_display_mode.next());
+    apply_settings_draft_guarded(
+        app,
+        &state,
+        SettingsDraft {
+            subtitle_display_mode: Some(mode),
             ..SettingsDraft::default()
         },
     )?;

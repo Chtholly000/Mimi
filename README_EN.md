@@ -83,6 +83,14 @@ My wallet is still a little empty, and I’m saving up for Apple Developer membe
 
 See the [contributing guide](CONTRIBUTING.md) for building and contributing, and the [security policy](SECURITY.md) for reporting vulnerabilities.
 
+## Subtitle display
+
+Choose **Translation only**, **Original + translation**, or **Original only**
+in Settings, the overlay control panel, or the tray. Switch instantly with
+**⌘⇧B** on macOS or **Ctrl+Shift+B** on Windows/Linux. This changes what you see
+without restarting translation. Bilingual mode pairs confirmed sentences and
+previews the recognized original while a translation is pending.
+
 ## Community links
 
 [LINUX DO](https://linux.do/)

@@ -22,6 +22,7 @@ const SETTINGS: SettingsSnapshot = {
   translationMode: "lowLatency",
   fontSize: 18,
   subtitleAlignment: "center",
+  subtitleDisplayMode: "translation",
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
   uiLanguage: null,
@@ -34,10 +35,12 @@ describe("mergeSettingsSnapshot", () => {
     expect(
       mergeSettingsSnapshot(SETTINGS, {
         subtitleAlignment: "right",
+        subtitleDisplayMode: "bilingual",
         subtitleBlendsWithBackground: true,
       }),
     ).toMatchObject({
       subtitleAlignment: "right",
+      subtitleDisplayMode: "bilingual",
       subtitleBlendsWithBackground: true,
     });
   });

@@ -1,3 +1,4 @@
+import { Select } from "../../components/Select";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
@@ -5,6 +6,8 @@ import {
   isTauri,
   overlayControlSetPanelHeight,
 } from "../../lib/ipc";
+import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
+import type { SubtitleDisplayMode } from "../../lib/types";
 import { targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import {
   TRANSLATION_MODE_DISPLAY_NAMES,
@@ -21,6 +24,7 @@ import { LanguageStatusCapsule } from "./LanguageStatusCapsule";
 import type { OverlayControlPanelModel } from "./overlayControlModel";
 
 type PendingAction =
+  | "display"
   | "source"
   | "mode"
   | "immersive"
@@ -38,6 +42,7 @@ interface OverlayControlPanelProps {
   onDismiss: () => void;
   onSwitchSourceLanguage: (language: SourceLanguage) => Promise<void>;
   onSwitchTranslationMode: (mode: TranslationMode) => Promise<void>;
+  onSetSubtitleDisplayMode: (mode: SubtitleDisplayMode) => Promise<void>;
   onSetImmersiveMode: (enabled: boolean) => Promise<void>;
   onSetOverlayLocked: (locked: boolean) => Promise<void>;
   onShowSettings: () => Promise<void>;
@@ -54,6 +59,7 @@ export function OverlayControlPanel({
   onDismiss,
   onSwitchSourceLanguage,
   onSwitchTranslationMode,
+  onSetSubtitleDisplayMode,
   onSetImmersiveMode,
   onSetOverlayLocked,
   onShowSettings,
@@ -147,6 +153,13 @@ export function OverlayControlPanel({
           expanded
           onToggle={onDismiss}
         />
+
+        <div className="overlay-control-display">
+          <span>{I18N.settings.subtitleDisplay}<kbd>{subtitleDisplayShortcut()}</kbd></span>
+          <Select label={I18N.settings.subtitleDisplay} value={settings.subtitleDisplayMode}
+            options={SUBTITLE_DISPLAY_OPTIONS} disabled={pendingAction !== null}
+            onChange={(value) => performAction("display", () => onSetSubtitleDisplayMode(value as SubtitleDisplayMode), false)} />
+        </div>
 
         {model.sourceOptions.length > 0 && (
           <fieldset className="overlay-control-group">

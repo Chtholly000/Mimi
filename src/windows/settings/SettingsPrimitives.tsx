@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Select } from "../../components/Select";
 import { Icon, type IconName } from "../../components/Icon";
 
 export function SettingsSection({
@@ -65,20 +66,7 @@ export function SettingsSelect({
 }) {
   return (
     <span className="settings-select-wrap">
-      <select
-        className="settings-select"
-        value={value}
-        disabled={disabled}
-        aria-label={label}
-        onChange={(event) => onChange(event.target.value)}
-      >
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-      <Icon name="chevron-down" />
+      <Select label={label} value={value} disabled={disabled} options={options} onChange={onChange} />
     </span>
   );
 }
