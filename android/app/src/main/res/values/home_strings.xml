@@ -27,4 +27,12 @@
     <string name="preview_zh">离世界，再近一点。</string>
     <string name="preview_en">A little closer to the world.</string>
     <string name="preview_ja">世界に、もう少し近づく。</string>
+    <string name="home_edit_appearance">调整字幕外观</string>
+    <string name="preview_edit">示例 · 调整外观 ›</string>
+    <string name="language_source_title">原声是什么语言？</string>
+    <string name="language_target_title">想看哪种语言的字幕？</string>
+    <string name="language_sheet_hint">选择后自动保存，下次开始字幕时使用。</string>
+    <string name="language_saved">已设为 %1$s</string>
+    <string name="language_saved_next_session">下次开始字幕时将使用 %1$s</string>
+    <string name="undo">撤销</string>
 </resources>

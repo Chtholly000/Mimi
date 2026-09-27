@@ -59,9 +59,10 @@ a separate manual check.
 ## Local UI preview
 
 The Android interface reuses Mimi's existing character artwork and neutral
-light/dark palette. Service settings and subtitle appearance are separate tabs;
-the subtitle sample responds to appearance controls without capture or a network
-session. A provider API key is still required for real translation.
+light/dark palette. Languages can be changed directly on the home screen with Undo. Tapping the
+subtitle sample opens appearance settings, where changes are saved automatically
+and previewed without capture or a network session. Credentials require explicit
+Save in the service tab. A provider API key is still required for real translation.
 
 On a development emulator with no active subtitle session:
 
@@ -73,10 +74,13 @@ adb shell am instrument -w -e theme light app.yuxino.mimi.android.test/app.yuxin
 adb shell am instrument -w -e theme dark app.yuxino.mimi.android.test/app.yuxino.mimi.android.UiSmokeInstrumentation
 ```
 
-The checks exercise provider drafts, tabs, advanced settings, sliders and the
-keyboard. Test edits are discarded without pressing Save; no provider or audio
-capture session is started. Screenshots contain sample subtitles and empty key
-fields and are written to the app's external `files/ui-preview` directory.
+The checks exercise quick language selection/Undo, direct appearance access,
+auto-save with actual touch gestures, provider drafts, history clearing and the
+keyboard. Changed non-secret preferences are restored in a finally block; provider
+drafts are discarded without Save. No provider or audio capture session starts. Screenshots contain sample subtitles and empty key
+fields and are written to the app's external `files/ui-preview` directory. Pass
+`-e demo true` for a paced walkthrough suitable for emulator screen recording;
+it demonstrates the labeled sample, not live translation.
 
 ## Architecture
 

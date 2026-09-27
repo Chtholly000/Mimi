@@ -62,6 +62,7 @@ class MimiService : Service() {
 
     private var windowManager: WindowManager? = null
     private var overlayView: View? = null
+    private var sessionSourceLanguage = "auto"
     private var statusView: TextView? = null
     private var historyView: TextView? = null
     private var sourceView: TextView? = null
@@ -192,6 +193,7 @@ class MimiService : Service() {
         val provider = SettingsStore.provider(this)
         val apiKey = SettingsStore.apiKey(this)
         val sourceLang = SettingsStore.sourceLang(this)
+        sessionSourceLanguage = sourceLang
         val targetLang = SettingsStore.targetLang(this)
         val listener = object : EngineListener {
             override fun onSessionReady() = dispatch { Log.i(TAG, "session ready") }
@@ -451,7 +453,7 @@ class MimiService : Service() {
         // when the speech is English (detected or configured).
         val liveVisible = !SubtitleBus.liveHidden
         val sourceIsEnglish =
-            SettingsStore.sourceLang(this) == "en" ||
+            sessionSourceLanguage == "en" ||
                 SubtitleBus.detectedSourceLanguage?.startsWith("en") == true
         sourceView?.apply {
             visibility = if (liveVisible && sourceIsEnglish) View.VISIBLE else View.GONE

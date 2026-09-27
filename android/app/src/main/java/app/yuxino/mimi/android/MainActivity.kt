@@ -13,11 +13,16 @@ import android.provider.Settings
 import android.widget.Toast
 import android.widget.TextView
 import android.view.View
+import android.view.Gravity
+import android.widget.LinearLayout
+import android.widget.FrameLayout
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import app.yuxino.mimi.android.capture.MimiService
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.snackbar.Snackbar
 
 class MainActivity : AppCompatActivity() {
 
@@ -40,6 +45,15 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
         findViewById<View>(R.id.service_settings).setOnClickListener { openSettings() }
+        findViewById<View>(R.id.source_language_action).setOnClickListener { showLanguages(source = true) }
+        findViewById<View>(R.id.target_language_action).setOnClickListener { showLanguages(source = false) }
+        findViewById<SubtitlePreviewView>(R.id.subtitle_preview).apply {
+            showAppearanceShortcut()
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, SettingsActivity::class.java)
+                    .putExtra("settings_section", "appearance"))
+            }
+        }
         startStop.setOnClickListener {
             if (MimiService.isRunning) {
                 stopService()
@@ -50,7 +64,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        requestNotificationPermissionIfNeeded()
     }
 
     override fun onStart() {
@@ -125,6 +138,60 @@ class MainActivity : AppCompatActivity() {
         else -> R.string.lang_auto
     })
 
+    private fun showLanguages(source: Boolean) {
+        val selected = if (source) SettingsStore.sourceLang(this) else SettingsStore.targetLang(this)
+        val choices = if (source) listOf("auto", "zh", "en", "ja", "ko") else listOf("zh", "en", "ja")
+        val dialog = BottomSheetDialog(this)
+        val content = layoutInflater.inflate(R.layout.language_sheet, FrameLayout(this), false)
+        content.findViewById<TextView>(R.id.language_heading).setText(
+            if (source) R.string.language_source_title else R.string.language_target_title,
+        )
+        val options = content.findViewById<LinearLayout>(R.id.language_options)
+        for (code in choices) {
+            val row = MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
+                tag = "language-$code"
+                text = languageLabel(code)
+                isAllCaps = false
+                textSize = 16f
+                gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                setTextColor(ContextCompat.getColor(context, R.color.mimi_text))
+                minHeight = dp(54)
+                setPadding(dp(16), 0, dp(16), 0)
+                cornerRadius = dp(12)
+                if (code == selected) {
+                    setBackgroundTintList(ContextCompat.getColorStateList(context, R.color.mimi_surface))
+                    setIconResource(R.drawable.ic_check)
+                    iconGravity = MaterialButton.ICON_GRAVITY_END
+                    iconTint = ContextCompat.getColorStateList(context, R.color.mimi_text)
+                }
+                setOnClickListener {
+                    dialog.dismiss()
+                    if (code != selected) {
+                        saveLanguage(source, code)
+                        refreshUi()
+                        Snackbar.make(this@MainActivity.findViewById(android.R.id.content), getString(
+                            if (MimiService.isRunning) R.string.language_saved_next_session else R.string.language_saved,
+                            languageLabel(code),
+                        ), Snackbar.LENGTH_LONG).setAction(R.string.undo) {
+                            saveLanguage(source, selected)
+                            refreshUi()
+                        }.show()
+                    }
+                }
+            }
+            options.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        dialog.setContentView(content)
+        dialog.show()
+    }
+
+    private fun saveLanguage(source: Boolean, code: String) {
+        if (source) SettingsStore.setSourceLang(this, code) else SettingsStore.setTargetLang(this, code)
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -140,11 +207,13 @@ class MainActivity : AppCompatActivity() {
         if (starting || MimiService.isRunning) return
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, R.string.need_overlay_permission, Toast.LENGTH_LONG).show()
-            startActivity(
+            starting = true
+            refreshUi()
+            ActivityCompat.startActivityForResult(this,
                 Intent(
                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                     Uri.parse("package:$packageName"),
-                ),
+                ), REQ_OVERLAY, null,
             )
             return
         }
@@ -177,12 +246,18 @@ class MainActivity : AppCompatActivity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_OVERLAY) {
+            starting = false
+            if (Settings.canDrawOverlays(this)) beginStartFlow()
+            refreshUi()
+        }
         if (requestCode == REQ_PROJECTION) {
             starting = false
             if (resultCode == Activity.RESULT_OK && data != null) {
                 ContextCompat.startForegroundService(
                     this, MimiService.startIntent(this, resultCode, data),
                 )
+                requestNotificationPermissionIfNeeded()
             }
             refreshUi()
         }
@@ -197,5 +272,6 @@ class MainActivity : AppCompatActivity() {
         private const val REQ_NOTIFICATIONS = 11
         private const val REQ_PROJECTION = 12
         private const val REQ_AUDIO = 13
+        private const val REQ_OVERLAY = 14
     }
 }

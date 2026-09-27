@@ -7,6 +7,7 @@ import android.widget.TextView
 import android.widget.ArrayAdapter
 import android.widget.RadioButton
 import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.Toast
@@ -22,17 +23,12 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var apiKeyInput: TextInputEditText
     private lateinit var baseUrlInput: TextInputEditText
     private lateinit var modelInput: TextInputEditText
-    private lateinit var sourceSpinner: Spinner
-    private lateinit var targetSpinner: Spinner
     private lateinit var fontSeek: SeekBar
     private lateinit var opacitySeek: SeekBar
     private lateinit var bgAlphaSeek: SeekBar
     private lateinit var historySeek: SeekBar
     private lateinit var hotwordsInput: TextInputEditText
     private lateinit var colorSpinner: Spinner
-
-    private val sourceCodes = listOf("auto", "zh", "en", "ja", "ko")
-    private val targetCodes = listOf("zh", "en", "ja")
 
     // Display the neutral default first without changing persisted preset indices.
     private val colorIndices = listOf(1, 0, 2, 3, 4)
@@ -52,9 +48,15 @@ class SettingsActivity : AppCompatActivity() {
             val appearance = tabs.checkedRadioButtonId == R.id.tab_appearance
             findViewById<View>(R.id.service_panel).visibility = if (appearance) View.GONE else View.VISIBLE
             findViewById<View>(R.id.appearance_panel).visibility = if (appearance) View.VISIBLE else View.GONE
+            findViewById<View>(R.id.service_footer).visibility = if (appearance) View.GONE else View.VISIBLE
+            findViewById<View>(R.id.appearance_autosave).visibility = if (appearance) View.VISIBLE else View.GONE
+            findViewById<ScrollView>(R.id.settings_scroll).scrollTo(0, 0)
         }
         tabs.setOnCheckedChangeListener { _, _ -> showTab() }
-        tabs.check(savedInstanceState?.getInt("settings_tab", R.id.tab_service) ?: R.id.tab_service)
+        val initialTab = if (intent.getStringExtra("settings_section") == "appearance") {
+            R.id.tab_appearance
+        } else R.id.tab_service
+        tabs.check(savedInstanceState?.getInt("settings_tab", initialTab) ?: initialTab)
         showTab()
         val advancedPanel = findViewById<View>(R.id.advanced_panel)
         val advancedToggle = findViewById<MaterialButton>(R.id.advanced_toggle)
@@ -64,6 +66,14 @@ class SettingsActivity : AppCompatActivity() {
         }
         showAdvanced(savedInstanceState?.getBoolean("settings_advanced") ?: false)
         advancedToggle.setOnClickListener { showAdvanced(advancedPanel.visibility != View.VISIBLE) }
+        val morePanel = findViewById<View>(R.id.appearance_more_panel)
+        val moreToggle = findViewById<MaterialButton>(R.id.appearance_more_toggle)
+        fun showMore(expanded: Boolean) {
+            morePanel.visibility = if (expanded) View.VISIBLE else View.GONE
+            moreToggle.setText(if (expanded) R.string.settings_more_collapse else R.string.settings_more)
+        }
+        showMore(savedInstanceState?.getBoolean("settings_more") ?: false)
+        moreToggle.setOnClickListener { showMore(morePanel.visibility != View.VISIBLE) }
 
         providerGroup = findViewById(R.id.provider_group)
         providerDashscope = findViewById(R.id.provider_dashscope)
@@ -71,24 +81,12 @@ class SettingsActivity : AppCompatActivity() {
         apiKeyInput = findViewById(R.id.api_key)
         baseUrlInput = findViewById(R.id.base_url)
         modelInput = findViewById(R.id.model)
-        sourceSpinner = findViewById(R.id.source_lang)
-        targetSpinner = findViewById(R.id.target_lang)
         fontSeek = findViewById(R.id.font_size)
         opacitySeek = findViewById(R.id.overlay_opacity)
         bgAlphaSeek = findViewById(R.id.overlay_bg_alpha)
         historySeek = findViewById(R.id.history_lines)
         hotwordsInput = findViewById(R.id.hotwords)
         colorSpinner = findViewById(R.id.translation_color)
-
-        sourceSpinner.adapter = arrayAdapter(
-            listOf(getString(R.string.lang_auto), getString(R.string.lang_zh),
-                getString(R.string.lang_en), getString(R.string.lang_ja),
-                getString(R.string.lang_ko)),
-        )
-        targetSpinner.adapter = arrayAdapter(
-            listOf(getString(R.string.lang_zh), getString(R.string.lang_en),
-                getString(R.string.lang_ja)),
-        )
 
         when (SettingsStore.provider(this)) {
             SettingsStore.PROVIDER_OPENAI -> providerOpenai.isChecked = true
@@ -123,8 +121,6 @@ class SettingsActivity : AppCompatActivity() {
             updateProviderFields()
         }
         updateProviderFields()
-        sourceSpinner.setSelection(sourceCodes.indexOf(SettingsStore.sourceLang(this)).coerceAtLeast(0))
-        targetSpinner.setSelection(targetCodes.indexOf(SettingsStore.targetLang(this)).coerceAtLeast(0))
         fontSeek.progress = SettingsStore.fontSize(this)
         opacitySeek.progress = SettingsStore.overlayOpacity(this)
         bgAlphaSeek.progress = SettingsStore.overlayBgAlpha(this)
@@ -134,19 +130,34 @@ class SettingsActivity : AppCompatActivity() {
         colorSpinner.setSelection(colorIndices.indexOf(SettingsStore.translationColorIndex(this)).coerceAtLeast(0))
 
         val sliderListener = object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) = refreshPreview()
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                refreshPreview()
+                // Programmatic initialization/restoration must never write preferences.
+                if (!fromUser) return
+                when (seekBar?.id) {
+                    R.id.font_size -> SettingsStore.setFontSize(this@SettingsActivity, progress)
+                    R.id.overlay_bg_alpha -> SettingsStore.setOverlayBgAlpha(this@SettingsActivity, progress)
+                    R.id.overlay_opacity -> SettingsStore.setOverlayOpacity(this@SettingsActivity, progress)
+                    R.id.history_lines -> SettingsStore.setHistoryLines(this@SettingsActivity, progress)
+                }
+            }
             override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
             override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
         }
         listOf(fontSeek, opacitySeek, bgAlphaSeek, historySeek).forEach {
             it.setOnSeekBarChangeListener(sliderListener)
         }
-        val selectionListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = refreshPreview()
+        // Spinner reports its initial selection too; only a changed user selection saves.
+        var lastColorPosition = colorIndices.indexOf(SettingsStore.translationColorIndex(this)).coerceAtLeast(0)
+        colorSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                refreshPreview()
+                if (position == lastColorPosition) return
+                lastColorPosition = position
+                SettingsStore.setTranslationColorIndex(this@SettingsActivity, colorIndices[position])
+            }
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
-        colorSpinner.onItemSelectedListener = selectionListener
-        targetSpinner.onItemSelectedListener = selectionListener
         refreshPreview()
 
         findViewById<MaterialButton>(R.id.reset_position).setOnClickListener {
@@ -165,14 +176,7 @@ class SettingsActivity : AppCompatActivity() {
                 SettingsStore.setModel(this, draftProvider, draft.model)
             }
             SettingsStore.setProvider(this, provider)
-            SettingsStore.setSourceLang(this, sourceCodes[sourceSpinner.selectedItemPosition])
-            SettingsStore.setTargetLang(this, targetCodes[targetSpinner.selectedItemPosition])
-            SettingsStore.setFontSize(this, fontSeek.progress)
-            SettingsStore.setOverlayOpacity(this, opacitySeek.progress)
-            SettingsStore.setOverlayBgAlpha(this, bgAlphaSeek.progress)
-            SettingsStore.setHistoryLines(this, historySeek.progress)
             SettingsStore.setHotwords(this, hotwordsInput.text?.toString().orEmpty())
-            SettingsStore.setTranslationColorIndex(this, colorIndices[colorSpinner.selectedItemPosition])
             Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
             finish()
         }
@@ -181,6 +185,7 @@ class SettingsActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putInt("settings_tab", findViewById<RadioGroup>(R.id.settings_tabs).checkedRadioButtonId)
         outState.putBoolean("settings_advanced", findViewById<View>(R.id.advanced_panel).visibility == View.VISIBLE)
+        outState.putBoolean("settings_more", findViewById<View>(R.id.appearance_more_panel).visibility == View.VISIBLE)
         super.onSaveInstanceState(outState)
     }
 
@@ -200,7 +205,7 @@ class SettingsActivity : AppCompatActivity() {
         findViewById<SubtitlePreviewView>(R.id.subtitle_preview).configure(
             fontSeek.progress, SettingsStore.COLOR_PRESETS[colorIndex].toInt(),
             opacitySeek.progress, bgAlphaSeek.progress,
-            targetCodes[targetSpinner.selectedItemPosition.coerceAtLeast(0)],
+            SettingsStore.targetLang(this),
         )
     }
 

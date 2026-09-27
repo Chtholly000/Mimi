@@ -6,7 +6,7 @@
     <string name="settings_tab_appearance">字幕外观</string>
     <string name="settings_provider_aliyun">阿里云</string>
     <string name="settings_provider_openai">OpenAI</string>
-    <string name="settings_api_help">使用云端识别与翻译，需要填写所选服务的 API Key。密钥仅保存在这台设备的加密存储中。</string>
+    <string name="settings_api_help">填写云端服务的 API Key 即可使用。\n密钥加密保存在本机。</string>
     <string name="settings_api_hint">API Key</string>
     <string name="settings_advanced">高级设置</string>
     <string name="settings_endpoint">自定义服务地址</string>
@@ -23,9 +23,8 @@
     <string name="settings_history_help">默认关闭。开启后仅在本次会话内保留；关闭或停止字幕后清除。</string>
     <string name="settings_reset">恢复字幕位置</string>
     <string name="settings_reset_done">已恢复到底部居中</string>
-    <string name="settings_save">保存设置</string>
+    <string name="settings_save">保存服务设置</string>
     <string name="settings_saved">已保存</string>
-    <string name="settings_restart_help">外观与服务更改将在下次开始字幕时生效。</string>
     <string name="settings_font_value">%1$d sp</string>
     <string name="settings_percent_value">%1$d%%</string>
     <string name="settings_history_off">关闭</string>
@@ -36,4 +35,7 @@
     <string name="settings_color_green">绿色</string>
     <string name="settings_color_pink">粉色</string>
     <string name="settings_advanced_collapse">收起高级设置</string>
+    <string name="settings_more">更多选项</string>
+    <string name="settings_more_collapse">收起更多选项</string>
+    <string name="settings_autosave">自动保存 · 下次开始字幕时生效</string>
 </resources>

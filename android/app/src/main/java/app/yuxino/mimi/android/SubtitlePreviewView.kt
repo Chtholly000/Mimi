@@ -15,6 +15,7 @@ class SubtitlePreviewView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : LinearLayout(context, attrs) {
+    private val exampleLabel = TextView(context)
     private val source = TextView(context)
     private val translation = TextView(context)
     private val subtitle = LinearLayout(context)
@@ -36,10 +37,10 @@ class SubtitlePreviewView @JvmOverloads constructor(
             setTextColor(Color.rgb(184, 184, 184))
             textSize = 11f
         }, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
-        labelRow.addView(TextView(context).apply {
+        labelRow.addView(exampleLabel.apply {
             setText(R.string.preview_example)
             setTextColor(Color.rgb(145, 145, 145))
-            textSize = 10f
+            textSize = 11f
         })
         addView(labelRow)
         subtitle.orientation = VERTICAL
@@ -59,6 +60,10 @@ class SubtitlePreviewView @JvmOverloads constructor(
             topMargin = dp(18)
         })
         configure(16, Color.WHITE, 100, 0, "zh")
+    }
+
+    fun showAppearanceShortcut() {
+        exampleLabel.setText(R.string.preview_edit)
     }
 
     fun configure(fontSize: Int, color: Int, opacity: Int, backgroundAlpha: Int, targetLang: String) {
