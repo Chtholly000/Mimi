@@ -7,6 +7,13 @@
     · <a href="https://github.com/yuxino/mimi/releases/latest"><strong>Download latest</strong></a>
     · <a href="README_ZH.md">简体中文</a>
   </p>
+  <p>
+    <a href="https://github.com/yuxino/mimi/releases/latest"><img src="https://img.shields.io/github/v/release/yuxino/mimi?logo=github&amp;logoColor=white&amp;style=flat-square&amp;labelColor=202020&amp;color=555" alt="Latest release"></a>
+    <a href="https://github.com/yuxino/mimi/releases/latest"><img src="https://img.shields.io/badge/desktop-macOS%20%7C%20Windows%20%7C%20Linux-555?style=flat-square&amp;labelColor=202020&amp;color=555" alt="Desktop: macOS, Windows, Linux"></a>
+    <a href="android/README.md"><img src="https://img.shields.io/badge/mobile-Android-555?style=flat-square&amp;labelColor=202020&amp;color=555" alt="Android app and setup"></a>
+    <a href="https://github.com/yuxino/mimi/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/yuxino/mimi/ci.yml?branch=main&amp;event=push&amp;label=CI&amp;style=flat-square&amp;labelColor=202020&amp;color=555" alt="CI status on main"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/github/license/yuxino/mimi?style=flat-square&amp;labelColor=202020&amp;color=555" alt="MIT license"></a>
+  </p>
 </div>
 
 Mimi shows live subtitles in a floating window for films, live streams, lessons, and games playing on your computer. Your chosen cloud service transcribes the system audio or translates it into Simplified Chinese, English, or Japanese; available languages and modes depend on the service. The name `mimi` means “ear” in Japanese.
