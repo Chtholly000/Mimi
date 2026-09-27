@@ -14,7 +14,7 @@ The six additional adapters mirror desktop protocol encoders and event semantics
 
 ## Verification and delivery
 
-Test catalog normalization, credential isolation/validation, signed requests, exact protocol frames, readiness, event ordering, final/draft behavior and teardown without real credentials. Run Android unit tests/lint/build, update UI smoke coverage and inspect light/dark, missing/configured/error and long-field screens in the emulator. Re-run actual Firefox system-audio translation using the existing Alibaba key. Label every other provider as integration-tested rather than live-verified unless suitable credentials are available. Run the canonical repository check before committing. Preserve the requested 4x demo; refresh the service demo and website only after the new UI is verified. 
+Test catalog normalization, credential isolation/validation, signed requests, exact protocol frames, readiness, event ordering, final/draft behavior and teardown without real credentials. Run Android unit tests/lint/build, update UI smoke coverage and inspect light/dark, missing/configured/error and long-field screens in the emulator. Re-run actual Firefox system-audio translation using the existing Alibaba key. Label every other provider as integration-tested rather than live-verified unless suitable credentials are available. Run the canonical repository check before committing. Preserve the requested 4x demo; refresh the service demo and website only after the new UI is verified.
 
 ## Verified scope
 
