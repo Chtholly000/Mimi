@@ -48,6 +48,7 @@ pub enum SystemAudioCaptureError {
     PreviousCaptureStopping,
     #[error("System audio capture could not be started.")]
     NativeStartFailed,
+    #[cfg(any(target_os = "macos", target_os = "windows", test))]
     #[error("System audio capture could not process the device audio format.")]
     AudioProcessingFailed,
     #[cfg(target_os = "linux")]

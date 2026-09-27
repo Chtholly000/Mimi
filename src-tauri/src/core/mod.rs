@@ -7,6 +7,7 @@ pub mod credentials;
 pub mod diagnostics;
 pub mod models;
 pub mod openai_transcript_committer;
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub mod pcm16;
 pub mod protocols;
 pub mod provider;
