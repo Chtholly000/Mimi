@@ -4,6 +4,7 @@ description = "Allows every bundled window to hydrate public settings and sessio
 commands.allow = [
   "settings_get",
   "session_get_state",
+  "app_desktop_shortcut_commands",
   "app_ui_test_frontend_ready",
 ]
 
