@@ -14,8 +14,18 @@ set -euo pipefail
 # prepare-macos-release.sh using the pinned stable certificate. Older ad-hoc
 # releases need an intentional one-time identity migration.
 
-if [[ $# -ne 0 ]]; then
-  echo "Usage: ./scripts/package-app.sh (local QA packages only; no CLI overrides)." >&2
+TARGET=""
+TARGET_ARGS=()
+if [[ $# -eq 2 && "$1" == --target && "$(uname -s)" == Darwin ]]; then
+  case "$2" in
+    x86_64-apple-darwin|aarch64-apple-darwin)
+      TARGET="$2"
+      TARGET_ARGS=(--target "$TARGET")
+      ;;
+    *) echo "Unsupported macOS QA target: $2" >&2; exit 2 ;;
+  esac
+elif [[ $# -ne 0 ]]; then
+  echo "Usage: ./scripts/package-app.sh [--target x86_64-apple-darwin|aarch64-apple-darwin]" >&2
   echo "Use prepare-macos-release.sh for public signed updater artifacts." >&2
   exit 2
 fi
@@ -47,9 +57,9 @@ fi
 # Local QA packages are signed with the development identity, not the public
 # updater signature. Do not require or use the release updater private key for
 # QA; prepare-macos-release.sh creates updater artifacts on the signing Mac.
-npm run tauri -- build --config '{"bundle":{"createUpdaterArtifacts":false}}' -- --locked
+npm run tauri -- build ${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"} --config '{"bundle":{"createUpdaterArtifacts":false}}' -- --locked
 
-BUNDLE_DIR="$PROJECT_DIR/src-tauri/target/release/bundle"
+BUNDLE_DIR="$PROJECT_DIR/src-tauri/target/${TARGET:+$TARGET/}release/bundle"
 echo "Bundle produced under: $BUNDLE_DIR"
 find "$BUNDLE_DIR" -maxdepth 2 \( -name "*.app" -o -name "*.dmg" -o -name "*.msi" -o -name "*.exe" \) -print 2>/dev/null || true
 
@@ -60,6 +70,16 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     exit 1
   }
   "$SCRIPT_DIR/verify-macos-app.sh" "$APP"
+  if [[ -n "$TARGET" ]]; then
+    ACTUAL_ARCH="$(lipo -archs "$APP/Contents/MacOS/mimi")"
+    EXPECTED_ARCH="${TARGET%%-*}"
+    [[ "$EXPECTED_ARCH" != aarch64 ]] || EXPECTED_ARCH=arm64
+    [[ "$ACTUAL_ARCH" == "$EXPECTED_ARCH" ]] || {
+      echo "Wrong package architecture: expected $EXPECTED_ARCH, got $ACTUAL_ARCH" >&2
+      exit 1
+    }
+    echo "Verified package architecture: $ACTUAL_ARCH"
+  fi
   if [[ -e /Applications/mimi.app ]]; then
     cat <<EOF
 An existing /Applications/mimi.app was left untouched. This package uses
