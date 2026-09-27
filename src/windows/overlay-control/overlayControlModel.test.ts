@@ -22,6 +22,7 @@ const BASE_SETTINGS: SettingsSnapshot = {
   targetLanguage: "zh",
   translationMode: "highQuality",
   fontSize: 18,
+  subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
   subtitleBlendsWithBackground: false,

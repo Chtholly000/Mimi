@@ -6,7 +6,9 @@
 
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::ProviderCredentials;
-use crate::core::models::{SourceLanguage, SubtitleDisplayMode, TargetLanguage, TranslationMode};
+use crate::core::models::{
+    SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
+};
 use crate::core::provider::{
     ProviderKind, ProviderPreferences, ServiceProfile, DEFAULT_ALIBABA_PROFILE_ID,
 };
@@ -65,6 +67,7 @@ pub struct Preferences {
     pub target_language: TargetLanguage,
     pub translation_mode: TranslationMode,
     pub font_size: f64,
+    pub subtitle_color: SubtitleColor,
     pub subtitle_alignment: SubtitleAlignment,
     pub subtitle_display_mode: SubtitleDisplayMode,
     pub subtitle_blends_with_background: bool,
@@ -85,6 +88,7 @@ impl Default for Preferences {
             target_language: TargetLanguage::SimplifiedChinese,
             translation_mode: TranslationMode::LowLatency,
             font_size: DEFAULT_FONT_SIZE,
+            subtitle_color: SubtitleColor::White,
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
             subtitle_blends_with_background: false,
@@ -1982,12 +1986,42 @@ mod tests {
     fn legacy_preferences_default_to_centered_card_presentation() {
         let preferences: Preferences = serde_json::from_str("{}").unwrap();
 
+        assert_eq!(preferences.subtitle_color, SubtitleColor::White);
         assert_eq!(preferences.subtitle_alignment, SubtitleAlignment::Center);
         assert_eq!(
             preferences.subtitle_display_mode,
             SubtitleDisplayMode::Translation
         );
         assert!(!preferences.subtitle_blends_with_background);
+    }
+
+    #[test]
+    fn subtitle_colors_persist_without_changing_provider_configuration() {
+        let directory = std::env::temp_dir().join(format!(
+            "mimi-subtitle-color-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.clone(), Box::new(fake.clone()));
+        store
+            .save_api_key(DEFAULT_ALIBABA_PROFILE_ID, "test-key")
+            .unwrap();
+        let original_configuration = store.configuration().unwrap();
+        for color in [
+            SubtitleColor::White,
+            SubtitleColor::Teal,
+            SubtitleColor::Yellow,
+            SubtitleColor::Green,
+            SubtitleColor::Pink,
+        ] {
+            store
+                .save_preferences_for_active_profile(|prefs| prefs.subtitle_color = color)
+                .unwrap();
+            assert_eq!(store.configuration().unwrap(), original_configuration);
+            let reloaded = SettingsStore::at_path(directory.clone(), Box::new(fake.clone()));
+            assert_eq!(reloaded.preferences().subtitle_color, color);
+        }
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

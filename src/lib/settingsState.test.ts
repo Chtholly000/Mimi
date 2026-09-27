@@ -21,6 +21,7 @@ const SETTINGS: SettingsSnapshot = {
   targetLanguage: "zh",
   translationMode: "lowLatency",
   fontSize: 18,
+  subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
   subtitleBlendsWithBackground: false,
@@ -34,11 +35,13 @@ describe("mergeSettingsSnapshot", () => {
   it("merges runtime-safe subtitle presentation preferences", () => {
     expect(
       mergeSettingsSnapshot(SETTINGS, {
+        subtitleColor: "pink",
         subtitleAlignment: "right",
         subtitleDisplayMode: "bilingual",
         subtitleBlendsWithBackground: true,
       }),
     ).toMatchObject({
+      subtitleColor: "pink",
       subtitleAlignment: "right",
       subtitleDisplayMode: "bilingual",
       subtitleBlendsWithBackground: true,

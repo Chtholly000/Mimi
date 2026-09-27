@@ -22,7 +22,8 @@ import {
 } from "../../lib/types";
 import { sourceLanguageButtonTitle } from "../overlay/overlayModel";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
-import type { SubtitleDisplayMode } from "../../lib/types";
+import { SUBTITLE_COLORS, SUBTITLE_COLOR_OPTIONS } from "../../lib/subtitleColor";
+import type { SubtitleDisplayMode, SubtitleColor } from "../../lib/types";
 import { ServiceProfiles } from "./ServiceProfiles";
 import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
@@ -319,10 +320,10 @@ export function SettingsView() {
                     >
                       <div
                         className="subtitle-preview__text"
-                        style={{ fontSize: settings.fontSize }}
+                        style={{ fontSize: settings.fontSize, color: SUBTITLE_COLORS[settings.subtitleColor] }}
                       >
                         {settings.subtitleDisplayMode !== "translation" && (
-                          <span>{I18N.settings.previewOriginal}</span>
+                          <span style={{ color: settings.subtitleDisplayMode === "original" ? "inherit" : "rgba(255,255,255,0.72)" }}>{I18N.settings.previewOriginal}</span>
                         )}
                         {settings.subtitleDisplayMode !== "original" && (
                           <strong>{I18N.settings.previewTranslation}</strong>
@@ -336,6 +337,14 @@ export function SettingsView() {
                           value={settings.subtitleDisplayMode}
                           options={SUBTITLE_DISPLAY_OPTIONS}
                           onChange={(value) => void saveSettings({ subtitleDisplayMode: value as SubtitleDisplayMode })}
+                        />
+                      </SettingsRow>
+                      <SettingsRow label={I18N.settings.subtitleColor}>
+                        <SettingsSelect
+                          label={I18N.settings.subtitleColor}
+                          value={settings.subtitleColor}
+                          options={SUBTITLE_COLOR_OPTIONS}
+                          onChange={(value) => void saveSettings({ subtitleColor: value as SubtitleColor })}
                         />
                       </SettingsRow>
                       <SettingsRow label={I18N.settings.fontSize}>

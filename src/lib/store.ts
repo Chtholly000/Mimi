@@ -89,6 +89,7 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   targetLanguage: "zh",
   translationMode: "lowLatency",
   fontSize: 18,
+  subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
   subtitleBlendsWithBackground: false,
