@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_heading">设置</string>
+    <string name="settings_back">返回</string>
+    <string name="settings_tab_service">翻译服务</string>
+    <string name="settings_tab_appearance">字幕外观</string>
+    <string name="settings_provider_aliyun">阿里云</string>
+    <string name="settings_provider_openai">OpenAI</string>
+    <string name="settings_api_help">使用云端识别与翻译，需要填写所选服务的 API Key。密钥仅保存在这台设备的加密存储中。</string>
+    <string name="settings_api_hint">API Key</string>
+    <string name="settings_advanced">高级设置</string>
+    <string name="settings_endpoint">自定义服务地址</string>
+    <string name="settings_endpoint_hint">留空使用官方地址</string>
+    <string name="settings_model">自定义模型</string>
+    <string name="settings_model_hint">留空使用默认模型</string>
+    <string name="settings_glossary">翻译词表</string>
+    <string name="settings_glossary_help">每行一组「原词=译词」，也可用逗号分隔。</string>
+    <string name="settings_font">字幕字号</string>
+    <string name="settings_color">字幕颜色</string>
+    <string name="settings_opacity">字幕不透明度</string>
+    <string name="settings_background">背景不透明度</string>
+    <string name="settings_history">保留历史字幕</string>
+    <string name="settings_history_help">默认关闭。开启后仅在本次会话内保留；关闭或停止字幕后清除。</string>
+    <string name="settings_reset">恢复字幕位置</string>
+    <string name="settings_reset_done">已恢复到底部居中</string>
+    <string name="settings_save">保存设置</string>
+    <string name="settings_saved">已保存</string>
+    <string name="settings_restart_help">外观与服务更改将在下次开始字幕时生效。</string>
+    <string name="settings_font_value">%1$d sp</string>
+    <string name="settings_percent_value">%1$d%%</string>
+    <string name="settings_history_off">关闭</string>
+    <string name="settings_history_value">%1$d 条</string>
+    <string name="settings_color_white">白色（默认）</string>
+    <string name="settings_color_teal">青绿</string>
+    <string name="settings_color_yellow">黄色</string>
+    <string name="settings_color_green">绿色</string>
+    <string name="settings_color_pink">粉色</string>
+    <string name="settings_advanced_collapse">收起高级设置</string>
+</resources>

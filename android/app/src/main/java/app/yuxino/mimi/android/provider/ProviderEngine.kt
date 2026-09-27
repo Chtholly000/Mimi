@@ -62,3 +62,8 @@ fun normalizeWebSocketUrl(url: String): String {
         else -> "wss://$trimmed"
     }
 }
+
+/** Keep provider-controlled diagnostics bounded and free of arbitrary messages. */
+internal fun sanitizeErrorCode(code: String?): String =
+    code?.takeIf { it.length in 1..64 && it.all { c -> c.isLetterOrDigit() || c == '_' || c == '-' } }
+        ?: "provider_error"

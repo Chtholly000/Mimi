@@ -28,7 +28,7 @@ object SettingsStore {
     const val PROVIDER_DASHSCOPE = "dashscope"
     const val PROVIDER_OPENAI = "openai"
 
-    private var prefs: SharedPreferences? = null
+    @Volatile private var prefs: SharedPreferences? = null
 
     private fun get(context: Context): SharedPreferences {
         return prefs ?: synchronized(this) {
@@ -51,11 +51,27 @@ object SettingsStore {
     fun setProvider(context: Context, value: String) =
         get(context).edit().putString(KEY_PROVIDER, value).apply()
 
-    fun apiKey(context: Context): String =
-        get(context).getString(KEY_API_KEY, "") ?: ""
+    fun apiKey(context: Context, provider: String = provider(context)): String {
+        val prefs = get(context)
+        // Migrate the original shared key only to the provider it belonged to.
+        synchronized(this) {
+            if (prefs.contains(KEY_API_KEY)) {
+                val owner = this.provider(context)
+                val scopedKey = KEY_API_KEY + "_" + owner
+                val editor = prefs.edit()
+                if (!prefs.contains(scopedKey)) {
+                    editor.putString(scopedKey, prefs.getString(KEY_API_KEY, ""))
+                }
+                editor.remove(KEY_API_KEY).apply()
+            }
+            return prefs.getString(KEY_API_KEY + "_" + provider, "") ?: ""
+        }
+    }
 
-    fun setApiKey(context: Context, value: String) =
-        get(context).edit().putString(KEY_API_KEY, value.trim()).apply()
+    fun setApiKey(context: Context, value: String, provider: String = provider(context)) {
+        apiKey(context, provider) // Complete any legacy migration first.
+        get(context).edit().putString(KEY_API_KEY + "_" + provider, value.trim()).apply()
+    }
 
     /** Custom endpoint per provider; blank means the official endpoint. */
     fun baseUrl(context: Context, provider: String): String =
@@ -78,16 +94,19 @@ object SettingsStore {
     fun setOverlayOpacity(context: Context, value: Int) =
         get(context).edit().putInt(KEY_OVERLAY_OPACITY, value.coerceIn(20, 100)).apply()
 
-    /** Confirmed history pairs shown above the live lines; 0 hides history. */
+    /** History retention is opt-in; zero clears retained content immediately. */
     fun historyLines(context: Context): Int =
         get(context).getInt(KEY_HISTORY_LINES, 0).coerceIn(0, 6)
 
-    fun setHistoryLines(context: Context, value: Int) =
-        get(context).edit().putInt(KEY_HISTORY_LINES, value.coerceIn(0, 6)).apply()
+    fun setHistoryLines(context: Context, value: Int) {
+        val limit = value.coerceIn(0, 6)
+        get(context).edit().putInt(KEY_HISTORY_LINES, limit).apply()
+        app.yuxino.mimi.android.provider.SubtitleBus.setHistoryLimit(limit)
+    }
 
     /**
-     * Hotword pairs parsed from comma/newline-separated `term=weight` or bare
-     * `term` entries; weight defaults to 1. Only DashScope uses them.
+     * Hotword pairs parsed from comma/newline-separated `source=translation` or bare
+     * `term` entries; bare terms map to themselves. Only DashScope uses them.
      */
     fun hotwords(context: Context): Map<String, String> {
         val raw = get(context).getString(KEY_HOTWORDS, "") ?: ""
@@ -97,10 +116,13 @@ object SettingsStore {
                 if (item.isEmpty()) return@mapNotNull null
                 val idx = item.indexOf('=')
                 if (idx > 0) item.substring(0, idx).trim() to item.substring(idx + 1).trim()
-                else item to "1"
+                else item to item
             }
             .toMap()
     }
+
+    fun hotwordsText(context: Context): String =
+        get(context).getString(KEY_HOTWORDS, "") ?: ""
 
     fun setHotwords(context: Context, value: String) =
         get(context).edit().putString(KEY_HOTWORDS, value.trim()).apply()
@@ -127,13 +149,13 @@ object SettingsStore {
     val COLOR_PRESETS = listOf(0xFF4FD1C5, 0xFFFFFFFF, 0xFFFFD54F, 0xFF9AE66E, 0xFFF49AB5)
 
     fun translationColor(context: Context): Int {
-        val index = get(context).getInt(KEY_TRANSLATION_COLOR, 0)
+        val index = get(context).getInt(KEY_TRANSLATION_COLOR, 1)
             .coerceIn(0, COLOR_PRESETS.size - 1)
         return COLOR_PRESETS[index].toInt()
     }
 
     fun translationColorIndex(context: Context): Int =
-        get(context).getInt(KEY_TRANSLATION_COLOR, 0)
+        get(context).getInt(KEY_TRANSLATION_COLOR, 1)
             .coerceIn(0, COLOR_PRESETS.size - 1)
 
     fun setTranslationColorIndex(context: Context, index: Int) =

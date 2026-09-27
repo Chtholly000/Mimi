@@ -11,6 +11,8 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
+import android.widget.TextView
+import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -20,7 +22,8 @@ import com.google.android.material.button.MaterialButton
 class MainActivity : AppCompatActivity() {
 
     private lateinit var startStop: MaterialButton
-    private var running = false
+    private var starting = false
+    private val stateListener: () -> Unit = { runOnUiThread { refreshUi() } }
 
     private val projectionManager: MediaProjectionManager by lazy {
         getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -28,15 +31,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        starting = savedInstanceState?.getBoolean("starting") ?: false
         setContentView(R.layout.activity_main)
+        applySystemBarInsets()
 
         startStop = findViewById(R.id.start_stop)
         findViewById<MaterialButton>(R.id.go_settings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+        findViewById<View>(R.id.service_settings).setOnClickListener { openSettings() }
         startStop.setOnClickListener {
-            if (running) {
+            if (MimiService.isRunning) {
                 stopService()
+            } else if (SettingsStore.apiKey(this).isEmpty()) {
+                openSettings()
             } else {
                 beginStartFlow()
             }
@@ -45,23 +53,77 @@ class MainActivity : AppCompatActivity() {
         requestNotificationPermissionIfNeeded()
     }
 
+    override fun onStart() {
+        super.onStart()
+        MimiService.addStateListener(stateListener)
+    }
+
+    override fun onStop() {
+        MimiService.removeStateListener(stateListener)
+        super.onStop()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean("starting", starting)
+        super.onSaveInstanceState(outState)
+    }
+
     override fun onResume() {
         super.onResume()
         refreshUi()
     }
 
-    private fun refreshUi() {
-        val overlayOk = Settings.canDrawOverlays(this)
-        val keyOk = SettingsStore.apiKey(this).isNotEmpty()
-        startStop.text = getString(
-            if (running) R.string.stop_capture else R.string.start_capture,
-        )
-        if (!overlayOk) {
-            Toast.makeText(this, R.string.need_overlay_permission, Toast.LENGTH_LONG).show()
-        } else if (!keyOk) {
-            Toast.makeText(this, R.string.need_api_key, Toast.LENGTH_LONG).show()
-        }
+    private fun openSettings() {
+        startActivity(Intent(this, SettingsActivity::class.java))
     }
+
+    private fun refreshUi() {
+        val running = MimiService.isRunning
+        val keyOk = SettingsStore.apiKey(this).isNotEmpty()
+        val overlayOk = Settings.canDrawOverlays(this)
+        startStop.isEnabled = !starting
+        startStop.setText(when {
+            running -> R.string.stop_capture
+            !keyOk -> R.string.home_setup_action
+            else -> R.string.start_capture
+        })
+        startStop.setIconResource(when {
+            running -> R.drawable.ic_stop
+            !keyOk -> R.drawable.ic_arrow
+            else -> R.drawable.ic_play
+        })
+        findViewById<TextView>(R.id.status).setText(when {
+            starting -> R.string.home_starting_status
+            running -> R.string.home_running_status
+            !keyOk -> R.string.home_setup_status
+            else -> R.string.home_ready_status
+        })
+        findViewById<TextView>(R.id.status_hint).setText(when {
+            running -> R.string.home_running_hint
+            !keyOk -> R.string.home_setup_hint
+            !overlayOk -> R.string.home_overlay_hint
+            else -> R.string.home_ready_hint
+        })
+        findViewById<TextView>(R.id.source_summary).text = languageLabel(SettingsStore.sourceLang(this))
+        findViewById<TextView>(R.id.target_summary).text = languageLabel(SettingsStore.targetLang(this))
+        val provider = getString(if (SettingsStore.provider(this) == SettingsStore.PROVIDER_OPENAI)
+            R.string.home_provider_openai else R.string.home_provider_aliyun)
+        findViewById<TextView>(R.id.provider_summary).text = getString(
+            if (keyOk) R.string.home_service_ready else R.string.home_service_unset, provider,
+        )
+        findViewById<SubtitlePreviewView>(R.id.subtitle_preview).configure(
+            SettingsStore.fontSize(this), SettingsStore.translationColor(this),
+            SettingsStore.overlayOpacity(this), SettingsStore.overlayBgAlpha(this), SettingsStore.targetLang(this),
+        )
+    }
+
+    private fun languageLabel(code: String): String = getString(when (code) {
+        "zh" -> R.string.lang_zh
+        "en" -> R.string.lang_en
+        "ja" -> R.string.lang_ja
+        "ko" -> R.string.lang_ko
+        else -> R.string.lang_auto
+    })
 
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -75,6 +137,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun beginStartFlow() {
+        if (starting || MimiService.isRunning) return
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, R.string.need_overlay_permission, Toast.LENGTH_LONG).show()
             startActivity(
@@ -90,8 +153,24 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, SettingsActivity::class.java))
             return
         }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Toast.makeText(this, R.string.need_audio_permission, Toast.LENGTH_LONG).show()
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO)
+            return
+        }
+        starting = true
+        refreshUi()
         projectionManager.createScreenCaptureIntent().let {
             ActivityCompat.startActivityForResult(this, it, REQ_PROJECTION, null)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_AUDIO && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            beginStartFlow()
         }
     }
 
@@ -99,24 +178,24 @@ class MainActivity : AppCompatActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_PROJECTION) {
+            starting = false
             if (resultCode == Activity.RESULT_OK && data != null) {
                 ContextCompat.startForegroundService(
                     this, MimiService.startIntent(this, resultCode, data),
                 )
-                running = true
-                refreshUi()
             }
+            refreshUi()
         }
     }
 
     private fun stopService() {
-        startService(MimiService.stopIntent(this))
-        running = false
+        stopService(Intent(this, MimiService::class.java))
         refreshUi()
     }
 
     companion object {
         private const val REQ_NOTIFICATIONS = 11
         private const val REQ_PROJECTION = 12
+        private const val REQ_AUDIO = 13
     }
 }

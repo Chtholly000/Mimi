@@ -1,5 +1,8 @@
 package app.yuxino.mimi.android.capture
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -28,6 +31,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
+import android.widget.Toast
+import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.atomic.AtomicBoolean
 import app.yuxino.mimi.android.R
 import app.yuxino.mimi.android.SettingsStore
 import app.yuxino.mimi.android.provider.DashScopeEngine
@@ -49,7 +55,9 @@ class MimiService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
     private var captureThread: Thread? = null
-    private val capturing = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var capturing: AtomicBoolean? = null
+    private var generation = 0
+    private var projectionCallback: MediaProjection.Callback? = null
     private var engine: ProviderEngine? = null
 
     private var windowManager: WindowManager? = null
@@ -104,6 +112,7 @@ class MimiService : Service() {
             stopEverything()
             return START_NOT_STICKY
         }
+        if (isRunning) return START_NOT_STICKY
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         val resultData = intent?.compatGetParcelableExtra(EXTRA_RESULT_DATA)
         if (resultCode == Int.MIN_VALUE || resultData == null) {
@@ -116,20 +125,22 @@ class MimiService : Service() {
         // token deadline is satisfied by calling it immediately after.
         val projectionManager =
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        startAsForeground()
-        val projection = projectionManager.getMediaProjection(resultCode, resultData)
-        if (projection == null) {
-            Log.e(TAG, "getMediaProjection returned null")
-            stopSelf()
-            return START_NOT_STICKY
+        try {
+            startAsForeground()
+            val projection = checkNotNull(projectionManager.getMediaProjection(resultCode, resultData))
+            mediaProjection = projection
+            startCapture(projection)
+            setRunning(true)
+        } catch (_: Exception) {
+            Log.w(TAG, "capture_start_failed")
+            Toast.makeText(this, R.string.capture_failed, Toast.LENGTH_LONG).show()
+            stopEverything()
         }
-        mediaProjection = projection
-        startCapture(projection)
         return START_NOT_STICKY
     }
 
     private fun startAsForeground() {
-        val stopIntent = PendingIntent.getForegroundService(
+        val stopIntent = PendingIntent.getService(
             this, 1,
             Intent(this, MimiService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE,
@@ -160,45 +171,53 @@ class MimiService : Service() {
         )
 
     private fun startCapture(projection: MediaProjection) {
-        projection.registerCallback(object : MediaProjection.Callback() {
+        check(ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            "audio_permission_required"
+        }
+        val sessionGeneration = ++generation
+        SubtitleBus.clear()
+        SubtitleBus.setHistoryLimit(SettingsStore.historyLines(this))
+        val callback = object : MediaProjection.Callback() {
             override fun onStop() {
-                mainHandler.post { stopEverything() }
+                if (generation == sessionGeneration) stopEverything()
             }
-        }, mainHandler)
+        }
+        projectionCallback = callback
+        projection.registerCallback(callback, mainHandler)
 
-        // Open the audio engine with the configured provider.
+        // Serialize provider callbacks with stop/start and ignore stale sessions.
+        fun dispatch(action: () -> Unit) {
+            mainHandler.post { if (generation == sessionGeneration) action() }
+        }
         val provider = SettingsStore.provider(this)
         val apiKey = SettingsStore.apiKey(this)
         val sourceLang = SettingsStore.sourceLang(this)
         val targetLang = SettingsStore.targetLang(this)
         val listener = object : EngineListener {
-            override fun onSessionReady() {
-                Log.i(TAG, "session ready")
-            }
-            override fun onSourceDraft(text: String, language: String?) {
+            override fun onSessionReady() = dispatch { Log.i(TAG, "session ready") }
+            override fun onSourceDraft(text: String, language: String?) = dispatch {
                 cancelAutoHide()
                 SubtitleBus.onSourceDraft(text, language)
             }
-            override fun onSourceFinal(text: String, language: String?) {
+            override fun onSourceFinal(text: String, language: String?) = dispatch {
                 cancelAutoHide()
                 SubtitleBus.onSourceFinal(text, language)
             }
-            override fun onTranslationDraft(text: String) {
+            override fun onTranslationDraft(text: String) = dispatch {
                 cancelAutoHide()
                 SubtitleBus.onTranslationDraft(text)
             }
-            override fun onTranslationFinal(text: String) {
+            override fun onTranslationFinal(text: String) = dispatch {
                 SubtitleBus.onTranslationFinal(text)
                 scheduleAutoHide()
             }
-            override fun onError(code: String, message: String) =
-                SubtitleBus.onStatus("错误[$code] $message")
-            override fun onClosed() {
-                Log.i(TAG, "session closed")
+            override fun onError(code: String, message: String) = dispatch {
+                // Provider error bodies can echo user content or credentials.
+                Toast.makeText(this@MimiService, R.string.capture_failed, Toast.LENGTH_LONG).show()
+                stopEverything()
             }
-            override fun onLog(message: String) {
-                Log.i(TAG, message)
-            }
+            override fun onClosed() = dispatch { stopEverything() }
+            override fun onLog(message: String) = Unit
         }
         engine = when (provider) {
             SettingsStore.PROVIDER_OPENAI -> OpenAIRealtimeEngine(listener)
@@ -227,56 +246,82 @@ class MimiService : Service() {
         val minBuffer = AudioRecord.getMinBufferSize(
             CAPTURE_RATE_HZ, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_FLOAT,
         )
+        check(minBuffer > 0) { "unsupported_capture_format" }
         val record = AudioRecord.Builder()
             .setAudioFormat(format)
             .setBufferSizeInBytes(minBuffer * 4)
             .setAudioPlaybackCaptureConfig(captureConfig)
             .build()
         audioRecord = record
+        check(record.state == AudioRecord.STATE_INITIALIZED) { "capture_uninitialized" }
 
         val resampler = StreamResampler(CAPTURE_RATE_HZ, engine!!.sampleRateHz, 2)
         val readBuffer = FloatArray(CAPTURE_RATE_HZ / 10 * 2) // 100 ms of stereo
 
-        capturing.set(true)
+        val captureActive = AtomicBoolean(true)
+        capturing = captureActive
+        val sessionEngine = checkNotNull(engine)
         record.startRecording()
-        SubtitleBus.clear()
+        check(record.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "capture_not_started" }
         showOverlay()
         captureThread = thread(name = "mimi-capture") {
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
-            while (capturing.get()) {
-                val read = record.read(readBuffer, 0, readBuffer.size, AudioRecord.READ_BLOCKING)
-                if (read <= 0) continue
-                val pcm = resampler.push(readBuffer.copyOf(read))
-                if (pcm.isNotEmpty()) engine?.sendAudio(pcm)
+            try {
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+                while (captureActive.get()) {
+                    val read = record.read(readBuffer, 0, readBuffer.size, AudioRecord.READ_BLOCKING)
+                    if (!captureActive.get()) break
+                    check(read >= 0) { "capture_read_failed" }
+                    if (read == 0) continue
+                    val pcm = resampler.push(readBuffer.copyOf(read))
+                    if (captureActive.get() && pcm.isNotEmpty()) sessionEngine.sendAudio(pcm)
+                }
+            } catch (_: Exception) {
+                mainHandler.post {
+                    if (generation == sessionGeneration) {
+                        Toast.makeText(this, R.string.capture_failed, Toast.LENGTH_LONG).show()
+                        stopEverything()
+                    }
+                }
+            } finally {
+                record.release()
             }
         }
     }
 
-    private fun stopEverything() {
-        if (!capturing.compareAndSet(true, false) && mediaProjection == null) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return
-        }
-        captureThread?.join(600)
-        captureThread = null
-        try {
-            audioRecord?.stop()
-        } catch (_: Exception) {
-        }
-        audioRecord?.release()
+    private fun releaseSession() {
+        ++generation
+        mainHandler.removeCallbacksAndMessages(null)
+        capturing?.set(false)
+        capturing = null
+        // Stop blocking reads before waiting for the worker to finish.
+        val record = audioRecord
         audioRecord = null
+        try { record?.stop() } catch (_: Exception) { }
+        val worker = captureThread
+        captureThread = null
+        if (worker != null) worker.join(600) else record?.release()
         engine?.stop()
         engine = null
-        mediaProjection?.stop()
+        val projection = mediaProjection
         mediaProjection = null
+        projectionCallback?.let { projection?.unregisterCallback(it) }
+        projectionCallback = null
+        try { projection?.stop() } catch (_: Exception) { }
+        SubtitleBus.clear()
         hideOverlay()
+        setRunning(false)
+    }
+
+    private fun stopEverything() {
+        releaseSession()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onDestroy() {
         SubtitleBus.removeListener(busListener)
+        releaseSession()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
@@ -292,18 +337,18 @@ class MimiService : Service() {
             setPadding(dp(14), dp(10), dp(14), dp(12))
             background = GradientDrawable().apply {
                 cornerRadius = dp(14).toFloat()
-                setColor(((bgAlpha / 100.0) * 255).toInt() shl 24 or 0x101828)
+                setColor(((bgAlpha / 100.0) * 255).toInt() shl 24 or 0x101010)
             }
             alpha = SettingsStore.overlayOpacity(this@MimiService) / 100f
         }
 
         val status = TextView(this).apply {
-            setTextColor(0xFF8A93A6.toInt())
+            setTextColor(0xFFADADAD.toInt())
             textSize = 11f
             visibility = View.GONE
         }
         val history = TextView(this).apply {
-            setTextColor(0xFFB7BFCE.toInt())
+            setTextColor(0xFFB7B7B7.toInt())
             textSize = (SettingsStore.fontSize(this@MimiService) - 3).coerceAtLeast(11).toFloat()
             setLineSpacing(dp(2).toFloat(), 1f)
         }
@@ -348,7 +393,7 @@ class MimiService : Service() {
                 MotionEvent.ACTION_DOWN -> {
                     initialY = params.y
                     initialTouchY = event.rawY
-                    false
+                    true
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val newY = (initialY - (event.rawY - initialTouchY)).toInt()
@@ -357,10 +402,11 @@ class MimiService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    container.performClick()
                     SettingsStore.setOverlayYOffset(
-                        this, params.y / resources.displayMetrics.density.toInt().coerceAtLeast(1),
+                        this, (params.y / resources.displayMetrics.density).toInt(),
                     )
-                    false
+                    true
                 }
                 else -> false
             }
@@ -397,10 +443,8 @@ class MimiService : Service() {
             val maxLines = SettingsStore.historyLines(this@MimiService)
             visibility = if (maxLines <= 0) View.GONE else View.VISIBLE
             setMaxLines(maxOf(maxLines, 1) * 2) // each history pair renders as two lines
-            text = synchronized(SubtitleBus.history) {
-                SubtitleBus.history.joinToString("\n") { pair ->
-                    "${pair.source}\n${pair.translation}"
-                }
+            text = SubtitleBus.historySnapshot().takeLast(maxLines).joinToString("\n") { pair ->
+                "${pair.source}\n${pair.translation}"
             }
         }
         // Live display: translation line always; the source line joins only
@@ -447,7 +491,15 @@ class MimiService : Service() {
         private const val CAPTURE_RATE_HZ = 48_000
         private const val AUTO_HIDE_MS = 600L
         private const val WATCHDOG_MS = 3_000L
-        private val SENTENCE_DELIMITERS = charArrayOf('.', '!', '?', '。', '！', '？', '，', ',')
+        @Volatile var isRunning: Boolean = false
+            private set
+        private val stateListeners = CopyOnWriteArraySet<() -> Unit>()
+        fun addStateListener(listener: () -> Unit) { stateListeners.add(listener) }
+        fun removeStateListener(listener: () -> Unit) { stateListeners.remove(listener) }
+        private fun setRunning(value: Boolean) {
+            isRunning = value
+            stateListeners.forEach { it() }
+        }
 
         const val ACTION_STOP = "app.yuxino.mimi.android.action.STOP"
         const val EXTRA_RESULT_CODE = "result_code"

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="brand_description">mimi 官方角色图标</string>
+    <string name="home_kicker">实时字幕与翻译</string>
+    <string name="home_title">跟上每一句。</string>
+    <string name="home_description">给正在播放的视频、直播和游戏加上字幕。</string>
+    <string name="home_source">原声语言</string>
+    <string name="home_target">翻译为</string>
+    <string name="home_service">翻译服务</string>
+    <string name="home_service_unset">%1$s · 待配置</string>
+    <string name="home_service_ready">%1$s · 已配置</string>
+    <string name="home_provider_aliyun">阿里云</string>
+    <string name="home_provider_openai">OpenAI</string>
+    <string name="home_setup_action">配置翻译服务</string>
+    <string name="home_setup_status">首次使用</string>
+    <string name="home_setup_hint">需要你自己的阿里云或 OpenAI API Key。</string>
+    <string name="home_ready_status">准备就绪</string>
+    <string name="home_ready_hint">开启后，字幕会显示在其他应用上方。</string>
+    <string name="home_overlay_hint">下一步将开启悬浮窗权限。</string>
+    <string name="home_running_status">字幕已开启</string>
+    <string name="home_running_hint">切换到视频或游戏，即可查看悬浮字幕。</string>
+    <string name="home_starting_status">等待授权</string>
+    <string name="home_privacy">仅捕获系统播放声音 · 不采集麦克风</string>
+    <string name="preview_label">字幕预览</string>
+    <string name="preview_example">示例内容</string>
+    <string name="preview_source">A little closer to the world.</string>
+    <string name="preview_zh">离世界，再近一点。</string>
+    <string name="preview_en">A little closer to the world.</string>
+    <string name="preview_ja">世界に、もう少し近づく。</string>
+</resources>

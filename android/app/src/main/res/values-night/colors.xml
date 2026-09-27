@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="mimi_bg">#161616</color>
+    <color name="mimi_surface">#202020</color>
+    <color name="mimi_text">#F4F4F4</color>
+    <color name="mimi_muted">#ADADAD</color>
+    <color name="mimi_border">#333333</color>
+    <color name="mimi_primary">#F4F4F4</color>
+    <color name="mimi_on_primary">#171717</color>
+    <bool name="mimi_light_bars">false</bool>
+</resources>
