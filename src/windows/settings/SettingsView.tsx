@@ -2,16 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { Switch } from "../../components/Switch";
 import { I18N, setStoredUiLanguage, type UiLanguage } from "../../lib/i18n";
-import {
-  announceSettingsNavigationReady,
-  isTauri,
-  listenSettingsNavigation,
-} from "../../lib/ipc";
-import {
-  selectSessionErrorMessage,
-  selectSessionStatusKind,
-  useStore,
-} from "../../lib/store";
+import { announceSettingsNavigationReady, isTauri, listenSettingsNavigation } from "../../lib/ipc";
+import { selectSessionErrorMessage, selectSessionStatusKind, useStore } from "../../lib/store";
 import {
   effectiveTranslationModeForSettings,
   sourceLanguagesForSettings,
@@ -40,11 +32,7 @@ import {
   type SettingsSessionPendingAction,
   type SettingsSessionVisibleStatus,
 } from "./settingsSessionControlModel";
-import {
-  SettingsRow,
-  SettingsSection,
-  SettingsSelect,
-} from "./SettingsPrimitives";
+import { SettingsRow, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
 import "./settings.css";
 
 type SettingsCategory = "subtitles" | "service" | "general" | "export";
@@ -73,9 +61,8 @@ export function SettingsView() {
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
 
   const activeProfile =
-    settings.profiles.find(
-      (profile) => profile.id === settings.activeProfileId,
-    ) ?? settings.profiles[0];
+    settings.profiles.find((profile) => profile.id === settings.activeProfileId) ??
+    settings.profiles[0];
   const locationCategory = settingsCategoryFromHash(window.location.hash);
   const preferredCategory: SettingsCategory =
     activeProfile?.credentialState === "present" ? "subtitles" : "service";
@@ -85,9 +72,7 @@ export function SettingsView() {
   const [sessionPendingAction, setSessionPendingAction] =
     useState<SettingsSessionPendingAction>(null);
   const [sessionActionError, setSessionActionError] = useState(false);
-  const [sessionActionCoordinator] = useState(
-    () => new SettingsSessionActionCoordinator(),
-  );
+  const [sessionActionCoordinator] = useState(() => new SettingsSessionActionCoordinator());
   const locationSelectedCategory = useRef(locationCategory !== null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const initialCredentialState = useRef(activeProfile?.credentialState);
@@ -104,19 +89,15 @@ export function SettingsView() {
       return;
     }
     initialCredentialState.current = activeProfile?.credentialState;
-    setActiveCategory(
-      activeProfile?.credentialState === "present" ? "subtitles" : "service",
-    );
+    setActiveCategory(activeProfile?.credentialState === "present" ? "subtitles" : "service");
   }, [activeProfile?.credentialState]);
 
   const sourceLanguages = sourceLanguagesForSettings(settings);
   const targetLanguages = targetLanguagesForSettings(settings);
   const chineseIsOriginalOnly = targetLanguages.includes("original");
   const translationModes = translationModesForSettings(settings);
-  const effectiveTranslationMode =
-    effectiveTranslationModeForSettings(settings);
-  const isChangingSession =
-    sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
+  const effectiveTranslationMode = effectiveTranslationModeForSettings(settings);
+  const isChangingSession = sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
   const sessionControl = settingsSessionControlState({
     statusKind: sessionStatusKind,
     isActive: sessionIsActive,
@@ -164,9 +145,7 @@ export function SettingsView() {
 
   const changeSession = useCallback(
     (checked: boolean) => {
-      const pendingAction: Exclude<SettingsSessionPendingAction, null> = checked
-        ? "start"
-        : "stop";
+      const pendingAction: Exclude<SettingsSessionPendingAction, null> = checked ? "start" : "stop";
       if (!sessionActionCoordinator.begin(pendingAction)) {
         return;
       }
@@ -186,10 +165,7 @@ export function SettingsView() {
       const statusKind = selectSessionStatusKind(state);
       const previousStatusKind = selectSessionStatusKind(previousState);
       const isActive = state.session.isActive;
-      if (
-        statusKind === previousStatusKind &&
-        isActive === previousState.session.isActive
-      ) {
+      if (statusKind === previousStatusKind && isActive === previousState.session.isActive) {
         return;
       }
       // A fresh native transition is authoritative even when it came from the
@@ -200,9 +176,7 @@ export function SettingsView() {
         statusKind,
         isActive,
       });
-      setSessionPendingAction((current) =>
-        current === pendingAction ? current : pendingAction,
-      );
+      setSessionPendingAction((current) => (current === pendingAction ? current : pendingAction));
     });
   }, [sessionActionCoordinator]);
 
@@ -239,9 +213,7 @@ export function SettingsView() {
       <aside className="settings-sidebar">
         <div className="settings-brand">
           <span className="settings-brand__name">mimi</span>
-          <span className="settings-brand__label">
-            {I18N.settings.windowTitle}
-          </span>
+          <span className="settings-brand__label">{I18N.settings.windowTitle}</span>
         </div>
         <nav
           key={activeCategory}
@@ -266,10 +238,7 @@ export function SettingsView() {
             );
           })}
         </nav>
-        <section
-          className="settings-session-card"
-          aria-labelledby="settings-session-title"
-        >
+        <section className="settings-session-card" aria-labelledby="settings-session-title">
           <div className="settings-session-card__main">
             <h2 id="settings-session-title">{I18N.settings.liveSubtitles}</h2>
             <Switch
@@ -287,10 +256,7 @@ export function SettingsView() {
             aria-live="polite"
           >
             <span aria-hidden="true" />
-            {settingsSessionStatusText(
-              sessionControl.visibleStatus,
-              sessionErrorMessage,
-            )}
+            {settingsSessionStatusText(sessionControl.visibleStatus, sessionErrorMessage)}
           </span>
           <p
             id="settings-session-shortcut"
@@ -326,30 +292,70 @@ export function SettingsView() {
       <div className="settings-console__scroll" ref={contentScrollRef}>
         <div className="settings-console__frame">
           <header className="settings-page-header">
-            <h1>
-              {
-                categories.find((category) => category.id === activeCategory)
-                  ?.label
-              }
-            </h1>
+            <h1>{categories.find((category) => category.id === activeCategory)?.label}</h1>
             <p>{pageDescriptions[activeCategory]}</p>
           </header>
           <div className="settings-layout">
             {activeCategory === "subtitles" && (
-              <div
-                id="subtitle-settings-panel"
-                className="settings-category-panel"
-              >
+              <div id="subtitle-settings-panel" className="settings-category-panel">
                 <SettingsSection
                   id="subtitle-settings"
                   title={I18N.settings.subtitleTitle}
                   hideHeading
                 >
-                  <div className="settings-field-group">
-                    <span
-                      className="settings-field-group__label"
-                      id="source-language-label"
+                  <div
+                    className="subtitle-preview"
+                    data-immersive={settings.subtitleBlendsWithBackground}
+                  >
+                    <div className="subtitle-preview__label">
+                      <span>{I18N.settings.subtitlePreview}</span>
+                      <small>{I18N.settings.previewSample}</small>
+                    </div>
+                    <div
+                      className="subtitle-preview__stage"
+                      style={{ textAlign: settings.subtitleAlignment }}
                     >
+                      <div
+                        className="subtitle-preview__text"
+                        style={{ fontSize: settings.fontSize }}
+                      >
+                        <span>{I18N.settings.previewOriginal}</span>
+                        <strong>{I18N.settings.previewTranslation}</strong>
+                      </div>
+                    </div>
+                    <div className="subtitle-preview__controls">
+                      <SettingsRow label={I18N.settings.fontSize}>
+                        <div className="font-size-control">
+                          <span className="font-size-control__sample" aria-hidden="true">
+                            A
+                          </span>
+                          <input
+                            type="range"
+                            min={14}
+                            max={20}
+                            step={1}
+                            value={settings.fontSize}
+                            aria-label={I18N.settings.fontSize}
+                            onChange={(event) =>
+                              void saveSettings({
+                                fontSize: Number(event.target.value),
+                              })
+                            }
+                          />
+                          <output aria-live="polite">{Math.round(settings.fontSize)}</output>
+                        </div>
+                      </SettingsRow>
+
+                      <SettingsRow label={I18N.settings.subtitleAlignment}>
+                        <SubtitleAlignmentControl
+                          value={settings.subtitleAlignment}
+                          onChange={(subtitleAlignment) => void saveSettings({ subtitleAlignment })}
+                        />
+                      </SettingsRow>
+                    </div>
+                  </div>
+                  <div className="settings-field-group">
+                    <span className="settings-field-group__label" id="source-language-label">
                       {I18N.settings.sourceLanguage}
                     </span>
                     <div
@@ -364,19 +370,13 @@ export function SettingsView() {
                           language={language}
                           selected={settings.sourceLanguage === language}
                           chineseIsOriginalOnly={chineseIsOriginalOnly}
-                          disabled={
-                            isChangingSession || sourceLanguages.length === 1
-                          }
+                          disabled={isChangingSession || sourceLanguages.length === 1}
                           onSelect={() => void switchSourceLanguage(language)}
                         />
                       ))}
                     </div>
                     <p className="settings-help">
-                      {sourceLanguageHelp(
-                        sessionStatusKind,
-                        settings,
-                        chineseIsOriginalOnly,
-                      )}
+                      {sourceLanguageHelp(sessionStatusKind, settings, chineseIsOriginalOnly)}
                     </p>
                   </div>
 
@@ -387,8 +387,7 @@ export function SettingsView() {
                       value={settings.targetLanguage}
                       disabled={
                         sessionIsActive ||
-                        (settings.sourceLanguage === "zh" &&
-                          targetLanguages.includes("original"))
+                        (settings.sourceLanguage === "zh" && targetLanguages.includes("original"))
                       }
                       label={I18N.settings.translateTo}
                       onChange={(value) =>
@@ -428,46 +427,6 @@ export function SettingsView() {
 
                   <div className="settings-divider" />
 
-                  <SettingsRow label={I18N.settings.fontSize}>
-                    <div className="font-size-control">
-                      <span
-                        className="font-size-control__sample"
-                        aria-hidden="true"
-                      >
-                        A
-                      </span>
-                      <input
-                        type="range"
-                        min={14}
-                        max={20}
-                        step={1}
-                        value={settings.fontSize}
-                        aria-label={I18N.settings.fontSize}
-                        onChange={(event) =>
-                          void saveSettings({
-                            fontSize: Number(event.target.value),
-                          })
-                        }
-                      />
-                      <output aria-live="polite">
-                        {Math.round(settings.fontSize)}
-                      </output>
-                    </div>
-                  </SettingsRow>
-
-                  <div className="settings-divider" />
-
-                  <SettingsRow label={I18N.settings.subtitleAlignment}>
-                    <SubtitleAlignmentControl
-                      value={settings.subtitleAlignment}
-                      onChange={(subtitleAlignment) =>
-                        void saveSettings({ subtitleAlignment })
-                      }
-                    />
-                  </SettingsRow>
-
-                  <div className="settings-divider" />
-
                   <SettingsRow
                     label={I18N.settings.blendBackground}
                     description={I18N.settings.blendBackgroundHelp}
@@ -484,32 +443,32 @@ export function SettingsView() {
 
                   <div className="settings-divider" />
 
-                  <SettingsRow
-                    label={I18N.settings.lockPosition}
-                    description={I18N.settings.lockHelp}
-                    align="start"
-                  >
-                    <Switch
-                      checked={settings.isOverlayLocked}
-                      aria-label={I18N.settings.lockPosition}
-                      onChange={(checked) => {
-                        void setOverlayLocked(checked).catch(() => {});
-                      }}
-                    />
-                  </SettingsRow>
+                  <details className="subtitle-placement">
+                    <summary>
+                      {I18N.settings.lockPosition}
+                      <Icon name="chevron-down" />
+                    </summary>
+                    <SettingsRow
+                      label={I18N.settings.lockPosition}
+                      description={I18N.settings.lockHelp}
+                      align="start"
+                    >
+                      <Switch
+                        checked={settings.isOverlayLocked}
+                        aria-label={I18N.settings.lockPosition}
+                        onChange={(checked) => {
+                          void setOverlayLocked(checked).catch(() => {});
+                        }}
+                      />
+                    </SettingsRow>
+                  </details>
                 </SettingsSection>
               </div>
             )}
 
             {activeCategory === "service" && (
-              <div
-                id="service-profiles-panel"
-                className="settings-category-panel"
-              >
-                <ServiceProfiles
-                  settings={settings}
-                  sessionIsActive={sessionIsActive}
-                />
+              <div id="service-profiles-panel" className="settings-category-panel">
+                <ServiceProfiles settings={settings} sessionIsActive={sessionIsActive} />
               </div>
             )}
 
@@ -517,16 +476,10 @@ export function SettingsView() {
               id="application-settings-panel"
               className={`settings-category-panel${activeCategory !== "general" ? " is-inactive" : ""}`}
             >
-              <SettingsSection
-                id="application-settings"
-                title={I18N.settings.appearance}
-              >
+              <SettingsSection id="application-settings" title={I18N.settings.appearance}>
                 <AppearancePicker value={theme} onChange={changeTheme} />
               </SettingsSection>
-              <SettingsSection
-                id="application-preferences"
-                title={I18N.settings.preferencesTitle}
-              >
+              <SettingsSection id="application-preferences" title={I18N.settings.preferencesTitle}>
                 <SettingsRow
                   label={I18N.settings.appLanguage}
                   description={I18N.settings.languageHelp}
@@ -575,8 +528,7 @@ export function SettingsView() {
 }
 
 function startStopShortcut(): string {
-  return typeof navigator !== "undefined" &&
-    /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
     ? "⌘⇧Space"
     : "Ctrl+Shift+Space";
 }
@@ -605,11 +557,7 @@ function settingsSessionStatusText(
   }
 }
 
-const SUBTITLE_ALIGNMENTS: readonly SubtitleAlignment[] = [
-  "left",
-  "center",
-  "right",
-];
+const SUBTITLE_ALIGNMENTS: readonly SubtitleAlignment[] = ["left", "center", "right"];
 
 function SubtitleAlignmentControl({
   value,
@@ -728,7 +676,5 @@ function sourceLanguageButtonHelp(
 ): string {
   return language === "zh" && chineseIsOriginalOnly
     ? I18N.settings.switchToChineseHelp
-    : I18N.settings.switchToLanguageHelp(
-        SOURCE_LANGUAGE_DISPLAY_NAMES[language],
-      );
+    : I18N.settings.switchToLanguageHelp(SOURCE_LANGUAGE_DISPLAY_NAMES[language]);
 }
