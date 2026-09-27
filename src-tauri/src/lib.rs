@@ -207,6 +207,13 @@ pub fn run() {
                     windows::OverlayControlWindowManager::cancel_scheduled_dismiss(app);
                 }
                 WindowEvent::CloseRequested { api, .. } if window.label() == "settings" => {
+                    // AppIndicator can accept an icon even when the desktop
+                    // has no tray host. Linux users minimize to keep running;
+                    // closing Settings must not strand an invisible process.
+                    if cfg!(target_os = "linux") {
+                        app.exit(0);
+                        return;
+                    }
                     // Hiding instead of closing keeps the window alive so
                     // the tray or a repeated launch can restore it instantly.
                     // Windows users may keep tray icons in the notification

@@ -75,3 +75,19 @@ if [[ "$ready" != 1 ]]; then
   exit 1
 fi
 echo "Linux UI smoke passed: settings and subtitle windows visible; synthetic session listening."
+
+# A desktop without a tray must still have a reliable exit path. Closing
+# Settings exits on Linux; minimizing it is the keep-running action.
+settings_window="$(xdotool search --onlyvisible --name '^mimi UI test settings$' | head -1)"
+xdotool windowactivate --sync "$settings_window" key --clearmodifiers alt+F4
+for _ in {1..20}; do
+  if ! kill -0 "$app_pid" 2>/dev/null; then
+    wait "$app_pid"
+    app_pid=""
+    echo "Linux close-to-exit smoke passed."
+    exit 0
+  fi
+  sleep 0.25
+done
+echo "Closing Linux Settings did not exit Mimi." >&2
+exit 1

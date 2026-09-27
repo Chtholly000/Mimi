@@ -29,7 +29,8 @@ unavailable. No plaintext fallback or microphone capture is added. Retention
 and recording stay off by default.
 
 Use a colored tray asset outside macOS. Settings remains accessible at startup
-when the desktop has no tray host. Recommend X11; document compositor limits
+when the desktop has no tray host. Linux closes to exit rather than hiding an
+unreachable process; minimize Settings to keep subtitles running. Recommend X11; document compositor limits
 for positioning, always-on-top, click-through, and global shortcuts on Wayland.
 
 ## Distribution and proof

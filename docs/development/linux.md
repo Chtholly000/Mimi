@@ -17,7 +17,8 @@ Download the `.deb` or `.AppImage` from [Releases](https://github.com/yuxino/mim
 - AppImage supports signed updates in Settings. Quit before updating `.deb`
   with a newer package; its Settings button opens Releases.
 
-Mimi opens Settings at startup, so a tray extension is optional. X11 is
+Mimi opens Settings at startup, so a tray extension is optional. Minimize
+Settings to keep subtitles running; closing Settings exits Mimi on Linux. X11 is
 recommended for the complete overlay experience. Wayland window placement,
 always-on-top, click-through, and global shortcuts depend on the compositor;
 use Settings controls when shortcuts are unavailable. No Linux ARM64 package
