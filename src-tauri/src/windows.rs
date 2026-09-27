@@ -79,6 +79,9 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+#[cfg(target_os = "macos")]
+mod macos_control_dismiss;
+
 #[cfg(target_os = "windows")]
 mod windows_workspace;
 
@@ -2167,6 +2170,8 @@ impl OverlayControlWindowManager {
     }
 
     fn apply_mode_now(app: &AppHandle, mode: OverlayControlMode, focus: bool) {
+        #[cfg(target_os = "macos")]
+        macos_control_dismiss::sync(app);
         let Some(window) = app.get_webview_window("overlay-control") else {
             return;
         };

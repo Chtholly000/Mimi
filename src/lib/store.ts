@@ -34,7 +34,7 @@ import {
   trayPanelHide,
   type SettingsNavigationTarget,
 } from "./ipc";
-import { effectiveUiLanguage, setStoredUiLanguage } from "./i18n";
+import { setStoredUiLanguage } from "./i18n";
 import {
   capabilitiesForProvider,
   sourceLanguagesForSettings,
@@ -162,24 +162,6 @@ const settingsResponseGate = new SnapshotResponseGate();
 let initializationRetryTimer: number | undefined;
 let initializationRetryDelay = 500;
 
-/**
- * The UI language this window's module-level i18n constants (I18N, display
- * name tables) were computed with. Captured once at module load, before any
- * reload. Because all Tauri windows share one localStorage origin, the stored
- * override is already updated by the window that initiated the switch, so we
- * compare against this rendered-language snapshot instead of localStorage to
- * decide whether this window needs a reload.
- */
-const renderedUiLanguage = effectiveUiLanguage();
-
-function systemEffectiveLanguage(): "zh" | "en" | "ja" {
-  const system =
-    typeof navigator !== "undefined" ? (navigator.language ?? "") : "";
-  if (system.toLowerCase().startsWith("zh")) return "zh";
-  if (system.toLowerCase().startsWith("ja")) return "ja";
-  return "en";
-}
-
 export const useStore = create<StoreState>()((set, get) => ({
   session: INITIAL_SESSION,
   settings: INITIAL_SETTINGS,
@@ -206,8 +188,7 @@ export const useStore = create<StoreState>()((set, get) => ({
                 settingsSaveCoordinator.invalidate();
                 set({ settings });
                 // Language switches initiated from any window reach every other
-                // window through this event; reload so module-level i18n
-                // constants (I18N, display-name tables) are recomputed.
+                // window through this event without reloading the WebView.
                 syncUiLanguageFromSettings(settings);
               },
               applySession: (session) => set({ session }),
@@ -586,24 +567,7 @@ function settingsAfterMockProfileSelection(
   };
 }
 
-/**
- * Reconciles this window's rendered UI language with the backend preference.
- * All windows share one localStorage origin, so a switch initiated in another
- * window already updated the stored override by the time this event arrives;
- * compare the backend preference against the language this window rendered
- * with and reload only when they differ, so the module-level i18n constants
- * are recomputed. When they agree this is a no-op, so a reload only ever
- * happens once per switch.
- */
+/** Settings events update each window in place, preserving updater resources. */
 function syncUiLanguageFromSettings(settings: SettingsSnapshot): void {
-  const target =
-    settings.uiLanguage === "zh" ||
-    settings.uiLanguage === "en" ||
-    settings.uiLanguage === "ja"
-      ? settings.uiLanguage
-      : systemEffectiveLanguage();
-  if (target !== renderedUiLanguage) {
-    setStoredUiLanguage(settings.uiLanguage ?? "system");
-    window.location.reload();
-  }
+  setStoredUiLanguage(settings.uiLanguage ?? "system");
 }

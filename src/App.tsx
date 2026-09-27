@@ -1,5 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { effectiveUiLanguage, subscribeUiLanguage } from "./lib/i18n";
 import { appUiTestFrontendReady, isTauri } from "./lib/ipc";
 import { selectSessionStatusKind, useStore } from "./lib/store";
 
@@ -35,6 +36,7 @@ type WindowLabel = "overlay" | "overlay-control" | "tray-panel" | "settings";
  * "settings").
  */
 export default function App() {
+  useSyncExternalStore(subscribeUiLanguage, effectiveUiLanguage);
   const [label] = useState<WindowLabel>(resolveInitialLabel);
   const init = useStore((state) => state.init);
 

@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef } from "react";
 import { hexToRgba } from "../../lib/types";
 import type { SubtitleAlignment } from "../../lib/types";
+import { observeTimelineResize } from "./timelineResize";
 import { rowHorizontalPadding } from "./alignment";
 import { timelineClassName, type SubtitleRow } from "./overlayModel";
 
@@ -50,7 +51,13 @@ export const Timeline = memo(function Timeline({
       // never stutters.
       element.scrollTop = element.scrollHeight;
     }
-  }, [rows.length, lastTextLength]);
+  }, [rows.length, lastTextLength, fontSize, alignment, blendsWithBackground]);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element) return;
+    return observeTimelineResize(element);
+  }, []);
 
   return (
     <div

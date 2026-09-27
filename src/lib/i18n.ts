@@ -23,19 +23,39 @@ function getStoredUiLanguage(): UiLanguage | null {
   }
 }
 
-/** Persists the UI language override before a reload applies it. */
+let selectedUiLanguage = getStoredUiLanguage();
+const languageListeners = new Set<() => void>();
+
+export function subscribeUiLanguage(listener: () => void): () => void {
+  languageListeners.add(listener);
+  return () => {
+    languageListeners.delete(listener);
+  };
+}
+
+/** Resolves labels at render time without discarding mounted window state. */
+export function localizedRecord<T extends object>(read: () => T): T {
+  return new Proxy(read(), { get: (_target, key) => Reflect.get(read(), key) });
+}
+
+/** Applies a language override in this window and persists it for future windows. */
 export function setStoredUiLanguage(language: UiLanguage): void {
+  const previous = effectiveUiLanguage();
+  selectedUiLanguage = language;
   try {
     localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, language);
   } catch {
     // Storage may be unavailable; the backend preference still persists.
+  }
+  if (previous !== effectiveUiLanguage()) {
+    languageListeners.forEach((listener) => listener());
   }
 }
 
 /** The effective UI language, honoring a stored override over the OS/webview
  * language. */
 export function effectiveUiLanguage(): "zh" | "en" | "ja" {
-  const stored = getStoredUiLanguage();
+  const stored = selectedUiLanguage;
   if (stored === "zh" || stored === "en" || stored === "ja") return stored;
   const system =
     typeof navigator !== "undefined" ? (navigator.language ?? "") : "";
@@ -920,13 +940,13 @@ const MODES_JA = {
 };
 
 export const I18N = {
-  overlay: effectiveUiLanguage() === "ja" ? OVERLAY_JA : isChineseSystem() ? OVERLAY_ZH : OVERLAY_EN,
+  get overlay() { return effectiveUiLanguage() === "ja" ? OVERLAY_JA : isChineseSystem() ? OVERLAY_ZH : OVERLAY_EN; },
 
-  tray: effectiveUiLanguage() === "ja" ? TRAY_JA : isChineseSystem() ? TRAY_ZH : TRAY_EN,
+  get tray() { return effectiveUiLanguage() === "ja" ? TRAY_JA : isChineseSystem() ? TRAY_ZH : TRAY_EN; },
 
-  settings: effectiveUiLanguage() === "ja" ? SETTINGS_JA : isChineseSystem() ? SETTINGS_ZH : SETTINGS_EN,
+  get settings() { return effectiveUiLanguage() === "ja" ? SETTINGS_JA : isChineseSystem() ? SETTINGS_ZH : SETTINGS_EN; },
 
-  modes: effectiveUiLanguage() === "ja" ? MODES_JA : isChineseSystem() ? MODES_ZH : MODES_EN,
+  get modes() { return effectiveUiLanguage() === "ja" ? MODES_JA : isChineseSystem() ? MODES_ZH : MODES_EN; },
 } as const;
 
 export function providerDisplayName(provider: ServiceProvider): string {

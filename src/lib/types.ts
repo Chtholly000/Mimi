@@ -5,7 +5,7 @@
  * (language enums and status semantics).
  */
 
-import { I18N, effectiveUiLanguage, isChineseSystem } from "./i18n";
+import { I18N, effectiveUiLanguage, isChineseSystem, localizedRecord } from "./i18n";
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -162,7 +162,7 @@ export const TRANSLATION_MODE_CASES: readonly TranslationMode[] = [
 ];
 
 /** Localized source-language labels for the active UI language. */
-export const SOURCE_LANGUAGE_DISPLAY_NAMES: Record<SourceLanguage, string> =
+export const SOURCE_LANGUAGE_DISPLAY_NAMES: Record<SourceLanguage, string> = localizedRecord(() =>
   effectiveUiLanguage() === "ja"
     ? {
         auto: "自動認識",
@@ -185,10 +185,10 @@ export const SOURCE_LANGUAGE_DISPLAY_NAMES: Record<SourceLanguage, string> =
           en: "English",
           ja: "Japanese",
           ko: "Korean",
-        };
+        });
 
 /** Localized target-language labels for the active UI language. */
-export const TARGET_LANGUAGE_DISPLAY_NAMES: Record<TargetLanguage, string> =
+export const TARGET_LANGUAGE_DISPLAY_NAMES: Record<TargetLanguage, string> = localizedRecord(() =>
   effectiveUiLanguage() === "ja"
     ? {
         original: "原文（翻訳しない）",
@@ -208,10 +208,10 @@ export const TARGET_LANGUAGE_DISPLAY_NAMES: Record<TargetLanguage, string> =
           zh: "Simplified Chinese",
           en: "English",
           ja: "Japanese",
-        };
+        });
 
 /** Localized translation-mode labels for the active UI language. */
-export const TRANSLATION_MODE_DISPLAY_NAMES: Record<TranslationMode, string> =
+export const TRANSLATION_MODE_DISPLAY_NAMES: Record<TranslationMode, string> = localizedRecord(() =>
   effectiveUiLanguage() === "ja"
     ? {
         lowLatency: "低遅延",
@@ -228,7 +228,7 @@ export const TRANSLATION_MODE_DISPLAY_NAMES: Record<TranslationMode, string> =
           lowLatency: "Low latency",
           highQuality: "High quality",
           turbo: "Turbo",
-        };
+        });
 
 /** Display labels for normalized recognition-service language codes. */
 const DETECTED_LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
@@ -343,49 +343,49 @@ export const OVERLAY_ACTIVITY_PHASES: Record<
   OverlayActivityPhaseInfo
 > = {
   idle: {
-    accessibilityLabel: I18N.overlay.phaseIdle,
+    get accessibilityLabel() { return I18N.overlay.phaseIdle; },
     color: "#FFFFFF",
     baseOpacity: 0.5,
     animationSpeed: 0,
     amplitude: 0,
   },
   error: {
-    accessibilityLabel: I18N.overlay.phaseError,
+    get accessibilityLabel() { return I18N.overlay.phaseError; },
     color: "#FF8A80",
     baseOpacity: 1,
     animationSpeed: 0,
     amplitude: 0,
   },
   connecting: {
-    accessibilityLabel: I18N.overlay.phaseConnecting,
+    get accessibilityLabel() { return I18N.overlay.phaseConnecting; },
     color: "#FFFFFF",
     baseOpacity: 0.5,
     animationSpeed: 2.6,
     amplitude: 3,
   },
   listening: {
-    accessibilityLabel: I18N.overlay.phaseListening,
+    get accessibilityLabel() { return I18N.overlay.phaseListening; },
     color: "#7AA8FF",
     baseOpacity: 0.62,
     animationSpeed: 2.6,
     amplitude: 2,
   },
   recognizing: {
-    accessibilityLabel: I18N.overlay.phaseRecognizing,
+    get accessibilityLabel() { return I18N.overlay.phaseRecognizing; },
     color: "#7AA8FF",
     baseOpacity: 1,
     animationSpeed: 2.6,
     amplitude: 6,
   },
   translating: {
-    accessibilityLabel: I18N.overlay.phaseTranslating,
+    get accessibilityLabel() { return I18N.overlay.phaseTranslating; },
     color: "#B894FF",
     baseOpacity: 1,
     animationSpeed: 2.6,
     amplitude: 4,
   },
   paused: {
-    accessibilityLabel: I18N.overlay.phasePaused,
+    get accessibilityLabel() { return I18N.overlay.phasePaused; },
     color: "#FFB852",
     baseOpacity: 1,
     animationSpeed: 0,
