@@ -781,8 +781,10 @@ mod tests {
 
     fn matches_tone(pcm: &[u8], sample_rate: u32) -> bool {
         let samples: Vec<f64> = pcm
-            .chunks_exact(2)
-            .map(|sample| f64::from(i16::from_le_bytes([sample[0], sample[1]])) / 32768.0)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|sample| f64::from(i16::from_le_bytes(*sample)) / 32768.0)
             .collect();
         let count = samples.len() as f64;
         let mut sine = 0.0;
