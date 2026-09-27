@@ -2,3 +2,7 @@
 .kotlin/
 **/build/
 local.properties
+release/
+*.jks
+*.keystore
+keystore.properties

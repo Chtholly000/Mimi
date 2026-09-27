@@ -33,11 +33,42 @@ jobs:
       - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
       - name: Install Android SDK packages
         run: '"${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"'
-      - name: Unit tests, lint and debug APK
+      - name: Unit tests, lint and Android build variants
         working-directory: android
-        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+        run: ./gradlew --no-daemon testDebugUnitTest testReleaseUnitTest lintDebug lintRelease assembleDebug assembleRelease
+      - name: Verify signing and rejection checks with a disposable test key
+        run: |
+          # This key is only a CI test fixture, never a release identity.
+          signing_dir="$(mktemp -d)"
+          trap 'rm -rf "$signing_dir" android/release' EXIT
+          export ANDROID_KEYSTORE_PATH="$signing_dir/test.jks"
+          export ANDROID_KEYSTORE_PASSWORD=ci-test-only
+          export ANDROID_KEY_PASSWORD=ci-test-only
+          export ANDROID_KEY_ALIAS=ci-test
+          keytool -genkeypair -keystore "$ANDROID_KEYSTORE_PATH" -alias "$ANDROID_KEY_ALIAS" \
+            -storepass:env ANDROID_KEYSTORE_PASSWORD -keypass:env ANDROID_KEY_PASSWORD \
+            -keyalg RSA -keysize 2048 -validity 1 -dname 'CN=Mimi CI Signing Test' -noprompt
+          keytool -exportcert -keystore "$ANDROID_KEYSTORE_PATH" -alias "$ANDROID_KEY_ALIAS" \
+            -storepass:env ANDROID_KEYSTORE_PASSWORD -file "$signing_dir/cert.der"
+          export ANDROID_SIGNING_CERT_SHA256="$(sha256sum "$signing_dir/cert.der" | cut -d ' ' -f1)"
+          bash android/sign-release.sh
+          if bash android/sign-release.sh app/build/outputs/apk/debug/app-debug.apk; then
+            echo '::error::Signing accepted a debuggable APK.'
+            exit 1
+          fi
+          export ANDROID_SIGNING_CERT_SHA256=0000000000000000000000000000000000000000000000000000000000000000
+          if bash android/sign-release.sh; then
+            echo '::error::Signing accepted a different certificate.'
+            exit 1
+          fi
       - name: Upload Android APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: mimi-android-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Upload unsigned release for signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: mimi-android-unsigned-release
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: error

@@ -1,9 +1,11 @@
 # mimi for Android
 
-Native Android development port of [mimi](../README.md) — live subtitles and
+Native Android version of [mimi](../README.md) — live subtitles and
 translation for system audio. Pure Kotlin (no Tauri), single module.
 
-> This port is not part of the official mimi desktop releases. It reads the
+[Download Android 1.5.1](https://github.com/yuxino/mimi/releases/tag/android-v1.5.1)
+
+> Android is packaged separately from mimi desktop releases. It reads the
 > same provider wire protocols as the desktop app (`src-tauri/src/core/protocols`)
 > with provider-specific credentials configured on Android. Live verification is
 > listed below; protocol parity alone does not establish service availability.
@@ -59,8 +61,39 @@ export ANDROID_HOME=/path/to/android-sdk
 
 Requires JDK 17, Android SDK platform 35 and build-tools 35.0.0. The wrapper pins
 Gradle 8.10.2 and verifies its distribution checksum. minSdk 29, targetSdk 35,
-Kotlin 2.0, AGP 8.7. CI builds a debug APK and runs tests/lint; device capture is
-a separate manual check.
+Kotlin 2.0, AGP 8.7. CI tests/lints both variants and produces a debug APK and an
+unsigned release APK. The unsigned artifact is for signing, not installation;
+device capture remains a separate manual check.
+
+### Signed release
+
+`version.properties` is the Android version source. Increment `versionCode` for
+every public update, and keep `versionName` consistent with the release notes.
+Build with `./gradlew testReleaseUnitTest lintRelease assembleRelease`, then run
+`bash sign-release.sh` with these environment variables set securely:
+
+- `ANDROID_HOME`: Android SDK directory.
+- `ANDROID_KEYSTORE_PATH`: existing, securely backed-up release keystore.
+- `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`: its signing credentials.
+- `ANDROID_SIGNING_CERT_SHA256`: the expected public release certificate fingerprint.
+
+The script verifies the compiled package/version and rejects debug builds,
+aligns and signs the APK, then verifies its signature against the pinned
+non-debug certificate. It writes `release/mimi_<version>_android.apk` and
+`release/SHA256SUMS.txt`. It never creates a temporary replacement identity.
+
+For GitHub publishing, configure repository secrets `ANDROID_KEYSTORE_BASE64`
+(base64 of that same keystore), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`
+and `ANDROID_KEY_PASSWORD`, plus repository variable
+`ANDROID_SIGNING_CERT_SHA256`. Run `android-release` on main, or push an
+`android-v<version>` tag. All assets are attached to a draft before it is
+published; existing releases are never overwritten. Android tags do not trigger
+desktop packaging and are not marked as the repository's latest release.
+
+Keep the signing key and its backup outside Git. Use the same key for future
+updates. Debug installations have a different signature and must be uninstalled
+first, which removes their saved settings and credentials. The APK uses release
+build settings; this does not imply physical-device or all-provider validation.
 
 ## Local UI preview
 
