@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { lazy, Suspense, useEffect, useState } from "react";
-import { isTauri } from "./lib/ipc";
-import { useStore } from "./lib/store";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { appUiTestFrontendReady, isTauri } from "./lib/ipc";
+import { selectSessionStatusKind, useStore } from "./lib/store";
 
 const OverlayWindow = lazy(() =>
   import("./windows/overlay/OverlayWindow").then((module) => ({
@@ -52,7 +52,48 @@ export default function App() {
   else if (label === "tray-panel") windowContent = <TrayPanel />;
   else windowContent = <SettingsView />;
 
-  return <Suspense fallback={null}>{windowContent}</Suspense>;
+  return (
+    <Suspense fallback={null}>
+      {windowContent}
+      <FrontendReadySignal label={label} />
+    </Suspense>
+  );
+}
+
+/** Mount inside Suspense so a failed lazy import cannot pass native smoke. */
+function FrontendReadySignal({ label }: { label: WindowLabel }) {
+  const status = useStore(selectSessionStatusKind);
+  const reported = useRef(false);
+
+  useEffect(() => {
+    if (
+      !isTauri ||
+      reported.current ||
+      status !== "listening" ||
+      (label !== "settings" && label !== "overlay")
+    ) {
+      return;
+    }
+
+    // Wait for the committed window to paint with the native session snapshot.
+    // The backend writes a content-free marker only in explicit UI-test mode.
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        void appUiTestFrontendReady()
+          .then(() => {
+            reported.current = true;
+          })
+          .catch(() => {});
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [label, status]);
+
+  return null;
 }
 
 function resolveInitialLabel(): WindowLabel {

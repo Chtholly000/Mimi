@@ -9,6 +9,14 @@ if [[ "${MIMI_LINUX_KEYRING_SESSION:-}" != 1 ]]; then
   exec dbus-run-session -- env MIMI_LINUX_KEYRING_SESSION=1 "$0"
 fi
 
+test_name=settings_store::tests::linux_secret_service_roundtrip
+test_list="$(timeout 120s cargo test --locked --manifest-path src-tauri/Cargo.toml \
+  --lib "$test_name" -- --exact --ignored --list)"
+if ! grep -Fxq "$test_name: test" <<< "$test_list"; then
+  echo "Required Linux credential integration test was not discovered: $test_name" >&2
+  exit 1
+fi
+
 secret_dir="$(mktemp -d -t mimi-linux-keyring.XXXXXX)"
 keyring_pid=""
 cleanup() {
@@ -52,4 +60,4 @@ if [[ "$ready" != 1 ]]; then
   exit 1
 fi
 MIMI_TEST_SECRET_SERVICE=1 timeout 120s cargo test --locked --manifest-path src-tauri/Cargo.toml \
-  settings_store::tests::linux_secret_service_roundtrip -- --ignored --nocapture
+  --lib "$test_name" -- --exact --ignored --nocapture

@@ -431,6 +431,10 @@ jobs:
 
       - run: npm run tauri -- build -- --locked
 
+      - name: Smoke launch release x64 UI-test app
+        shell: pwsh
+        run: ./scripts/windows-ci-smoke.ps1 -ExecutablePath ./src-tauri/target/release/mimi.exe -ExpectedArchitecture x64
+
       - name: Verify and stage Windows release assets
         shell: pwsh
         run: |
@@ -474,6 +478,15 @@ jobs:
             }
           }
           ./scripts/package-windows-portable.ps1 -ExecutablePath "$env:GITHUB_WORKSPACE/src-tauri/target/release/mimi.exe" -Version $version -OutputDirectory $stagingDir
+
+      - name: Smoke launch extracted release portable x64 app
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $archive = "$env:RUNNER_TEMP/mimi-release-assets/mimi_${version}_x64-portable.zip"
+          $extracted = Join-Path $env:RUNNER_TEMP 'mimi-release-portable-smoke'
+          Expand-Archive -LiteralPath $archive -DestinationPath $extracted -Force
+          ./scripts/windows-ci-smoke.ps1 -ExecutablePath (Join-Path $extracted 'mimi.exe') -ExpectedArchitecture x64
 
       - name: Upload verified Windows release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -545,7 +558,7 @@ jobs:
   publish-release:
     if: ${{ github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
-    needs: [release-macos, release-windows, release-linux]
+    needs: [release-macos, release-windows, release-linux, windows-arm64]
     permissions:
       actions: read
       contents: write

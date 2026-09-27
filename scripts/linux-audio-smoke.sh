@@ -5,6 +5,13 @@ if [[ "$(uname -s)" != Linux ]]; then
   echo "This test requires Linux and PulseAudio." >&2
   exit 2
 fi
+test_name=audio::linux::tests::native_monitor_capture_is_pcm16_and_restarts
+test_list="$(timeout 120s cargo test --locked --manifest-path src-tauri/Cargo.toml \
+  --lib "$test_name" -- --exact --ignored --list)"
+if ! grep -Fxq "$test_name: test" <<< "$test_list"; then
+  echo "Required Linux audio integration test was not discovered: $test_name" >&2
+  exit 1
+fi
 audio_dir="$(mktemp -d -t mimi-linux-audio.XXXXXX)"
 pulse_pid=""
 cleanup() {
@@ -41,4 +48,4 @@ fi
 pactl set-default-sink mimi-output
 pactl set-default-source mimi-microphone.monitor
 timeout 120s cargo test --locked --manifest-path src-tauri/Cargo.toml \
-  native_monitor_capture_is_pcm16_and_restarts -- --ignored --nocapture
+  --lib "$test_name" -- --exact --ignored --nocapture

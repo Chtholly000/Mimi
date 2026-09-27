@@ -41,6 +41,7 @@ export MIMI_UI_TEST=1
 export MIMI_UI_TEST_STANDARD_OVERLAY=1
 export MIMI_AUTO_START=1
 export MIMI_UI_TEST_SESSION_STATE_FILE="$smoke_dir/session-state"
+export MIMI_UI_TEST_FRONTEND_READY_DIR="$smoke_dir/frontend-ready"
 
 openbox >"$smoke_dir/openbox.log" 2>&1 &
 wm_pid=$!
@@ -62,6 +63,8 @@ for _ in {1..60}; do
   fi
   if [[ -f "$MIMI_UI_TEST_SESSION_STATE_FILE" ]] \
     && [[ "$(cat "$MIMI_UI_TEST_SESSION_STATE_FILE")" == listening ]] \
+    && [[ -f "$MIMI_UI_TEST_FRONTEND_READY_DIR/settings" ]] \
+    && [[ -f "$MIMI_UI_TEST_FRONTEND_READY_DIR/overlay" ]] \
     && xdotool search --onlyvisible --name '^mimi UI test settings$' >/dev/null \
     && xdotool search --onlyvisible --name '^mimi Subtitles$' >/dev/null; then
     ready=1
@@ -70,11 +73,11 @@ for _ in {1..60}; do
   sleep 0.5
 done
 if [[ "$ready" != 1 ]]; then
-  echo "mimi did not show settings and subtitle windows with a listening UI-test session." >&2
+  echo "mimi did not render settings and subtitle frontends with a listening UI-test session." >&2
   cat "$smoke_dir/app.log" >&2
   exit 1
 fi
-echo "Linux UI smoke passed: settings and subtitle windows visible; synthetic session listening."
+echo "Linux UI smoke passed: both frontends rendered; windows visible; synthetic session listening."
 
 # A desktop without a tray must still have a reliable exit path. Closing
 # Settings exits on Linux; minimizing it is the keep-running action.

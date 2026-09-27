@@ -45,3 +45,7 @@ Run strict Rust/frontend checks on all platforms, an isolated PulseAudio test
 with generated PCM, an isolated Secret Service test with non-secret fixtures,
 package inspection, and a credential-free Xvfb native launch. State physical
 Linux and real-provider acceptance separately from these automated checks.
+Native smoke requires both lazy-loaded frontends to commit and paint with the
+listening snapshot before recording separate, content-free readiness markers.
+The marker IPC does nothing outside explicit UI-test mode and accepts no path
+or content from the frontend. Publishing also waits for Windows ARM64 checks.
