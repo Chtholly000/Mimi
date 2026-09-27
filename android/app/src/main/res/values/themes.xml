@@ -1,8 +1,83 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Mimi" parent="Theme.Material3.Dark.NoActionBar">
+    <style name="Theme.Mimi" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="colorPrimary">@color/mimi_primary</item>
+        <item name="colorOnPrimary">@color/mimi_on_primary</item>
+        <item name="colorSecondary">@color/mimi_primary</item>
+        <item name="colorOnSecondary">@color/mimi_on_primary</item>
+        <item name="colorPrimaryContainer">@color/mimi_surface</item>
+        <item name="colorOnPrimaryContainer">@color/mimi_text</item>
+        <item name="colorSecondaryContainer">@color/mimi_surface</item>
+        <item name="colorOnSecondaryContainer">@color/mimi_text</item>
+        <item name="colorAccent">@color/mimi_text</item>
+        <item name="colorControlNormal">@color/mimi_muted</item>
+        <item name="colorControlActivated">@color/mimi_text</item>
+        <item name="colorSurface">@color/mimi_bg</item>
+        <item name="colorOnSurface">@color/mimi_text</item>
+        <item name="colorOnSurfaceVariant">@color/mimi_muted</item>
+        <item name="colorOutline">@color/mimi_border</item>
+        <item name="android:colorBackground">@color/mimi_bg</item>
+        <item name="android:windowBackground">@color/mimi_bg</item>
         <item name="android:statusBarColor">@color/mimi_bg</item>
         <item name="android:navigationBarColor">@color/mimi_bg</item>
+        <item name="android:windowLightStatusBar">@bool/mimi_light_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/mimi_light_bars</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowSoftInputMode">adjustResize</item>
+        <item name="materialButtonStyle">@style/Widget.Mimi.Button.Primary</item>
+        <item name="textInputStyle">@style/Widget.Mimi.Input</item>
+        <item name="android:colorControlNormal">@color/mimi_muted</item>
+        <item name="android:colorControlActivated">@color/mimi_text</item>
+    </style>
+
+    <style name="Widget.Mimi.Button.Primary" parent="Widget.Material3.Button">
+        <item name="android:minHeight">52dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="cornerRadius">12dp</item>
+        <item name="backgroundTint">@color/mimi_primary</item>
+        <item name="android:textColor">@color/mimi_on_primary</item>
+        <item name="iconTint">@color/mimi_on_primary</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0</item>
+        <item name="android:elevation">0dp</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+    <style name="Widget.Mimi.Button.Secondary" parent="Widget.Material3.Button.OutlinedButton">
+        <item name="android:minHeight">48dp</item>
+        <item name="android:insetTop">0dp</item>
+        <item name="android:insetBottom">0dp</item>
+        <item name="cornerRadius">12dp</item>
+        <item name="strokeColor">@color/mimi_border</item>
+        <item name="android:textColor">@color/mimi_text</item>
+        <item name="iconTint">@color/mimi_text</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:letterSpacing">0</item>
+    </style>
+    <style name="Widget.Mimi.Input" parent="Widget.Material3.TextInputLayout.OutlinedBox">
+        <item name="boxCornerRadiusTopStart">10dp</item>
+        <item name="boxCornerRadiusTopEnd">10dp</item>
+        <item name="boxCornerRadiusBottomStart">10dp</item>
+        <item name="boxCornerRadiusBottomEnd">10dp</item>
+        <item name="boxStrokeColor">@color/mimi_input_stroke</item>
+        <item name="hintTextColor">@color/mimi_muted</item>
+        <item name="android:textColorHint">@color/mimi_muted</item>
+        <item name="endIconTint">@color/mimi_muted</item>
+        <item name="helperTextTextColor">@color/mimi_muted</item>
+    </style>
+    <style name="TextAppearance.Mimi.Body" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textColor">@color/mimi_text</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:letterSpacing">0</item>
+    </style>
+    <style name="TextAppearance.Mimi.Label" parent="TextAppearance.Material3.LabelMedium">
+        <item name="android:textColor">@color/mimi_muted</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:letterSpacing">0</item>
     </style>
 </resources>

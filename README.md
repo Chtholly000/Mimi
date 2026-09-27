@@ -70,6 +70,10 @@ My wallet is still a little empty, and I’m saving up for Apple Developer membe
 
 See the [contributing guide](CONTRIBUTING.md) for building and contributing, and the [security policy](SECURITY.md) for reporting vulnerabilities.
 
+## Thanks
+
+Special thanks to [@yebuwudong](https://github.com/yebuwudong) for contributing the native [Android port in PR #37](https://github.com/yuxino/mimi/pull/37). Android remains a development preview; see its [setup and verification notes](android/README.md).
+
 ## Community links
 
 [LINUX DO](https://linux.do/)

@@ -8,6 +8,7 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONObject
+import org.json.JSONException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -45,8 +46,8 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
     private var targetLang: String = "zh"
     private var model: String = MODEL
 
-    private var sourceText = StringBuilder()
-    private var translationText = StringBuilder()
+    private val sourceText = TranscriptBuffer()
+    private val translationText = TranscriptBuffer()
 
     override fun start(
         apiKey: String,
@@ -69,15 +70,15 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
-                handleServerEvent(JSONObject(text))
+                receiveServerMessage(text)
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 if (stopped.get()) return
-                Log.w(TAG, "ws failure", t)
+                Log.w(TAG, "WebSocket transport failure (HTTP ${response?.code ?: 0})")
                 listener.onError(
                     "transport_error",
-                    "连接失败: ${t.message ?: "OpenAI connection failed"}",
+                    "连接失败，请检查网络和服务配置。",
                 )
                 sessionReady.set(false)
             }
@@ -91,7 +92,7 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
     }
 
     override fun sendAudio(pcm16Mono: ByteArray) {
-        if (!sessionReady.get()) return
+        if (stopped.get() || !sessionReady.get()) return
         synchronized(audioBuffer) {
             audioBuffer.write(pcm16Mono)
             val data = audioBuffer.toByteArray()
@@ -99,7 +100,12 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
             var offset = 0
             while (offset + frameBytes <= data.size) {
                 val frame = data.copyOfRange(offset, offset + frameBytes)
-                webSocket?.send(encodeAudioAppend(frame).toString())
+                if (webSocket?.send(encodeAudioAppend(frame).toString()) != true) {
+                    audioBuffer.reset()
+                    sessionReady.set(false)
+                    listener.onError("audio_send_failed", "音频发送失败，请重新连接。")
+                    return
+                }
                 offset += frameBytes
             }
             if (offset > 0) {
@@ -111,6 +117,9 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
 
     override fun stop() {
         stopped.set(true)
+        synchronized(audioBuffer) { audioBuffer.reset() }
+        sourceText.clear()
+        translationText.clear()
         try {
             webSocket?.send(JSONObject().put("type", "session.close").toString())
             webSocket?.close(1000, "bye")
@@ -147,6 +156,16 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
             .put("audio", audio)
     }
 
+    internal fun receiveServerMessage(text: String) {
+        if (stopped.get()) return
+        try {
+            handleServerEvent(JSONObject(text))
+        } catch (_: JSONException) {
+            sessionReady.set(false)
+            listener.onError("invalid_server_event", "服务返回了无效数据，请重新连接。")
+        }
+    }
+
     private fun handleServerEvent(json: JSONObject) {
         when (json.optString("type")) {
             "session.created" -> Unit
@@ -159,42 +178,24 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
                 listener.onClosed()
             }
             "session.input_transcript.delta" -> {
-                sourceText.append(json.optString("delta"))
-                commitAtBoundary(sourceText)?.let { committed ->
-                    listener.onSourceFinal(committed)
-                } ?: listener.onSourceDraft(sourceText.toString())
+                val update = sourceText.append(json.optString("delta"))
+                update.final?.let { listener.onSourceFinal(it) }
+                if (update.draft.isNotEmpty()) listener.onSourceDraft(update.draft)
             }
             "session.output_transcript.delta" -> {
-                translationText.append(json.optString("delta"))
-                commitAtBoundary(translationText)?.let { committed ->
-                    listener.onTranslationFinal(committed)
-                } ?: listener.onTranslationDraft(translationText.toString())
+                val update = translationText.append(json.optString("delta"))
+                update.final?.let { listener.onTranslationFinal(it) }
+                if (update.draft.isNotEmpty()) listener.onTranslationDraft(update.draft)
             }
             "session.output_audio.delta" -> Unit
             "error" -> {
                 val error = json.optJSONObject("error")
                 listener.onError(
-                    error?.optString("code") ?: "provider_error",
-                    error?.optString("message") ?: "OpenAI returned an unknown error.",
+                    sanitizeErrorCode(error?.optString("code")),
+                    "服务请求失败，请检查 API Key 和服务配置。",
                 )
             }
         }
-    }
-
-    /** Splits the buffer at the last sentence delimiter, returning the committed prefix. */
-    private fun commitAtBoundary(buffer: StringBuilder): String? {
-        val text = buffer.toString()
-        var last = -1
-        for (delimiter in SENTENCE_DELIMITERS) {
-            val index = text.lastIndexOf(delimiter)
-            if (index > last) last = index
-        }
-        if (last < 0) return null
-        val committed = text.substring(0, last + 1).trim()
-        val rest = text.substring(last + 1)
-        buffer.setLength(0)
-        buffer.append(rest)
-        return committed.ifBlank { null }
     }
 
     companion object {
@@ -202,6 +203,5 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
         const val ENDPOINT = "wss://api.openai.com/v1/realtime/translations"
         const val MODEL = "gpt-realtime-translate"
         const val SOURCE_TRANSCRIPTION_MODEL = "gpt-realtime-whisper"
-        private val SENTENCE_DELIMITERS = charArrayOf('.', '!', '?', '。', '！', '？', '\n')
     }
 }

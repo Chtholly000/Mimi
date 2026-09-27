@@ -28,7 +28,7 @@ object SettingsStore {
     const val PROVIDER_DASHSCOPE = "dashscope"
     const val PROVIDER_OPENAI = "openai"
 
-    private var prefs: SharedPreferences? = null
+    @Volatile private var prefs: SharedPreferences? = null
 
     private fun get(context: Context): SharedPreferences {
         return prefs ?: synchronized(this) {
@@ -45,17 +45,67 @@ object SettingsStore {
         }
     }
 
+    /** Instrumentation terminates the process immediately; wait for its restore writes first. */
+    internal fun flushPendingWritesForTests(context: Context): Boolean = get(context).edit().commit()
+
     fun provider(context: Context): String =
         get(context).getString(KEY_PROVIDER, PROVIDER_DASHSCOPE) ?: PROVIDER_DASHSCOPE
 
     fun setProvider(context: Context, value: String) =
         get(context).edit().putString(KEY_PROVIDER, value).apply()
 
-    fun apiKey(context: Context): String =
-        get(context).getString(KEY_API_KEY, "") ?: ""
+    fun apiKey(context: Context, provider: String = provider(context)): String {
+        val prefs = get(context)
+        // Migrate the original shared key only to the provider it belonged to.
+        synchronized(this) {
+            if (prefs.contains(KEY_API_KEY)) {
+                val owner = this.provider(context)
+                val scopedKey = KEY_API_KEY + "_" + owner
+                val editor = prefs.edit()
+                if (!prefs.contains(scopedKey)) {
+                    editor.putString(scopedKey, prefs.getString(KEY_API_KEY, ""))
+                }
+                editor.remove(KEY_API_KEY).apply()
+            }
+            return prefs.getString(KEY_API_KEY + "_" + provider, "") ?: ""
+        }
+    }
 
-    fun setApiKey(context: Context, value: String) =
-        get(context).edit().putString(KEY_API_KEY, value.trim()).apply()
+    fun setApiKey(context: Context, value: String, provider: String = provider(context)) {
+        apiKey(context, provider) // Complete any legacy migration first.
+        get(context).edit().putString(KEY_API_KEY + "_" + provider, value.trim()).apply()
+    }
+
+    fun configuration(context: Context, provider: app.yuxino.mimi.android.provider.ServiceProvider =
+        app.yuxino.mimi.android.provider.ServiceProvider.fromId(provider(context))): app.yuxino.mimi.android.provider.ServiceConfiguration {
+        val values = provider.fields.associate { field -> field.id to if (field.id == "apiKey")
+            apiKey(context, provider.id) else get(context).getString("credential_${provider.id}_${field.id}", "").orEmpty() }
+        return app.yuxino.mimi.android.provider.ServiceConfiguration(provider, values, baseUrl(context, provider.id), model(context, provider.id))
+    }
+
+    fun isConfigured(context: Context, provider: app.yuxino.mimi.android.provider.ServiceProvider =
+        app.yuxino.mimi.android.provider.ServiceProvider.fromId(provider(context))): Boolean =
+        provider.configured(configuration(context, provider).credentials)
+
+    /** Save one complete profile atomically; callers preserve blank, write-only secret fields. */
+    fun saveConfiguration(context: Context, config: app.yuxino.mimi.android.provider.ServiceConfiguration): Boolean {
+        apiKey(context, config.provider.id) // Resolve legacy ownership before activating another provider.
+        val editor = get(context).edit()
+        config.provider.fields.forEach { field ->
+            val key = if (field.id == "apiKey") "${KEY_API_KEY}_${config.provider.id}" else "credential_${config.provider.id}_${field.id}"
+            editor.putString(key, config.value(field.id).trim())
+        }
+        editor.putString(KEY_BASE_URL_PREFIX + config.provider.id, config.endpoint.trim())
+        editor.putString(KEY_MODEL_PREFIX + config.provider.id, config.model.trim())
+        return editor.commit()
+    }
+
+    fun activateProvider(context: Context, provider: app.yuxino.mimi.android.provider.ServiceProvider): Boolean {
+        if (!isConfigured(context, provider)) return false
+        val (source, target) = provider.normalize(sourceLang(context), targetLang(context))
+        return get(context).edit().putString(KEY_PROVIDER, provider.id)
+            .putString(KEY_SOURCE_LANG, source).putString(KEY_TARGET_LANG, target).commit()
+    }
 
     /** Custom endpoint per provider; blank means the official endpoint. */
     fun baseUrl(context: Context, provider: String): String =
@@ -78,16 +128,19 @@ object SettingsStore {
     fun setOverlayOpacity(context: Context, value: Int) =
         get(context).edit().putInt(KEY_OVERLAY_OPACITY, value.coerceIn(20, 100)).apply()
 
-    /** Confirmed history pairs shown above the live lines; 0 hides history. */
+    /** History retention is opt-in; zero clears retained content immediately. */
     fun historyLines(context: Context): Int =
         get(context).getInt(KEY_HISTORY_LINES, 0).coerceIn(0, 6)
 
-    fun setHistoryLines(context: Context, value: Int) =
-        get(context).edit().putInt(KEY_HISTORY_LINES, value.coerceIn(0, 6)).apply()
+    fun setHistoryLines(context: Context, value: Int) {
+        val limit = value.coerceIn(0, 6)
+        get(context).edit().putInt(KEY_HISTORY_LINES, limit).apply()
+        app.yuxino.mimi.android.provider.SubtitleBus.setHistoryLimit(limit)
+    }
 
     /**
-     * Hotword pairs parsed from comma/newline-separated `term=weight` or bare
-     * `term` entries; weight defaults to 1. Only DashScope uses them.
+     * Hotword pairs parsed from comma/newline-separated `source=translation` or bare
+     * `term` entries; bare terms map to themselves. Only DashScope uses them.
      */
     fun hotwords(context: Context): Map<String, String> {
         val raw = get(context).getString(KEY_HOTWORDS, "") ?: ""
@@ -97,10 +150,13 @@ object SettingsStore {
                 if (item.isEmpty()) return@mapNotNull null
                 val idx = item.indexOf('=')
                 if (idx > 0) item.substring(0, idx).trim() to item.substring(idx + 1).trim()
-                else item to "1"
+                else item to item
             }
             .toMap()
     }
+
+    fun hotwordsText(context: Context): String =
+        get(context).getString(KEY_HOTWORDS, "") ?: ""
 
     fun setHotwords(context: Context, value: String) =
         get(context).edit().putString(KEY_HOTWORDS, value.trim()).apply()
@@ -127,13 +183,13 @@ object SettingsStore {
     val COLOR_PRESETS = listOf(0xFF4FD1C5, 0xFFFFFFFF, 0xFFFFD54F, 0xFF9AE66E, 0xFFF49AB5)
 
     fun translationColor(context: Context): Int {
-        val index = get(context).getInt(KEY_TRANSLATION_COLOR, 0)
+        val index = get(context).getInt(KEY_TRANSLATION_COLOR, 1)
             .coerceIn(0, COLOR_PRESETS.size - 1)
         return COLOR_PRESETS[index].toInt()
     }
 
     fun translationColorIndex(context: Context): Int =
-        get(context).getInt(KEY_TRANSLATION_COLOR, 0)
+        get(context).getInt(KEY_TRANSLATION_COLOR, 1)
             .coerceIn(0, COLOR_PRESETS.size - 1)
 
     fun setTranslationColorIndex(context: Context, index: Int) =
