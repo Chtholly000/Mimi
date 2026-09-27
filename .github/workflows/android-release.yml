@@ -1,28 +1,15 @@
-name: android
+name: android-release
 
 on:
-  pull_request:
-    paths:
-      - 'android/**'
-      - '.github/workflows/android.yml'
-      - '.github/workflows/android-release.yml'
   push:
-    branches: [main]
-    paths:
-      - 'android/**'
-      - '.github/workflows/android.yml'
-      - '.github/workflows/android-release.yml'
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 permissions:
-  contents: read
-
-concurrency:
-  group: android-${{ github.ref }}
-  cancel-in-progress: true
+  contents: write
 
 jobs:
-  check:
+  release-apk:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -33,11 +20,14 @@ jobs:
       - uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
       - name: Install Android SDK packages
         run: '"${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"'
-      - name: Unit tests, lint and debug APK
+      - name: Test, lint and build Android APK
         working-directory: android
         run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
-      - name: Upload Android APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mimi-android-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+      - name: Name Android APK
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "mimi_${version}_android-debug.apk"
+      - name: Attach Android APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" mimi_*_android-debug.apk --clobber
