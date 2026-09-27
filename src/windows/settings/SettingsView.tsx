@@ -22,8 +22,9 @@ import {
 } from "../../lib/types";
 import { sourceLanguageButtonTitle } from "../overlay/overlayModel";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
-import { SUBTITLE_COLORS, SUBTITLE_COLOR_OPTIONS } from "../../lib/subtitleColor";
-import type { SubtitleDisplayMode, SubtitleColor } from "../../lib/types";
+import { subtitleColorHex } from "../../lib/subtitleColor";
+import type { SubtitleDisplayMode } from "../../lib/types";
+import { SubtitleColorControl } from "./SubtitleColorControl";
 import { ServiceProfiles } from "./ServiceProfiles";
 import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
@@ -320,7 +321,7 @@ export function SettingsView() {
                     >
                       <div
                         className="subtitle-preview__text"
-                        style={{ fontSize: settings.fontSize, color: SUBTITLE_COLORS[settings.subtitleColor] }}
+                        style={{ fontSize: settings.fontSize, color: subtitleColorHex(settings.subtitleColor) }}
                       >
                         {settings.subtitleDisplayMode !== "translation" && (
                           <span style={{ color: settings.subtitleDisplayMode === "original" ? "inherit" : "rgba(255,255,255,0.72)" }}>{I18N.settings.previewOriginal}</span>
@@ -340,11 +341,9 @@ export function SettingsView() {
                         />
                       </SettingsRow>
                       <SettingsRow label={I18N.settings.subtitleColor}>
-                        <SettingsSelect
-                          label={I18N.settings.subtitleColor}
+                        <SubtitleColorControl
                           value={settings.subtitleColor}
-                          options={SUBTITLE_COLOR_OPTIONS}
-                          onChange={(value) => void saveSettings({ subtitleColor: value as SubtitleColor })}
+                          onChange={(subtitleColor) => void saveSettings({ subtitleColor })}
                         />
                       </SettingsRow>
                       <SettingsRow label={I18N.settings.fontSize}>

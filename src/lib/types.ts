@@ -75,7 +75,8 @@ export interface SettingsSnapshot {
 
 export type UiLanguage = "system" | "zh" | "en" | "ja";
 export type SubtitleDisplayMode = "translation" | "bilingual" | "original";
-export type SubtitleColor = "white" | "teal" | "yellow" | "green" | "pink";
+export type SubtitlePresetColor = "white" | "teal" | "yellow" | "green" | "pink";
+export type SubtitleColor = SubtitlePresetColor | `#${string}`;
 export type SubtitleAlignment = "left" | "center" | "right";
 
 export interface SettingsDraft {

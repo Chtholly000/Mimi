@@ -1,6 +1,6 @@
 import { memo, useEffect, useRef } from "react";
 import { hexToRgba } from "../../lib/types";
-import { SUBTITLE_COLORS } from "../../lib/subtitleColor";
+import { subtitleColorHex } from "../../lib/subtitleColor";
 import type { SubtitleAlignment, SubtitleColor } from "../../lib/types";
 import { observeTimelineResize } from "./timelineResize";
 import { rowHorizontalPadding } from "./alignment";
@@ -128,7 +128,7 @@ export const Timeline = memo(function Timeline({
                   : rowFontSize(index, rows.length, fontSize),
                 fontWeight: (isLast || isLatestPair) && !isPairedSource ? 500 : 400,
                 color: hexToRgba(
-                  SUBTITLE_COLORS[isPairedSource ? "white" : color],
+                  subtitleColorHex(isPairedSource ? "white" : color),
                   isDraftRow ? 0.72 : isLatestPair ? isPairedSource ? 0.72 : 1 : rowOpacity(distance),
                 ),
                 lineHeight: 1.45,

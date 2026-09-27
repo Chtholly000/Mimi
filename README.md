@@ -85,7 +85,7 @@ See the [contributing guide](CONTRIBUTING.md) for building and contributing, and
 
 ## Subtitle display
 
-Desktop subtitle colors match Android: choose white (default), teal, yellow, green, or pink in Settings. The preview and floating subtitles update immediately, including immersive mode. In bilingual mode, the original text stays neutral while the translation uses the selected color.
+In Settings, choose one of the five subtitle color swatches (white by default), open the desktop color picker, or enter a custom `#RRGGBB` value. Press Enter or leave the HEX field to apply a valid value; Escape restores the current color. The preview and floating subtitles update immediately, including immersive mode. In bilingual mode, the original text stays neutral while the translation uses the selected color.
 
 Choose **Translation only**, **Original + translation**, or **Original only**
 in Settings, the overlay control panel, or the tray. Switch instantly with

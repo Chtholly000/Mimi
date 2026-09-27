@@ -3,8 +3,15 @@
 Port the five Android subtitle color presets to desktop: white (default), teal,
 yellow, green, and pink, using the same RGB values and display order.
 
-Store the selected preset in Preferences and expose it through the existing
-settings snapshot/draft contract. Missing preferences default to white. Color
+Offer accessible preset swatches, the system color picker, and a HEX field.
+HEX edits commit on Enter or blur; Escape restores the current value. Incomplete
+or invalid text remains local and does not change the preview or persisted color.
+
+Store the selected preset or custom RGB color in Preferences through the existing
+settings snapshot/draft contract. Preserve existing preset strings; serialize custom
+colors as uppercase `#RRGGBB`. Validate at both the text-input and native IPC
+boundaries. Reject names, shorthand, alpha, and invalid hex. Missing preferences
+default to white. Color
 changes are presentation-only and remain available during an active session;
 they do not change provider configuration or restart audio/translation.
 

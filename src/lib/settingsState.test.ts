@@ -35,13 +35,13 @@ describe("mergeSettingsSnapshot", () => {
   it("merges runtime-safe subtitle presentation preferences", () => {
     expect(
       mergeSettingsSnapshot(SETTINGS, {
-        subtitleColor: "pink",
+        subtitleColor: "#123456",
         subtitleAlignment: "right",
         subtitleDisplayMode: "bilingual",
         subtitleBlendsWithBackground: true,
       }),
     ).toMatchObject({
-      subtitleColor: "pink",
+      subtitleColor: "#123456",
       subtitleAlignment: "right",
       subtitleDisplayMode: "bilingual",
       subtitleBlendsWithBackground: true,
