@@ -46,3 +46,8 @@ Demonstration footage is a real emulator screen recording of the installed APK.
 It uses the labeled sample only and never initiates audio capture or a provider
 session. UI tests restore changed non-secret preferences after the demonstration;
 credentials are neither edited nor exported.
+
+Instrumentation must synchronously flush restored non-secret preferences before
+finishing: Android terminates the instrumented process immediately, which can
+otherwise interrupt asynchronous preference writes. Cold-process readback is
+used to verify restoration before recording another walkthrough.

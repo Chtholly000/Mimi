@@ -45,6 +45,9 @@ object SettingsStore {
         }
     }
 
+    /** Instrumentation terminates the process immediately; wait for its restore writes first. */
+    internal fun flushPendingWritesForTests(context: Context): Boolean = get(context).edit().commit()
+
     fun provider(context: Context): String =
         get(context).getString(KEY_PROVIDER, PROVIDER_DASHSCOPE) ?: PROVIDER_DASHSCOPE
 

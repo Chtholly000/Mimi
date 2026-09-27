@@ -31,6 +31,8 @@ class UiSmokeInstrumentation : Instrumentation() {
     private var restoreTarget: String? = null
     private var restoreFont: Int? = null
     private var restoreColor: Int? = null
+    private var restoreSource: String? = null
+    private var restoreBackground: Int? = null
 
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
@@ -39,12 +41,15 @@ class UiSmokeInstrumentation : Instrumentation() {
         restoreTarget = arguments?.getString("restore_target")?.takeIf { it in listOf("zh", "en", "ja") }
         restoreFont = arguments?.getString("restore_font")?.toIntOrNull()?.takeIf { it in 12..24 }
         restoreColor = arguments?.getString("restore_color")?.toIntOrNull()?.takeIf { it in 0..4 }
+        restoreSource = arguments?.getString("restore_source")?.takeIf { it in listOf("auto", "zh", "en", "ja", "ko") }
+        restoreBackground = arguments?.getString("restore_background")?.toIntOrNull()?.takeIf { it in 0..90 }
         start()
     }
 
     override fun onStart() {
         super.onStart()
         val prefs = AppearanceSnapshot()
+        pause("Initial preferences: source=${SettingsStore.sourceLang(targetContext)}, target=${SettingsStore.targetLang(targetContext)}, font=${SettingsStore.fontSize(targetContext)}, color=${SettingsStore.translationColorIndex(targetContext)}, background=${SettingsStore.overlayBgAlpha(targetContext)}", 0)
         var failure: Throwable? = null
         try {
             check(!MimiService.isRunning) { "Stop the active session before running UI checks." }
@@ -60,6 +65,7 @@ class UiSmokeInstrumentation : Instrumentation() {
                 prefs.restore()
                 AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
             }
+            check(SettingsStore.flushPendingWritesForTests(targetContext)) { "Preference restore did not reach disk" }
         }
         finish(if (failure == null) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
             putString("stream", if (failure == null)
@@ -288,12 +294,12 @@ class UiSmokeInstrumentation : Instrumentation() {
     }
 
     private inner class AppearanceSnapshot {
-        private val source = SettingsStore.sourceLang(targetContext)
+        private val source = restoreSource ?: SettingsStore.sourceLang(targetContext)
         private val target = restoreTarget ?: SettingsStore.targetLang(targetContext)
         private val font = restoreFont ?: SettingsStore.fontSize(targetContext)
         private val color = restoreColor ?: SettingsStore.translationColorIndex(targetContext)
         private val opacity = SettingsStore.overlayOpacity(targetContext)
-        private val background = SettingsStore.overlayBgAlpha(targetContext)
+        private val background = restoreBackground ?: SettingsStore.overlayBgAlpha(targetContext)
         private val history = SettingsStore.historyLines(targetContext)
         fun restore() {
             SettingsStore.setSourceLang(targetContext, source)
