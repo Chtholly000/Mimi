@@ -12,7 +12,10 @@ pub mod macos;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+pub mod linux;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub mod unsupported;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,26 +31,29 @@ pub enum SystemAudioCaptureError {
     NoDisplay,
     #[error("The system returned an unsupported audio format.")]
     UnsupportedAudioFormat,
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     #[error("No default playback device is available for system audio capture.")]
     NoPlaybackDevice,
     #[cfg(target_os = "macos")]
     #[error("System audio capture permission was denied.")]
     PermissionDenied,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[error("System audio capture setup timed out.")]
     StartTimedOut,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[error("System audio capture start was cancelled.")]
     StartCancelled,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[error("The previous system audio capture is still stopping.")]
     PreviousCaptureStopping,
     #[error("System audio capture could not be started.")]
     NativeStartFailed,
     #[error("System audio capture could not process the device audio format.")]
     AudioProcessingFailed,
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    #[error("Connect to PulseAudio or PipeWire with PulseAudio support to capture system audio.")]
+    AudioServerUnavailable,
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     #[error("System audio capture is not supported on this platform.")]
     UnsupportedPlatform,
 }
@@ -116,7 +122,7 @@ impl CaptureFailureSender {
     }
 }
 
-/// Provider-requested wire format. Both supported backends capture system
+/// Provider-requested wire format. All supported backends capture system
 /// audio only, mix to mono, resample to this rate, and encode little-endian
 /// PCM16 before emitting buffers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,7 +146,10 @@ pub type SystemAudioCapture = macos::MacSystemAudioCapture;
 #[cfg(target_os = "windows")]
 pub type SystemAudioCapture = windows::WindowsSystemAudioCapture;
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+pub type SystemAudioCapture = linux::LinuxSystemAudioCapture;
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub type SystemAudioCapture = unsupported::UnsupportedSystemAudioCapture;
 
 impl SystemAudioCapture {
@@ -168,7 +177,12 @@ impl SystemAudioCapture {
             let _ = app;
             windows::WindowsSystemAudioCapture::new()
         }
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        #[cfg(target_os = "linux")]
+        {
+            let _ = app;
+            linux::LinuxSystemAudioCapture::new()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
         {
             let _ = app;
             unsupported::UnsupportedSystemAudioCapture::new()

@@ -1,7 +1,7 @@
 <div align="center">
   <img src="src-tauri/icons/128x128@2x.png" width="96" alt="mimi">
   <h1>mimi</h1>
-  <p>Live subtitles and translation for system audio on macOS 13+ (Apple silicon and Intel) and Windows x64.</p>
+  <p>Live subtitles and translation for system audio on macOS 13+ (Apple silicon and Intel) and Windows / Linux x86_64.</p>
   <p>
     <a href="https://mimi.yuxino.cn">Website</a>
     · <a href="https://github.com/yuxino/mimi/releases/latest"><strong>Download latest</strong></a>
@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/5acd46bb-e6b5-4bb5-b280-d70d4e0cdbb4
 - **Live subtitles and translation** — captures system output audio; source languages, targets, and quality modes vary by provider.
 - **Service configurations** — save and switch between services without repeatedly entering credentials.
 - **Subtitle overlay** — move, resize, collapse, pause, enable click-through, or use Immersive Mode.
-- **In-app updates** — check and install updates in Settings.
+- **Updates** — check and install updates in Settings on macOS, Windows installers, and Linux AppImage. Windows ZIP and Linux .deb builds link to Releases for manual updates.
 - **Session export** — opt in under Settings → Session export to retain timestamped transcripts or record system audio, then stop and export TXT / WAV. Both switches are off by default.
 - **Settings appearance** — light, dark, or follow the system.
 - **Privacy** — no mimi account, microphone, or screen capture; audio goes only to the active provider. Session content stays in memory until you explicitly export it. Turning an option off clears its buffer; starting a new session or quitting clears both. Export before doing so.
@@ -34,21 +34,23 @@ Transcript retention is limited to 10,000 confirmed pairs / 2 MiB of text and au
 
 ## Get started
 
-1. Download the macOS Apple silicon or Intel DMG, or a Windows x64 EXE, MSI, or portable ZIP from the [latest release](https://github.com/yuxino/mimi/releases/latest), or build from source.
+1. Download the macOS Apple silicon or Intel DMG, a Windows x64 EXE, MSI, or portable ZIP, or a Linux x86_64 .deb / AppImage from the [latest release](https://github.com/yuxino/mimi/releases/latest), or build from source.
 2. Open **Translation Service**, choose a provider, and save its credentials.
 3. Play something and select **Start** from the mimi menu bar/system tray icon; on first use, macOS then prompts for **Screen & System Audio Recording**.
 
 Bring your own provider API credentials; usage charges may apply. Credentials are stored in the OS credential store.
 
-For installed copies, open **Settings → General → Software Update**. Mimi downloads the
+For macOS, Windows installer copies, and Linux AppImage, open **Settings → General → Software Update**. Mimi downloads the
 update with progress, then lets you install it. Windows reopens Mimi after
-installation; macOS offers a separate **Restart and Finish Update** action.
+installation; macOS and Linux AppImage offer a separate **Restart and Finish Update** action.
 Versions older than v1.3.8 need one manual installation to enable in-app updates.
 
 ### Platform support
 
 - **macOS 13+ (Apple silicon and Intel)**: Choose the `_aarch64.dmg` for Apple silicon or `_x64.dmg` for Intel. Intel packages are available from v1.4.4; build and signing checks passed, but Intel hardware capture and permission behavior remain unverified. DMG installers are not Apple-notarized. If first launch is blocked, choose **Open Anyway** in **System Settings → Privacy & Security**. See the permission notes below when upgrading from an older build.
 - **Windows x64**: Unsigned preview EXE / MSI installers and, since v1.4.3, a portable ZIP are available; SmartScreen may warn. Extract `mimi_<version>_x64-portable.zip` and launch `mimi.exe` without installation. WebView2 must already be installed (it is normally present on Windows 11). The ZIP does not move settings, service credentials, or exported files into its folder; those remain in their existing user-selected or OS-managed locations. Update this copy by quitting Mimi and replacing it with a new ZIP from Releases. The portable build does not run the in-app installer updater.
+
+- **Linux x86_64 preview (Ubuntu 22.04+ baseline)**: Use the `.deb` package or AppImage. Requires PulseAudio or PipeWire with `pipewire-pulse`, a working default output device, and an unlocked Secret Service keyring (for example GNOME Keyring). Mimi captures only the output monitor, never the default input or microphone. Restart the session after changing output devices. X11 is recommended; Wayland compositors may restrict positioning, always-on-top, click-through, and global shortcuts. Use Settings if your desktop does not show a tray icon. Linux ARM64 packages are not provided. See [Linux setup and verification](docs/development/linux.md).
 
 ### macOS permissions after an update
 

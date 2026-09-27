@@ -333,6 +333,12 @@ pub fn app_is_portable() -> bool {
     }
 }
 
+/// Tauri can replace an AppImage, but cannot update a package-manager install.
+#[tauri::command]
+pub fn app_is_linux_package() -> bool {
+    cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_none_or(|path| path.is_empty())
+}
+
 /// Opens a single hard-coded release destination. The frontend cannot supply
 /// or widen the URL, and no generic opener permission is exposed to WebViews.
 #[tauri::command]

@@ -1157,6 +1157,28 @@ fn sync_directory(_path: &Path) {}
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated D-Bus session and unlocked test Secret Service"]
+    fn linux_secret_service_roundtrip() {
+        assert_eq!(
+            std::env::var("MIMI_TEST_SECRET_SERVICE").as_deref(),
+            Ok("1")
+        );
+        let account = format!("linux-ci-{}", uuid::Uuid::new_v4());
+        let service = "app.yuxino.mimi.test.secret-service";
+        let store = KeyringSecretStore;
+        assert_eq!(store.load(service, &account).unwrap(), None);
+        store
+            .save(service, &account, "non-secret-test-value")
+            .unwrap();
+        assert!(store.load(service, &account).unwrap().as_deref() == Some("non-secret-test-value"));
+        store.save(service, &account, "updated-test-value").unwrap();
+        assert!(store.load(service, &account).unwrap().as_deref() == Some("updated-test-value"));
+        store.delete(service, &account).unwrap();
+        assert_eq!(store.load(service, &account).unwrap(), None);
+    }
+
     #[test]
     fn legacy_preferences_keep_both_export_options_off() {
         let preferences: super::Preferences = serde_json::from_str("{}").unwrap();

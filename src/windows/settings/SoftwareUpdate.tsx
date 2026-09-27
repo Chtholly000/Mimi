@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { I18N } from "../../lib/i18n";
-import { appIsPortable, appIsUiTest, appOpenReleases, isTauri } from "../../lib/ipc";
+import { appIsLinuxPackage, appIsPortable, appIsUiTest, appOpenReleases, isTauri } from "../../lib/ipc";
 import { InlineFeedback, SettingsRow } from "./SettingsPrimitives";
 import {
   applyDownloadEvent,
@@ -26,6 +26,7 @@ export function SoftwareUpdate() {
   const [currentVersion, setCurrentVersion] = useState<string>();
   const [updater, setUpdater] = useState<SoftwareUpdater>();
   const [portable, setPortable] = useState(false);
+  const [linuxPackage, setLinuxPackage] = useState(false);
   const [openingReleases, setOpeningReleases] = useState(false);
   const [portableOpenError, setPortableOpenError] = useState(false);
   const [state, setState] = useState<UpdateCheckState>({ kind: "idle" });
@@ -38,8 +39,9 @@ export function SoftwareUpdate() {
     void createUpdaterForEnvironment()
       .then((environment) => {
         if (disposed) return;
-        if (environment.kind === "portable") {
-          setPortable(true);
+        if (environment.kind !== "installed") {
+          setPortable(environment.kind === "portable");
+          setLinuxPackage(environment.kind === "linuxPackage");
           setCurrentVersion(environment.currentVersion);
         } else {
           setUpdater(environment.updater);
@@ -147,7 +149,7 @@ export function SoftwareUpdate() {
 
   const busy = interaction.busy || !updater;
 
-  if (portable) {
+  if (portable || linuxPackage) {
     return (
       <div className="software-update">
         <SettingsRow
@@ -177,7 +179,7 @@ export function SoftwareUpdate() {
           </button>
         </SettingsRow>
         <span className="software-update-live-status" role="status">
-          {I18N.settings.portableUpdateDescription}
+          {linuxPackage ? I18N.settings.linuxPackageUpdateDescription : I18N.settings.portableUpdateDescription}
         </span>
         {portableOpenError && <span role="alert">{I18N.settings.openUpdateFailed}</span>}
       </div>
@@ -227,7 +229,7 @@ export function SoftwareUpdate() {
 }
 
 type UpdateEnvironment =
-  | { kind: "portable"; currentVersion: string }
+  | { kind: "portable" | "linuxPackage"; currentVersion: string }
   | { kind: "installed"; updater: SoftwareUpdater };
 
 export async function createUpdaterForEnvironment(): Promise<UpdateEnvironment> {
@@ -252,6 +254,13 @@ export async function createUpdaterForEnvironment(): Promise<UpdateEnvironment> 
       const { getVersion } = await import("@tauri-apps/api/app");
       return { kind: "portable", currentVersion: await getVersion() };
     }
+  }
+
+  // Native distribution detection avoids guessing from the WebView user agent.
+  // If detection fails, initialization fails closed before creating an updater.
+  if (await appIsLinuxPackage()) {
+    const { getVersion } = await import("@tauri-apps/api/app");
+    return { kind: "linuxPackage", currentVersion: await getVersion() };
   }
 
   if (await appIsUiTest()) {

@@ -72,6 +72,10 @@ export function appIsPortable(): Promise<boolean> {
   return invoke<boolean>("app_is_portable");
 }
 
+export function appIsLinuxPackage(): Promise<boolean> {
+  return invoke<boolean>("app_is_linux_package");
+}
+
 export function appOpenReleases(): Promise<void> {
   return invoke("app_open_releases");
 }

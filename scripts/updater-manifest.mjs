@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const PLATFORM_KEYS = ["darwin-aarch64", "darwin-x86_64", "windows-x86_64"];
+const PLATFORM_KEYS = ["darwin-aarch64", "darwin-x86_64", "linux-x86_64", "windows-x86_64"];
 
 export function expectedUpdaterAssets(version) {
   assertVersion(version);
@@ -19,6 +19,9 @@ export function expectedUpdaterAssets(version) {
     windowsExeSignature: `mimi_${version}_x64-setup.exe.sig`,
     windowsMsi: `mimi_${version}_x64_en-US.msi`,
     windowsMsiSignature: `mimi_${version}_x64_en-US.msi.sig`,
+    linuxDeb: `mimi_${version}_amd64.deb`,
+    linuxAppImage: `mimi_${version}_amd64.AppImage`,
+    linuxAppImageSignature: `mimi_${version}_amd64.AppImage.sig`,
   };
 }
 
@@ -61,6 +64,10 @@ export function createUpdaterManifest({
         signature: readSignature(assetDir, assets.windowsExeSignature),
         url: `${releaseBase}/${encodeURIComponent(assets.windowsExe)}`,
       },
+      "linux-x86_64": {
+        signature: readSignature(assetDir, assets.linuxAppImageSignature),
+        url: `${releaseBase}/${encodeURIComponent(assets.linuxAppImage)}`,
+      },
     },
   };
 
@@ -88,6 +95,7 @@ export function verifyUpdaterManifest({
     "darwin-aarch64": assets.macArchive,
     "darwin-x86_64": assets.intelArchive,
     "windows-x86_64": assets.windowsExe,
+    "linux-x86_64": assets.linuxAppImage,
   };
   const urls = new Set();
   for (const platform of PLATFORM_KEYS) {

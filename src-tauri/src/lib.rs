@@ -266,6 +266,7 @@ pub fn run() {
             commands::settings_get,
             commands::app_is_ui_test,
             commands::app_is_portable,
+            commands::app_is_linux_package,
             commands::app_open_releases,
             commands::settings_save,
             commands::profile_create,
@@ -435,7 +436,15 @@ fn system_language_code() -> Option<String> {
     String::from_utf16(&buffer[..usize::try_from(length - 1).ok()?]).ok()
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn system_language_code() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find(|value| !value.is_empty())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn system_language_code() -> Option<String> {
     None
 }
@@ -444,7 +453,7 @@ fn system_language_code() -> Option<String> {
 /// Copy follows the saved UI override, falling back to the system language.
 fn tray_icon_bytes(is_windows: bool) -> &'static [u8] {
     if is_windows {
-        // Windows does not implement macOS template-image recolouring. Use
+        // Other desktops do not implement macOS template-image recolouring. Use
         // the branded full-colour icon so it remains visible on dark taskbars.
         include_bytes!("../icons/32x32.png")
     } else {
@@ -495,7 +504,7 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     // the native menu-bar resolution — crisp at any size and adapting to the
     // light/dark menu bar — unlike the character squircle, whose fine detail
     // turned into a blurry blob at ~18pt.
-    let icon = tauri::image::Image::from_bytes(tray_icon_bytes(cfg!(target_os = "windows")))
+    let icon = tauri::image::Image::from_bytes(tray_icon_bytes(!cfg!(target_os = "macos")))
         .ok()
         .or_else(|| app.default_window_icon().cloned())
         .expect("the tray icon is bundled");

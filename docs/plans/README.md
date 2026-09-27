@@ -6,6 +6,9 @@ Git history, not on the active documentation path.
 
 ## Architecture and security
 
+- `2026-09-27-linux-support-design.md` — output-monitor capture, Secret Service,
+  Linux desktop limits, packages, and signed AppImage updates.
+
 - `2026-07-22-stable-local-signing-design.md` — stable development identity,
   canonical install path, and privacy-permission continuity.
 - `2026-08-27-developer-installable-release-design.md` — credential-free,
