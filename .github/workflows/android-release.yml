@@ -82,4 +82,14 @@ jobs:
           gh release create "$tag" android/release/*.apk android/release/SHA256SUMS.txt \
             --target "$GITHUB_SHA" --draft --title "mimi ${tag}" \
             --notes-file android/RELEASE_NOTES.md
+          # Verify the uploaded bytes before immutable publication.
+          gh release view "$tag" --json assets > "$RUNNER_TEMP/android-assets.json"
+          python3 - "$RUNNER_TEMP/android-assets.json" <<'PY'
+          import hashlib, json, pathlib, sys
+          local = {p.name: 'sha256:' + hashlib.sha256(p.read_bytes()).hexdigest()
+                   for p in pathlib.Path('android/release').iterdir() if p.is_file()}
+          remote = {a['name']: a['digest'] for a in json.load(open(sys.argv[1]))['assets']}
+          if local != remote:
+              raise SystemExit('Uploaded Android assets do not match the verified build.')
+          PY
           gh release edit "$tag" --draft=false --latest=false

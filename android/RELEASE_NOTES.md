@@ -1,6 +1,6 @@
 ## English
 
-- Android 1.5.0: release APK with debugging disabled and a fixed release signing identity.
+- Android 1.5.1: the first public Android release APK, with debugging disabled and a fixed release signing identity.
 - Requires Android 10 or later and credentials for a supported translation service.
 - Captures system playback only. Apps that prohibit playback capture and DRM-protected audio cannot be captured.
 - Android is distributed separately from the desktop release. Desktop packages and the updater are unchanged.
@@ -9,7 +9,7 @@
 
 ## 中文
 
-- Android 1.5.0：关闭调试功能，使用固定发布签名的 release APK。
+- Android 1.5.1：首个公开发布的 Android release APK，关闭调试功能，使用固定发布签名。
 - 需要 Android 10 或更新版本，以及受支持翻译服务的凭证。
 - 仅采集系统播放声音；无法采集禁止播放捕获的应用和受 DRM 保护的音频。
 - Android 独立发布，桌面端安装包及更新通道保持不变。

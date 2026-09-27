@@ -1,7 +1,9 @@
 # mimi for Android
 
-Native Android development port of [mimi](../README.md) — live subtitles and
+Native Android version of [mimi](../README.md) — live subtitles and
 translation for system audio. Pure Kotlin (no Tauri), single module.
+
+[Download Android 1.5.1](https://github.com/yuxino/mimi/releases/tag/android-v1.5.1)
 
 > Android is packaged separately from mimi desktop releases. It reads the
 > same provider wire protocols as the desktop app (`src-tauri/src/core/protocols`)
