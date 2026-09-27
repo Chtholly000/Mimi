@@ -184,6 +184,8 @@ class MainActivity : AppCompatActivity() {
         }
         dialog.setContentView(content)
         dialog.show()
+        dialog.findViewById<View>(com.google.android.material.R.id.design_bottom_sheet)
+            ?.backgroundTintList = ContextCompat.getColorStateList(this, R.color.mimi_bg)
     }
 
     private fun saveLanguage(source: Boolean, code: String) {
