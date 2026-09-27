@@ -53,6 +53,7 @@ tempfile = "3"
 minisign-verify = "0.2.5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
 screen-capture-kit = "0.7.1"
 core-media = "0.8"
 core-graphics2 = { version = "0.6", features = ["display"] }

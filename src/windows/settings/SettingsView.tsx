@@ -507,7 +507,6 @@ export function SettingsView() {
                       void saveSettings({ uiLanguage: language })
                         .then(() => {
                           setStoredUiLanguage(language);
-                          window.location.reload();
                         })
                         .catch(() => {});
                     }}

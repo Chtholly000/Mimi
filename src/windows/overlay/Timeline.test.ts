@@ -3,11 +3,11 @@ import { rowHorizontalPadding } from "./alignment";
 import { emptyStateDensity, timelineClassName } from "./overlayModel";
 
 describe("subtitle row alignment", () => {
-  it("reserves the timestamp gutter on the aligned edge", () => {
+  it("keeps the timestamp gutter on the left for right-aligned wrapped text", () => {
     expect(rowHorizontalPadding("left", "left", false)).toBe(57);
     expect(rowHorizontalPadding("left", "right", false)).toBe(18);
-    expect(rowHorizontalPadding("right", "left", false)).toBe(18);
-    expect(rowHorizontalPadding("right", "right", false)).toBe(57);
+    expect(rowHorizontalPadding("right", "left", false)).toBe(57);
+    expect(rowHorizontalPadding("right", "right", false)).toBe(18);
   });
 
   it("keeps centered and background-blended subtitles symmetric", () => {
