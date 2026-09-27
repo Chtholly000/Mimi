@@ -10,6 +10,8 @@ import {
   CircleCheck,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   Cloud,
   Eraser,
@@ -44,6 +46,8 @@ export type IconName =
   | "play"
   | "stop"
   | "chevron-up"
+  | "chevron-left"
+  | "chevron-right"
   | "chevron-down"
   | "eraser"
   | "gear"
@@ -74,6 +78,8 @@ const ICONS: Record<IconName, LucideIcon> = {
   stop: Square,
   "chevron-up": ChevronUp,
   "chevron-down": ChevronDown,
+  "chevron-left": ChevronLeft,
+  "chevron-right": ChevronRight,
   eraser: Eraser,
   gear: Settings,
   sparkles: Sparkles,
