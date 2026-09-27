@@ -2,7 +2,9 @@
 //! documented in docs/plans/2026-08-22-multi-provider-professional-settings-design.md.
 
 use crate::core::credentials::ProviderCredentials;
-use crate::core::models::{SourceLanguage, SubtitleDisplayMode, TargetLanguage, TranslationMode};
+use crate::core::models::{
+    SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
+};
 use crate::core::provider::{ProviderKind, ServiceProfile};
 use crate::session_manager::{SessionManager, SessionStateEvent};
 use crate::settings_store::{CredentialState, SettingsStore, SubtitleAlignment};
@@ -70,6 +72,7 @@ pub struct SettingsSnapshotPayload {
     pub target_language: TargetLanguage,
     pub translation_mode: TranslationMode,
     pub font_size: f64,
+    pub subtitle_color: SubtitleColor,
     pub subtitle_alignment: SubtitleAlignment,
     pub subtitle_display_mode: SubtitleDisplayMode,
     pub subtitle_blends_with_background: bool,
@@ -168,6 +171,7 @@ mod tests {
             target_language: TargetLanguage::SimplifiedChinese,
             translation_mode: TranslationMode::HighQuality,
             font_size: 18.0,
+            subtitle_color: SubtitleColor::White,
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
             subtitle_blends_with_background: false,
@@ -181,6 +185,7 @@ mod tests {
         assert_eq!(json["profiles"][0]["provider"], "alibabaCloud");
         assert_eq!(json["profiles"][0]["credentialState"], "present");
         assert_eq!(json["subtitleAlignment"], "center");
+        assert_eq!(json["subtitleColor"], "white");
         assert_eq!(json["subtitleDisplayMode"], "translation");
         assert_eq!(json["subtitleBlendsWithBackground"], false);
         assert!(json.get("apiKey").is_none());
@@ -223,6 +228,7 @@ mod tests {
 
         let visual = SettingsDraft {
             font_size: Some(19.0),
+            subtitle_color: Some(SubtitleColor::Yellow),
             subtitle_alignment: Some(SubtitleAlignment::Right),
             subtitle_display_mode: Some(SubtitleDisplayMode::Bilingual),
             subtitle_blends_with_background: Some(true),
@@ -279,6 +285,7 @@ impl SettingsSnapshotPayload {
                     target_language: prefs.target_language,
                     translation_mode: prefs.translation_mode,
                     font_size: prefs.font_size,
+                    subtitle_color: prefs.subtitle_color,
                     subtitle_alignment: prefs.subtitle_alignment,
                     subtitle_display_mode: prefs.subtitle_display_mode,
                     subtitle_blends_with_background: prefs.subtitle_blends_with_background,
@@ -304,6 +311,7 @@ impl SettingsSnapshotPayload {
             target_language: prefs.target_language,
             translation_mode: prefs.translation_mode,
             font_size: prefs.font_size,
+            subtitle_color: prefs.subtitle_color,
             subtitle_alignment: prefs.subtitle_alignment,
             subtitle_display_mode: prefs.subtitle_display_mode,
             subtitle_blends_with_background: prefs.subtitle_blends_with_background,
@@ -322,6 +330,7 @@ pub struct SettingsDraft {
     pub target_language: Option<TargetLanguage>,
     pub translation_mode: Option<TranslationMode>,
     pub font_size: Option<f64>,
+    pub subtitle_color: Option<SubtitleColor>,
     pub subtitle_alignment: Option<SubtitleAlignment>,
     pub subtitle_display_mode: Option<SubtitleDisplayMode>,
     pub subtitle_blends_with_background: Option<bool>,
@@ -458,6 +467,7 @@ fn apply_settings_draft_guarded(
         || draft.target_language.is_some()
         || draft.translation_mode.is_some()
         || draft.font_size.is_some()
+        || draft.subtitle_color.is_some()
         || draft.subtitle_alignment.is_some()
         || draft.subtitle_display_mode.is_some()
         || draft.subtitle_blends_with_background.is_some()
@@ -492,6 +502,9 @@ fn apply_settings_draft_guarded(
             }
             if let Some(mode) = draft.subtitle_display_mode {
                 prefs.subtitle_display_mode = mode;
+            }
+            if let Some(color) = draft.subtitle_color {
+                prefs.subtitle_color = color;
             }
             if let Some(alignment) = draft.subtitle_alignment {
                 prefs.subtitle_alignment = alignment;

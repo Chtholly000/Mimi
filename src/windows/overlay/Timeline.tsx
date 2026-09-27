@@ -1,6 +1,7 @@
 import { memo, useEffect, useRef } from "react";
 import { hexToRgba } from "../../lib/types";
-import type { SubtitleAlignment } from "../../lib/types";
+import { SUBTITLE_COLORS } from "../../lib/subtitleColor";
+import type { SubtitleAlignment, SubtitleColor } from "../../lib/types";
 import { observeTimelineResize } from "./timelineResize";
 import { rowHorizontalPadding } from "./alignment";
 import { timelineClassName, type SubtitleRow } from "./overlayModel";
@@ -13,6 +14,7 @@ interface TimelineProps {
   rows: SubtitleRow[];
   fontSize: number;
   alignment: SubtitleAlignment;
+  color: SubtitleColor;
   blendsWithBackground?: boolean;
   /** True when the trailing row(s) are the live draft preview. Draft rows
    * (id prefix `draft-`) render dimmed with a trailing ellipsis so the
@@ -28,6 +30,7 @@ export const Timeline = memo(function Timeline({
   rows,
   fontSize,
   alignment,
+  color,
   blendsWithBackground = false,
   draft = false,
 }: TimelineProps) {
@@ -124,9 +127,10 @@ export const Timeline = memo(function Timeline({
                   ? isPairedSource ? Math.max(12, fontSize * 0.82) : fontSize
                   : rowFontSize(index, rows.length, fontSize),
                 fontWeight: (isLast || isLatestPair) && !isPairedSource ? 500 : 400,
-                color: isDraftRow
-                  ? "rgba(255,255,255,0.72)"
-                  : `rgba(255,255,255,${isLatestPair ? isPairedSource ? 0.72 : 1 : rowOpacity(distance)})`,
+                color: hexToRgba(
+                  SUBTITLE_COLORS[isPairedSource ? "white" : color],
+                  isDraftRow ? 0.72 : isLatestPair ? isPairedSource ? 0.72 : 1 : rowOpacity(distance),
+                ),
                 lineHeight: 1.45,
                 overflowWrap: "break-word",
                 textShadow: blendsWithBackground

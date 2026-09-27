@@ -2,6 +2,18 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Desktop subtitle palette shared with Android. Presentation only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SubtitleColor {
+    #[default]
+    White,
+    Teal,
+    Yellow,
+    Green,
+    Pink,
+}
+
 /// Presentation only; this never changes provider recognition or translation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,7 +36,24 @@ impl SubtitleDisplayMode {
 
 #[cfg(test)]
 mod display_mode_tests {
-    use super::SubtitleDisplayMode;
+    use super::{SubtitleColor, SubtitleDisplayMode};
+
+    #[test]
+    fn subtitle_palette_has_stable_wire_values() {
+        for (color, name) in [
+            (SubtitleColor::White, "white"),
+            (SubtitleColor::Teal, "teal"),
+            (SubtitleColor::Yellow, "yellow"),
+            (SubtitleColor::Green, "green"),
+            (SubtitleColor::Pink, "pink"),
+        ] {
+            assert_eq!(serde_json::to_value(color).unwrap(), name);
+            assert_eq!(
+                serde_json::from_value::<SubtitleColor>(name.into()).unwrap(),
+                color
+            );
+        }
+    }
 
     #[test]
     fn display_modes_round_trip_and_cycle_in_presentation_order() {
