@@ -5,6 +5,7 @@ mod audio;
 mod clients;
 mod commands;
 mod core;
+mod desktop_shortcuts;
 #[cfg(target_os = "linux")]
 mod linux_startup;
 mod session_export;
@@ -59,13 +60,22 @@ pub fn run() {
     // other plugin, renderer, tray, or settings store is initialized.
     #[cfg(target_os = "windows")]
     let builder = builder.plugin(windows_startup::single_instance_plugin());
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        desktop_shortcuts::dispatch_linux_launch(app, &args);
+    }));
     let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    // X11 grabs cannot act as desktop shortcuts in a Wayland session.
+    let builder = if desktop_shortcuts::uses_system_shortcuts() {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_global_shortcut::Builder::new().build())
+    };
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
 
@@ -143,6 +153,13 @@ pub fn run() {
 
             setup_tray(&app_handle)?;
             setup_global_shortcuts(&app_handle, Arc::clone(&session))?;
+            #[cfg(target_os = "linux")]
+            {
+                let args = std::env::args().collect::<Vec<_>>();
+                if desktop_shortcuts::DesktopAction::from_args(&args).is_some() {
+                    desktop_shortcuts::dispatch_linux_launch(&app_handle, &args);
+                }
+            }
 
             // Test-only probe: `SessionManager` handles UI-test starts as a
             // synthetic local state transition. It never reads the keychain,
@@ -285,6 +302,7 @@ pub fn run() {
             commands::app_ui_test_frontend_ready,
             commands::app_is_portable,
             commands::app_is_linux_package,
+            desktop_shortcuts::app_desktop_shortcut_commands,
             commands::app_open_releases,
             commands::settings_save,
             commands::profile_create,
@@ -745,6 +763,11 @@ fn setup_global_shortcuts(
     use tauri_plugin_global_shortcut::{
         Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
     };
+
+    if desktop_shortcuts::uses_system_shortcuts() {
+        tracing::info!("Wayland shortcuts are configured in desktop settings");
+        return Ok(());
+    }
 
     // macOS: Cmd+Shift (SUPER is the Command key); Windows: Ctrl+Shift.
     #[cfg(target_os = "macos")]

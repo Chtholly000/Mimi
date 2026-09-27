@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useRef, useState, useSyncExternalStore } fro
 import { effectiveUiLanguage, subscribeUiLanguage } from "./lib/i18n";
 import { appUiTestFrontendReady, isTauri } from "./lib/ipc";
 import { selectSessionStatusKind, useStore } from "./lib/store";
+import { useDesktopShortcuts } from "./lib/useDesktopShortcuts";
 
 const OverlayWindow = lazy(() =>
   import("./windows/overlay/OverlayWindow").then((module) => ({
@@ -64,6 +65,7 @@ export default function App() {
 
 /** Mount inside Suspense so a failed lazy import cannot pass native smoke. */
 function FrontendReadySignal({ label }: { label: WindowLabel }) {
+  const { commands: desktopShortcuts } = useDesktopShortcuts();
   const status = useStore(selectSessionStatusKind);
   const reported = useRef(false);
 
@@ -71,6 +73,7 @@ function FrontendReadySignal({ label }: { label: WindowLabel }) {
     if (
       !isTauri ||
       reported.current ||
+      desktopShortcuts === undefined ||
       status !== "listening" ||
       (label !== "settings" && label !== "overlay")
     ) {
@@ -78,6 +81,8 @@ function FrontendReadySignal({ label }: { label: WindowLabel }) {
     }
 
     // Wait for the committed window to paint with the native session snapshot.
+    // Shortcut hydration must succeed too, so missing IPC capabilities fail
+    // installed-app smoke instead of silently hiding all shortcut hints.
     // The backend writes a content-free marker only in explicit UI-test mode.
     let secondFrame = 0;
     const firstFrame = window.requestAnimationFrame(() => {
@@ -93,7 +98,7 @@ function FrontendReadySignal({ label }: { label: WindowLabel }) {
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
     };
-  }, [label, status]);
+  }, [label, status, desktopShortcuts]);
 
   return null;
 }

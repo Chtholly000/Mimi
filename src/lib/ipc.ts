@@ -240,3 +240,13 @@ export function sessionExport(kind: SessionExportKind): Promise<boolean> {
 export function sessionArchiveClear(): Promise<void> {
   return invoke("session_archive_clear");
 }
+
+export interface DesktopShortcutCommands {
+  toggleSession: string;
+  toggleImmersive: string;
+  cycleSubtitleDisplay: string;
+}
+
+export function appDesktopShortcutCommands(): Promise<DesktopShortcutCommands | null> {
+  return invoke("app_desktop_shortcut_commands");
+}

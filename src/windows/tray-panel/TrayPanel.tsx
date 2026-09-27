@@ -1,3 +1,4 @@
+import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -53,6 +54,7 @@ type PendingAction =
 
 /** Compact cross-platform command center shown from the tray icon. */
 export function TrayPanel() {
+  const { nativeShortcuts } = useDesktopShortcuts();
   // Keep streaming subtitle updates from repainting this hidden native window:
   // each selector returns only the primitive state rendered by the tray.
   const sessionStatusKind = useStore(selectSessionStatusKind);
@@ -265,7 +267,7 @@ export function TrayPanel() {
 
         <span className="tray-card__divider" />
 
-        <div className="tray-setting-row tray-setting-row--display" title={subtitleDisplayShortcut()}>
+        <div className="tray-setting-row tray-setting-row--display" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>
           <span className="tray-setting-row__icon" aria-hidden="true"><Icon name="languages" /></span>
           <span className="tray-setting-row__copy"><span>{I18N.settings.subtitleDisplay}</span></span>
           <span className="tray-select-wrap">

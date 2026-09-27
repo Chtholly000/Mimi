@@ -1,3 +1,4 @@
+import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
@@ -64,6 +65,7 @@ export function OverlayControlPanel({
   onSetOverlayLocked,
   onShowSettings,
 }: OverlayControlPanelProps) {
+  const { nativeShortcuts } = useDesktopShortcuts();
   const panelRef = useRef<HTMLElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const selectedSourceRef = useRef<HTMLButtonElement>(null);
@@ -155,7 +157,7 @@ export function OverlayControlPanel({
         />
 
         <div className="overlay-control-display">
-          <span>{I18N.settings.subtitleDisplay}<kbd>{subtitleDisplayShortcut()}</kbd></span>
+          <span>{I18N.settings.subtitleDisplay}{nativeShortcuts && <kbd>{subtitleDisplayShortcut()}</kbd>}</span>
           <Select label={I18N.settings.subtitleDisplay} value={settings.subtitleDisplayMode}
             options={SUBTITLE_DISPLAY_OPTIONS} disabled={pendingAction !== null}
             onChange={(value) => performAction("display", () => onSetSubtitleDisplayMode(value as SubtitleDisplayMode), false)} />
