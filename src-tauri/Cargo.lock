@@ -2566,6 +2566,7 @@ dependencies = [
  "cpal",
  "dispatch2",
  "futures-util",
+ "gtk",
  "keyring",
  "keyring-core",
  "libpulse-binding",

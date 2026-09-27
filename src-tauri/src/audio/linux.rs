@@ -12,6 +12,7 @@ use crate::audio::send_pipeline::{AudioIngress, AudioIngressError};
 use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureError, SystemAudioCaptureFailure,
 };
+use crate::core::diagnostics::milliseconds;
 use crate::pipeline_log;
 use libpulse_binding as pulse;
 use pulse::callbacks::ListResult;
@@ -301,8 +302,22 @@ impl PulseCapture {
         // Each capture owns its partial frame. Stop/cancellation drops less
         // than 20 ms without waiting, padding, or carrying it into a restart.
         let mut frames = PcmFrameAssembler::new(self.chunk_bytes, self.max_buffer_bytes);
+        let mut last_poll_finished_at = Instant::now();
         while !control.cancelled.load(Ordering::SeqCst) && !failure_tx.has_reported() {
-            if !matches!(self.mainloop.iterate(false), IterateResult::Success(_))
+            let poll_started_at = Instant::now();
+            let poll_result = self.mainloop.iterate(false);
+            let poll_finished_at = Instant::now();
+            let gap_ms = milliseconds(last_poll_finished_at, poll_started_at);
+            let iterate_ms = milliseconds(poll_started_at, poll_finished_at);
+            last_poll_finished_at = poll_finished_at;
+            if gap_ms > 100 || iterate_ms > 100 {
+                pipeline_log!(
+                    "capture native poll gapMs={} iterateMs={}",
+                    gap_ms,
+                    iterate_ms
+                );
+            }
+            if !matches!(poll_result, IterateResult::Success(_))
                 || self.context.get_state() != ContextState::Ready
                 || self.stream.get_state() != StreamState::Ready
                 || self.stream.get_device_index() != Some(self.monitor_index)

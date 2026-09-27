@@ -89,6 +89,72 @@ if [[ "$ready" != 1 ]]; then
 fi
 echo "Linux UI smoke passed: both frontends rendered; windows visible; synthetic session listening."
 
+# Verify native attachment as well as rendering: no invisible click-catching
+# area below the island, and no control window stranded at the desktop origin.
+overlay_window="$(xdotool search --onlyvisible --name '^mimi Subtitles$' | head -1)"
+control_window=""
+for _ in {1..20}; do
+  control_window="$(xdotool search --onlyvisible --name '^mimi$' | head -1 || true)"
+  [[ -n "$control_window" ]] && break
+  sleep 0.25
+done
+[[ -n "$control_window" ]] || { echo "Overlay control was not mapped." >&2; exit 1; }
+window_geometry() {
+  xwininfo -id "$1" | awk '
+    /Absolute upper-left X:/ { x=$4 }
+    /Absolute upper-left Y:/ { y=$4 }
+    /Width:/ { w=$2 }
+    /Height:/ { h=$2 }
+    END { print x, y, w, h }'
+}
+window_is_visible() {
+  xwininfo -id "$1" | grep -q 'Map State: IsViewable'
+}
+assert_control_attached() {
+  local ox oy ow oh cx cy cw ch
+  for _ in {1..20}; do
+    read -r ox oy ow oh < <(window_geometry "$overlay_window")
+    read -r cx cy cw ch < <(window_geometry "$control_window")
+    if [[ "$cx" == "$((ox + 18))" && "$cy" == "$((oy + 16))" \
+      && "$cw" == 236 && "$ch" == 30 \
+      && ( -z "${1:-}" || ( "$ox" == "$1" && "$oy" == "$2" ) ) ]] \
+      && window_is_visible "$overlay_window" && window_is_visible "$control_window"; then return; fi
+    sleep 0.25
+  done
+  echo "Overlay control geometry failed: parent=$ox,$oy,$ow,$oh control=$cx,$cy,$cw,$ch" >&2
+  exit 1
+}
+assert_control_attached
+wmctrl -ir "$overlay_window" -e 0,120,140,-1,-1
+assert_control_attached 120 140
+echo "Linux overlay geometry passed: initial attachment, exact island bounds, native move following."
+
+# Leave a geometry debounce pending, then stop before it fires. Neither that
+# callback nor a later mapping event may resurrect a stopped control window.
+wmctrl -ir "$overlay_window" -e 0,160,160,-1,-1
+xdotool key --clearmodifiers ctrl+shift+space
+for _ in {1..40}; do
+  [[ "$(cat "$MIMI_UI_TEST_SESSION_STATE_FILE")" == idle ]] && break
+  sleep 0.05
+done
+[[ "$(cat "$MIMI_UI_TEST_SESSION_STATE_FILE")" == idle ]] || {
+  echo "Linux session shortcut did not stop the UI-test session." >&2; exit 1;
+}
+sleep 0.75
+if xdotool search --onlyvisible --name '^mimi$' >/dev/null; then
+  echo "A stopped overlay control became visible again." >&2; exit 1
+fi
+xdotool key --clearmodifiers ctrl+shift+space
+for _ in {1..40}; do
+  [[ "$(cat "$MIMI_UI_TEST_SESSION_STATE_FILE")" == listening ]] && break
+  sleep 0.05
+done
+[[ "$(cat "$MIMI_UI_TEST_SESSION_STATE_FILE")" == listening ]] || {
+  echo "Linux session shortcut did not restart the UI-test session." >&2; exit 1;
+}
+assert_control_attached
+echo "Linux overlay lifecycle passed: move-stop stays hidden; restart reattaches."
+
 # A desktop without a tray must still have a reliable exit path. Closing
 # Settings exits on Linux; minimizing it is the keep-running action.
 settings_window="$(xdotool search --onlyvisible --name '^mimi UI test settings$' | head -1)"

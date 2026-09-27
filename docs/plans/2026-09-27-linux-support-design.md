@@ -24,6 +24,10 @@ and drop that tail on stop/cancellation rather than padding or waiting. Keep
 the 250 ms native-fragment limit and distinguish oversized-fragment diagnostics. Capture remains pinned to that output;
 users restart after changing devices. Pause stops capture and resume starts a fresh worker; stop cancels the
 worker, and fatal errors use the existing sanitized capture-failure channel.
+Content-free slow-path diagnostics separate native polling gaps, send-lock
+waits, socket-send waits, and time since the last completed send when the
+bounded queue fills. Keep timing separate from log-write overhead and preserve
+the existing queue and recovery policy while diagnosing VM/network stalls.
 
 ## Credentials and desktop
 
@@ -44,6 +48,15 @@ unreachable process; minimize Settings to keep subtitles running. Recommend X11;
 for positioning, always-on-top, click-through, and global shortcuts on Wayland.
 
 ## Linux presentation
+
+Read mapped overlay geometry directly on GTK's main thread. The initial
+ConfigureNotify cache can still report `(0, 0)` after showing a hidden window,
+which detaches the language island at the desktop origin. Keep controls hidden
+until the parent maps, then follow its map event without a timer. Explicitly
+size the non-resizable GTK control window to its visible island/panel bounds;
+the default natural height otherwise leaves a transparent click-catching area.
+Reuse the already-locked GTK crate for these native operations. Native smoke
+checks first-map attachment, 236-by-30 island bounds, and movement following.
 
 Prefer a consistent installed Noto/desktop UI font across WebKitGTK text and
 form controls. Allow full language labels and credential state to wrap within

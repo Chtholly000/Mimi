@@ -4,7 +4,7 @@
 use crate::core::diagnostics::milliseconds;
 use crate::pipeline_log;
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
@@ -41,6 +41,7 @@ pub struct AudioIngress {
     tx: mpsc::Sender<Vec<u8>>,
     failed: Arc<AtomicBool>,
     accepting: Arc<AtomicBool>,
+    progress: Arc<SendProgress>,
 }
 
 impl AudioIngress {
@@ -53,6 +54,13 @@ impl AudioIngress {
             Err(mpsc::error::TrySendError::Full(_)) => {
                 self.accepting.store(false, Ordering::SeqCst);
                 if !self.failed.swap(true, Ordering::SeqCst) {
+                    let completed_ago_ms = self.progress.completed_ago_ms(Instant::now());
+                    pipeline_log!(
+                        "audio queue full capacity={} hasCompletedSend={} lastSendCompletedAgoMs={}",
+                        QUEUE_CAPACITY,
+                        completed_ago_ms.is_some(),
+                        completed_ago_ms.unwrap_or(0)
+                    );
                     Err(AudioIngressError::Backpressure)
                 } else {
                     Err(AudioIngressError::Closed)
@@ -71,9 +79,40 @@ pub struct AudioSendPipeline {
     tx: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
     failed: Arc<AtomicBool>,
     accepting: Arc<AtomicBool>,
+    progress: Arc<SendProgress>,
     finish_tx: Mutex<Option<oneshot::Sender<()>>>,
     worker: Mutex<Option<AbortOnDropTask>>,
     abort_worker: tokio::task::AbortHandle,
+}
+
+// A monotonic timestamp shared with the native ingress without introducing
+// a lock. Zero means no send has completed; other values encode elapsed+1.
+struct SendProgress {
+    epoch: Instant,
+    last_completed_ms: AtomicU64,
+}
+
+impl SendProgress {
+    fn new(epoch: Instant) -> Self {
+        Self {
+            epoch,
+            last_completed_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn completed(&self, at: Instant) {
+        self.last_completed_ms.store(
+            milliseconds(self.epoch, at).saturating_add(1),
+            Ordering::Release,
+        );
+    }
+
+    fn completed_ago_ms(&self, now: Instant) -> Option<u64> {
+        self.last_completed_ms
+            .load(Ordering::Acquire)
+            .checked_sub(1)
+            .map(|completed| milliseconds(self.epoch, now).saturating_sub(completed))
+    }
 }
 
 // A cancelled finish future must not detach a worker that still owns queued
@@ -102,6 +141,8 @@ impl AudioSendPipeline {
         let failed_worker = failed.clone();
         let accepting = Arc::new(AtomicBool::new(true));
         let accepting_worker = Arc::clone(&accepting);
+        let progress = Arc::new(SendProgress::new(Instant::now()));
+        let progress_worker = Arc::clone(&progress);
         let on_error = Arc::new(on_error);
         let on_error_worker = on_error.clone();
 
@@ -126,12 +167,17 @@ impl AudioSendPipeline {
                         None => return true,
                     },
                 };
-                let started_at = Instant::now();
                 let bytes = data.len();
                 peak_audio_sample = peak_audio_sample.max(peak_pcm16_sample(&data));
+                let started_at = Instant::now();
                 let result = send_audio(data).await;
+                // Freeze the measurement before level/counter diagnostics:
+                // a slow log writer is not part of the send operation.
+                let finished_at = Instant::now();
+                let send_ms = milliseconds(started_at, finished_at);
                 match result {
                     Ok(()) => {
+                        progress_worker.completed(finished_at);
                         sent_buffer_count += 1;
                         sent_byte_count += bytes as u64;
                         if sent_buffer_count == 1 || sent_buffer_count.is_multiple_of(100) {
@@ -143,7 +189,6 @@ impl AudioSendPipeline {
                             );
                             peak_audio_sample = 0;
                         }
-                        let send_ms = milliseconds(started_at, Instant::now());
                         if send_ms > 200 {
                             pipeline_log!("audio send blockedMs={} bytes={}", send_ms, bytes);
                         }
@@ -165,6 +210,7 @@ impl AudioSendPipeline {
             tx: Mutex::new(Some(tx)),
             failed,
             accepting,
+            progress,
             finish_tx: Mutex::new(Some(finish_tx)),
             worker: Mutex::new(Some(AbortOnDropTask(worker))),
             abort_worker,
@@ -176,6 +222,7 @@ impl AudioSendPipeline {
             tx: tx.clone(),
             failed: Arc::clone(&self.failed),
             accepting: Arc::clone(&self.accepting),
+            progress: Arc::clone(&self.progress),
         })
     }
 
@@ -239,6 +286,27 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
+    #[test]
+    fn send_progress_distinguishes_no_completion_and_tracks_the_latest_success() {
+        let start = Instant::now();
+        let progress = SendProgress::new(start);
+        assert_eq!(
+            progress.completed_ago_ms(start + Duration::from_secs(1)),
+            None
+        );
+        // Completion in the epoch's first millisecond must not look absent.
+        progress.completed(start);
+        assert_eq!(
+            progress.completed_ago_ms(start + Duration::from_millis(450)),
+            Some(450)
+        );
+        progress.completed(start + Duration::from_millis(440));
+        assert_eq!(
+            progress.completed_ago_ms(start + Duration::from_millis(450)),
+            Some(10)
+        );
+    }
+
     #[tokio::test]
     async fn graceful_finish_drains_buffers_already_in_the_queue() {
         let sent = Arc::new(AtomicUsize::new(0));
@@ -260,6 +328,7 @@ mod tests {
         // capture has stopped; that must not keep the receiver open.
         assert!(pipeline.finish(Duration::from_millis(200)).await);
         assert_eq!(sent.load(Ordering::SeqCst), 2);
+        assert!(ingress.progress.completed_ago_ms(Instant::now()).is_some());
         assert_eq!(ingress.try_send(vec![3, 0]), Err(AudioIngressError::Closed));
     }
 
@@ -269,6 +338,7 @@ mod tests {
         pipeline.ingress().unwrap().try_send(vec![0, 0]).unwrap();
 
         assert!(!pipeline.finish(Duration::from_millis(200)).await);
+        assert_eq!(pipeline.progress.completed_ago_ms(Instant::now()), None);
     }
 
     struct ReleaseSignal(Option<oneshot::Sender<()>>);
@@ -386,6 +456,7 @@ mod tests {
         }
 
         assert!(accepted <= QUEUE_CAPACITY + 1);
+        assert_eq!(ingress.progress.completed_ago_ms(Instant::now()), None);
         assert_eq!(ingress.try_send(vec![0, 0]), Err(AudioIngressError::Closed));
         pipeline.stop();
     }
