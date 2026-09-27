@@ -1703,3 +1703,8 @@
 .service-detail .credential-panel__heading {
   margin-bottom: 12px;
 }
+
+.settings-desktop-shortcuts dl { margin: 12px 0 0; }
+.settings-desktop-shortcuts dt { margin-top: 10px; }
+.settings-desktop-shortcuts dd { margin: 4px 0 0; }
+.settings-desktop-shortcuts code { overflow-wrap: anywhere; user-select: text; }
