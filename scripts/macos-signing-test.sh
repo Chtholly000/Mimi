@@ -36,6 +36,11 @@ cat > "$TEST_ROOT/bin/security" <<'STUB'
 printf '%s\n' "${TEST_IDENTITIES:-}"
 STUB
 chmod +x "$TEST_ROOT/bin/"*
+cat > "$TEST_ROOT/bin/lipo" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "${TEST_ARCH:-arm64}"
+STUB
+chmod +x "$TEST_ROOT/bin/lipo"
 export PATH="$TEST_ROOT/bin:$PATH"
 PIN="$(tr -d '[:space:]' < "$SCRIPT_DIR/macos-release-identity.txt")"
 export TEST_REQUIREMENT="identifier \"app.yuxino.mimi\" and certificate root = H\"${PIN}\""
@@ -57,7 +62,9 @@ export TEST_IDENTITIES="  1) $PIN \"mimi Local Development\""
 [[ "$(MIMI_CODESIGN_IDENTITY= "$SCRIPT_DIR/codesign-identity.sh")" == "$PIN" ]]
 expect_failure env MIMI_CODESIGN_IDENTITY= TEST_IDENTITIES="$TEST_IDENTITIES
   2) $PIN \"mimi Local Development\"" "$SCRIPT_DIR/codesign-identity.sh"
-"$SCRIPT_DIR/verify-macos-release-source.sh" "$TEST_ROOT/mimi.app" 1111111111111111111111111111111111111111 1.0.0 >/dev/null
-expect_failure "$SCRIPT_DIR/verify-macos-release-source.sh" "$TEST_ROOT/mimi.app" 2222222222222222222222222222222222222222 1.0.0
-expect_failure "$SCRIPT_DIR/verify-macos-release-source.sh" "$TEST_ROOT/mimi.app" 1111111111111111111111111111111111111111 2.0.0
+"$SCRIPT_DIR/verify-macos-release-source.sh" "$TEST_ROOT/mimi.app" 1111111111111111111111111111111111111111 1.0.0 arm64 >/dev/null
+expect_failure "$SCRIPT_DIR/verify-macos-release-source.sh" "$TEST_ROOT/mimi.app" 2222222222222222222222222222222222222222 1.0.0 arm64
+expect_failure "$SCRIPT_DIR/verify-macos-release-source.sh" "$TEST_ROOT/mimi.app" 1111111111111111111111111111111111111111 2.0.0 arm64
+expect_failure "$SCRIPT_DIR/verify-macos-release-source.sh" "$TEST_ROOT/mimi.app" 1111111111111111111111111111111111111111 1.0.0 x86_64
+TEST_ARCH=x86_64 "$SCRIPT_DIR/verify-macos-release-source.sh" "$TEST_ROOT/mimi.app" 1111111111111111111111111111111111111111 1.0.0 x86_64 >/dev/null
 echo 'macOS signing safety tests passed.'

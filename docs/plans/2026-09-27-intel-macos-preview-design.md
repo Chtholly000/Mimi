@@ -1,43 +1,40 @@
-# Intel macOS preview
+# Intel macOS distribution
 
-## Scope
+## Scope and validation boundary
 
-Produce an independently downloadable Intel QA package for a user who requested
-Intel Mac support. Keep macOS 13 as the minimum version and retain the existing
-system-audio-only capture, cloud providers, privacy defaults and Keychain storage.
-An actual Intel Mac must validate capture and permissions before formal support
-or an Intel updater channel is announced.
+Provide Intel Mac builds on macOS 13 or later, alongside the existing Apple
+silicon and Windows packages. The initial Intel QA build passed compilation,
+repository checks, stable signing and DMG consistency verification. The owner
+then authorized formal distribution without Intel hardware acceptance; release
+notes must explicitly disclose that installation, capture and permissions on
+Intel hardware remain unverified. Preserve all existing privacy and credential
+constraints.
 
-## Approach
+## Packaging and updates
 
-Allow the existing local packaging command to select `x86_64-apple-darwin` or
-`aarch64-apple-darwin` explicitly. Without an argument its native build behavior
-is unchanged. Reuse stable signing and reject unexpected binary architectures.
-Keep target output directories separate. Do not modify the installed app,
-published releases, version, or updater manifest for this preview.
+Keep architecture-specific DMGs. A universal app would increase download size
+and still require validation of both architectures. Local QA uses
+`./scripts/package-app.sh --target x86_64-apple-darwin`.
 
-A separate Intel DMG limits download size and avoids replacing the working ARM
-release. A universal package would increase downloads and require validation of
-both slices; deferring all work until hardware is available would prevent the
-requesting user from testing.
+For public releases, the Apple silicon signing Mac runs
+`./scripts/prepare-macos-release.sh` to build both architectures sequentially
+with the pinned identity and signed source revision. Native ARM builds reuse
+the established cache and `mimi.app.tar.gz` name. Intel uses its own Cargo target
+directory, `mimi_VERSION_x64.dmg` and `mimi_x64.app.tar.gz`; both archives contain
+an app named `mimi.app`. No installed app is replaced.
 
-## Build and acceptance
+CI verifies each architecture, source/version marker, stable requirement and
+matching DMG before signing its updater archive with the existing update key.
+Publication requires both Mac architectures and Windows assets. The manifest
+maps `darwin-aarch64` and `darwin-x86_64` to separate URLs and signatures.
+Missing assets, swapped architectures, URLs or signatures must fail closed.
 
-Install the Rust `x86_64-apple-darwin` target, then on the signing Mac run:
+## Verification
 
-```sh
-./scripts/package-app.sh --target x86_64-apple-darwin
-```
-
-The DMG is under `src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/`.
-Run the repository checks and verify the app signature, architecture, minimum
-system version, and matching app inside the DMG. Packaging is not proof of
-Intel hardware compatibility. Rosetta execution, if tested, is separate evidence.
-
-On an Intel Mac running macOS 13 or later, verify installation/opening, normal
-Gatekeeper approval, system-audio permission, provider-key storage/readback,
-live translated subtitles, pause/resume/stop, and overlay/full-screen behavior.
-Keep diagnostics content-free. The self-signed preview is not Apple-notarized
-and can require normal OS approval. Its in-app updater has no Intel platform
-entry yet; testers replace previews manually. Formal release integration waits
-for that hardware feedback.
+Run the canonical checks, focused manifest/signing regressions, both real
+package builds, and public asset/checksum/updater verification. Keep package
+proof separate from Intel hardware acceptance. A future Intel hardware check
+should cover installation and normal OS approval, key storage/readback, system
+sound translation, pause/resume/stop, and the overlay above full-screen video.
+Keep all captured diagnostics content-free. Do not claim notarization or
+password-free Keychain continuity from the stable self-signed identity.

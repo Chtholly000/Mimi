@@ -17,7 +17,7 @@ export MACOSX_DEPLOYMENT_TARGET=13.0
 export CARGO_HOME="${CARGO_HOME:-$PWD/.cargo-home}"
 export npm_config_cache="${npm_config_cache:-$PWD/.npm-cache}"
 [[ "$(uname -m)" == arm64 ]] || {
-  echo "The current public macOS release target is Apple silicon." >&2
+  echo "Prepare both macOS release architectures on the Apple silicon signing Mac." >&2
   exit 1
 }
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mimi-release-config.XXXXXX")"
@@ -35,23 +35,33 @@ with (folder / 'Info.plist').open('wb') as f:
     'bundle': {'createUpdaterArtifacts': False, 'macOS': {'infoPlist': str(folder / 'Info.plist')}}
 }))
 PY
-npm run tauri -- build --config "$TEMP_DIR/tauri.conf.json" -- --locked
 VERSION="$(node -p 'require("./package.json").version')"
-BUNDLE="$PWD/src-tauri/target/release/bundle"
-APP="$BUNDLE/macos/mimi.app"
-DMG="$BUNDLE/dmg/mimi_${VERSION}_aarch64.dmg"
-./scripts/verify-macos-release.sh "$APP" "$DMG"
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :MimiSourceRevision' "$APP/Contents/Info.plist")" == "$REVISION" ]]
-# CI applies the existing updater signature only after verifying this app.
-# Disable AppleDouble metadata; all required bundle files are ordinary files.
-COPYFILE_DISABLE=1 tar -czf "$BUNDLE/macos/mimi.app.tar.gz" -C "$BUNDLE/macos" mimi.app
-python3 scripts/extract-macos-updater.py "$BUNDLE/macos/mimi.app.tar.gz" "$TEMP_DIR/extracted"
-./scripts/verify-macos-release-source.sh "$TEMP_DIR/extracted/mimi.app" "$REVISION" "$VERSION"
-./scripts/verify-macos-release.sh "$TEMP_DIR/extracted/mimi.app" "$DMG"
-cat <<END
-Verified local release assets for v$VERSION at $REVISION:
-  $DMG
-  $BUNDLE/macos/mimi.app.tar.gz
-Follow docs/development/macos-release-signing.md to stage the draft before
-pushing its release tag. This script does not upload, publish, or install.
-END
+for arch in arm64 x86_64; do
+  if [[ "$arch" == arm64 ]]; then
+    # Preserve the established native ARM cache and archive name for updates.
+    TARGET_ARGS=()
+    BUNDLE="$PWD/src-tauri/target/release/bundle"
+    DMG_ARCH=aarch64
+    ARCHIVE=mimi.app.tar.gz
+  else
+    TARGET_ARGS=(--target x86_64-apple-darwin)
+    BUNDLE="$PWD/src-tauri/target/x86_64-apple-darwin/release/bundle"
+    DMG_ARCH=x64
+    ARCHIVE=mimi_x64.app.tar.gz
+  fi
+  npm run tauri -- build ${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"} --config "$TEMP_DIR/tauri.conf.json" -- --locked
+  APP="$BUNDLE/macos/mimi.app"
+  DMG="$BUNDLE/dmg/mimi_${VERSION}_${DMG_ARCH}.dmg"
+  ./scripts/verify-macos-release.sh "$APP" "$DMG"
+  ./scripts/verify-macos-release-source.sh "$APP" "$REVISION" "$VERSION" "$arch"
+  # CI applies the existing updater signature after verifying both architectures.
+  COPYFILE_DISABLE=1 tar -czf "$BUNDLE/macos/$ARCHIVE" -C "$BUNDLE/macos" mimi.app
+  python3 scripts/extract-macos-updater.py "$BUNDLE/macos/$ARCHIVE" "$TEMP_DIR/extracted-$arch"
+  ./scripts/verify-macos-release-source.sh "$TEMP_DIR/extracted-$arch/mimi.app" "$REVISION" "$VERSION" "$arch"
+  ./scripts/verify-macos-release.sh "$TEMP_DIR/extracted-$arch/mimi.app" "$DMG"
+  echo "Verified $arch release assets for v$VERSION at $REVISION:"
+  echo "  $DMG"
+  echo "  $BUNDLE/macos/$ARCHIVE"
+done
+echo "Follow docs/development/macos-release-signing.md to stage all four assets."
+echo "This script does not upload, publish, or install."

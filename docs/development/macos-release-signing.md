@@ -17,14 +17,19 @@ public key in `src-tauri/tauri.conf.json`.
 2. Run `./scripts/check.sh` and complete native QA in
    `/Applications/mimi-dev.app`. Commit reviewed source, then push `main` through
    the normal authorized publication flow. Do not push the version tag yet.
-3. On the signing Mac, run `./scripts/prepare-macos-release.sh` from the clean
+3. On the Apple silicon signing Mac, install the Rust `x86_64-apple-darwin`
+   target, then run `./scripts/prepare-macos-release.sh` from the clean
    committed checkout. It produces and verifies:
 
    - `src-tauri/target/release/bundle/dmg/mimi_VERSION_aarch64.dmg`
    - `src-tauri/target/release/bundle/macos/mimi.app.tar.gz`
+   - `src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/mimi_VERSION_x64.dmg`
+   - `src-tauri/target/x86_64-apple-darwin/release/bundle/macos/mimi_x64.app.tar.gz`
 
    The app contains the signed `MimiSourceRevision` for that exact commit.
-   CI applies the existing updater signature only after verifying the pinned
+   Both archives contain `mimi.app`; separate filenames keep architecture
+   updates distinct. CI applies the existing updater signature only after
+   verifying the expected architecture, pinned
    app identity, signed source/version and matching DMG. The updater private
    key/password remain in the existing Actions secrets; no local secret export
    or key rotation is needed. A QA build lacks the signed source marker.
@@ -42,9 +47,11 @@ tag="v$version"
 gh release create "$tag" --draft --target "$revision" \
   --title "mimi $tag" --notes-file "docs/releases/$tag.md" \
   "src-tauri/target/release/bundle/dmg/mimi_${version}_aarch64.dmg" \
-  src-tauri/target/release/bundle/macos/mimi.app.tar.gz
+  src-tauri/target/release/bundle/macos/mimi.app.tar.gz \
+  "src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/mimi_${version}_x64.dmg" \
+  src-tauri/target/x86_64-apple-darwin/release/bundle/macos/mimi_x64.app.tar.gz
 gh release view "$tag" --json isDraft,assets
-# Confirm both uploads completed before triggering tag CI.
+# Confirm all four uploads completed before triggering tag CI.
 git tag "$tag" "$revision"
 git push origin "$tag"
 ```
@@ -59,7 +66,8 @@ The tag-only macOS job needs `contents: write` because GitHub hides unpublished
 drafts from read-only tokens. Ordinary CI remains read-only; the final publish
 job still controls publication.
 
-GitHub macOS CI safely extracts the app, checks
+GitHub macOS CI verifies each architecture in a separate matrix job. It safely
+extracts the app, checks
 its complete pinned identity and signed source/version, and compares its CDHash
 with the app inside the DMG. It then creates and verifies the updater signature
 with the existing key. On the disposable runner, only the embedded public

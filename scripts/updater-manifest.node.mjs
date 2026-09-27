@@ -32,7 +32,7 @@ function fixture() {
   return { assetDir, assets };
 }
 
-test("creates a two-platform manifest bound to signed release assets", () => {
+test("creates a three-platform manifest bound to signed release assets", () => {
   const { assetDir, assets } = fixture();
   try {
     const manifest = createUpdaterManifest({
@@ -46,9 +46,15 @@ test("creates a two-platform manifest bound to signed release assets", () => {
     assert.equal(manifest.version, version);
     assert.deepEqual(Object.keys(manifest.platforms).sort(), [
       "darwin-aarch64",
+      "darwin-x86_64",
       "windows-x86_64",
     ]);
     assert.match(manifest.platforms["darwin-aarch64"].url, /mimi\.app\.tar\.gz$/);
+    assert.match(manifest.platforms["darwin-x86_64"].url, /mimi_x64\.app\.tar\.gz$/);
+    assert.equal(
+      manifest.platforms["darwin-x86_64"].signature,
+      readFileSync(join(assetDir, assets.intelSignature), "utf8"),
+    );
     assert.match(manifest.platforms["windows-x86_64"].url, /x64-setup\.exe$/);
     assert.equal(
       manifest.platforms["darwin-aarch64"].signature,
@@ -104,6 +110,38 @@ test("rejects a manifest URL that is not bound to the release tag", () => {
         }),
       /does not match its release asset/,
     );
+  } finally {
+    rmSync(assetDir, { recursive: true, force: true });
+  }
+});
+
+test("rejects Intel updates pointing at ARM assets or signatures", () => {
+  const { assetDir } = fixture();
+  try {
+    const options = { assetDir, version, repository, tag, pubDate, notes: "fixture" };
+    const original = createUpdaterManifest(options);
+    for (const field of ["url", "signature"]) {
+      const manifest = structuredClone(original);
+      manifest.platforms["darwin-x86_64"][field] = original.platforms["darwin-aarch64"][field];
+      assert.throws(
+        () => verifyUpdaterManifest({ ...options, manifest }),
+        /does not match/,
+      );
+    }
+  } finally {
+    rmSync(assetDir, { recursive: true, force: true });
+  }
+});
+
+test("requires an Intel archive and updater entry in every release", () => {
+  const { assetDir, assets } = fixture();
+  try {
+    const options = { assetDir, version, repository, tag, pubDate, notes: "fixture" };
+    const manifest = createUpdaterManifest(options);
+    delete manifest.platforms["darwin-x86_64"];
+    assert.throws(() => verifyUpdaterManifest({ ...options, manifest }), /unexpected updater platforms/);
+    rmSync(join(assetDir, assets.intelArchive));
+    assert.throws(() => createUpdaterManifest(options), /ENOENT/);
   } finally {
     rmSync(assetDir, { recursive: true, force: true });
   }

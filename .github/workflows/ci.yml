@@ -49,6 +49,12 @@ jobs:
       - name: Test
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
+      - name: Check Intel macOS target
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add x86_64-apple-darwin
+          cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin
+
       - name: Test vendored WASAPI capture packets
         if: ${{ matrix.os == 'windows-2025' }}
         run: cargo test --manifest-path src-tauri/vendor/cpal/Cargo.toml --lib capture_packet_tests
@@ -131,6 +137,9 @@ jobs:
 
       - name: Test
         run: npm run test
+
+      - name: Verify updater platform mapping
+        run: node --test scripts/updater-manifest.node.mjs
 
       - name: Typecheck and build
         run: npm run build
@@ -239,6 +248,15 @@ jobs:
   # Hosted runners verify the pinned certificate; they never create ad-hoc apps.
   release-macos:
     if: ${{ github.ref_type == 'tag' }}
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            dmg_arch: aarch64
+            archive: mimi.app.tar.gz
+          - arch: x86_64
+            dmg_arch: x64
+            archive: mimi_x64.app.tar.gz
     runs-on: macos-latest
     # GitHub requires push access to read an unpublished release draft.
     # Limit this permission to the release-only job; ordinary CI stays read-only.
@@ -246,6 +264,9 @@ jobs:
       contents: write
     needs: [rust, msrv, frontend, release-preflight]
     env:
+      MAC_ARCH: ${{ matrix.arch }}
+      MAC_DMG_ARCH: ${{ matrix.dmg_arch }}
+      MAC_ARCHIVE: ${{ matrix.archive }}
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -275,9 +296,9 @@ jobs:
           staging_dir="$RUNNER_TEMP/mimi-release-assets"
           mkdir -p "$staging_dir"
           gh release download "$GITHUB_REF_NAME" --dir "$staging_dir" \
-            --pattern "mimi_${GITHUB_REF_NAME#v}_aarch64.dmg" \
-            --pattern 'mimi.app.tar.gz'
-          [[ -s "$staging_dir/mimi.app.tar.gz" ]]
+            --pattern "mimi_${GITHUB_REF_NAME#v}_${MAC_DMG_ARCH}.dmg" \
+            --pattern "$MAC_ARCHIVE"
+          [[ -s "$staging_dir/$MAC_ARCHIVE" ]]
 
       - name: Verify stable identity, DMG, and signed source revision
         shell: bash
@@ -285,7 +306,7 @@ jobs:
           set -euo pipefail
           staging_dir="$RUNNER_TEMP/mimi-release-assets"
           python3 scripts/extract-macos-updater.py \
-            "$staging_dir/mimi.app.tar.gz" "$RUNNER_TEMP/mimi-verified-updater"
+            "$staging_dir/$MAC_ARCHIVE" "$RUNNER_TEMP/mimi-verified-updater"
           app_path="$RUNNER_TEMP/mimi-verified-updater/mimi.app"
           # The disposable runner has no local self-signed trust entry. Trust
           # only the exact pinned public certificate, and only for code signing.
@@ -299,8 +320,8 @@ jobs:
           sudo security add-trusted-cert -d -r trustRoot -p codeSign \
             -k /Library/Keychains/System.keychain "${certificate_prefix}0"
           ./scripts/verify-macos-release.sh \
-            "$app_path" "$staging_dir/mimi_${GITHUB_REF_NAME#v}_aarch64.dmg"
-          ./scripts/verify-macos-release-source.sh "$app_path" "$GITHUB_SHA" "${GITHUB_REF_NAME#v}"
+            "$app_path" "$staging_dir/mimi_${GITHUB_REF_NAME#v}_${MAC_DMG_ARCH}.dmg"
+          ./scripts/verify-macos-release-source.sh "$app_path" "$GITHUB_SHA" "${GITHUB_REF_NAME#v}" "$MAC_ARCH"
 
       - name: Sign verified macOS updater with the existing update key
         env:
@@ -311,16 +332,16 @@ jobs:
           set -euo pipefail
           : "${TAURI_SIGNING_PRIVATE_KEY:?Updater signing key is missing}"
           staging_dir="$RUNNER_TEMP/mimi-release-assets"
-          npm run tauri -- signer sign "$staging_dir/mimi.app.tar.gz"
+          npm run tauri -- signer sign "$staging_dir/$MAC_ARCHIVE"
           public_key="$(node -p 'require("./src-tauri/tauri.conf.json").plugins.updater.pubkey')"
           cargo run --release --locked --manifest-path src-tauri/Cargo.toml \
             --example verify_updater_signature -- \
-            "$public_key" "$staging_dir/mimi.app.tar.gz.sig" "$staging_dir/mimi.app.tar.gz"
+            "$public_key" "$staging_dir/$MAC_ARCHIVE.sig" "$staging_dir/$MAC_ARCHIVE"
 
       - name: Upload verified macOS release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: mimi-release-macos
+          name: mimi-release-macos-${{ matrix.arch }}
           path: ${{ runner.temp }}/mimi-release-assets/*
           if-no-files-found: error
           retention-days: 7
@@ -464,6 +485,9 @@ jobs:
             "mimi_${version}_aarch64.dmg"
             "mimi.app.tar.gz"
             "mimi.app.tar.gz.sig"
+            "mimi_${version}_x64.dmg"
+            "mimi_x64.app.tar.gz"
+            "mimi_x64.app.tar.gz.sig"
             "mimi_${version}_x64-setup.exe"
             "mimi_${version}_x64-setup.exe.sig"
             "mimi_${version}_x64_en-US.msi"
@@ -518,6 +542,8 @@ jobs:
             sha256sum \
               "mimi_${version}_aarch64.dmg" \
               mimi.app.tar.gz mimi.app.tar.gz.sig \
+              "mimi_${version}_x64.dmg" \
+              mimi_x64.app.tar.gz mimi_x64.app.tar.gz.sig \
               "mimi_${version}_x64-setup.exe" \
               "mimi_${version}_x64-setup.exe.sig" \
               "mimi_${version}_x64_en-US.msi" \

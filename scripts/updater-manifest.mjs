@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const PLATFORM_KEYS = ["darwin-aarch64", "windows-x86_64"];
+const PLATFORM_KEYS = ["darwin-aarch64", "darwin-x86_64", "windows-x86_64"];
 
 export function expectedUpdaterAssets(version) {
   assertVersion(version);
@@ -12,6 +12,9 @@ export function expectedUpdaterAssets(version) {
     dmg: `mimi_${version}_aarch64.dmg`,
     macArchive: "mimi.app.tar.gz",
     macSignature: "mimi.app.tar.gz.sig",
+    intelDmg: `mimi_${version}_x64.dmg`,
+    intelArchive: "mimi_x64.app.tar.gz",
+    intelSignature: "mimi_x64.app.tar.gz.sig",
     windowsExe: `mimi_${version}_x64-setup.exe`,
     windowsExeSignature: `mimi_${version}_x64-setup.exe.sig`,
     windowsMsi: `mimi_${version}_x64_en-US.msi`,
@@ -50,6 +53,10 @@ export function createUpdaterManifest({
         signature: readSignature(assetDir, assets.macSignature),
         url: `${releaseBase}/${encodeURIComponent(assets.macArchive)}`,
       },
+      "darwin-x86_64": {
+        signature: readSignature(assetDir, assets.intelSignature),
+        url: `${releaseBase}/${encodeURIComponent(assets.intelArchive)}`,
+      },
       "windows-x86_64": {
         signature: readSignature(assetDir, assets.windowsExeSignature),
         url: `${releaseBase}/${encodeURIComponent(assets.windowsExe)}`,
@@ -79,6 +86,7 @@ export function verifyUpdaterManifest({
 
   const expected = {
     "darwin-aarch64": assets.macArchive,
+    "darwin-x86_64": assets.intelArchive,
     "windows-x86_64": assets.windowsExe,
   };
   const urls = new Set();

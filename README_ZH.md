@@ -1,7 +1,7 @@
 <div align="center">
   <img src="src-tauri/icons/128x128@2x.png" width="96" alt="mimi">
   <h1>mimi</h1>
-  <p>系统音频实时字幕与翻译，支持 Apple 芯片 macOS 13+ 和 Windows x64。</p>
+  <p>系统音频实时字幕与翻译，支持 Apple 芯片和 Intel Mac（macOS 13+），以及 Windows x64。</p>
   <p>
     <a href="https://mimi.yuxino.cn">官网</a>
     · <a href="https://github.com/yuxino/mimi/releases/latest"><strong>下载最新版</strong></a>
@@ -34,7 +34,7 @@ https://github.com/user-attachments/assets/342c049c-1bed-44da-b4d2-ba55dad1a49c
 
 ## 开始使用
 
-1. 从 [Latest Release](https://github.com/yuxino/mimi/releases/latest) 下载 macOS Apple Silicon DMG，或 Windows x64 EXE、MSI、绿色版 ZIP；也可以从源码构建。
+1. 从 [Latest Release](https://github.com/yuxino/mimi/releases/latest) 下载 macOS Apple Silicon 或 Intel DMG，或 Windows x64 EXE、MSI、绿色版 ZIP；也可以从源码构建。
 2. 打开「翻译服务」，选择服务商并保存凭证。
 3. 播放内容，从菜单栏/系统托盘的 mimi 图标点击 **开始**；macOS 首次使用时按提示允许「屏幕与系统音频录制」。
 
@@ -46,7 +46,7 @@ Windows 安装完成后会重新打开 Mimi；macOS 可点击 **重新启动并�
 
 ### 平台支持
 
-- **Apple 芯片 macOS 13+**：提供未经 Apple 公证的 DMG；若首次打开被拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。从旧版本升级时，请留意下方的权限说明。
+- **macOS 13+（Apple 芯片和 Intel）**：Apple 芯片选择 `_aarch64.dmg`，Intel 选择 `_x64.dmg`。从 v1.4.4 起提供 Intel 包，已通过构建和签名检查，Intel 实机采集和权限行为仍待验证。提供未经 Apple 公证的 DMG；若首次打开被拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。从旧版本升级时，请留意下方的权限说明。
 - **Windows x64**：提供未签名的预览版 EXE / MSI；从 v1.4.3 起还提供绿色版 ZIP。SmartScreen 可能显示提示。下载 `mimi_<version>_x64-portable.zip` 解压后，直接运行 `mimi.exe`。电脑需已安装 WebView2（Windows 11 通常自带）。ZIP 不会把设置、服务凭证或已导出文件搬到自身目录；它们仍保存在原来的用户目录、系统凭据管理器或用户选择的位置。更新绿色版时，先退出 Mimi，再从 Releases 下载新版 ZIP 替换；绿色版不会运行应用内安装器更新。
 
 ### macOS 更新后重复授权
