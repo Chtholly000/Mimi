@@ -71,6 +71,10 @@ Windows 安装完成后会重新打开 Mimi；macOS 和 Linux AppImage 可点击
 
 构建与贡献请参阅 [贡献指南](CONTRIBUTING.md)，安全问题请参阅 [安全政策](SECURITY.md)。
 
+## 特别感谢
+
+特别感谢 [@yebuwudong](https://github.com/yebuwudong) 在 [PR #37](https://github.com/yuxino/mimi/pull/37) 中贡献原生 Android 版本。Android 目前仍是开发预览，配置方式和已验证范围见 [Android 说明](android/README.md)。
+
 ## 社区友链
 
 [LINUX DO](https://linux.do/)

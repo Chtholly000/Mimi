@@ -23,11 +23,12 @@ object SubtitleBus {
     @Volatile var detectedSourceLanguage: String? = null
 
     /** Confirmed history, newest last, bounded. */
-    val history = ArrayDeque<Pair>()
+    private val history = ArrayDeque<Pair>()
+    private var historyLimit = 0
     /** Queue of source finals awaiting their translation for pairing. */
     private val pendingSources = ArrayDeque<String>()
 
-    const val MAX_HISTORY = 4
+    const val MAX_HISTORY = 6
     const val MAX_PENDING = 8
 
     interface Listener {
@@ -69,8 +70,10 @@ object SubtitleBus {
         detectedSourceLanguage = normalizeLang(language) ?: detectedSourceLanguage
         liveHidden = false
         synchronized(this) {
-            if (pendingSources.size >= MAX_PENDING) pendingSources.removeFirst()
-            pendingSources.addLast(trimmed)
+            if (historyLimit > 0) {
+                if (pendingSources.size >= MAX_PENDING) pendingSources.removeFirst()
+                pendingSources.addLast(trimmed)
+            }
         }
         notifyListeners()
     }
@@ -90,12 +93,25 @@ object SubtitleBus {
         translationDraft = ""
         liveHidden = false
         synchronized(this) {
-            val source = pendingSources.removeFirstOrNull() ?: sourceFinal
-            if (history.size >= MAX_HISTORY) history.removeFirst()
-            history.addLast(Pair(source, trimmed))
+            if (historyLimit > 0) {
+                val source = pendingSources.removeFirstOrNull() ?: sourceFinal
+                if (history.size >= historyLimit) history.removeFirst()
+                history.addLast(Pair(source, trimmed))
+            }
         }
         notifyListeners()
     }
+
+    fun setHistoryLimit(limit: Int) {
+        synchronized(this) {
+            historyLimit = limit.coerceIn(0, MAX_HISTORY)
+            while (history.size > historyLimit) history.removeFirst()
+            if (historyLimit == 0) pendingSources.clear()
+        }
+        notifyListeners()
+    }
+
+    fun historySnapshot(): List<Pair> = synchronized(this) { history.toList() }
 
     fun onStatus(line: String) {
         statusLine = line
@@ -123,7 +139,8 @@ object SubtitleBus {
      * a delimiter: return the last complete sentence) so a finished sentence
      * never lets the whole buffer through.
      */
-    private fun lastSentence(text: String): String {
+    private fun lastSentence(input: String): String {
+        val text = input.trim()
         var effectiveEnd = text.length
         while (effectiveEnd > 0 && text[effectiveEnd - 1] in SENTENCE_DELIMITERS) {
             effectiveEnd--
@@ -139,13 +156,15 @@ object SubtitleBus {
         } else {
             text.substring(0, effectiveEnd)
         }
-        return tail.trim().take(200)
+        return tail.trim().takeLast(200)
     }
 
     fun clear() {
         synchronized(this) {
             sourceDraft = ""; sourceFinal = ""; translationDraft = ""; translationFinal = ""
             statusLine = ""
+            detectedSourceLanguage = null
+            liveHidden = false
             history.clear()
             pendingSources.clear()
         }

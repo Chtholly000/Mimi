@@ -1,231 +1,287 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/mimi_bg">
-
+    android:orientation="vertical">
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="20dp">
-
+        android:layout_height="64dp"
+        android:gravity="center_vertical"
+        android:paddingStart="12dp"
+        android:paddingEnd="24dp"
+        android:orientation="horizontal"
+        android:baselineAligned="false">
+        <ImageButton
+            android:id="@+id/back"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/ic_back"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/settings_back"
+            app:tint="@color/mimi_text"/>
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="@string/provider_label"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <RadioGroup
-            android:id="@+id/provider_group"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="vertical">
-
-            <RadioButton
-                android:id="@+id/provider_dashscope"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/provider_dashscope"
-                android:textColor="@color/mimi_text" />
-
-            <RadioButton
-                android:id="@+id/provider_openai"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/provider_openai"
-                android:textColor="@color/mimi_text" />
-        </RadioGroup>
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/api_key_label"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/api_key"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:hint="sk-..."
-            android:inputType="textPassword"
-            android:textColor="@color/mimi_text" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/base_url_label"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/base_url"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:hint="wss://your-proxy.example/v1/...（留空用官方）"
-            android:inputType="textUri"
-            android:textColor="@color/mimi_text" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/model_label"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/model"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:hint="留空用默认模型"
-            android:inputType="text"
-            android:textColor="@color/mimi_text" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/source_language"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <Spinner
-            android:id="@+id/source_lang"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/target_language"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <Spinner
-            android:id="@+id/target_lang"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/font_size"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <SeekBar
-            android:id="@+id/font_size"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:max="24"
-            android:min="12" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/translation_color"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <Spinner
-            android:id="@+id/translation_color"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/overlay_opacity"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <SeekBar
-            android:id="@+id/overlay_opacity"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:max="100"
-            android:min="20" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/overlay_bg_alpha"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <SeekBar
-            android:id="@+id/overlay_bg_alpha"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:max="90"
-            android:min="0" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/history_lines"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <SeekBar
-            android:id="@+id/history_lines"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:max="6"
-            android:min="0" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
-            android:text="@string/hotwords_label"
-            android:textColor="@color/mimi_muted"
-            android:textSize="13sp" />
-
-        <com.google.android.material.textfield.TextInputEditText
-            android:id="@+id/hotwords"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:hint="@string/hotwords_hint"
-            android:inputType="text"
-            android:textColor="@color/mimi_text" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/reset_position"
-            style="@style/Widget.Material3.Button.OutlinedButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="@string/reset_position" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/save"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="28dp"
-            android:text="保存" />
+            android:text="@string/settings_heading"
+            android:textColor="@color/mimi_text"
+            android:textSize="21sp"
+            android:fontFamily="sans-serif-medium"/>
     </LinearLayout>
-</ScrollView>
+    <RadioGroup
+        android:id="@+id/settings_tabs"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="24dp"
+        android:background="@drawable/mimi_surface"
+        android:padding="4dp"
+        android:orientation="horizontal"
+        android:checkedButton="@id/tab_service">
+        <RadioButton
+            android:id="@+id/tab_service"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:button="@null"
+            android:background="@drawable/mimi_segment"
+            android:gravity="center"
+            android:paddingHorizontal="8dp"
+            android:text="@string/settings_tab_service"
+            android:textColor="@color/mimi_text"
+            android:textSize="14sp"
+            android:fontFamily="sans-serif-medium"/>
+        <RadioButton
+            android:id="@+id/tab_appearance"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:button="@null"
+            android:background="@drawable/mimi_segment"
+            android:gravity="center"
+            android:paddingHorizontal="8dp"
+            android:text="@string/settings_tab_appearance"
+            android:textColor="@color/mimi_text"
+            android:textSize="14sp"
+            android:fontFamily="sans-serif-medium"/>
+    </RadioGroup>
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true"
+        android:clipToPadding="false"
+        android:paddingHorizontal="24dp"
+        android:paddingTop="20dp"
+        android:paddingBottom="20dp"
+        android:id="@+id/settings_scroll">
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <LinearLayout
+                android:id="@+id/service_panel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical" />
+            <LinearLayout
+                android:id="@+id/appearance_panel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+                <app.yuxino.mimi.android.SubtitlePreviewView
+                    android:id="@+id/subtitle_preview"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"/>
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:baselineAligned="false">
+                    <TextView
+                        style="@style/TextAppearance.Mimi.Label"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/settings_font"
+                        android:textColor="@color/mimi_text"/>
+                    <TextView
+                        android:id="@+id/font_size_value"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/mimi_muted"
+                        android:textSize="13sp"/>
+                </LinearLayout>
+                <SeekBar
+                    android:id="@+id/font_size"
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"
+                    android:layout_marginTop="4dp"
+                    android:min="12"
+                    android:max="24"
+                    android:progressTint="@color/mimi_text"
+                    android:progressBackgroundTint="@color/mimi_border"
+                    android:thumbTint="@color/mimi_text"/>
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:baselineAligned="false">
+                    <TextView
+                        style="@style/TextAppearance.Mimi.Label"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/settings_background"
+                        android:textColor="@color/mimi_text"/>
+                    <TextView
+                        android:id="@+id/overlay_bg_alpha_value"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/mimi_muted"
+                        android:textSize="13sp"/>
+                </LinearLayout>
+                <SeekBar
+                    android:id="@+id/overlay_bg_alpha"
+                    android:layout_width="match_parent"
+                    android:layout_height="40dp"
+                    android:layout_marginTop="4dp"
+                    android:min="0"
+                    android:max="90"
+                    android:progressTint="@color/mimi_text"
+                    android:progressBackgroundTint="@color/mimi_border"
+                    android:thumbTint="@color/mimi_text"/>
+                <TextView
+                    style="@style/TextAppearance.Mimi.Label"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="20dp"
+                    android:text="@string/settings_color"
+                    android:textColor="@color/mimi_text"/>
+                <Spinner
+                    android:id="@+id/translation_color"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/settings_field"
+                    android:popupBackground="@color/mimi_bg"
+                    android:spinnerMode="dropdown"/>
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/appearance_more_toggle"
+                    style="@style/Widget.Mimi.Button.Secondary"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="20dp"
+                    android:text="@string/settings_more"
+                    android:gravity="start|center_vertical"
+                    app:icon="@drawable/ic_chevron"
+                    app:iconGravity="end"
+                    app:iconTint="@color/mimi_muted"/>
+                <LinearLayout
+                    android:id="@+id/appearance_more_panel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:visibility="gone">
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="20dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:baselineAligned="false">
+                        <TextView
+                            style="@style/TextAppearance.Mimi.Label"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/settings_opacity"
+                            android:textColor="@color/mimi_text"/>
+                        <TextView
+                            android:id="@+id/overlay_opacity_value"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/mimi_muted"
+                            android:textSize="13sp"/>
+                    </LinearLayout>
+                    <SeekBar
+                        android:id="@+id/overlay_opacity"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:layout_marginTop="4dp"
+                        android:min="20"
+                        android:max="100"
+                        android:progressTint="@color/mimi_text"
+                        android:progressBackgroundTint="@color/mimi_border"
+                        android:thumbTint="@color/mimi_text"/>
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="20dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:baselineAligned="false">
+                        <TextView
+                            style="@style/TextAppearance.Mimi.Label"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="@string/settings_history"
+                            android:textColor="@color/mimi_text"/>
+                        <TextView
+                            android:id="@+id/history_lines_value"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/mimi_muted"
+                            android:textSize="13sp"/>
+                    </LinearLayout>
+                    <SeekBar
+                        android:id="@+id/history_lines"
+                        android:layout_width="match_parent"
+                        android:layout_height="40dp"
+                        android:layout_marginTop="4dp"
+                        android:min="0"
+                        android:max="6"
+                        android:progressTint="@color/mimi_text"
+                        android:progressBackgroundTint="@color/mimi_border"
+                        android:thumbTint="@color/mimi_text"/>
+                    <TextView
+                        style="@style/TextAppearance.Mimi.Body"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="0dp"
+                        android:text="@string/settings_history_help"
+                        android:textSize="12sp"
+                        android:lineSpacingExtra="3dp"
+                        android:textColor="@color/mimi_muted"/>
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/reset_position"
+                        style="@style/Widget.Mimi.Button.Secondary"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:layout_marginTop="20dp"
+                        android:text="@string/settings_reset"/>
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+
+    <TextView
+        style="@style/TextAppearance.Mimi.Body"
+        android:id="@+id/appearance_autosave"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="24dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="16dp"
+        android:text="@string/settings_autosave"
+        android:textColor="@color/mimi_muted"
+        android:textSize="12sp"
+        android:gravity="center"
+        android:visibility="gone"/>
+</LinearLayout>
