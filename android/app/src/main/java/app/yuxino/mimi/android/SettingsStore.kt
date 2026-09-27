@@ -76,6 +76,37 @@ object SettingsStore {
         get(context).edit().putString(KEY_API_KEY + "_" + provider, value.trim()).apply()
     }
 
+    fun configuration(context: Context, provider: app.yuxino.mimi.android.provider.ServiceProvider =
+        app.yuxino.mimi.android.provider.ServiceProvider.fromId(provider(context))): app.yuxino.mimi.android.provider.ServiceConfiguration {
+        val values = provider.fields.associate { field -> field.id to if (field.id == "apiKey")
+            apiKey(context, provider.id) else get(context).getString("credential_${provider.id}_${field.id}", "").orEmpty() }
+        return app.yuxino.mimi.android.provider.ServiceConfiguration(provider, values, baseUrl(context, provider.id), model(context, provider.id))
+    }
+
+    fun isConfigured(context: Context, provider: app.yuxino.mimi.android.provider.ServiceProvider =
+        app.yuxino.mimi.android.provider.ServiceProvider.fromId(provider(context))): Boolean =
+        provider.configured(configuration(context, provider).credentials)
+
+    /** Save one complete profile atomically; callers preserve blank, write-only secret fields. */
+    fun saveConfiguration(context: Context, config: app.yuxino.mimi.android.provider.ServiceConfiguration): Boolean {
+        apiKey(context, config.provider.id) // Resolve legacy ownership before activating another provider.
+        val editor = get(context).edit()
+        config.provider.fields.forEach { field ->
+            val key = if (field.id == "apiKey") "${KEY_API_KEY}_${config.provider.id}" else "credential_${config.provider.id}_${field.id}"
+            editor.putString(key, config.value(field.id).trim())
+        }
+        editor.putString(KEY_BASE_URL_PREFIX + config.provider.id, config.endpoint.trim())
+        editor.putString(KEY_MODEL_PREFIX + config.provider.id, config.model.trim())
+        return editor.commit()
+    }
+
+    fun activateProvider(context: Context, provider: app.yuxino.mimi.android.provider.ServiceProvider): Boolean {
+        if (!isConfigured(context, provider)) return false
+        val (source, target) = provider.normalize(sourceLang(context), targetLang(context))
+        return get(context).edit().putString(KEY_PROVIDER, provider.id)
+            .putString(KEY_SOURCE_LANG, source).putString(KEY_TARGET_LANG, target).commit()
+    }
+
     /** Custom endpoint per provider; blank means the official endpoint. */
     fun baseUrl(context: Context, provider: String): String =
         get(context).getString(KEY_BASE_URL_PREFIX + provider, "") ?: ""

@@ -223,7 +223,8 @@ class MimiService : Service() {
         }
         engine = when (provider) {
             SettingsStore.PROVIDER_OPENAI -> OpenAIRealtimeEngine(listener)
-            else -> DashScopeEngine(listener)
+            SettingsStore.PROVIDER_DASHSCOPE -> DashScopeEngine(listener)
+            else -> app.yuxino.mimi.android.provider.StreamingServiceEngine(SettingsStore.configuration(this), listener)
         }
         engine?.setHotwords(SettingsStore.hotwords(this))
         engine?.start(

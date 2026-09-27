@@ -17,6 +17,9 @@ internal class TranscriptBuffer {
     }
 
     @Synchronized
+    fun drain(): String = pending.trim().also { pending = "" }
+
+    @Synchronized
     fun clear() {
         pending = ""
     }

@@ -9,7 +9,6 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.inspector.WindowInspector
-import android.widget.RadioButton
 import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Spinner
@@ -19,6 +18,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import app.yuxino.mimi.android.capture.MimiService
+import app.yuxino.mimi.android.provider.ServiceProvider
 import app.yuxino.mimi.android.provider.SubtitleBus
 import com.google.android.material.textfield.TextInputEditText
 import java.io.File
@@ -94,7 +94,7 @@ class UiSmokeInstrumentation : Instrumentation() {
         val initialHistory = SettingsStore.historyLines(targetContext)
         val settings = openSettings(home, appearance = true)
         check(settings.findViewById<View>(R.id.appearance_panel).isShown)
-        check(settings.findViewById<View>(R.id.service_footer).visibility == View.GONE)
+        check(settings.findViewById<View>(R.id.service_panel).visibility == View.GONE)
         check(SettingsStore.fontSize(targetContext) == initialFont)
         check(SettingsStore.translationColorIndex(targetContext) == initialColor)
         check(SettingsStore.historyLines(targetContext) == initialHistory)
@@ -125,38 +125,40 @@ class UiSmokeInstrumentation : Instrumentation() {
         drag(history, 0)
         check(SubtitleBus.historySnapshot().isEmpty()) { "Disabling history did not clear it immediately" }
         click(reopened, R.id.tab_service)
-        val key = reopened.findViewById<TextInputEditText>(R.id.api_key)
-        onUi {
-            reopened.findViewById<RadioButton>(R.id.provider_dashscope).performClick()
-            key.setText("preview-aliyun")
-            reopened.findViewById<RadioButton>(R.id.provider_openai).performClick()
-            key.setText("preview-openai")
-            reopened.findViewById<RadioButton>(R.id.provider_dashscope).performClick()
-            check(key.text.toString() == "preview-aliyun") { "Provider draft was lost" }
-            key.setText("")
-            key.clearFocus()
+        capture("settings-services-$theme")
+        val activeProvider = SettingsStore.provider(targetContext)
+        for (provider in ServiceProvider.entries) {
+            val configuredBefore = SettingsStore.isConfigured(targetContext, provider)
+            val editor = openService(reopened, provider.id)
+            val root = editor.findViewById<View>(android.R.id.content)
+            for (field in provider.fields) {
+                val input = root.findViewWithTag<TextInputEditText>("credential-${field.id}")
+                check(input != null) { "Provider field missing: ${provider.id}/${field.id}" }
+                if (field.secret) check(input.text.toString().isEmpty()) { "Stored credential was exposed in UI" }
+            }
+            if (provider.id in listOf("azure", "tencent", "dashscope")) capture("service-${provider.id}-$theme")
+            if (!configuredBefore) {
+                click(editor, R.id.save)
+                check(SettingsStore.provider(targetContext) == activeProvider) { "Invalid form changed active provider" }
+            }
+            val secret = provider.fields.first { it.secret }
+            onUi { root.findViewWithTag<TextInputEditText>("credential-${secret.id}").setText("unsaved-test-value") }
+            click(editor, R.id.back)
+            check(SettingsStore.isConfigured(targetContext, provider) == configuredBefore) { "Unsaved form changed configuration" }
         }
-        click(reopened, R.id.advanced_toggle)
-        check(reopened.findViewById<View>(R.id.glossary_panel).isShown)
-        click(reopened, R.id.advanced_toggle)
-        capture("settings-service-$theme")
-        click(reopened, R.id.tab_appearance)
-        click(reopened, R.id.tab_service)
+        val editor = openService(reopened, "openai")
+        val key = editor.findViewById<View>(android.R.id.content).findViewWithTag<TextInputEditText>("credential-apiKey")
         onUi {
-            check(key.text.toString().isEmpty()) { "Tab switch changed service draft" }
-            reopened.findViewById<RadioButton>(R.id.provider_openai).performClick()
-            check(key.text.toString() == "preview-openai") { "Second provider draft was lost" }
-            check(reopened.findViewById<View>(R.id.glossary_panel).visibility == View.GONE)
-            key.setText("")
+            check(key.text.toString().isEmpty()) { "Unsaved credential survived reopening" }
             key.requestFocus()
-            WindowCompat.getInsetsController(reopened.window, key).show(WindowInsetsCompat.Type.ime())
+            WindowCompat.getInsetsController(editor.window, key).show(WindowInsetsCompat.Type.ime())
         }
         repeat(30) {
             if (ViewCompat.getRootWindowInsets(key)?.isVisible(WindowInsetsCompat.Type.ime()) != true) Thread.sleep(100)
         }
         check(ViewCompat.getRootWindowInsets(key)?.isVisible(WindowInsetsCompat.Type.ime()) == true) { "Keyboard did not open" }
         capture("settings-keyboard-$theme")
-        onUi { reopened.finish(); home.finish() }
+        onUi { editor.finish(); reopened.finish(); home.finish() }
         waitForIdleSync()
     }
 
@@ -184,22 +186,18 @@ class UiSmokeInstrumentation : Instrumentation() {
         onUi { settings.findViewById<ScrollView>(R.id.settings_scroll).smoothScrollTo(0, 650) }
         pause("低频选项收起，历史仍默认关闭", 2500)
         click(settings, R.id.tab_service)
-        onUi {
-            listOf(R.id.api_key, R.id.base_url, R.id.model, R.id.hotwords).forEach {
-                settings.findViewById<TextInputEditText>(it).setText("")
-            }
-        }
-        pause("服务设置只保留关键项", 2500)
-        click(settings, R.id.provider_openai)
-        onUi {
-            listOf(R.id.api_key, R.id.base_url, R.id.model, R.id.hotwords).forEach {
-                settings.findViewById<TextInputEditText>(it).setText("")
-            }
-        }
-        pause("两种服务可选，Key 仍需主动保存", 1800)
-        click(settings, R.id.advanced_toggle)
-        pause("自定义服务地址和模型按需展开", 2200)
-        click(settings, R.id.advanced_toggle)
+        pause("八家服务，已配置的可直接切换", 2800)
+        val azure = openService(settings, "azure")
+        pause("Azure：只显示资源地址、部署名和 Key", 3000)
+        click(azure, R.id.back)
+        val tencent = openService(settings, "tencent")
+        pause("腾讯云：独立的 AppID 与密钥表单", 2800)
+        click(tencent, R.id.back)
+        val aliyun = openService(settings, "dashscope")
+        pause("已保存的密钥不会回填到输入框", 2600)
+        click(aliyun, R.id.advanced_toggle)
+        pause("连接地址、模型和术语按需展开", 3000)
+        click(aliyun, R.id.back)
         click(settings, R.id.back)
         pause("返回首页，外观已经记住", 3000)
         capture("demo-home-$theme")
@@ -220,6 +218,16 @@ class UiSmokeInstrumentation : Instrumentation() {
         removeMonitor(monitor)
         waitForIdleSync()
         return settings
+    }
+
+    private fun openService(settings: SettingsActivity, provider: String): ServiceSettingsActivity {
+        val monitor = addMonitor(ServiceSettingsActivity::class.java.name, null, false)
+        onUi {
+            val row = settings.findViewById<View>(R.id.service_panel).findViewWithTag<View>("configure-$provider")
+            check(row != null && row.performClick()) { "Provider editor did not open" }
+        }
+        val editor = waitForMonitorWithTimeout(monitor, 5000) as? ServiceSettingsActivity ?: error("Service editor missing")
+        removeMonitor(monitor); waitForIdleSync(); return editor
     }
 
     private fun click(activity: Activity, id: Int) {

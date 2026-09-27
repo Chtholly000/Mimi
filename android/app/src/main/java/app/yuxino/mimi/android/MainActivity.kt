@@ -57,7 +57,7 @@ class MainActivity : AppCompatActivity() {
         startStop.setOnClickListener {
             if (MimiService.isRunning) {
                 stopService()
-            } else if (SettingsStore.apiKey(this).isEmpty()) {
+            } else if (!SettingsStore.isConfigured(this)) {
                 openSettings()
             } else {
                 beginStartFlow()
@@ -92,7 +92,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshUi() {
         val running = MimiService.isRunning
-        val keyOk = SettingsStore.apiKey(this).isNotEmpty()
+        val keyOk = SettingsStore.isConfigured(this)
         val overlayOk = Settings.canDrawOverlays(this)
         startStop.isEnabled = !starting
         startStop.setText(when {
@@ -119,8 +119,7 @@ class MainActivity : AppCompatActivity() {
         })
         findViewById<TextView>(R.id.source_summary).text = languageLabel(SettingsStore.sourceLang(this))
         findViewById<TextView>(R.id.target_summary).text = languageLabel(SettingsStore.targetLang(this))
-        val provider = getString(if (SettingsStore.provider(this) == SettingsStore.PROVIDER_OPENAI)
-            R.string.home_provider_openai else R.string.home_provider_aliyun)
+        val provider = app.yuxino.mimi.android.provider.ServiceProvider.fromId(SettingsStore.provider(this)).title
         findViewById<TextView>(R.id.provider_summary).text = getString(
             if (keyOk) R.string.home_service_ready else R.string.home_service_unset, provider,
         )
@@ -139,8 +138,11 @@ class MainActivity : AppCompatActivity() {
     })
 
     private fun showLanguages(source: Boolean) {
+        val previousSource = SettingsStore.sourceLang(this)
+        val previousTarget = SettingsStore.targetLang(this)
         val selected = if (source) SettingsStore.sourceLang(this) else SettingsStore.targetLang(this)
-        val choices = if (source) listOf("auto", "zh", "en", "ja", "ko") else listOf("zh", "en", "ja")
+        val provider = app.yuxino.mimi.android.provider.ServiceProvider.fromId(SettingsStore.provider(this))
+        val choices = if (source) provider.sources else provider.targets.filter { it != SettingsStore.sourceLang(this) }
         val dialog = BottomSheetDialog(this)
         val content = layoutInflater.inflate(R.layout.language_sheet, FrameLayout(this), false)
         content.findViewById<TextView>(R.id.language_heading).setText(
@@ -173,7 +175,8 @@ class MainActivity : AppCompatActivity() {
                             if (MimiService.isRunning) R.string.language_saved_next_session else R.string.language_saved,
                             languageLabel(code),
                         ), Snackbar.LENGTH_LONG).setAction(R.string.undo) {
-                            saveLanguage(source, selected)
+                            SettingsStore.setSourceLang(this@MainActivity, previousSource)
+                            SettingsStore.setTargetLang(this@MainActivity, previousTarget)
                             refreshUi()
                         }.show()
                     }
@@ -190,6 +193,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun saveLanguage(source: Boolean, code: String) {
         if (source) SettingsStore.setSourceLang(this, code) else SettingsStore.setTargetLang(this, code)
+        val provider = app.yuxino.mimi.android.provider.ServiceProvider.fromId(SettingsStore.provider(this))
+        val (from, to) = provider.normalize(SettingsStore.sourceLang(this), SettingsStore.targetLang(this))
+        SettingsStore.setSourceLang(this, from)
+        SettingsStore.setTargetLang(this, to)
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
@@ -219,7 +226,7 @@ class MainActivity : AppCompatActivity() {
             )
             return
         }
-        if (SettingsStore.apiKey(this).isEmpty()) {
+        if (!SettingsStore.isConfigured(this)) {
             Toast.makeText(this, R.string.need_api_key, Toast.LENGTH_LONG).show()
             startActivity(Intent(this, SettingsActivity::class.java))
             return

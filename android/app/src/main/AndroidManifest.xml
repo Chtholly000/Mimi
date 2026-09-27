@@ -29,6 +29,8 @@
             android:exported="false"
             android:label="@string/settings_title" />
 
+        <activity android:name=".ServiceSettingsActivity" android:exported="false" android:label="@string/services_heading" />
+
         <service
             android:name=".capture.MimiService"
             android:exported="false"

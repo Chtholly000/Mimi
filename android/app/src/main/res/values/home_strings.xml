@@ -9,11 +9,9 @@
     <string name="home_service">翻译服务</string>
     <string name="home_service_unset">%1$s · 待配置</string>
     <string name="home_service_ready">%1$s · 已配置</string>
-    <string name="home_provider_aliyun">阿里云</string>
-    <string name="home_provider_openai">OpenAI</string>
     <string name="home_setup_action">配置翻译服务</string>
     <string name="home_setup_status">首次使用</string>
-    <string name="home_setup_hint">需要你自己的阿里云或 OpenAI API Key。</string>
+    <string name="home_setup_hint">先选择翻译服务，填入你自己的服务商凭证。</string>
     <string name="home_ready_status">准备就绪</string>
     <string name="home_ready_hint">开启后，字幕会显示在其他应用上方。</string>
     <string name="home_overlay_hint">下一步将开启悬浮窗权限。</string>

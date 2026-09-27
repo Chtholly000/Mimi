@@ -5,7 +5,6 @@ import android.view.View
 import android.widget.AdapterView
 import android.widget.TextView
 import android.widget.ArrayAdapter
-import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -13,21 +12,13 @@ import android.widget.Spinner
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.textfield.TextInputEditText
 
 class SettingsActivity : AppCompatActivity() {
 
-    private lateinit var providerGroup: RadioGroup
-    private lateinit var providerDashscope: RadioButton
-    private lateinit var providerOpenai: RadioButton
-    private lateinit var apiKeyInput: TextInputEditText
-    private lateinit var baseUrlInput: TextInputEditText
-    private lateinit var modelInput: TextInputEditText
     private lateinit var fontSeek: SeekBar
     private lateinit var opacitySeek: SeekBar
     private lateinit var bgAlphaSeek: SeekBar
     private lateinit var historySeek: SeekBar
-    private lateinit var hotwordsInput: TextInputEditText
     private lateinit var colorSpinner: Spinner
 
     // Display the neutral default first without changing persisted preset indices.
@@ -48,7 +39,6 @@ class SettingsActivity : AppCompatActivity() {
             val appearance = tabs.checkedRadioButtonId == R.id.tab_appearance
             findViewById<View>(R.id.service_panel).visibility = if (appearance) View.GONE else View.VISIBLE
             findViewById<View>(R.id.appearance_panel).visibility = if (appearance) View.VISIBLE else View.GONE
-            findViewById<View>(R.id.service_footer).visibility = if (appearance) View.GONE else View.VISIBLE
             findViewById<View>(R.id.appearance_autosave).visibility = if (appearance) View.VISIBLE else View.GONE
             findViewById<ScrollView>(R.id.settings_scroll).scrollTo(0, 0)
         }
@@ -58,14 +48,6 @@ class SettingsActivity : AppCompatActivity() {
         } else R.id.tab_service
         tabs.check(savedInstanceState?.getInt("settings_tab", initialTab) ?: initialTab)
         showTab()
-        val advancedPanel = findViewById<View>(R.id.advanced_panel)
-        val advancedToggle = findViewById<MaterialButton>(R.id.advanced_toggle)
-        fun showAdvanced(expanded: Boolean) {
-            advancedPanel.visibility = if (expanded) View.VISIBLE else View.GONE
-            advancedToggle.setText(if (expanded) R.string.settings_advanced_collapse else R.string.settings_advanced)
-        }
-        showAdvanced(savedInstanceState?.getBoolean("settings_advanced") ?: false)
-        advancedToggle.setOnClickListener { showAdvanced(advancedPanel.visibility != View.VISIBLE) }
         val morePanel = findViewById<View>(R.id.appearance_more_panel)
         val moreToggle = findViewById<MaterialButton>(R.id.appearance_more_toggle)
         fun showMore(expanded: Boolean) {
@@ -75,57 +57,16 @@ class SettingsActivity : AppCompatActivity() {
         showMore(savedInstanceState?.getBoolean("settings_more") ?: false)
         moreToggle.setOnClickListener { showMore(morePanel.visibility != View.VISIBLE) }
 
-        providerGroup = findViewById(R.id.provider_group)
-        providerDashscope = findViewById(R.id.provider_dashscope)
-        providerOpenai = findViewById(R.id.provider_openai)
-        apiKeyInput = findViewById(R.id.api_key)
-        baseUrlInput = findViewById(R.id.base_url)
-        modelInput = findViewById(R.id.model)
         fontSeek = findViewById(R.id.font_size)
         opacitySeek = findViewById(R.id.overlay_opacity)
         bgAlphaSeek = findViewById(R.id.overlay_bg_alpha)
         historySeek = findViewById(R.id.history_lines)
-        hotwordsInput = findViewById(R.id.hotwords)
         colorSpinner = findViewById(R.id.translation_color)
 
-        when (SettingsStore.provider(this)) {
-            SettingsStore.PROVIDER_OPENAI -> providerOpenai.isChecked = true
-            else -> providerDashscope.isChecked = true
-        }
-        apiKeyInput.setText(SettingsStore.apiKey(this))
-        baseUrlInput.setText(SettingsStore.baseUrl(this, currentProvider()))
-        modelInput.setText(SettingsStore.model(this, currentProvider()))
-
-        // Keep unsaved edits separate while switching providers; Save persists them.
-        data class ProviderDraft(val key: String, val endpoint: String, val model: String)
-        val drafts = mutableMapOf<String, ProviderDraft>()
-        var displayedProvider = currentProvider()
-        fun rememberDraft() {
-            drafts[displayedProvider] = ProviderDraft(
-                apiKeyInput.text?.toString().orEmpty(),
-                baseUrlInput.text?.toString().orEmpty(),
-                modelInput.text?.toString().orEmpty(),
-            )
-        }
-        providerGroup.setOnCheckedChangeListener { _, _ ->
-            rememberDraft()
-            displayedProvider = currentProvider()
-            val draft = drafts[displayedProvider] ?: ProviderDraft(
-                SettingsStore.apiKey(this, displayedProvider),
-                SettingsStore.baseUrl(this, displayedProvider),
-                SettingsStore.model(this, displayedProvider),
-            )
-            apiKeyInput.setText(draft.key)
-            baseUrlInput.setText(draft.endpoint)
-            modelInput.setText(draft.model)
-            updateProviderFields()
-        }
-        updateProviderFields()
         fontSeek.progress = SettingsStore.fontSize(this)
         opacitySeek.progress = SettingsStore.overlayOpacity(this)
         bgAlphaSeek.progress = SettingsStore.overlayBgAlpha(this)
         historySeek.progress = SettingsStore.historyLines(this)
-        hotwordsInput.setText(SettingsStore.hotwordsText(this))
         colorSpinner.adapter = arrayAdapter(colorNameIds.map { getString(it) })
         colorSpinner.setSelection(colorIndices.indexOf(SettingsStore.translationColorIndex(this)).coerceAtLeast(0))
 
@@ -165,33 +106,17 @@ class SettingsActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.settings_reset_done, Toast.LENGTH_SHORT).show()
         }
 
-        findViewById<MaterialButton>(R.id.save).setOnClickListener {
-            val provider =
-                if (providerOpenai.isChecked) SettingsStore.PROVIDER_OPENAI
-                else SettingsStore.PROVIDER_DASHSCOPE
-            rememberDraft()
-            for ((draftProvider, draft) in drafts) {
-                SettingsStore.setApiKey(this, draft.key, draftProvider)
-                SettingsStore.setBaseUrl(this, draftProvider, draft.endpoint)
-                SettingsStore.setModel(this, draftProvider, draft.model)
-            }
-            SettingsStore.setProvider(this, provider)
-            SettingsStore.setHotwords(this, hotwordsInput.text?.toString().orEmpty())
-            Toast.makeText(this, R.string.settings_saved, Toast.LENGTH_SHORT).show()
-            finish()
-        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        ServiceSettingsUi.renderList(this, findViewById(R.id.service_panel))
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putInt("settings_tab", findViewById<RadioGroup>(R.id.settings_tabs).checkedRadioButtonId)
-        outState.putBoolean("settings_advanced", findViewById<View>(R.id.advanced_panel).visibility == View.VISIBLE)
         outState.putBoolean("settings_more", findViewById<View>(R.id.appearance_more_panel).visibility == View.VISIBLE)
         super.onSaveInstanceState(outState)
-    }
-
-    private fun updateProviderFields() {
-        findViewById<View>(R.id.glossary_panel).visibility =
-            if (currentProvider() == SettingsStore.PROVIDER_DASHSCOPE) View.VISIBLE else View.GONE
     }
 
     private fun refreshPreview() {
@@ -208,10 +133,6 @@ class SettingsActivity : AppCompatActivity() {
             SettingsStore.targetLang(this),
         )
     }
-
-    private fun currentProvider(): String =
-        if (providerOpenai.isChecked) SettingsStore.PROVIDER_OPENAI
-        else SettingsStore.PROVIDER_DASHSCOPE
 
     private fun arrayAdapter(items: List<String>): ArrayAdapter<String> {
         val adapter = ArrayAdapter(
