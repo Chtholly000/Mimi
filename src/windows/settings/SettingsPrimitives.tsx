@@ -30,18 +30,20 @@ export function SettingsSection({
 export function SettingsRow({
   label,
   description,
+  hint,
   children,
   align = "center",
 }: {
   label: string;
   description?: string;
+  hint?: string;
   children: ReactNode;
   align?: "center" | "start";
 }) {
   return (
     <div className={`settings-row settings-row--${align}`}>
       <span className="settings-row__copy">
-        <span className="settings-row__label">{label}</span>
+        <span className="settings-row__label">{label}{hint && <span className="settings-row__hint" tabIndex={0} role="note" aria-label={hint} title={hint}>ⓘ</span>}</span>
         {description && (
           <span className="settings-row__description">{description}</span>
         )}

@@ -37,6 +37,7 @@ import {
   type SettingsSessionVisibleStatus,
 } from "./settingsSessionControlModel";
 import { SettingsRow, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
+import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import "./settings.css";
 
 type SettingsCategory = "subtitles" | "service" | "general" | "export";
@@ -50,6 +51,7 @@ const CATEGORY_SECTION_IDS: Record<SettingsCategory, string> = {
 
 /** Compact settings surface shared by the macOS and Windows shells. */
 export function SettingsView() {
+  const { commands: desktopShortcuts, nativeShortcuts } = useDesktopShortcuts();
   const { theme, resolvedTheme, changeTheme } = useSettingsTheme();
   // Subscribe only to state rendered in this window. Subtitle text updates do
   // not re-render settings while a stream is active.
@@ -267,8 +269,23 @@ export function SettingsView() {
             className="settings-session-shortcut"
             aria-label={I18N.settings.startStopShortcut}
           >
-            <kbd>{startStopShortcut()}</kbd>
+            {nativeShortcuts && <kbd>{startStopShortcut()}</kbd>}
+            {desktopShortcuts && I18N.settings.systemShortcutRequired}
           </p>
+          {desktopShortcuts && (
+            <details className="settings-session-help settings-desktop-shortcuts">
+              <summary>{I18N.settings.systemShortcutSetup}</summary>
+              <p>{I18N.settings.systemShortcutInstructions}</p>
+              <dl>
+                <dt>{I18N.settings.startStopShortcut}</dt>
+                <dd><code>{desktopShortcuts.toggleSession}</code></dd>
+                <dt>{I18N.tray.blendBackground}</dt>
+                <dd><code>{desktopShortcuts.toggleImmersive}</code></dd>
+                <dt>{I18N.settings.subtitleDisplay}</dt>
+                <dd><code>{desktopShortcuts.cycleSubtitleDisplay}</code></dd>
+              </dl>
+            </details>
+          )}
           {sessionControl.canConfigure && (
             <button
               type="button"
@@ -332,7 +349,7 @@ export function SettingsView() {
                       </div>
                     </div>
                     <div className="subtitle-preview__controls">
-                      <SettingsRow label={I18N.settings.subtitleDisplay} description={`${I18N.settings.subtitleDisplayHelp} ${subtitleDisplayShortcut()}`}>
+                      <SettingsRow label={I18N.settings.subtitleDisplay} description={`${I18N.settings.subtitleDisplayHelp}${nativeShortcuts ? ` ${subtitleDisplayShortcut()}` : ""}`}>
                         <SettingsSelect
                           label={I18N.settings.subtitleDisplay}
                           value={settings.subtitleDisplayMode}
@@ -539,7 +556,7 @@ export function SettingsView() {
               id="session-export-panel"
               className={`settings-category-panel${activeCategory !== "export" ? " is-inactive" : ""}`}
             >
-              <SessionExport />
+              <SessionExport visible={activeCategory === "export"} />
             </div>
           </div>
         </div>

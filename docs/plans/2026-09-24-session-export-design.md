@@ -1,5 +1,8 @@
 # Optional session history and system-audio export
 
+The memory-only lifetime and manual-only storage rules below are superseded by
+`2026-09-28-session-history-design.md` for users who opt into local history.
+
 Issue #34 requests timestamped transcript and audio export. The accepted product
 boundary is explicit opt-in: two independent Session export settings, both false for new
 and existing installations. The non-secret booleans are remembered; content is

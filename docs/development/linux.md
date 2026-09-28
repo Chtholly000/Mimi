@@ -20,9 +20,40 @@ Download the `.deb` or `.AppImage` from [Releases](https://github.com/yuxino/mim
 Mimi opens Settings at startup, so a tray extension is optional. Minimize
 Settings to keep subtitles running; closing Settings exits Mimi on Linux. X11 is
 recommended for the complete overlay experience. Wayland window placement,
-always-on-top, click-through, and global shortcuts depend on the compositor;
-use Settings controls when shortcuts are unavailable. No Linux ARM64 package
+always-on-top, and click-through depend on the compositor. On Wayland,
+configure system keyboard shortcuts as described below or use Settings controls. No Linux ARM64 package
 is currently produced.
+
+## Keyboard shortcuts
+
+On X11, Mimi registers Ctrl+Shift+Space (start/stop), Ctrl+Shift+M (Immersive
+Mode), and Ctrl+Shift+B (subtitle display). On Wayland, assign commands in
+your desktop's keyboard settings. Mimi does not install desktop bindings or
+claim that an XWayland key grab is a working Wayland shortcut.
+
+For a `.deb` installation:
+
+| Action | Command |
+| --- | --- |
+| Start or stop subtitles | `mimi --toggle-session` |
+| Toggle Immersive Mode | `mimi --toggle-immersive` |
+| Cycle translation, bilingual, and original subtitles | `mimi --cycle-subtitle-display` |
+
+On GNOME, open Settings → Keyboard → View and Customize Shortcuts → Custom
+Shortcuts. Add an entry, paste the command, and choose an available key
+combination. Mimi's Settings shows commands for the current installation.
+AppImage users must use the quoted absolute AppImage path instead of `mimi`;
+update the binding after moving or renaming the AppImage.
+
+A command controls the running Mimi instance. When Mimi is closed, it opens
+Mimi and performs the action; starting subtitles still requires a configured
+service. Normal repeated launches bring the existing Settings window forward.
+Desktop commands are debounced, and start/stop is ignored while connecting or
+stopping, just like the native session shortcut.
+
+Installed `.deb` and AppImage CI tests verify command forwarding, start/stop,
+Immersive Mode, and absence of duplicate Settings windows under Xvfb. This
+checks the command path, not GNOME/KDE shortcut setup or native Wayland focus.
 
 ## Audio and troubleshooting
 

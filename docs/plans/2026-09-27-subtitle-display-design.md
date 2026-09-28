@@ -15,10 +15,17 @@ All new copy is localized into English, Simplified Chinese and Japanese.
 
 Committed bilingual subtitles use the source/translation pair already delivered
 by the reducer. Current draft snapshots do not carry a shared utterance ID;
-never pair a newer recognition draft with an older translated draft. Bilingual
-mode can preview the source while awaiting a confirmed pair. Keep draft tails
-bounded, do not duplicate same-language text, and preserve empty/paused/error and
-immersive behavior. This changes presentation only, not opt-in archival rules.
+never pair a newer recognition draft with an older translated draft in durable
+history. Issue #59 showed the gap in waiting for those pairs: the affected
+Alibaba live-translate session confirmed only two pairs in forty seconds while
+its translation draft streamed, so bilingual mode showed the original alone.
+Bilingual mode therefore keeps the previous preview row set as the trailing
+rows — recognized original first, then the streaming translation — and a
+preview gives way to its committed pair the moment that pair exists. In
+same-language mode, show one source preview even if the two streams differ
+briefly. Keep draft tails bounded and preserve empty/paused/error
+and immersive behavior. This changes presentation only, not opt-in archival
+rules.
 
 Validate preference migration and serialization, display selection and pairing,
 missing/late translations, long subtitles, same-language behavior, multi-window

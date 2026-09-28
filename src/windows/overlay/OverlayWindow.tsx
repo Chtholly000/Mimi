@@ -19,7 +19,7 @@ import {
   emptyStateText,
   hasSubtitleContent,
   subtitleSegmentLength,
-  visibleLiveSubtitle,
+  visibleLiveSubtitles,
 } from "./overlayModel";
 
 const ACCENT = "#7AA8FF";
@@ -75,15 +75,15 @@ export function OverlayWindow() {
     // draft churn a no-op here.
     [session.subtitles.history, segmentLength, sourceSegmentLength, settings.subtitleDisplayMode],
   );
-  // The live preview line is the timeline's LAST row (dimmed with a trailing
-  // ellipsis), so it naturally follows history instead of piling up at the
-  // bottom of the panel. Its text is stabilized: original-mode text settles
+  // The live preview rows are the timeline's LAST rows (dimmed with a trailing
+  // ellipsis), so they naturally follow history instead of piling up at the
+  // bottom of the panel. Text is stabilized: original-mode text settles
   // quickly, translated text stays calmer, and confirmed/removed tails update
   // immediately. Source and translation previews have separate stabilization
   // identities so a display-mode change cannot retain the previous source.
-  const liveSubtitle = useMemo(
+  const livePreviews = useMemo(
     () =>
-      visibleLiveSubtitle(
+      visibleLiveSubtitles(
         session.subtitles,
         settings,
         detectedLanguage,
@@ -98,34 +98,50 @@ export function OverlayWindow() {
       detectedLanguage,
     ],
   );
-  const draftText = useStableText(
-    liveSubtitle?.text ?? "",
-    liveSubtitle === null || liveSubtitle.isFinal
-      ? 0
-      : liveSubtitle.kind === "source"
-        ? 180
-        : 400,
-    liveSubtitle?.kind === "source" ? 750 : 1_500,
-    `${settings.subtitleDisplayMode}-${liveSubtitle?.kind ?? ""}`,
+  const sourcePreview = livePreviews.find((preview) => preview.kind === "source");
+  const translationPreview = livePreviews.find(
+    (preview) => preview.kind === "translation",
   );
-  const hasLiveDraft = draftText !== "" && !liveSubtitle?.isFinal;
+  const sourceDraftText = useStableText(
+    sourcePreview?.text ?? "",
+    sourcePreview === undefined || sourcePreview.isFinal ? 0 : 180,
+    750,
+    `${settings.subtitleDisplayMode}-source`,
+  );
+  const translationDraftText = useStableText(
+    translationPreview?.text ?? "",
+    translationPreview === undefined || translationPreview.isFinal ? 0 : 400,
+    1_500,
+    `${settings.subtitleDisplayMode}-translation`,
+  );
+  const hasLiveDraft =
+    (sourceDraftText !== "" && !sourcePreview?.isFinal) ||
+    (translationDraftText !== "" && !translationPreview?.isFinal);
   // Full row list: history rows plus the stabilized draft segments as the
-  // trailing rows. Rebuilt only when history or the (settled) draft changes.
-  const liveSegmentLength = liveSubtitle?.kind === "source" ? sourceSegmentLength : segmentLength;
+  // trailing rows, original above translation. The `draft-` id prefix is what
+  // the timeline uses to dim unconfirmed text. Rebuilt only when history or
+  // the (settled) drafts change.
   const allRows = useMemo(() => {
-    if (draftText === "") {
-      return rows;
-    }
-    const draftSegments = visibleDraftSegments(draftText, liveSegmentLength, 2);
-    return [
-      ...rows,
-      ...draftSegments.map((text, index) => ({
-        id: `draft-${index}`,
-        text,
-        createdAt: null,
-      })),
-    ];
-  }, [rows, draftText, liveSegmentLength]);
+    const draftRows = (
+      [
+        { text: sourceDraftText, kind: "source", length: sourceSegmentLength },
+        {
+          text: translationDraftText,
+          kind: "translation",
+          length: segmentLength,
+        },
+      ] as const
+    ).flatMap(({ text, kind, length }) =>
+      text === ""
+        ? []
+        : visibleDraftSegments(text, length, 2).map((segment, index) => ({
+            id: `draft-${kind}-${index}`,
+            text: segment,
+            createdAt: null,
+          })),
+    );
+    return draftRows.length === 0 ? rows : [...rows, ...draftRows];
+  }, [rows, sourceDraftText, translationDraftText, sourceSegmentLength, segmentLength]);
   const hasContent = hasSubtitleContent(session.subtitles);
 
   const phaseLabel = OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;

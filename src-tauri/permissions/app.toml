@@ -4,6 +4,7 @@ description = "Allows every bundled window to hydrate public settings and sessio
 commands.allow = [
   "settings_get",
   "session_get_state",
+  "app_desktop_shortcut_commands",
   "app_ui_test_frontend_ready",
 ]
 
@@ -16,6 +17,11 @@ commands.allow = [
   "app_is_portable",
   "app_is_linux_package",
   "session_archive_state",
+  "session_transcript_page",
+  "session_history_list",
+  "session_history_page",
+  "session_history_audio",
+  "session_history_delete",
   "session_archive_clear",
   "session_export",
   "app_open_releases",

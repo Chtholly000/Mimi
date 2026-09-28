@@ -292,6 +292,51 @@ export function visibleLiveSubtitle(
   };
 }
 
+/**
+ * Every live preview row the overlay should render below the committed
+ * history, in display order (original above translation).
+ *
+ * Bilingual mode used to show only the recognized original until a sentence
+ * pair completed, so a service that confirms pairs slowly (or only at long
+ * utterance boundaries) left the translation invisible while its draft
+ * streamed. The translation preview is therefore shown as soon as it exists,
+ * independently of the original; committed pairs still own the durable rows
+ * above and never repeat as a preview.
+ */
+export function visibleLiveSubtitles(
+  subtitles: SubtitleSnapshot,
+  settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage"> &
+    Partial<Pick<SettingsSnapshot, "subtitleDisplayMode">>,
+  detectedLanguage: string | null,
+  isTranslationPending: boolean,
+  isTranslationTimedOut: boolean,
+): LiveSubtitlePreview[] {
+  const preview = visibleLiveSubtitle(
+    subtitles,
+    settings,
+    detectedLanguage,
+    isTranslationPending,
+    isTranslationTimedOut,
+  );
+  const previews = preview === null ? [] : [preview];
+  if (settings.subtitleDisplayMode !== "bilingual") return previews;
+  // An empty original already leaves the translation preview on its own.
+  if (preview?.kind === "translation") return previews;
+  // Same-language drafts can differ briefly while the two streams advance.
+  // Showing both would duplicate one language in the bilingual display.
+  if (preview?.kind === "source" && isSameLanguageMode(settings, detectedLanguage)) {
+    return previews;
+  }
+  const translation = visibleDraft(subtitles.translation, subtitles.history);
+  if (translation === null) return previews;
+  // Never stack a second copy of the same text (same-language or
+  // original-target sessions translate into the recognized language).
+  if (subtitles.translation.text.trim() === subtitles.source.text.trim()) {
+    return previews;
+  }
+  return [...previews, { ...translation, kind: "translation" }];
+}
+
 export interface LanguageStatus {
   source: string;
   separator: string;

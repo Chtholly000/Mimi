@@ -61,7 +61,7 @@ Versions older than v1.3.8 need one manual installation to enable in-app updates
 - **macOS 13+ (Apple silicon and Intel)**: Choose the `_aarch64.dmg` for Apple silicon or `_x64.dmg` for Intel. Intel packages are available from v1.4.4; build and signing checks passed, but Intel hardware capture and permission behavior remain unverified. DMG installers are not Apple-notarized. If first launch is blocked, choose **Open Anyway** in **System Settings → Privacy & Security**. See the permission notes below when upgrading from an older build.
 - **Windows x64**: Unsigned preview EXE / MSI installers and, since v1.4.3, a portable ZIP are available; SmartScreen may warn. Extract `mimi_<version>_x64-portable.zip` and launch `mimi.exe` without installation. WebView2 must already be installed (it is normally present on Windows 11). The ZIP does not move settings, service credentials, or exported files into its folder; those remain in their existing user-selected or OS-managed locations. Update this copy by quitting Mimi and replacing it with a new ZIP from Releases. The portable build does not run the in-app installer updater.
 
-- **Linux x86_64 preview (Ubuntu 22.04+ baseline)**: Use the `.deb` package or AppImage. Requires PulseAudio or PipeWire with `pipewire-pulse`, a working default output device, and an unlocked Secret Service keyring (for example GNOME Keyring). Mimi captures only the output monitor, never the default input or microphone. Restart the session after changing output devices. X11 is recommended; Wayland compositors may restrict positioning, always-on-top, click-through, and global shortcuts. Use Settings if your desktop does not show a tray icon. Minimize it to keep subtitles running; closing it exits Mimi on Linux. Linux ARM64 packages are not provided. See [Linux setup and verification](docs/development/linux.md).
+- **Linux x86_64 preview (Ubuntu 22.04+ baseline)**: Use the `.deb` package or AppImage. Requires PulseAudio or PipeWire with `pipewire-pulse`, a working default output device, and an unlocked Secret Service keyring (for example GNOME Keyring). Mimi captures only the output monitor, never the default input or microphone. Restart the session after changing output devices. X11 is recommended; Wayland compositors may restrict positioning, always-on-top, and click-through. For Wayland keyboard shortcuts, use the commands shown in Settings to create system shortcuts. Use Settings if your desktop does not show a tray icon. Minimize it to keep subtitles running; closing it exits Mimi on Linux. Linux ARM64 packages are not provided. See [Linux setup and verification](docs/development/linux.md).
 
 ### macOS permissions after an update
 
@@ -87,7 +87,7 @@ See the [contributing guide](CONTRIBUTING.md) for building and contributing, and
 
 Choose **Translation only**, **Original + translation**, or **Original only**
 in Settings, the overlay control panel, or the tray. Switch instantly with
-**⌘⇧B** on macOS or **Ctrl+Shift+B** on Windows/Linux. This changes what you see
+**⌘⇧B** on macOS or **Ctrl+Shift+B** on Windows/Linux X11. On Wayland, bind `mimi --cycle-subtitle-display` in desktop settings. This changes what you see
 without restarting translation. Bilingual mode pairs confirmed sentences and
 previews the recognized original while a translation is pending.
 
