@@ -322,6 +322,11 @@ export function visibleLiveSubtitles(
   if (settings.subtitleDisplayMode !== "bilingual") return previews;
   // An empty original already leaves the translation preview on its own.
   if (preview?.kind === "translation") return previews;
+  // Same-language drafts can differ briefly while the two streams advance.
+  // Showing both would duplicate one language in the bilingual display.
+  if (preview?.kind === "source" && isSameLanguageMode(settings, detectedLanguage)) {
+    return previews;
+  }
   const translation = visibleDraft(subtitles.translation, subtitles.history);
   if (translation === null) return previews;
   // Never stack a second copy of the same text (same-language or

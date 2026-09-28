@@ -21,8 +21,9 @@ Alibaba live-translate session confirmed only two pairs in forty seconds while
 its translation draft streamed, so bilingual mode showed the original alone.
 Bilingual mode therefore keeps the previous preview row set as the trailing
 rows — recognized original first, then the streaming translation — and a
-preview gives way to its committed pair the moment that pair exists. Never stack
-identical text twice, keep draft tails bounded, and preserve empty/paused/error
+preview gives way to its committed pair the moment that pair exists. In
+same-language mode, show one source preview even if the two streams differ
+briefly. Keep draft tails bounded and preserve empty/paused/error
 and immersive behavior. This changes presentation only, not opt-in archival
 rules.
 

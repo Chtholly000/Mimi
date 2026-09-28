@@ -396,4 +396,17 @@ describe("bilingual preview rows", () => {
       { sourceLanguage: "ja", targetLanguage: "original", subtitleDisplayMode: "bilingual" }, "ja", false, false,
     )).toEqual([{ text: "今日は晴れです。", isFinal: false, kind: "source" }]);
   });
+
+  it.each([
+    { sourceLanguage: "ja" as const, targetLanguage: "original" as const, detectedLanguage: "ja" },
+    { sourceLanguage: "auto" as const, targetLanguage: "ja" as const, detectedLanguage: "ja" },
+  ])("keeps one language when same-language drafts briefly differ", ({ sourceLanguage, targetLanguage, detectedLanguage }) => {
+    expect(visibleLiveSubtitles(
+      subtitles(
+        { text: "今日は晴れ", isFinal: false },
+        { text: "今日は晴れです。", isFinal: false },
+      ),
+      { sourceLanguage, targetLanguage, subtitleDisplayMode: "bilingual" }, detectedLanguage, false, false,
+    )).toEqual([{ text: "今日は晴れ", isFinal: false, kind: "source" }]);
+  });
 });
