@@ -6,8 +6,10 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.Settings
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
 import android.view.inspector.WindowInspector
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -21,12 +23,15 @@ import app.yuxino.mimi.android.capture.MimiService
 import app.yuxino.mimi.android.provider.ServiceProvider
 import app.yuxino.mimi.android.provider.SubtitleBus
 import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.materialswitch.MaterialSwitch
 import java.io.File
 
 /** Real emulator interactions. No credential is saved and no capture/provider session starts. */
 class UiSmokeInstrumentation : Instrumentation() {
     private var theme = "light"
     private var demo = false
+    private var overlayPreview = false
+    private var expectLandscape = false
     private var screenshots = 0
     private var restoreTarget: String? = null
     private var restoreFont: Int? = null
@@ -38,6 +43,8 @@ class UiSmokeInstrumentation : Instrumentation() {
         super.onCreate(arguments)
         theme = arguments?.getString("theme") ?: "light"
         demo = arguments?.getString("demo") == "true"
+        overlayPreview = arguments?.getString("overlay_preview") == "true"
+        expectLandscape = arguments?.getString("expect_landscape") == "true"
         restoreTarget = arguments?.getString("restore_target")?.takeIf { it in listOf("zh", "en", "ja") }
         restoreFont = arguments?.getString("restore_font")?.toIntOrNull()?.takeIf { it in 12..24 }
         restoreColor = arguments?.getString("restore_color")?.toIntOrNull()?.takeIf { it in 0..4 }
@@ -57,7 +64,11 @@ class UiSmokeInstrumentation : Instrumentation() {
                 AppCompatDelegate.setDefaultNightMode(if (theme == "dark")
                     AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO)
             }
-            if (demo) demonstrate() else smoke()
+            when {
+                overlayPreview -> previewOverlay()
+                demo -> demonstrate()
+                else -> smoke()
+            }
         } catch (error: Throwable) {
             failure = error
         } finally {
@@ -69,7 +80,7 @@ class UiSmokeInstrumentation : Instrumentation() {
         }
         finish(if (failure == null) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
             putString("stream", if (failure == null)
-                "UI ${if (demo) "demo" else "smoke"} passed ($theme): $screenshots screenshots; non-secret preferences restored; no credentials saved or provider session started.\n"
+                "UI ${if (overlayPreview) "overlay preview" else if (demo) "demo" else "smoke"} passed ($theme): $screenshots screenshots; non-secret preferences restored; no credentials saved or provider session started.\n"
             else "UI check failed: ${failure.javaClass.simpleName}: ${failure.message}\n")
         })
     }
@@ -98,6 +109,15 @@ class UiSmokeInstrumentation : Instrumentation() {
         check(SettingsStore.fontSize(targetContext) == initialFont)
         check(SettingsStore.translationColorIndex(targetContext) == initialColor)
         check(SettingsStore.historyLines(targetContext) == initialHistory)
+        val initialImmersive = SettingsStore.immersiveSubtitles(targetContext)
+        val immersive = settings.findViewById<MaterialSwitch>(R.id.immersive_subtitles)
+        check(immersive.isChecked == initialImmersive)
+        click(settings, R.id.immersive_subtitles)
+        check(SettingsStore.immersiveSubtitles(targetContext) != initialImmersive)
+        check(settings.findViewById<SeekBar>(R.id.overlay_bg_alpha).isEnabled == initialImmersive)
+        capture("settings-immersive-$theme")
+        click(settings, R.id.immersive_subtitles)
+        check(SettingsStore.immersiveSubtitles(targetContext) == initialImmersive)
         val seek = settings.findViewById<SeekBar>(R.id.font_size)
         drag(seek, if (initialFont < 20) 20 else 16)
         check(SettingsStore.fontSize(targetContext) == seek.progress) { "Font was not automatically saved" }
@@ -160,6 +180,153 @@ class UiSmokeInstrumentation : Instrumentation() {
         capture("settings-keyboard-$theme")
         onUi { editor.finish(); reopened.finish(); home.finish() }
         waitForIdleSync()
+    }
+
+    private fun previewOverlay() {
+        check(Settings.canDrawOverlays(targetContext)) { "Grant the debug app overlay permission before preview." }
+        check(!MimiService.isRunning) { "Stop the active session before preview." }
+        // Use the new neutral defaults for both screenshots; AppearanceSnapshot
+        // restores the emulator's existing preferences when this check finishes.
+        SettingsStore.setTranslationColorIndex(targetContext, 1)
+        SettingsStore.setOverlayBgAlpha(targetContext, 65)
+        SettingsStore.setOverlayOpacity(targetContext, 100)
+        SettingsStore.setImmersiveSubtitles(targetContext, false)
+        launchHome()
+        try {
+            check(targetContext.startService(Intent(targetContext, MimiService::class.java)
+                .setAction(MimiService.ACTION_UI_PREVIEW)) != null)
+            var root: View? = null
+            for (attempt in 0 until 30) {
+                waitForIdleSync()
+                root = WindowInspector.getGlobalWindowViews().firstOrNull { it.tag == "mimi-overlay" }
+                if (root != null) break
+                SystemClock.sleep(100)
+            }
+            val overlay = root ?: error("Actual floating overlay did not appear; windows=" +
+                WindowInspector.getGlobalWindowViews().map { it.tag })
+            val compact = overlay.findViewWithTag<View>("compact-subtitle")
+            val expanded = overlay.findViewWithTag<View>("expanded-subtitles")
+            check(compact != null && expanded != null)
+            targetContext.startActivity(Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_HOME)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            waitForIdleSync()
+            if (expectLandscape) {
+                var wide = false
+                for (attempt in 0 until 30) {
+                    val screenshot = checkNotNull(uiAutomation.takeScreenshot())
+                    wide = screenshot.width > screenshot.height
+                    screenshot.recycle()
+                    if (wide) break
+                    SystemClock.sleep(100)
+                }
+                check(wide) { "Landscape display did not settle before screenshot" }
+            }
+            check(compact.isShown && !expanded.isShown)
+            capture("overlay-before-compact-$theme")
+            onUi { check(compact.performClick()) }
+            check(expanded.isShown && !compact.isShown) { "Expanded floating overlay did not open" }
+            if (targetContext.resources.displayMetrics.widthPixels > targetContext.resources.displayMetrics.heightPixels) {
+                val params = overlay.layoutParams as WindowManager.LayoutParams
+                check(params.width <= (560 * targetContext.resources.displayMetrics.density).toInt()) {
+                    "Landscape panel is too wide"
+                }
+                check(params.height <= (targetContext.resources.displayMetrics.heightPixels * 0.48f).toInt()) {
+                    "Landscape panel blocks too much height"
+                }
+            }
+            capture("overlay-after-expanded-default-$theme")
+            val savedHistory = SettingsStore.historyLines(targetContext)
+            targetContext.startService(Intent(targetContext, MimiService::class.java)
+                .setAction(MimiService.ACTION_UI_PREVIEW_HISTORY))
+            waitForIdleSync()
+            check(SettingsStore.historyLines(targetContext) == savedHistory)
+            capture("overlay-after-expanded-history-$theme")
+            onUi { check(expanded.findViewWithTag<View>("collapse-overlay").performClick()) { "Collapse click failed" } }
+            check(compact.isShown && !expanded.isShown) { "Floating overlay did not collapse" }
+            onUi { check(compact.performClick()) { "Compact reopen click failed" } }
+            onUi { check(expanded.findViewWithTag<View>("enter-immersive").performClick()) { "Immersive entry click failed" } }
+            check(SettingsStore.immersiveSubtitles(targetContext)) { "Immersive entry did not update preference" }
+            val exit = WindowInspector.getGlobalWindowViews()
+                .firstOrNull { it.tag == "exit-immersive" }
+            check(exit?.isShown == true) { "Immersive mode has no in-overlay exit" }
+            var touchThrough = false
+            for (attempt in 0 until 30) {
+                waitForIdleSync()
+                touchThrough = WindowInspector.getGlobalWindowViews().any {
+                    it.tag == "mimi-overlay" &&
+                        (it.layoutParams as WindowManager.LayoutParams).flags and
+                            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE != 0
+                }
+                if (touchThrough) break
+                SystemClock.sleep(100)
+            }
+            check(touchThrough) { "Subtitle window is not touch-through" }
+            check((exit.layoutParams as WindowManager.LayoutParams).flags and
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE == 0) { "Exit control is not touchable" }
+            capture("overlay-after-immersive-$theme")
+            dragExitControl(exit)
+            onUi { check(exit.performClick()) { "Exit control click failed" } }
+            waitForIdleSync()
+            check(!SettingsStore.immersiveSubtitles(targetContext)) { "Exit did not clear immersive preference" }
+            val restored = WindowInspector.getGlobalWindowViews()
+                .firstOrNull { it.tag == "mimi-overlay" }
+            check(restored?.findViewWithTag<View>("compact-subtitle")?.isShown == true) {
+                "Exit did not restore the compact overlay"
+            }
+            check(WindowInspector.getGlobalWindowViews().none { it.tag == "exit-immersive" }) {
+                "Exit control remained after leaving immersive mode"
+            }
+            SettingsStore.setImmersiveSubtitles(targetContext, true)
+            targetContext.startService(Intent(targetContext, MimiService::class.java)
+                .setAction(MimiService.ACTION_APPLY_APPEARANCE))
+            val settingsExit = waitForOverlayTag("exit-immersive")
+            check(settingsExit?.isShown == true) { "Settings change did not apply to the active overlay" }
+            onUi { SubtitleBus.hideLive() }
+            check(settingsExit.isShown) { "Immersive exit disappeared when speech paused" }
+            SettingsStore.setImmersiveSubtitles(targetContext, false)
+            targetContext.startService(Intent(targetContext, MimiService::class.java)
+                .setAction(MimiService.ACTION_APPLY_APPEARANCE))
+            for (attempt in 0 until 30) {
+                waitForIdleSync()
+                if (WindowInspector.getGlobalWindowViews().none { it.tag == "exit-immersive" }) break
+                SystemClock.sleep(100)
+            }
+            check(WindowInspector.getGlobalWindowViews().none { it.tag == "exit-immersive" })
+        } finally {
+            targetContext.startService(MimiService.stopIntent(targetContext))
+            waitForIdleSync()
+        }
+    }
+
+    private fun waitForOverlayTag(tag: String): View? {
+        repeat(30) {
+            waitForIdleSync()
+            WindowInspector.getGlobalWindowViews().firstOrNull { it.tag == tag }?.let { return it }
+            SystemClock.sleep(100)
+        }
+        return null
+    }
+
+    private fun dragExitControl(exit: View) {
+        val location = IntArray(2)
+        onUi { exit.getLocationOnScreen(location) }
+        val x = location[0] + exit.width / 2f
+        val startY = location[1] + exit.height / 2f
+        val endY = (startY + 90f).coerceAtMost(targetContext.resources.displayMetrics.heightPixels - 70f)
+        val down = SystemClock.uptimeMillis()
+        fun event(action: Int, y: Float) {
+            val pointer = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0)
+            sendPointerSync(pointer)
+            pointer.recycle()
+        }
+        event(MotionEvent.ACTION_DOWN, startY)
+        event(MotionEvent.ACTION_MOVE, endY)
+        event(MotionEvent.ACTION_UP, endY)
+        waitForIdleSync()
+        val after = IntArray(2)
+        onUi { exit.getLocationOnScreen(after) }
+        check(after[1] > location[1] + 20) { "Immersive exit control could not move away from app controls" }
     }
 
     private fun demonstrate() {
@@ -309,6 +476,7 @@ class UiSmokeInstrumentation : Instrumentation() {
         private val opacity = SettingsStore.overlayOpacity(targetContext)
         private val background = restoreBackground ?: SettingsStore.overlayBgAlpha(targetContext)
         private val history = SettingsStore.historyLines(targetContext)
+        private val immersive = SettingsStore.immersiveSubtitles(targetContext)
         fun restore() {
             SettingsStore.setSourceLang(targetContext, source)
             SettingsStore.setTargetLang(targetContext, target)
@@ -317,6 +485,7 @@ class UiSmokeInstrumentation : Instrumentation() {
             SettingsStore.setOverlayOpacity(targetContext, opacity)
             SettingsStore.setOverlayBgAlpha(targetContext, background)
             SettingsStore.setHistoryLines(targetContext, history)
+            SettingsStore.setImmersiveSubtitles(targetContext, immersive)
             SubtitleBus.clear()
         }
     }

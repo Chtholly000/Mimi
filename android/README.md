@@ -28,9 +28,17 @@ translation for system audio. Pure Kotlin (no Tauri), single module.
   leaving a secret field empty preserves its saved value. Changes are written only with Save and use.
 - **Subtitle overlay** — `TYPE_APPLICATION_OVERLAY` floating window, text-hugging
   card, always horizontally centered over the video, vertically draggable
-  (position persists). Background alpha adjustable 0–90 % (0 = plain text over
-  video, like embedded subtitles), text color presets, font size, whole-window
-  opacity.
+  (position persists). Tap it to open a translucent reading panel with the
+  current source and translation; confirmed lines appear there only when
+  bounded history is enabled in settings. The panel has a language shortcut,
+  font-size control, collapse action, and immersive toggle. Its compact card has adjustable background alpha
+  (0–90 %), text color presets, font size, and whole-window opacity. An optional
+  immersive mode shows plain text with a contrast shadow and passes touches
+  through to the app below. A small control on the right edge can be moved
+  vertically and exits immersive
+  mode without stopping the session; the app and foreground notification remain
+  backup controls. In landscape, the expanded panel stays centered and caps its
+  width at 560 dp; its covered area receives touches until it is collapsed.
 - **Native-subtitle behaviour** — only the current sentence is shown (drafts
   are clipped to the last sentence of the provider's cumulative buffer);
   English source speech shows source + translation lines, other languages show
@@ -103,7 +111,8 @@ build settings; this does not imply physical-device or all-provider validation.
 The Android interface reuses Mimi's existing character artwork and neutral
 light/dark palette. Languages can be changed directly on the home screen with Undo. Tapping the
 subtitle sample opens appearance settings, where changes are saved automatically
-and previewed without capture or a network session. The service tab lists all eight integrations and opens a separate editor with only that service’s fields.
+and previewed without capture or a network session. The appearance screen also
+previews the compact card and immersive text mode. The service tab lists all eight integrations and opens a separate editor with only that service’s fields.
 Credentials require explicit Save and use; changing appearance never saves credentials. Your own service credentials are still required for real translation.
 
 On a development emulator with no active subtitle session:
@@ -114,6 +123,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 adb shell am instrument -w -e theme light app.yuxino.mimi.android.test/app.yuxino.mimi.android.UiSmokeInstrumentation
 adb shell am instrument -w -e theme dark app.yuxino.mimi.android.test/app.yuxino.mimi.android.UiSmokeInstrumentation
+adb shell am instrument -w -e overlay_preview true -e theme light app.yuxino.mimi.android.test/app.yuxino.mimi.android.UiSmokeInstrumentation
 ```
 
 The checks exercise quick language selection/Undo, direct appearance access,

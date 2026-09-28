@@ -22,8 +22,8 @@ class SubtitlePreviewView @JvmOverloads constructor(
 
     init {
         orientation = VERTICAL
-        minimumHeight = dp(176)
-        setPadding(dp(20), dp(18), dp(20), dp(20))
+        minimumHeight = dp(152)
+        setPadding(dp(18), dp(16), dp(18), dp(18))
         background = GradientDrawable().apply {
             setColor(ContextCompat.getColor(context, R.color.mimi_preview_bg))
             cornerRadius = dp(14).toFloat()
@@ -44,7 +44,7 @@ class SubtitlePreviewView @JvmOverloads constructor(
         })
         addView(labelRow)
         subtitle.orientation = VERTICAL
-        subtitle.setPadding(dp(8), dp(10), dp(8), dp(10))
+        subtitle.setPadding(dp(12), dp(9), dp(12), dp(10))
         source.setTextColor(Color.rgb(203, 203, 203))
         source.textSize = 14f
         source.setLineSpacing(dp(3).toFloat(), 1f)
@@ -57,16 +57,16 @@ class SubtitlePreviewView @JvmOverloads constructor(
             topMargin = dp(8)
         })
         addView(subtitle, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply {
-            topMargin = dp(18)
+            topMargin = dp(14)
         })
-        configure(16, Color.WHITE, 100, 0, "zh")
+        configure(16, Color.WHITE, 100, 65, "zh", false)
     }
 
     fun showAppearanceShortcut() {
         exampleLabel.setText(R.string.preview_edit)
     }
 
-    fun configure(fontSize: Int, color: Int, opacity: Int, backgroundAlpha: Int, targetLang: String) {
+    fun configure(fontSize: Int, color: Int, opacity: Int, backgroundAlpha: Int, targetLang: String, immersive: Boolean) {
         source.setText(if (targetLang == "en") R.string.preview_zh else R.string.preview_source)
         translation.setText(when (targetLang) {
             "en" -> R.string.preview_en
@@ -76,10 +76,12 @@ class SubtitlePreviewView @JvmOverloads constructor(
         source.textSize = fontSize.coerceIn(12, 24).toFloat()
         translation.textSize = fontSize.coerceIn(12, 24) + 3f
         translation.setTextColor(color)
-        subtitle.alpha = opacity.coerceIn(20, 100) / 100f
+        subtitle.alpha = if (immersive) 0.8f else opacity.coerceIn(20, 100) / 100f
+        source.setShadowLayer(if (immersive) dp(4).toFloat() else 0f, 0f, dp(1).toFloat(), Color.BLACK)
+        translation.setShadowLayer(if (immersive) dp(4).toFloat() else 0f, 0f, dp(1).toFloat(), Color.BLACK)
         subtitle.background = GradientDrawable().apply {
-            setColor(Color.argb(backgroundAlpha.coerceIn(0, 90) * 255 / 100, 16, 16, 16))
-            cornerRadius = dp(8).toFloat()
+            setColor(Color.argb(if (immersive) 0 else backgroundAlpha.coerceIn(0, 90) * 255 / 100, 16, 16, 16))
+            cornerRadius = dp(12).toFloat()
         }
     }
 

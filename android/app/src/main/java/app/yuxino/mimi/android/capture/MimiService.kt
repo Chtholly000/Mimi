@@ -2,6 +2,7 @@ package app.yuxino.mimi.android.capture
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.pm.ApplicationInfo
 import androidx.core.content.ContextCompat
 import android.app.Notification
 import android.app.NotificationChannel
@@ -10,6 +11,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -31,6 +33,9 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.Toast
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.atomic.AtomicBoolean
@@ -62,11 +67,24 @@ class MimiService : Service() {
 
     private var windowManager: WindowManager? = null
     private var overlayView: View? = null
+    private var overlayParams: WindowManager.LayoutParams? = null
+    private var immersiveExitView: View? = null
+    private var immersiveExitParams: WindowManager.LayoutParams? = null
+    private var immersiveExitYFraction = 0.42f
+    private var compactView: View? = null
+    private var expandedView: View? = null
+    private var expanded = false
+    private var compactYOffset = 0
+    private var previewMode = false
+    private var immersiveSession = false
     private var sessionSourceLanguage = "auto"
     private var statusView: TextView? = null
     private var historyView: TextView? = null
     private var sourceView: TextView? = null
     private var translationView: TextView? = null
+    private var expandedStatusView: TextView? = null
+    private var expandedSourceView: TextView? = null
+    private var expandedTranslationView: TextView? = null
 
     private val busListener = object : SubtitleBus.Listener {
         override fun onSubtitleChanged() {
@@ -113,7 +131,36 @@ class MimiService : Service() {
             stopEverything()
             return START_NOT_STICKY
         }
-        if (isRunning) return START_NOT_STICKY
+        if (intent?.action == ACTION_APPLY_APPEARANCE) {
+            if (overlayView != null && immersiveSession != SettingsStore.immersiveSubtitles(this)) {
+                rebuildOverlay()
+            } else if (overlayView == null && !isRunning) stopSelf()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_UI_PREVIEW_HISTORY && previewMode &&
+            applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        ) {
+            previewHistoryEnabled = true
+            seedPreviewHistory()
+            showExpandedOverlay()
+            return START_NOT_STICKY
+        }
+        if (isRunning || overlayView != null) return START_NOT_STICKY
+        // Debug-only screenshot fixture: the real overlay with synthetic
+        // subtitles and no MediaProjection, provider, or credential access.
+        if (intent?.action == ACTION_UI_PREVIEW &&
+            applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+        ) {
+            previewMode = true
+            previewHistoryEnabled = false
+            sessionSourceLanguage = "ja"
+            SubtitleBus.clear()
+            SubtitleBus.setHistoryLimit(0)
+            SubtitleBus.onSourceDraft("もう少し歩いてみましょう。", "ja")
+            SubtitleBus.onTranslationDraft("再往前走一会儿吧。")
+            showOverlay()
+            return START_NOT_STICKY
+        }
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         val resultData = intent?.compatGetParcelableExtra(EXTRA_RESULT_DATA)
         if (resultCode == Int.MIN_VALUE || resultData == null) {
@@ -312,6 +359,7 @@ class MimiService : Service() {
         try { projection?.stop() } catch (_: Exception) { }
         SubtitleBus.clear()
         hideOverlay()
+        previewMode = false
         setRunning(false)
     }
 
@@ -328,21 +376,38 @@ class MimiService : Service() {
         super.onDestroy()
     }
 
-    /** Overlay window: draggable vertically, full width, translucent card. */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        mainHandler.post {
+            if (expanded) {
+                resizeExpandedOverlay(SubtitleBus.historySnapshot().size)
+            }
+            immersiveExitParams?.let { params ->
+                params.y = exitControlY()
+                immersiveExitView?.let { windowManager?.updateViewLayout(it, params) }
+            }
+        }
+    }
+
+    /** The actual floating window: a small live line that opens a bounded reading panel. */
     private fun showOverlay() {
         if (overlayView != null) return
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
 
-        val bgAlpha = SettingsStore.overlayBgAlpha(this)
-        val container = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(12))
+        immersiveSession = SettingsStore.immersiveSubtitles(this)
+        expanded = false
+        val bgAlpha = if (immersiveSession) 0 else SettingsStore.overlayBgAlpha(this)
+        val compact = LinearLayout(this).apply {
+            tag = "compact-subtitle"
+            orientation = LinearLayout.VERTICAL
+            val horizontalPadding = if (immersiveSession) 3 else 14
+            setPadding(dp(horizontalPadding), dp(9), dp(horizontalPadding), dp(10))
             background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
+                cornerRadius = dp(12).toFloat()
                 setColor(((bgAlpha / 100.0) * 255).toInt() shl 24 or 0x101010)
             }
-            alpha = SettingsStore.overlayOpacity(this@MimiService) / 100f
+            alpha = if (immersiveSession) 1f else SettingsStore.overlayOpacity(this@MimiService) / 100f
         }
 
         val status = TextView(this).apply {
@@ -350,103 +415,392 @@ class MimiService : Service() {
             textSize = 11f
             visibility = View.GONE
         }
-        val history = TextView(this).apply {
-            setTextColor(0xFFB7B7B7.toInt())
-            textSize = (SettingsStore.fontSize(this@MimiService) - 3).coerceAtLeast(11).toFloat()
-            setLineSpacing(dp(2).toFloat(), 1f)
-        }
         val source = TextView(this).apply {
-            setTextColor(Color.WHITE)
+            setTextColor(0xFFE7E7E7.toInt())
             textSize = SettingsStore.fontSize(this@MimiService).toFloat()
-            setTypeface(typeface, Typeface.BOLD)
+            maxLines = 2
+            maxWidth = (resources.displayMetrics.widthPixels * 0.88f).toInt()
+            if (immersiveSession) setShadowLayer(dp(4).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
         }
         val translation = TextView(this).apply {
             setTextColor(SettingsStore.translationColor(this@MimiService))
             textSize = (SettingsStore.fontSize(this@MimiService) + 3).toFloat()
             setTypeface(typeface, Typeface.BOLD)
-            // Keep the card inside the screen in either orientation.
-            maxWidth = (resources.displayMetrics.widthPixels * 0.92f).toInt()
+            maxLines = 3
+            if (immersiveSession) setShadowLayer(dp(4).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
+            maxWidth = (resources.displayMetrics.widthPixels * 0.88f).toInt()
         }
 
-        container.addView(status)
-        container.addView(history)
-        container.addView(source)
-        container.addView(translation)
+        compact.addView(status)
+        compact.addView(source)
+        compact.addView(translation)
+        val panel = if (immersiveSession) null else buildExpandedPanel()
+        val root = FrameLayout(this).apply {
+            tag = "mimi-overlay"
+            addView(compact, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER,
+            ))
+            panel?.let {
+                it.visibility = View.GONE
+                addView(it, FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT,
+                ))
+            }
+        }
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                or (if (immersiveSession) WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else 0),
             PixelFormat.TRANSLUCENT,
         ).apply {
-            // Always horizontally centered over the video, offset from the
-            // bottom edge; the card hugs its text in both directions.
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             y = dp(SettingsStore.overlayYOffset(this@MimiService))
+            // Android 12+ passes touches through an untrusted overlay only when
+            // its window opacity stays at or below the system threshold (0.8).
+            if (immersiveSession) alpha = 0.8f
         }
+        compactYOffset = params.y
 
-        // Vertical drag only; horizontal centering is fixed so every sentence
-        // length stays self-centered, like native video subtitles.
         var initialY = 0
         var initialTouchY = 0f
-        container.setOnTouchListener { _, event ->
+        var dragged = false
+        if (!immersiveSession) compact.setOnClickListener { showExpandedOverlay() }
+        if (!immersiveSession) compact.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     initialY = params.y
                     initialTouchY = event.rawY
+                    dragged = false
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val newY = (initialY - (event.rawY - initialTouchY)).toInt()
-                    params.y = newY.coerceAtLeast(0)
-                    wm.updateViewLayout(container, params)
+                    if (kotlin.math.abs(event.rawY - initialTouchY) > dp(8)) dragged = true
+                    if (dragged) {
+                        params.y = (initialY - (event.rawY - initialTouchY)).toInt().coerceAtLeast(0)
+                        wm.updateViewLayout(root, params)
+                    }
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    container.performClick()
-                    SettingsStore.setOverlayYOffset(
-                        this, (params.y / resources.displayMetrics.density).toInt(),
-                    )
+                    if (dragged) {
+                        compactYOffset = params.y
+                        SettingsStore.setOverlayYOffset(
+                            this, (params.y / resources.displayMetrics.density).toInt(),
+                        )
+                    } else compact.performClick()
                     true
                 }
+                MotionEvent.ACTION_CANCEL -> true
                 else -> false
             }
         }
 
-        wm.addView(container, params)
-        overlayView = container
+        wm.addView(root, params)
+        overlayView = root
+        overlayParams = params
+        compactView = compact
+        expandedView = panel
         statusView = status
-        historyView = history
         sourceView = source
         translationView = translation
+        if (immersiveSession) showImmersiveExitControl(wm)
+        renderBus()
+    }
+
+    private fun showImmersiveExitControl(wm: WindowManager) {
+        val exit = panelButton(getString(R.string.overlay_exit_short)).apply {
+            tag = "exit-immersive"
+            contentDescription = getString(R.string.overlay_exit_immersive)
+            alpha = 0.68f
+            setOnClickListener { setImmersiveMode(false) }
+        }
+        val params = WindowManager.LayoutParams(
+            dp(56), dp(40), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            x = dp(4)
+            y = exitControlY()
+        }
+        var initialY = 0
+        var initialTouchY = 0f
+        var dragged = false
+        exit.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialY = params.y
+                    initialTouchY = event.rawY
+                    dragged = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (kotlin.math.abs(event.rawY - initialTouchY) > dp(8)) dragged = true
+                    if (dragged) {
+                        params.y = (initialY + event.rawY - initialTouchY).toInt()
+                            .coerceIn(0, (resources.displayMetrics.heightPixels - dp(48)).coerceAtLeast(0))
+                        wm.updateViewLayout(exit, params)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (dragged) {
+                        immersiveExitYFraction = params.y.toFloat() /
+                            resources.displayMetrics.heightPixels.coerceAtLeast(1)
+                    } else exit.performClick()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+        wm.addView(exit, params)
+        immersiveExitView = exit
+        immersiveExitParams = params
+    }
+
+    private fun exitControlY(): Int =
+        (resources.displayMetrics.heightPixels * immersiveExitYFraction).toInt()
+            .coerceIn(0, (resources.displayMetrics.heightPixels - dp(48)).coerceAtLeast(0))
+
+    private fun setImmersiveMode(enabled: Boolean) {
+        if (immersiveSession == enabled) return
+        SettingsStore.setImmersiveSubtitles(this, enabled)
+        rebuildOverlay()
+    }
+
+    private fun rebuildOverlay() {
+        hideOverlay()
+        showOverlay()
+    }
+
+    private fun buildExpandedPanel(): View {
+        val panel = LinearLayout(this).apply {
+            tag = "expanded-subtitles"
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(14), dp(18), dp(18))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(22).toFloat()
+                setColor(0xD91B1B1B.toInt())
+            }
+        }
+        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+        val collapse = panelButton(getString(R.string.overlay_collapse)).apply {
+            tag = "collapse-overlay"
+            contentDescription = getString(R.string.overlay_collapse_description)
+            setOnClickListener { collapseOverlay() }
+        }
+        val font = panelButton("Aa").apply {
+            contentDescription = getString(R.string.overlay_font_description)
+            setOnClickListener {
+                val current = SettingsStore.fontSize(this@MimiService)
+                SettingsStore.setFontSize(this@MimiService, if (current >= 22) 16 else current + 2)
+                updateOverlayFontSize()
+            }
+        }
+        val immersive = panelButton(getString(R.string.overlay_enter_immersive)).apply {
+            tag = "enter-immersive"
+            contentDescription = getString(R.string.overlay_enter_immersive)
+            setOnClickListener { setImmersiveMode(true) }
+        }
+        val route = panelButton(
+            "${languageName(sessionSourceLanguage)} → ${languageName(SettingsStore.targetLang(this))}",
+        ).apply {
+            contentDescription = getString(R.string.overlay_language_description)
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setOnClickListener {
+                startActivity(Intent(this@MimiService, app.yuxino.mimi.android.MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        }
+        header.addView(collapse, LinearLayout.LayoutParams(dp(58), dp(38)))
+        header.addView(route, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(8) })
+        header.addView(font, LinearLayout.LayoutParams(dp(42), dp(38)).apply { marginStart = dp(8) })
+        header.addView(immersive, LinearLayout.LayoutParams(dp(58), dp(38)).apply { marginStart = dp(8) })
+        panel.addView(header)
+
+        expandedStatusView = TextView(this).apply {
+            setTextColor(0xFFB9B9B9.toInt())
+            textSize = 12f
+            visibility = View.GONE
+        }
+        panel.addView(expandedStatusView, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+
+        val scroll = ScrollView(this).apply { isFillViewport = true }
+        val transcript = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        historyView = TextView(this).apply {
+            setTextColor(0xFFB9B9B9.toInt())
+            textSize = (SettingsStore.fontSize(this@MimiService) - 1).coerceAtLeast(12).toFloat()
+            setLineSpacing(dp(5).toFloat(), 1f)
+        }
+        transcript.addView(historyView)
+        scroll.addView(transcript)
+        panel.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(18) })
+        panel.addView(View(this).apply { setBackgroundColor(0xFF555555.toInt()) },
+            LinearLayout.LayoutParams(-1, dp(1)))
+        expandedSourceView = TextView(this).apply {
+            setTextColor(0xFFD5D5D5.toInt())
+            textSize = SettingsStore.fontSize(this@MimiService).toFloat()
+            maxLines = 2
+        }
+        expandedTranslationView = TextView(this).apply {
+            setTextColor(SettingsStore.translationColor(this@MimiService))
+            textSize = (SettingsStore.fontSize(this@MimiService) + 3).toFloat()
+            setTypeface(typeface, Typeface.BOLD)
+            maxLines = 3
+        }
+        panel.addView(expandedSourceView, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+        panel.addView(expandedTranslationView, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        return panel
+    }
+
+    private var previewHistoryEnabled = false
+
+    private fun seedPreviewHistory() {
+        SubtitleBus.setHistoryLimit(3)
+        listOf(
+            "少し待ってください。" to "请稍等一下。",
+            "今日はいい天気ですね。" to "今天天气真好。",
+            "次はどこへ行きますか？" to "接下来去哪里？",
+        ).forEach { (source, translation) ->
+            SubtitleBus.onSourceFinal(source, "ja")
+            SubtitleBus.onTranslationFinal(translation)
+        }
+        SubtitleBus.onSourceDraft("もう少し歩いてみましょう。", "ja")
+        SubtitleBus.onTranslationDraft("再往前走一会儿吧。")
+    }
+
+    private fun panelButton(label: String): TextView = TextView(this).apply {
+        text = label
+        textSize = 13f
+        setTypeface(typeface, Typeface.BOLD)
+        setTextColor(Color.WHITE)
+        gravity = Gravity.CENTER
+        setPadding(dp(8), 0, dp(8), 0)
+        background = GradientDrawable().apply {
+            cornerRadius = dp(24).toFloat()
+            setColor(0xFF414141.toInt())
+        }
+        isClickable = true
+        isFocusable = true
+    }
+
+    private fun languageName(code: String): String = getString(when (code) {
+        "zh" -> R.string.lang_zh
+        "en" -> R.string.lang_en
+        "ja" -> R.string.lang_ja
+        "ko" -> R.string.lang_ko
+        else -> R.string.lang_auto
+    })
+
+    private fun updateOverlayFontSize() {
+        val size = SettingsStore.fontSize(this).toFloat()
+        sourceView?.textSize = size
+        translationView?.textSize = size + 3
+        expandedSourceView?.textSize = size
+        expandedTranslationView?.textSize = size + 3
+        historyView?.textSize = (size - 1).coerceAtLeast(12f)
+    }
+
+    private fun showExpandedOverlay() {
+        val root = overlayView ?: return
+        val params = overlayParams ?: return
+        val panel = expandedView ?: return
+        compactYOffset = params.y
+        compactView?.visibility = View.GONE
+        panel.visibility = View.VISIBLE
+        expanded = true
+        params.width = expandedPanelWidth()
+        params.height = expandedPanelHeight(0)
+        params.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        params.y = 0
+        windowManager?.updateViewLayout(root, params)
+        renderBus()
+    }
+
+    private fun resizeExpandedOverlay(historyCount: Int) {
+        val root = overlayView ?: return
+        val params = overlayParams ?: return
+        val desiredWidth = expandedPanelWidth()
+        val desiredHeight = expandedPanelHeight(historyCount)
+        if (params.width == desiredWidth && params.height == desiredHeight) return
+        params.width = desiredWidth
+        params.height = desiredHeight
+        windowManager?.updateViewLayout(root, params)
+    }
+
+    private fun expandedPanelWidth(): Int =
+        (resources.displayMetrics.widthPixels * 0.92f).toInt().coerceAtMost(dp(560))
+
+    private fun expandedPanelHeight(historyCount: Int): Int {
+        val landscape = resources.displayMetrics.widthPixels > resources.displayMetrics.heightPixels
+        val maxFraction = if (landscape && historyCount == 0) 0.48f
+            else if (landscape) 0.62f else 0.64f
+        return dp(230 + historyCount * 76)
+            .coerceAtMost((resources.displayMetrics.heightPixels * maxFraction).toInt())
+    }
+
+    private fun collapseOverlay() {
+        val root = overlayView ?: return
+        val params = overlayParams ?: return
+        expandedView?.visibility = View.GONE
+        compactView?.visibility = View.VISIBLE
+        expanded = false
+        params.width = WindowManager.LayoutParams.WRAP_CONTENT
+        params.height = WindowManager.LayoutParams.WRAP_CONTENT
+        params.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        params.y = compactYOffset
+        windowManager?.updateViewLayout(root, params)
         renderBus()
     }
 
     private fun hideOverlay() {
         try {
+            immersiveExitView?.let { windowManager?.removeView(it) }
+        } catch (_: Exception) {
+        }
+        immersiveExitView = null
+        immersiveExitParams = null
+        try {
             overlayView?.let { windowManager?.removeView(it) }
         } catch (_: Exception) {
         }
         overlayView = null
+        overlayParams = null
+        compactView = null
+        expandedView = null
+        expanded = false
         statusView = null
         historyView = null
         sourceView = null
         translationView = null
+        expandedStatusView = null
+        expandedSourceView = null
+        expandedTranslationView = null
     }
 
     private fun renderBus() {
+        val statusLine = SubtitleBus.statusLine
         statusView?.apply {
-            val line = SubtitleBus.statusLine
-            visibility = if (line.isEmpty()) View.GONE else View.VISIBLE
-            text = line
+            visibility = if (statusLine.isEmpty()) View.GONE else View.VISIBLE
+            text = statusLine
         }
+        expandedStatusView?.apply {
+            visibility = if (statusLine.isEmpty()) View.GONE else View.VISIBLE
+            text = statusLine
+        }
+        val maxHistory = if (previewMode) (if (previewHistoryEnabled) 3 else 0)
+            else SettingsStore.historyLines(this)
+        val history = if (maxHistory > 0) SubtitleBus.historySnapshot().takeLast(maxHistory) else emptyList()
         historyView?.apply {
-            val maxLines = SettingsStore.historyLines(this@MimiService)
-            visibility = if (maxLines <= 0) View.GONE else View.VISIBLE
-            setMaxLines(maxOf(maxLines, 1) * 2) // each history pair renders as two lines
-            text = SubtitleBus.historySnapshot().takeLast(maxLines).joinToString("\n") { pair ->
+            visibility = if (history.isEmpty()) View.GONE else View.VISIBLE
+            maxLines = maxOf(maxHistory, 1) * 3
+            text = history.joinToString("\n\n") { pair ->
                 "${pair.source}\n${pair.translation}"
             }
         }
@@ -470,8 +824,17 @@ class MimiService : Service() {
                 else -> SubtitleBus.translationFinal
             }
         }
-        // Hide the card's padding footprint when nothing is on screen.
-        overlayView?.visibility = if (liveVisible || SubtitleBus.statusLine.isNotEmpty())
+        expandedSourceView?.apply {
+            visibility = if (liveVisible && (SubtitleBus.sourceDraft.isNotEmpty() || SubtitleBus.sourceFinal.isNotEmpty()))
+                View.VISIBLE else View.GONE
+            text = SubtitleBus.sourceDraft.ifEmpty { SubtitleBus.sourceFinal }
+        }
+        expandedTranslationView?.apply {
+            visibility = if (liveVisible) View.VISIBLE else View.GONE
+            text = SubtitleBus.translationDraft.ifEmpty { SubtitleBus.translationFinal }
+        }
+        if (expanded) resizeExpandedOverlay(history.size)
+        overlayView?.visibility = if (expanded || liveVisible || statusLine.isNotEmpty())
             View.VISIBLE else View.GONE
     }
 
@@ -505,6 +868,9 @@ class MimiService : Service() {
         }
 
         const val ACTION_STOP = "app.yuxino.mimi.android.action.STOP"
+        const val ACTION_APPLY_APPEARANCE = "app.yuxino.mimi.android.action.APPLY_APPEARANCE"
+        const val ACTION_UI_PREVIEW = "app.yuxino.mimi.android.action.UI_PREVIEW"
+        const val ACTION_UI_PREVIEW_HISTORY = "app.yuxino.mimi.android.action.UI_PREVIEW_HISTORY"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
 

@@ -126,6 +126,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<SubtitlePreviewView>(R.id.subtitle_preview).configure(
             SettingsStore.fontSize(this), SettingsStore.translationColor(this),
             SettingsStore.overlayOpacity(this), SettingsStore.overlayBgAlpha(this), SettingsStore.targetLang(this),
+            SettingsStore.immersiveSubtitles(this),
         )
     }
 
