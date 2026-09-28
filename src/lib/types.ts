@@ -62,6 +62,7 @@ export interface SettingsSnapshot {
   translationMode: TranslationMode;
   /** 14..20 */
   fontSize: number;
+  subtitleColor: SubtitleColor;
   subtitleAlignment: SubtitleAlignment;
   subtitleDisplayMode: SubtitleDisplayMode;
   subtitleBlendsWithBackground: boolean;
@@ -74,6 +75,7 @@ export interface SettingsSnapshot {
 
 export type UiLanguage = "system" | "zh" | "en" | "ja";
 export type SubtitleDisplayMode = "translation" | "bilingual" | "original";
+export type SubtitleColor = "white" | "teal" | "yellow" | "green" | "pink";
 export type SubtitleAlignment = "left" | "center" | "right";
 
 export interface SettingsDraft {
@@ -81,6 +83,7 @@ export interface SettingsDraft {
   targetLanguage?: TargetLanguage;
   translationMode?: TranslationMode;
   fontSize?: number;
+  subtitleColor?: SubtitleColor;
   subtitleAlignment?: SubtitleAlignment;
   subtitleDisplayMode?: SubtitleDisplayMode;
   subtitleBlendsWithBackground?: boolean;

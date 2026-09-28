@@ -236,6 +236,7 @@ export function OverlayWindow() {
               <Timeline
                 rows={allRows}
                 fontSize={settings.fontSize}
+                color={settings.subtitleColor}
                 alignment={settings.subtitleAlignment}
                 blendsWithBackground
                 draft={hasLiveDraft}
@@ -411,6 +412,7 @@ export function OverlayWindow() {
             <Timeline
               rows={allRows}
               fontSize={settings.fontSize}
+              color={settings.subtitleColor}
               alignment={settings.subtitleAlignment}
               draft={hasLiveDraft}
             />
