@@ -300,14 +300,6 @@ export function SettingsView() {
               {I18N.settings.sessionActionFailed}
             </p>
           )}
-          <details className="settings-session-help">
-            <summary>
-              {I18N.settings.sessionUsageHelp}
-              <Icon name="chevron-down" />
-            </summary>
-            <p>{I18N.settings.liveSubtitlesDescription}</p>
-            <p>{I18N.settings.closeToTrayHelp}</p>
-          </details>
         </section>
       </aside>
       <div className="settings-console__scroll" ref={contentScrollRef}>
