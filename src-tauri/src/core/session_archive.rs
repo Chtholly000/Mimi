@@ -106,23 +106,8 @@ impl TranscriptArchive {
         self.entries.len()
     }
 
-    pub fn last(&self) -> Option<&SubtitlePair> {
-        self.entries.last()
-    }
-
     pub fn page(&self, query: &str, requested_page: usize) -> TranscriptPage {
         transcript_page(&self.entries, query, requested_page)
-    }
-
-    pub fn snapshot(&self, id: String, ended_at_ms: u64) -> SavedTranscript {
-        SavedTranscript {
-            version: 1,
-            id,
-            started_at_ms: self.started_at_ms,
-            ended_at_ms,
-            limited: self.limited,
-            entries: self.entries.clone(),
-        }
     }
 
     pub fn append(&mut self, pair: &SubtitlePair) {

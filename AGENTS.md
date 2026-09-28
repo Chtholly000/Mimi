@@ -7,7 +7,7 @@ Mimi is a Tauri v2 desktop app (Rust backend + React/TypeScript frontend) that l
 Preserve these product constraints:
 
 - Capture system audio only. Do not add microphone capture unless the task explicitly requires it.
-- Subtitle history retention and system-audio recording are off by default. Retain bounded session content in memory only after the user enables its setting; write content only through an explicit export to a user-selected file. Never auto-save content or add microphone capture. Disabling an option clears its in-memory buffer; a new session or app exit clears both.
+- Subtitle history retention and system-audio recording are off by default. When enabled, save bounded confirmed subtitles and/or system audio to private local session files as content arrives. Do not keep full session transcripts or PCM recordings in memory; only bounded overlay display content and size/limit metadata may remain there. New sessions and normal exit finalize the local files. Disabling an option clears its current-session content; saved sessions require explicit deletion. Never add microphone capture.
 - Store API credentials in the OS keychain only (macOS Keychain / Windows Credential Manager / Linux Secret Service via `keyring`). Never add plaintext, source-controlled, or environment-variable credential fallbacks.
 - Keep diagnostics content-free: timing, counts, language codes, status codes, and sanitized error labels are acceptable; recognized or translated text is not.
 

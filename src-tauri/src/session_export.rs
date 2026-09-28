@@ -38,7 +38,11 @@ pub async fn session_transcript_page(
     if query.chars().count() > 120 {
         return Err("Search is too long.".into());
     }
-    Ok(state.session.transcript_page(&query, page))
+    let session = std::sync::Arc::clone(&state.session);
+    tauri::async_runtime::spawn_blocking(move || session.transcript_page(&query, page))
+        .await
+        .map_err(|_| "Could not read current session.")?
+        .map_err(|_| "Could not read current session.".into())
 }
 
 #[tauri::command]
@@ -132,6 +136,7 @@ pub async fn session_export(
             ExportKind::Transcript => state.session.export_transcript(),
             ExportKind::Audio => state.session.export_audio(),
         }
+        .map_err(|_| "Could not read current session content.")?
         .ok_or("No session content is available to export.")?;
         (Some(state.session.archive_revision()), bytes)
     };

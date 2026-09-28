@@ -1,8 +1,6 @@
 //! Local opt-in transcript history. Files contain user content and are never logged.
 use crate::core::models::SubtitlePair;
-use crate::core::session_archive::{
-    AudioRecording, SavedTranscript, TranscriptPage, AUDIO_BYTE_LIMIT,
-};
+use crate::core::session_archive::{SavedTranscript, TranscriptPage, AUDIO_BYTE_LIMIT};
 use serde::Serialize;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
@@ -38,6 +36,10 @@ impl SessionHistory {
         }
     }
 
+    pub fn available(&self) -> bool {
+        !self.disabled
+    }
+
     fn path(&self, id: &str, extension: &str) -> io::Result<PathBuf> {
         uuid::Uuid::parse_str(id)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid history id"))?;
@@ -69,7 +71,7 @@ impl SessionHistory {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "empty history"))?;
         let mut saved: SavedTranscript = serde_json::from_str(&first)?;
         for line in lines {
-            let line = line?;
+            let Ok(line) = line else { break };
             if line.is_empty() {
                 continue;
             }
@@ -127,8 +129,14 @@ impl SessionHistory {
         let mut file = fs::OpenOptions::new()
             .append(true)
             .open(self.path(id, "jsonl")?)?;
-        serde_json::to_writer(&mut file, pair).map_err(io::Error::other)?;
-        file.write_all(b"\n")
+        let previous_len = file.metadata()?.len();
+        let result = serde_json::to_writer(&mut file, pair)
+            .map_err(io::Error::other)
+            .and_then(|_| file.write_all(b"\n"));
+        if result.is_err() {
+            let _ = file.set_len(previous_len);
+        }
+        result
     }
 
     pub fn append_pcm(&self, id: &str, sample_rate: u32, data: &[u8]) -> io::Result<()> {
@@ -148,7 +156,12 @@ impl SessionHistory {
             return Ok(());
         }
         let mut file = fs::OpenOptions::new().append(true).open(path)?;
-        file.write_all(data)
+        let previous_len = file.metadata()?.len();
+        let result = file.write_all(data);
+        if result.is_err() {
+            let _ = file.set_len(previous_len);
+        }
+        result
     }
 
     pub fn clear_text(&self, id: &str) -> io::Result<()> {
@@ -176,53 +189,78 @@ impl SessionHistory {
             return Ok(());
         }
         let _io = self.io.lock().unwrap();
-        let path = self.path(id, "pcm")?;
-        if path.exists() {
-            fs::remove_file(path)?;
+        for extension in ["pcm", "wav"] {
+            let path = self.path(id, extension)?;
+            if path.exists() {
+                fs::remove_file(path)?;
+            }
         }
         Ok(())
     }
 
-    pub fn save(&self, saved: &SavedTranscript, audio: Option<&[u8]>) -> io::Result<()> {
+    /// Commits the on-disk journals without keeping a second session-sized
+    /// transcript or PCM recording alive in the session manager.
+    pub fn finalize(&self, id: &str, ended_at_ms: u64, limited: bool) -> io::Result<bool> {
         if self.disabled {
-            return Ok(());
+            return Ok(false);
         }
-        fs::create_dir_all(&self.directory)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&self.directory, fs::Permissions::from_mode(0o700))?;
+        let mut saved = self.read(id)?;
+        saved.ended_at_ms = ended_at_ms;
+        saved.limited = limited;
+        let pcm_path = self.path(id, "pcm")?;
+        let has_audio = pcm_path.metadata().is_ok_and(|meta| meta.len() > 4);
+        if saved.entries.is_empty() && !has_audio {
+            self.discard(id)?;
+            return Ok(false);
         }
+
         let _io = self.io.lock().unwrap();
-        let transcript_path = self.path(&saved.id, "json")?;
-        let audio_path = self.path(&saved.id, "wav")?;
-        if !transcript_path.exists() && audio_path.exists() {
-            fs::remove_file(&audio_path)?;
-        }
-        if let Some(audio) = audio {
+        let transcript_path = self.path(id, "json")?;
+        let audio_path = self.path(id, "wav")?;
+        let mut wrote_audio = false;
+        if has_audio && !audio_path.exists() {
+            let mut input = fs::File::open(&pcm_path)?;
+            let length = input.metadata()?.len().saturating_sub(4);
+            if length > AUDIO_BYTE_LIMIT as u64 || !length.is_multiple_of(2) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid audio size",
+                ));
+            }
+            let mut rate = [0_u8; 4];
+            input.read_exact(&mut rate)?;
+            let rate = u32::from_le_bytes(rate);
+            if !matches!(rate, 16_000 | 24_000) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid audio rate",
+                ));
+            }
             let mut temporary = tempfile::NamedTempFile::new_in(&self.directory)?;
-            temporary.write_all(audio)?;
+            temporary.write_all(&wav_header(rate, length as u32))?;
+            io::copy(&mut input, &mut temporary)?;
             temporary.as_file().sync_all()?;
             temporary
                 .persist_noclobber(&audio_path)
                 .map_err(|error| error.error)?;
+            wrote_audio = true;
         }
         let result: io::Result<()> = (|| {
             let mut temporary = tempfile::NamedTempFile::new_in(&self.directory)?;
-            serde_json::to_writer(&mut temporary, saved).map_err(io::Error::other)?;
+            serde_json::to_writer(&mut temporary, &saved).map_err(io::Error::other)?;
             temporary.as_file().sync_all()?;
             temporary
                 .persist_noclobber(&transcript_path)
                 .map_err(|error| error.error)?;
             Ok(())
         })();
-        if result.is_err() && audio.is_some() {
-            let _ = fs::remove_file(audio_path);
+        if result.is_err() && wrote_audio {
+            let _ = fs::remove_file(&audio_path);
         }
         result?;
-        let _ = fs::remove_file(self.path(&saved.id, "jsonl")?);
-        let _ = fs::remove_file(self.path(&saved.id, "pcm")?);
-        Ok(())
+        let _ = fs::remove_file(self.path(id, "jsonl")?);
+        let _ = fs::remove_file(pcm_path);
+        Ok(true)
     }
 
     pub fn list(&self) -> io::Result<Vec<HistoryItem>> {
@@ -301,14 +339,15 @@ impl SessionHistory {
             }
             let mut rate = [0_u8; 4];
             file.read_exact(&mut rate)?;
-            let mut pcm = Vec::new();
-            file.read_to_end(&mut pcm)?;
-            let mut recording = AudioRecording::default();
-            recording.begin(true);
-            recording.append(u32::from_le_bytes(rate), &pcm);
-            return recording
-                .export()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid audio"));
+            let rate = u32::from_le_bytes(rate);
+            let length = file.metadata()?.len().saturating_sub(4);
+            if !matches!(rate, 16_000 | 24_000) || !length.is_multiple_of(2) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid audio"));
+            }
+            let mut audio = Vec::with_capacity(length as usize + 44);
+            audio.extend_from_slice(&wav_header(rate, length as u32));
+            file.read_to_end(&mut audio)?;
+            return Ok(audio);
         }
         let mut file = fs::File::open(wav_path)?;
         if file.metadata()?.len() > crate::core::session_archive::AUDIO_BYTE_LIMIT as u64 + 44 {
@@ -351,7 +390,7 @@ impl SessionHistory {
             return Ok(());
         }
         let _io = self.io.lock().unwrap();
-        for extension in ["jsonl", "pcm"] {
+        for extension in ["jsonl", "pcm", "wav"] {
             let path = self.path(id, extension)?;
             if path.exists() {
                 fs::remove_file(path)?;
@@ -359,6 +398,23 @@ impl SessionHistory {
         }
         Ok(())
     }
+}
+
+fn wav_header(rate: u32, length: u32) -> [u8; 44] {
+    let mut header = [0_u8; 44];
+    header[0..4].copy_from_slice(b"RIFF");
+    header[4..8].copy_from_slice(&(length + 36).to_le_bytes());
+    header[8..16].copy_from_slice(b"WAVEfmt ");
+    header[16..20].copy_from_slice(&16_u32.to_le_bytes());
+    header[20..22].copy_from_slice(&1_u16.to_le_bytes());
+    header[22..24].copy_from_slice(&1_u16.to_le_bytes());
+    header[24..28].copy_from_slice(&rate.to_le_bytes());
+    header[28..32].copy_from_slice(&(rate * 2).to_le_bytes());
+    header[32..34].copy_from_slice(&2_u16.to_le_bytes());
+    header[34..36].copy_from_slice(&16_u16.to_le_bytes());
+    header[36..40].copy_from_slice(b"data");
+    header[40..44].copy_from_slice(&length.to_le_bytes());
+    header
 }
 
 #[cfg(test)]
@@ -371,19 +427,20 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let history = SessionHistory::new(directory.path().join("history"), false);
         let id = uuid::Uuid::new_v4().to_string();
-        let saved = SavedTranscript {
-            version: 1,
-            id: id.clone(),
-            started_at_ms: 100,
-            ended_at_ms: 200,
-            limited: false,
-            entries: vec![SubtitlePair::new("source".into(), "译文".into(), 150)],
-        };
-        history.save(&saved, Some(b"synthetic wav")).unwrap();
+        history.begin(&id, 100).unwrap();
+        history
+            .append_pair(&id, &SubtitlePair::new("source".into(), "译文".into(), 150))
+            .unwrap();
+        history.append_pcm(&id, 16_000, &[1, 0, 2, 0]).unwrap();
+        assert!(history.finalize(&id, 200, false).unwrap());
         assert_eq!(history.list().unwrap()[0].count, 1);
         assert!(history.list().unwrap()[0].has_audio);
         assert_eq!(history.page(&id, "译文", 0).unwrap().total, 1);
-        assert_eq!(history.audio(&id).unwrap(), b"synthetic wav");
+        assert_eq!(&history.audio(&id).unwrap()[44..], &[1, 0, 2, 0]);
+        assert!(history.path(&id, "json").unwrap().exists());
+        assert!(history.path(&id, "wav").unwrap().exists());
+        assert!(!history.path(&id, "jsonl").unwrap().exists());
+        assert!(!history.path(&id, "pcm").unwrap().exists());
         assert!(history.delete("../escape").is_err());
         history.delete(&id).unwrap();
         assert!(history.list().unwrap().is_empty());
@@ -413,5 +470,45 @@ mod tests {
         assert_eq!(restored.list().unwrap()[0].count, 0);
         restored.delete(&id).unwrap();
         assert!(restored.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn finalizes_audio_only_from_disk_and_discards_empty_sessions() {
+        let directory = tempfile::tempdir().unwrap();
+        let history = SessionHistory::new(directory.path().join("history"), false);
+        let empty_id = uuid::Uuid::new_v4().to_string();
+        history.begin(&empty_id, 100).unwrap();
+        assert!(!history.finalize(&empty_id, 200, false).unwrap());
+        assert!(!history.path(&empty_id, "jsonl").unwrap().exists());
+
+        let audio_id = uuid::Uuid::new_v4().to_string();
+        history.begin(&audio_id, 300).unwrap();
+        history.append_pcm(&audio_id, 24_000, &[3, 0]).unwrap();
+        assert!(history.finalize(&audio_id, 400, false).unwrap());
+        let item = &history.list().unwrap()[0];
+        assert_eq!((item.count, item.has_audio), (0, true));
+        let wav = history.audio(&audio_id).unwrap();
+        assert_eq!(&wav[24..28], &24_000_u32.to_le_bytes());
+        assert_eq!(&wav[44..], &[3, 0]);
+        assert!(!history.path(&audio_id, "pcm").unwrap().exists());
+    }
+
+    #[test]
+    fn recovers_confirmed_pairs_before_a_truncated_final_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let history = SessionHistory::new(directory.path().join("history"), false);
+        let id = uuid::Uuid::new_v4().to_string();
+        history.begin(&id, 100).unwrap();
+        history
+            .append_pair(&id, &SubtitlePair::new("source".into(), "译文".into(), 150))
+            .unwrap();
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(history.path(&id, "jsonl").unwrap())
+            .unwrap();
+        file.write_all(&[b'{', 0xff]).unwrap();
+        assert_eq!(history.page(&id, "", 0).unwrap().total, 1);
+        assert!(history.finalize(&id, 200, false).unwrap());
+        assert_eq!(history.page(&id, "", 0).unwrap().total, 1);
     }
 }

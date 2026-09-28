@@ -438,6 +438,17 @@ fn status_should_show_overlay(status: &SessionStatus) -> bool {
     status.is_active() || matches!(status, SessionStatus::Error(_))
 }
 
+/// Content lives in the local journal. Only size/limit metadata stays here.
+#[derive(Default)]
+struct LocalCaptureStats {
+    transcript_count: usize,
+    transcript_bytes: usize,
+    transcript_limited: bool,
+    audio_bytes: usize,
+    audio_limited: bool,
+    sample_rate: u32,
+}
+
 #[derive(Clone)]
 pub struct SessionManager {
     app: AppHandle,
@@ -448,7 +459,9 @@ pub struct SessionManager {
     archive_revision: Arc<AtomicU64>,
     history: Arc<SessionHistory>,
     history_pending_id: Arc<Mutex<Option<String>>>,
+    history_pending_text: Arc<AtomicBool>,
     history_pending_audio: Arc<AtomicBool>,
+    history_stats: Arc<Mutex<LocalCaptureStats>>,
     history_save_error: Arc<AtomicBool>,
     client: Arc<Mutex<Option<TranslationClient>>>,
     client_generation: Arc<AtomicU64>,
@@ -517,7 +530,9 @@ impl SessionManager {
             archive_revision: Default::default(),
             history: Arc::new(history),
             history_pending_id: Arc::new(Mutex::new(None)),
+            history_pending_text: Arc::new(AtomicBool::new(false)),
             history_pending_audio: Arc::new(AtomicBool::new(false)),
+            history_stats: Arc::new(Mutex::new(LocalCaptureStats::default())),
             history_save_error: Arc::new(AtomicBool::new(false)),
             client: Arc::new(Mutex::new(None)),
             client_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
@@ -657,6 +672,9 @@ impl SessionManager {
         let history_id = (preferences.retain_session_history || preferences.record_session_audio)
             .then(|| uuid::Uuid::new_v4().to_string());
         if let Some(id) = &history_id {
+            if !self.history.available() && !self.is_ui_test() {
+                return Err("Local session history is unavailable.".to_string());
+            }
             self.history
                 .begin(id, started_at_ms)
                 .map_err(|_| "Could not start local session history.".to_string())?;
@@ -667,14 +685,17 @@ impl SessionManager {
             .store(NO_GENERATION, Ordering::SeqCst);
         self.is_paused.store(false, Ordering::SeqCst);
         *self.history_pending_id.lock().unwrap() = history_id;
+        self.history_pending_text
+            .store(preferences.retain_session_history, Ordering::SeqCst);
         self.history_pending_audio
             .store(preferences.record_session_audio, Ordering::SeqCst);
+        *self.history_stats.lock().unwrap() = LocalCaptureStats::default();
+        self.history_save_error.store(false, Ordering::SeqCst);
         self.archive_revision.fetch_add(1, Ordering::SeqCst);
-        self.controller
-            .lock()
-            .unwrap()
-            .archive_mut()
-            .begin(preferences.retain_session_history, started_at_ms);
+        self.controller.lock().unwrap().archive_mut().begin(
+            self.is_ui_test() && preferences.retain_session_history,
+            started_at_ms,
+        );
         self.recording
             .lock()
             .unwrap()
@@ -1321,27 +1342,46 @@ impl SessionManager {
     }
 
     fn record_audio(&self, generation: u64, sample_rate: u32, data: &[u8]) {
-        let mut recording = self.recording.lock().unwrap();
         if (self.is_generation_current(generation)
             || self.stopping_tail_generation.load(Ordering::SeqCst) == generation)
             && !self.is_paused()
         {
-            let old_len = recording.len();
-            recording.append(sample_rate, data);
-            let accepted = recording.len() - old_len;
-            drop(recording);
-            if accepted > 0 {
-                if let Some(id) = self.history_pending_id.lock().unwrap().as_deref() {
-                    if self
-                        .history
-                        .append_pcm(id, sample_rate, &data[..accepted])
-                        .is_err()
-                    {
-                        self.history_save_error.store(true, Ordering::SeqCst);
-                        pipeline_log!("session history audio append failed label=write_failed");
-                    }
-                }
+            let pending = self.history_pending_id.lock().unwrap();
+            if !self.history_pending_audio.load(Ordering::SeqCst) {
+                return;
             }
+            let Some(id) = pending.as_deref() else { return };
+            let mut stats = self.history_stats.lock().unwrap();
+            if stats.audio_limited || data.is_empty() {
+                return;
+            }
+            if !matches!(sample_rate, 16_000 | 24_000)
+                || !data.len().is_multiple_of(2)
+                || (stats.sample_rate != 0 && stats.sample_rate != sample_rate)
+            {
+                stats.audio_limited = true;
+                return;
+            }
+            let available =
+                crate::core::session_archive::AUDIO_BYTE_LIMIT.saturating_sub(stats.audio_bytes);
+            let accepted = data.len().min(available);
+            if accepted == 0 {
+                stats.audio_limited = true;
+                return;
+            }
+            if self
+                .history
+                .append_pcm(id, sample_rate, &data[..accepted])
+                .is_err()
+            {
+                self.history_save_error.store(true, Ordering::SeqCst);
+                pipeline_log!("session history audio append failed label=write_failed");
+                return;
+            }
+            stats.sample_rate = sample_rate;
+            stats.audio_bytes += accepted;
+            stats.audio_limited =
+                stats.audio_bytes == crate::core::session_archive::AUDIO_BYTE_LIMIT;
         }
     }
 
@@ -1354,32 +1394,53 @@ impl SessionManager {
             self.archive_revision.fetch_add(1, Ordering::SeqCst);
         }
         if history == Some(false) {
+            self.history_pending_text.store(false, Ordering::SeqCst);
             if let Some(id) = self.history_pending_id.lock().unwrap().as_deref() {
                 if self.history.clear_text(id).is_err() {
                     self.history_save_error.store(true, Ordering::SeqCst);
                 }
             }
             self.controller.lock().unwrap().archive_mut().disable();
+            let mut stats = self.history_stats.lock().unwrap();
+            stats.transcript_count = 0;
+            stats.transcript_bytes = 0;
+            stats.transcript_limited = false;
         }
         if audio == Some(false) {
+            self.history_pending_audio.store(false, Ordering::SeqCst);
             if let Some(id) = self.history_pending_id.lock().unwrap().as_deref() {
                 if self.history.clear_audio(id).is_err() {
                     self.history_save_error.store(true, Ordering::SeqCst);
                 }
             }
             self.recording.lock().unwrap().begin(false);
+            let mut stats = self.history_stats.lock().unwrap();
+            stats.audio_bytes = 0;
+            stats.audio_limited = false;
+            stats.sample_rate = 0;
         }
     }
 
     pub fn archive_state(&self) -> crate::core::session_archive::ArchiveState {
-        let controller = self.controller.lock().unwrap();
-        let recording = self.recording.lock().unwrap();
+        if self.is_ui_test() {
+            let controller = self.controller.lock().unwrap();
+            let recording = self.recording.lock().unwrap();
+            return crate::core::session_archive::ArchiveState {
+                transcript_count: controller.archive().count(),
+                transcript_limited: controller.archive().limited,
+                audio_bytes: recording.len(),
+                audio_limited: recording.limited,
+                sample_rate: recording.sample_rate,
+                history_save_error: false,
+            };
+        }
+        let stats = self.history_stats.lock().unwrap();
         crate::core::session_archive::ArchiveState {
-            transcript_count: controller.archive().count(),
-            transcript_limited: controller.archive().limited,
-            audio_bytes: recording.len(),
-            audio_limited: recording.limited,
-            sample_rate: recording.sample_rate,
+            transcript_count: stats.transcript_count,
+            transcript_limited: stats.transcript_limited,
+            audio_bytes: stats.audio_bytes,
+            audio_limited: stats.audio_limited,
+            sample_rate: stats.sample_rate,
             history_save_error: self.history_save_error.load(Ordering::SeqCst),
         }
     }
@@ -1397,30 +1458,27 @@ impl SessionManager {
         let Some(id) = pending.as_ref() else {
             return Ok(());
         };
-        let saved = self
-            .controller
-            .lock()
-            .unwrap()
-            .archive()
-            .snapshot(id.clone(), crate::core::subtitle_reducer::now_epoch_ms());
-        let audio = if self.history_pending_audio.load(Ordering::SeqCst) {
-            self.recording.lock().unwrap().export()
-        } else {
-            None
-        };
-        if saved.entries.is_empty() && audio.is_none() {
-            self.history.discard(id)?;
+        if self.is_ui_test() {
+            self.controller.lock().unwrap().archive_mut().clear();
+            self.recording.lock().unwrap().clear();
             *pending = None;
+            self.history_pending_text.store(false, Ordering::SeqCst);
+            self.history_pending_audio.store(false, Ordering::SeqCst);
             return Ok(());
         }
-        if let Err(error) = self.history.save(&saved, audio.as_deref()) {
+        let limited = self.history_stats.lock().unwrap().transcript_limited;
+        if let Err(error) =
+            self.history
+                .finalize(id, crate::core::subtitle_reducer::now_epoch_ms(), limited)
+        {
             self.history_save_error.store(true, Ordering::SeqCst);
             return Err(error);
         }
         self.history_save_error.store(false, Ordering::SeqCst);
-        self.controller.lock().unwrap().archive_mut().clear();
-        self.recording.lock().unwrap().clear();
+        *self.history_stats.lock().unwrap() = LocalCaptureStats::default();
         *pending = None;
+        self.history_pending_text.store(false, Ordering::SeqCst);
+        self.history_pending_audio.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -1428,21 +1486,47 @@ impl SessionManager {
         &self,
         query: &str,
         page: usize,
-    ) -> crate::core::session_archive::TranscriptPage {
-        self.controller.lock().unwrap().archive().page(query, page)
+    ) -> std::io::Result<crate::core::session_archive::TranscriptPage> {
+        if self.is_ui_test() {
+            return Ok(self.controller.lock().unwrap().archive().page(query, page));
+        }
+        let pending = self.history_pending_id.lock().unwrap();
+        let Some(id) = pending.as_deref() else {
+            return Ok(crate::core::session_archive::TranscriptPage {
+                total: 0,
+                page: 0,
+                entries: Vec::new(),
+            });
+        };
+        self.history.page(id, query, page)
     }
 
-    pub fn export_transcript(&self) -> Option<Vec<u8>> {
-        self.controller
-            .lock()
-            .unwrap()
-            .archive()
-            .export()
-            .map(String::into_bytes)
+    pub fn export_transcript(&self) -> std::io::Result<Option<Vec<u8>>> {
+        if self.is_ui_test() {
+            return Ok(self
+                .controller
+                .lock()
+                .unwrap()
+                .archive()
+                .export()
+                .map(String::into_bytes));
+        }
+        let pending = self.history_pending_id.lock().unwrap();
+        match pending.as_deref() {
+            Some(id) => self.history.export_transcript(id).map(Some),
+            None => Ok(None),
+        }
     }
 
-    pub fn export_audio(&self) -> Option<Vec<u8>> {
-        self.recording.lock().unwrap().export()
+    pub fn export_audio(&self) -> std::io::Result<Option<Vec<u8>>> {
+        if self.is_ui_test() {
+            return Ok(self.recording.lock().unwrap().export());
+        }
+        let pending = self.history_pending_id.lock().unwrap();
+        match pending.as_deref() {
+            Some(id) => self.history.audio(id).map(Some),
+            None => Ok(None),
+        }
     }
 
     pub fn clear_archive(&self) -> std::io::Result<()> {
@@ -1451,6 +1535,10 @@ impl SessionManager {
             self.history.discard(id)?;
         }
         *pending = None;
+        self.history_pending_text.store(false, Ordering::SeqCst);
+        self.history_pending_audio.store(false, Ordering::SeqCst);
+        *self.history_stats.lock().unwrap() = LocalCaptureStats::default();
+        self.history_save_error.store(false, Ordering::SeqCst);
         self.archive_revision.fetch_add(1, Ordering::SeqCst);
         self.controller.lock().unwrap().archive_mut().clear();
         self.recording.lock().unwrap().clear();
@@ -1458,11 +1546,20 @@ impl SessionManager {
     }
 
     pub fn clear_subtitles(self: &Arc<Self>) -> std::io::Result<()> {
-        if let Some(id) = self.history_pending_id.lock().unwrap().as_deref() {
+        let mut controller = self.controller.lock().unwrap();
+        let pending = self.history_pending_id.lock().unwrap();
+        if let Some(id) = pending.as_deref() {
             self.history.clear_text(id)?;
         }
+        let mut stats = self.history_stats.lock().unwrap();
+        stats.transcript_count = 0;
+        stats.transcript_bytes = 0;
+        stats.transcript_limited = false;
+        drop(stats);
         self.archive_revision.fetch_add(1, Ordering::SeqCst);
-        self.controller.lock().unwrap().clear_subtitles();
+        controller.clear_subtitles();
+        drop(pending);
+        drop(controller);
         self.publish_state();
         Ok(())
     }
@@ -1550,17 +1647,37 @@ impl SessionManager {
         }
         let newly_confirmed = {
             let mut controller = self.controller.lock().unwrap();
-            let count = controller.archive().count();
+            let previous = controller.state.subtitles.history.last().cloned();
             controller.handle(event.clone());
-            (controller.archive().count() > count)
-                .then(|| controller.archive().last().cloned())
+            let current = controller.state.subtitles.history.last();
+            (current != previous.as_ref())
+                .then(|| current.cloned())
                 .flatten()
         };
         if let Some(pair) = newly_confirmed {
-            if let Some(id) = self.history_pending_id.lock().unwrap().as_deref() {
-                if self.history.append_pair(id, &pair).is_err() {
-                    self.history_save_error.store(true, Ordering::SeqCst);
-                    pipeline_log!("session history subtitle append failed label=write_failed");
+            let pending = self.history_pending_id.lock().unwrap();
+            if let Some(id) = pending.as_deref() {
+                if self.history_pending_text.load(Ordering::SeqCst) {
+                    let mut stats = self.history_stats.lock().unwrap();
+                    let bytes = pair.source.len().saturating_add(pair.translation.len());
+                    if !stats.transcript_limited {
+                        if stats.transcript_count
+                            >= crate::core::session_archive::TRANSCRIPT_COUNT_LIMIT
+                            || bytes
+                                > crate::core::session_archive::TRANSCRIPT_BYTE_LIMIT
+                                    .saturating_sub(stats.transcript_bytes)
+                        {
+                            stats.transcript_limited = true;
+                        } else if self.history.append_pair(id, &pair).is_ok() {
+                            stats.transcript_count += 1;
+                            stats.transcript_bytes += bytes;
+                        } else {
+                            self.history_save_error.store(true, Ordering::SeqCst);
+                            pipeline_log!(
+                                "session history subtitle append failed label=write_failed"
+                            );
+                        }
+                    }
                 }
             }
         }
