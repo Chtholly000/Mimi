@@ -1,16 +1,18 @@
 //! Subtitle assembly state machine for drafts, confirmed pairs, and bounded
 //! history.
+//!
+//! Providers that stream recognition and translation independently pair them by
+//! the identity their own protocol carries and commit one atomic
+//! [`SubtitleEvent::FinalPair`]. [`SubtitleEvent::TranslationFinal`] remains the
+//! best-effort path for a stream without identity: the translation is paired
+//! with the recognition line currently on screen.
 
 use crate::core::models::{SubtitleEvent, SubtitleLine, SubtitlePair, SubtitleSnapshot};
-use std::collections::VecDeque;
 
 pub struct SubtitleReducer {
     pub snapshot: SubtitleSnapshot,
     pub archive: super::session_archive::TranscriptArchive,
     max_history_count: usize,
-    max_pending_source_count: usize,
-    pending_final_sources: VecDeque<String>,
-    separate_stream_alignment_lost: bool,
 }
 
 impl SubtitleReducer {
@@ -19,38 +21,18 @@ impl SubtitleReducer {
             snapshot: SubtitleSnapshot::empty(),
             archive: Default::default(),
             max_history_count,
-            max_pending_source_count: max_history_count.max(1),
-            pending_final_sources: VecDeque::new(),
-            separate_stream_alignment_lost: false,
         }
     }
 
     pub fn apply(&mut self, event: SubtitleEvent) {
         match event {
             SubtitleEvent::SourceDraft(text) => {
-                if self.separate_stream_alignment_lost {
-                    return;
-                }
                 self.snapshot.source = SubtitleLine::new(trim(&text), false);
             }
             SubtitleEvent::SourceFinal(text) => {
-                if self.separate_stream_alignment_lost {
-                    return;
-                }
-                let source = trim(&text);
-                self.snapshot.source = SubtitleLine::new(source.clone(), true);
-                if !source.is_empty() {
-                    if self.pending_final_sources.len() >= self.max_pending_source_count {
-                        self.drop_unconfirmed_separate_stream_state();
-                        return;
-                    }
-                    self.pending_final_sources.push_back(source);
-                }
+                self.snapshot.source = SubtitleLine::new(trim(&text), true);
             }
             SubtitleEvent::TranslationDraft(text) => {
-                if self.separate_stream_alignment_lost {
-                    return;
-                }
                 let trimmed = trim(&text);
                 // A blank draft must not overwrite an already-confirmed final.
                 if trimmed.is_empty() && self.snapshot.translation.is_final {
@@ -59,15 +41,9 @@ impl SubtitleReducer {
                 self.snapshot.translation = SubtitleLine::new(trimmed, false);
             }
             SubtitleEvent::TranslationFinal(text) => {
-                if self.separate_stream_alignment_lost {
-                    return;
-                }
                 let translation = trim(&text);
                 self.snapshot.translation = SubtitleLine::new(translation.clone(), true);
-                let source = self
-                    .pending_final_sources
-                    .pop_front()
-                    .unwrap_or_else(|| self.snapshot.source.text.clone());
+                let source = self.snapshot.source.text.clone();
                 self.append_history_if_possible(source, translation);
             }
             SubtitleEvent::FinalPair {
@@ -83,21 +59,15 @@ impl SubtitleReducer {
             SubtitleEvent::Clear => {
                 self.archive.clear();
                 self.snapshot = SubtitleSnapshot::empty();
-                self.pending_final_sources.clear();
-                self.separate_stream_alignment_lost = false;
             }
         }
     }
 
-    /// Drops generation-local alignment state while preserving confirmed
-    /// history and any fully confirmed line still displayed. A pending source
-    /// final is not confirmed until its translation arrives, so it is cleared
-    /// with drafts instead of leaking into the next connection.
+    /// Drops generation-local state while preserving confirmed history and any
+    /// fully confirmed line still displayed: an unconfirmed line belongs to the
+    /// connection that produced it.
     pub fn reset_transient(&mut self) {
-        let had_pending_source = !self.pending_final_sources.is_empty();
-        self.pending_final_sources.clear();
-        self.separate_stream_alignment_lost = false;
-        if had_pending_source || !self.snapshot.source.is_final {
+        if !self.snapshot.source.is_final {
             self.snapshot.source = SubtitleLine::new("", false);
         }
         if !self.snapshot.translation.is_final {
@@ -119,13 +89,6 @@ impl SubtitleReducer {
             let overflow = self.snapshot.history.len() - self.max_history_count;
             self.snapshot.history.drain(0..overflow);
         }
-    }
-
-    fn drop_unconfirmed_separate_stream_state(&mut self) {
-        self.pending_final_sources.clear();
-        self.separate_stream_alignment_lost = true;
-        self.snapshot.source = SubtitleLine::new("", false);
-        self.snapshot.translation = SubtitleLine::new("", false);
     }
 }
 
@@ -240,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn atomic_final_pair_never_consumes_an_unrelated_pending_source() {
+    fn an_atomic_final_pair_alone_enters_history() {
         let mut reducer = SubtitleReducer::default();
         reducer.apply(SubtitleEvent::SourceFinal("legacy pending".into()));
         reducer.apply(SubtitleEvent::FinalPair {
@@ -299,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn a_delayed_final_translation_stays_paired_with_its_original_source() {
+    fn a_late_final_translation_uses_the_recognition_line_on_screen() {
         let mut reducer = SubtitleReducer::default();
         reducer.apply(SubtitleEvent::SourceFinal("First sentence.".into()));
         reducer.apply(SubtitleEvent::SourceDraft("Second sentence".into()));
@@ -308,7 +271,7 @@ mod tests {
         assert_eq!(
             reducer.snapshot.history,
             vec![SubtitlePair::new(
-                "First sentence.".into(),
+                "Second sentence".into(),
                 "第一句。".into(),
                 0
             )]
@@ -360,25 +323,24 @@ mod tests {
     }
 
     #[test]
-    fn pending_source_finals_are_bounded_without_later_mispairing() {
+    fn recognition_finals_without_translations_never_enter_history() {
         let mut reducer = SubtitleReducer::new(2);
         reducer.apply(SubtitleEvent::SourceFinal("source 1".into()));
         reducer.apply(SubtitleEvent::SourceFinal("source 2".into()));
         reducer.apply(SubtitleEvent::SourceFinal("source 3".into()));
 
-        assert!(reducer.pending_final_sources.is_empty());
-        assert!(reducer.separate_stream_alignment_lost);
-        assert_eq!(reducer.snapshot.source, SubtitleLine::new("", false));
+        assert!(reducer.snapshot.history.is_empty());
+        assert_eq!(reducer.snapshot.source, SubtitleLine::new("source 3", true));
 
         reducer.apply(SubtitleEvent::TranslationFinal("late translation".into()));
-        assert!(reducer.snapshot.history.is_empty());
-        assert_eq!(reducer.snapshot.translation, SubtitleLine::new("", false));
-
-        reducer.reset_transient();
-        reducer.apply(SubtitleEvent::SourceFinal("new generation".into()));
-        reducer.apply(SubtitleEvent::TranslationFinal("new translation".into()));
-        assert_eq!(reducer.snapshot.history.len(), 1);
-        assert_eq!(reducer.snapshot.history[0].source, "new generation");
+        assert_eq!(
+            reducer.snapshot.history,
+            vec![SubtitlePair::new(
+                "source 3".into(),
+                "late translation".into(),
+                0
+            )]
+        );
     }
 
     #[test]
@@ -392,17 +354,21 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_drops_pending_source_before_pairing_new_generation() {
+    fn reconnect_clears_unconfirmed_lines_before_a_late_translation_final() {
         let mut reducer = SubtitleReducer::default();
-        reducer.apply(SubtitleEvent::SourceFinal("generation A".into()));
+        reducer.apply(SubtitleEvent::SourceDraft("generation A".into()));
 
         reducer.reset_transient();
+        assert_eq!(reducer.snapshot.source, SubtitleLine::new("", false));
+        reducer.apply(SubtitleEvent::TranslationFinal("译文 A".into()));
+        assert!(reducer.snapshot.history.is_empty());
+
         reducer.apply(SubtitleEvent::SourceFinal("generation B".into()));
         reducer.apply(SubtitleEvent::TranslationFinal("译文 B".into()));
-
-        assert_eq!(reducer.snapshot.history.len(), 1);
-        assert_eq!(reducer.snapshot.history[0].source, "generation B");
-        assert_eq!(reducer.snapshot.history[0].translation, "译文 B");
+        assert_eq!(
+            reducer.snapshot.history,
+            vec![SubtitlePair::new("generation B".into(), "译文 B".into(), 0)]
+        );
     }
 
     #[test]

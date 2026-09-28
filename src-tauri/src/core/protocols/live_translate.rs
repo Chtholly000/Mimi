@@ -137,14 +137,44 @@ pub enum LiveTranslateServerEvent {
     },
 }
 
+/// Wire identity carried by DashScope realtime events.
+///
+/// `item_id` names the conversation item an event belongs to. `previous_item_id`
+/// appears on `conversation.item.created` and links a response item to the input
+/// item it answers. The live-translate protocol streams recognition and
+/// translation independently and the two finals of one utterance arrive tens of
+/// milliseconds apart in either order, so this identity — not arrival order — is
+/// what pairs an original line with its translation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LiveTranslateEventIdentity {
+    pub item_id: Option<String>,
+    pub previous_item_id: Option<String>,
+}
+
 impl LiveTranslateServerEvent {
-    pub fn decode(text: &str) -> Result<Self, LiveTranslateProtocolError> {
+    /// Decodes one server frame together with the identity it carries.
+    pub fn decode_with_identity(
+        text: &str,
+    ) -> Result<(Self, LiveTranslateEventIdentity), LiveTranslateProtocolError> {
         let json: Value =
             serde_json::from_str(text).map_err(|_| LiveTranslateProtocolError::InvalidJSON)?;
-        Self::decode_value(&json)
+        Self::decode_value_with_identity(&json)
     }
 
-    pub fn decode_value(json: &Value) -> Result<Self, LiveTranslateProtocolError> {
+    pub fn decode_value_with_identity(
+        json: &Value,
+    ) -> Result<(Self, LiveTranslateEventIdentity), LiveTranslateProtocolError> {
+        let identity = LiveTranslateEventIdentity {
+            item_id: item_id_of(json),
+            previous_item_id: json
+                .get("previous_item_id")
+                .and_then(Value::as_str)
+                .map(String::from),
+        };
+        Ok((Self::decode_normalized(json)?, identity))
+    }
+
+    fn decode_normalized(json: &Value) -> Result<Self, LiveTranslateProtocolError> {
         let kind = json
             .get("type")
             .and_then(Value::as_str)
@@ -227,9 +257,28 @@ fn combined_text(json: &Value) -> String {
     format!("{confirmed}{tentative}").trim().to_string()
 }
 
+/// The conversation item an event belongs to: a top-level `item_id`, or the
+/// nested `item.id` of a created item.
+fn item_id_of(json: &Value) -> Option<String> {
+    json.get("item_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            json.get("item")
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str)
+        })
+        .map(String::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decode(text: &str) -> LiveTranslateServerEvent {
+        LiveTranslateServerEvent::decode_with_identity(text)
+            .expect("the test frame is a documented event")
+            .0
+    }
 
     #[test]
     fn endpoint_builds_the_unified_realtime_url() {
@@ -307,10 +356,9 @@ mod tests {
 
     #[test]
     fn source_preview_combines_confirmed_and_tentative_text() {
-        let event = LiveTranslateServerEvent::decode(
+        let event = decode(
             r#"{"type":"conversation.item.input_audio_transcription.text","text":"Hello","stash":" world","language":"en"}"#,
-        )
-        .unwrap();
+        );
         assert_eq!(
             event,
             LiveTranslateServerEvent::SourceDraft {
@@ -322,10 +370,9 @@ mod tests {
 
     #[test]
     fn asr_preview_combines_confirmed_text_and_stash() {
-        let event = LiveTranslateServerEvent::decode(
+        let event = decode(
             r#"{"type":"conversation.item.input_audio_transcription.text","text":"今日は","stash":"晴れです","language":"ja"}"#,
-        )
-        .unwrap();
+        );
         assert_eq!(
             event,
             LiveTranslateServerEvent::SourceDraft {
@@ -337,10 +384,9 @@ mod tests {
 
     #[test]
     fn source_completion_decodes_the_final_transcript() {
-        let event = LiveTranslateServerEvent::decode(
+        let event = decode(
             r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"Hello world.","language":"en"}"#,
-        )
-        .unwrap();
+        );
         assert_eq!(
             event,
             LiveTranslateServerEvent::SourceFinal {
@@ -351,15 +397,61 @@ mod tests {
     }
 
     #[test]
+    fn identity_keeps_the_recognition_item_of_source_events() {
+        let (event, identity) = LiveTranslateServerEvent::decode_with_identity(
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"Hello world.","item_id":"item_source"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            event,
+            LiveTranslateServerEvent::SourceFinal {
+                text: "Hello world.".into(),
+                language: None
+            }
+        );
+        assert_eq!(
+            identity,
+            LiveTranslateEventIdentity {
+                item_id: Some("item_source".into()),
+                previous_item_id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn identity_keeps_the_response_item_of_translation_events() {
+        let (event, identity) = LiveTranslateServerEvent::decode_with_identity(
+            r#"{"type":"response.text.done","text":"你好，世界。","item_id":"item_response","response_id":"resp_1"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            event,
+            LiveTranslateServerEvent::TranslationFinal("你好，世界。".into())
+        );
+        assert_eq!(identity.item_id.as_deref(), Some("item_response"));
+        assert_eq!(identity.previous_item_id, None);
+    }
+
+    #[test]
+    fn identity_links_a_created_response_item_to_its_input_item() {
+        let (event, identity) = LiveTranslateServerEvent::decode_with_identity(
+            r#"{"type":"conversation.item.created","item":{"id":"item_response","role":"assistant"},"previous_item_id":"item_source"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            event,
+            LiveTranslateServerEvent::Ignored {
+                kind: "conversation.item.created".into()
+            }
+        );
+        assert_eq!(identity.item_id.as_deref(), Some("item_response"));
+        assert_eq!(identity.previous_item_id.as_deref(), Some("item_source"));
+    }
+
+    #[test]
     fn translation_preview_and_completion_decode() {
-        let preview = LiveTranslateServerEvent::decode(
-            r#"{"type":"response.text.text","text":"你好","stash":"，世界"}"#,
-        )
-        .unwrap();
-        let final_event = LiveTranslateServerEvent::decode(
-            r#"{"type":"response.text.done","text":"你好，世界。"}"#,
-        )
-        .unwrap();
+        let preview = decode(r#"{"type":"response.text.text","text":"你好","stash":"，世界"}"#);
+        let final_event = decode(r#"{"type":"response.text.done","text":"你好，世界。"}"#);
 
         assert_eq!(
             preview,
@@ -373,12 +465,10 @@ mod tests {
 
     #[test]
     fn session_and_error_events_decode() {
-        let updated = LiveTranslateServerEvent::decode(r#"{"type":"session.updated"}"#).unwrap();
-        let finished = LiveTranslateServerEvent::decode(r#"{"type":"session.finished"}"#).unwrap();
-        let failure = LiveTranslateServerEvent::decode(
-            r#"{"type":"error","error":{"code":"invalid_value","message":"Bad language"}}"#,
-        )
-        .unwrap();
+        let updated = decode(r#"{"type":"session.updated"}"#);
+        let finished = decode(r#"{"type":"session.finished"}"#);
+        let failure =
+            decode(r#"{"type":"error","error":{"code":"invalid_value","message":"Bad language"}}"#);
 
         assert_eq!(updated, LiveTranslateServerEvent::SessionUpdated);
         assert_eq!(finished, LiveTranslateServerEvent::SessionFinished);
@@ -393,7 +483,7 @@ mod tests {
 
     #[test]
     fn unknown_events_are_ignored_without_failing_the_receive_loop() {
-        let event = LiveTranslateServerEvent::decode(r#"{"type":"response.created"}"#).unwrap();
+        let event = decode(r#"{"type":"response.created"}"#);
         assert_eq!(
             event,
             LiveTranslateServerEvent::Ignored {
@@ -405,11 +495,11 @@ mod tests {
     #[test]
     fn malformed_json_and_missing_type_fail_cleanly() {
         assert!(matches!(
-            LiveTranslateServerEvent::decode("not json"),
+            LiveTranslateServerEvent::decode_with_identity("not json"),
             Err(LiveTranslateProtocolError::InvalidJSON)
         ));
         assert!(matches!(
-            LiveTranslateServerEvent::decode(r#"{"event_id":"x"}"#),
+            LiveTranslateServerEvent::decode_with_identity(r#"{"event_id":"x"}"#),
             Err(LiveTranslateProtocolError::MissingEventType)
         ));
     }
