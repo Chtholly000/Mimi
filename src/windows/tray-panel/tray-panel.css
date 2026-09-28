@@ -280,6 +280,7 @@
 }
 
 .tray-setting-row--language,
+.tray-setting-row--display,
 .tray-setting-row--alignment,
 .tray-setting-row--toggle {
   display: grid;
@@ -743,13 +744,4 @@
   .tray-switch > span {
     forced-color-adjust: none;
   }
-}
-
-.tray-setting-row--display .tray-select-wrap {
-  max-width: 158px;
-  flex: 1 0 150px;
-}
-.tray-setting-row--display .tray-setting-row__copy {
-  min-width: 0;
-  white-space: normal;
 }
