@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.SystemClock
+import android.provider.Settings
 import android.view.MotionEvent
 import android.view.View
 import android.view.inspector.WindowInspector
@@ -28,6 +29,7 @@ import java.io.File
 class UiSmokeInstrumentation : Instrumentation() {
     private var theme = "light"
     private var demo = false
+    private var overlayPreview = false
     private var screenshots = 0
     private var restoreTarget: String? = null
     private var restoreFont: Int? = null
@@ -39,6 +41,7 @@ class UiSmokeInstrumentation : Instrumentation() {
         super.onCreate(arguments)
         theme = arguments?.getString("theme") ?: "light"
         demo = arguments?.getString("demo") == "true"
+        overlayPreview = arguments?.getString("overlay_preview") == "true"
         restoreTarget = arguments?.getString("restore_target")?.takeIf { it in listOf("zh", "en", "ja") }
         restoreFont = arguments?.getString("restore_font")?.toIntOrNull()?.takeIf { it in 12..24 }
         restoreColor = arguments?.getString("restore_color")?.toIntOrNull()?.takeIf { it in 0..4 }
@@ -58,7 +61,11 @@ class UiSmokeInstrumentation : Instrumentation() {
                 AppCompatDelegate.setDefaultNightMode(if (theme == "dark")
                     AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO)
             }
-            if (demo) demonstrate() else smoke()
+            when {
+                overlayPreview -> previewOverlay()
+                demo -> demonstrate()
+                else -> smoke()
+            }
         } catch (error: Throwable) {
             failure = error
         } finally {
@@ -70,7 +77,7 @@ class UiSmokeInstrumentation : Instrumentation() {
         }
         finish(if (failure == null) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
             putString("stream", if (failure == null)
-                "UI ${if (demo) "demo" else "smoke"} passed ($theme): $screenshots screenshots; non-secret preferences restored; no credentials saved or provider session started.\n"
+                "UI ${if (overlayPreview) "overlay preview" else if (demo) "demo" else "smoke"} passed ($theme): $screenshots screenshots; non-secret preferences restored; no credentials saved or provider session started.\n"
             else "UI check failed: ${failure.javaClass.simpleName}: ${failure.message}\n")
         })
     }
@@ -170,6 +177,53 @@ class UiSmokeInstrumentation : Instrumentation() {
         capture("settings-keyboard-$theme")
         onUi { editor.finish(); reopened.finish(); home.finish() }
         waitForIdleSync()
+    }
+
+    private fun previewOverlay() {
+        check(Settings.canDrawOverlays(targetContext)) { "Grant the debug app overlay permission before preview." }
+        check(!MimiService.isRunning) { "Stop the active session before preview." }
+        // Use the new neutral defaults for both screenshots; AppearanceSnapshot
+        // restores the emulator's existing preferences when this check finishes.
+        SettingsStore.setTranslationColorIndex(targetContext, 1)
+        SettingsStore.setOverlayBgAlpha(targetContext, 65)
+        SettingsStore.setOverlayOpacity(targetContext, 100)
+        launchHome()
+        try {
+            check(targetContext.startService(Intent(targetContext, MimiService::class.java)
+                .setAction(MimiService.ACTION_UI_PREVIEW)) != null)
+            var root: View? = null
+            for (attempt in 0 until 30) {
+                waitForIdleSync()
+                root = WindowInspector.getGlobalWindowViews().firstOrNull { it.tag == "mimi-overlay" }
+                if (root != null) break
+                SystemClock.sleep(100)
+            }
+            val overlay = root ?: error("Actual floating overlay did not appear; windows=" +
+                WindowInspector.getGlobalWindowViews().map { it.tag })
+            val compact = overlay.findViewWithTag<View>("compact-subtitle")
+            val expanded = overlay.findViewWithTag<View>("expanded-subtitles")
+            check(compact != null && expanded != null)
+            targetContext.startActivity(Intent(Intent.ACTION_MAIN)
+                .addCategory(Intent.CATEGORY_HOME)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            waitForIdleSync()
+            check(compact.isShown && !expanded.isShown)
+            capture("overlay-before-compact-$theme")
+            onUi { check(compact.performClick()) }
+            check(expanded.isShown && !compact.isShown) { "Expanded floating overlay did not open" }
+            capture("overlay-after-expanded-default-$theme")
+            val savedHistory = SettingsStore.historyLines(targetContext)
+            targetContext.startService(Intent(targetContext, MimiService::class.java)
+                .setAction(MimiService.ACTION_UI_PREVIEW_HISTORY))
+            waitForIdleSync()
+            check(SettingsStore.historyLines(targetContext) == savedHistory)
+            capture("overlay-after-expanded-history-$theme")
+            onUi { check(expanded.findViewWithTag<View>("collapse-overlay").performClick()) }
+            check(compact.isShown && !expanded.isShown) { "Floating overlay did not collapse" }
+        } finally {
+            targetContext.startService(MimiService.stopIntent(targetContext))
+            waitForIdleSync()
+        }
     }
 
     private fun demonstrate() {

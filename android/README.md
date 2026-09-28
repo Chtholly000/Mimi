@@ -28,7 +28,10 @@ translation for system audio. Pure Kotlin (no Tauri), single module.
   leaving a secret field empty preserves its saved value. Changes are written only with Save and use.
 - **Subtitle overlay** — `TYPE_APPLICATION_OVERLAY` floating window, text-hugging
   card, always horizontally centered over the video, vertically draggable
-  (position persists). Its compact card has adjustable background alpha
+  (position persists). Tap it to open a translucent reading panel with the
+  current source and translation; confirmed lines appear there only when
+  bounded history is enabled in settings. The panel has a language shortcut,
+  font-size control, and collapse action. Its compact card has adjustable background alpha
   (0–90 %), text color presets, font size, and whole-window opacity. An optional
   immersive mode shows plain text with a contrast shadow and passes touches
   through to the app below; change it in Subtitle appearance before starting
