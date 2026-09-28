@@ -20,12 +20,18 @@ default and never appears until explicitly enabled in settings.
 The panel or appearance switch enables immersive mode immediately without
 restarting audio capture. The subtitle window then has no background, hides
 history, uses a text shadow for contrast, and passes touches through. A separate
-small, touchable exit control sits at the upper right; it remains available even
-when subtitles temporarily hide. Tapping it returns to the ordinary compact
-card. Android 12 and newer reject touches passing through a fully opaque
+small, touchable exit control sits on the right edge. Users can drag it
+vertically out of the video's controls; it remains available even when subtitles
+temporarily hide. Tapping it returns to the ordinary compact card. In landscape,
+the expanded reading panel caps its width at 560 dp and its height at 48% of
+the screen without history, leaving the video sides operable. Android 12 and
+newer reject touches passing through a fully opaque
 untrusted overlay, so the immersive text window's opacity is capped at 0.8.
 The app and foreground notification remain backup controls. The ordinary card
-stays touchable for dragging.
+stays touchable for dragging. The compact card and expanded panel consume
+touches only inside their own window bounds; the immersive subtitle text does
+not consume touches. The small exit control consumes touches in its own bounds
+and can be moved away from another app's controls.
 
 Mode and appearance settings save separately from provider credentials. A
 debug-only instrumentation fixture renders the actual floating window over the

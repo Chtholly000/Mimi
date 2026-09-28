@@ -11,6 +11,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -68,6 +69,8 @@ class MimiService : Service() {
     private var overlayView: View? = null
     private var overlayParams: WindowManager.LayoutParams? = null
     private var immersiveExitView: View? = null
+    private var immersiveExitParams: WindowManager.LayoutParams? = null
+    private var immersiveExitYFraction = 0.42f
     private var compactView: View? = null
     private var expandedView: View? = null
     private var expanded = false
@@ -373,6 +376,19 @@ class MimiService : Service() {
         super.onDestroy()
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        mainHandler.post {
+            if (expanded) {
+                resizeExpandedOverlay(SubtitleBus.historySnapshot().size)
+            }
+            immersiveExitParams?.let { params ->
+                params.y = exitControlY()
+                immersiveExitView?.let { windowManager?.updateViewLayout(it, params) }
+            }
+        }
+    }
+
     /** The actual floating window: a small live line that opens a bounded reading panel. */
     private fun showOverlay() {
         if (overlayView != null) return
@@ -496,24 +512,60 @@ class MimiService : Service() {
     }
 
     private fun showImmersiveExitControl(wm: WindowManager) {
-        val exit = panelButton(getString(R.string.overlay_exit_immersive)).apply {
+        val exit = panelButton(getString(R.string.overlay_exit_short)).apply {
             tag = "exit-immersive"
             contentDescription = getString(R.string.overlay_exit_immersive)
-            alpha = 0.72f
+            alpha = 0.68f
             setOnClickListener { setImmersiveMode(false) }
         }
         val params = WindowManager.LayoutParams(
-            dp(88), dp(40), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            dp(56), dp(40), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.END
-            x = dp(12)
-            y = dp(16)
+            x = dp(4)
+            y = exitControlY()
+        }
+        var initialY = 0
+        var initialTouchY = 0f
+        var dragged = false
+        exit.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialY = params.y
+                    initialTouchY = event.rawY
+                    dragged = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (kotlin.math.abs(event.rawY - initialTouchY) > dp(8)) dragged = true
+                    if (dragged) {
+                        params.y = (initialY + event.rawY - initialTouchY).toInt()
+                            .coerceIn(0, (resources.displayMetrics.heightPixels - dp(48)).coerceAtLeast(0))
+                        wm.updateViewLayout(exit, params)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (dragged) {
+                        immersiveExitYFraction = params.y.toFloat() /
+                            resources.displayMetrics.heightPixels.coerceAtLeast(1)
+                    } else exit.performClick()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
         }
         wm.addView(exit, params)
         immersiveExitView = exit
+        immersiveExitParams = params
     }
+
+    private fun exitControlY(): Int =
+        (resources.displayMetrics.heightPixels * immersiveExitYFraction).toInt()
+            .coerceIn(0, (resources.displayMetrics.heightPixels - dp(48)).coerceAtLeast(0))
 
     private fun setImmersiveMode(enabled: Boolean) {
         if (immersiveSession == enabled) return
@@ -663,8 +715,8 @@ class MimiService : Service() {
         compactView?.visibility = View.GONE
         panel.visibility = View.VISIBLE
         expanded = true
-        params.width = (resources.displayMetrics.widthPixels * 0.92f).toInt()
-        params.height = dp(230)
+        params.width = expandedPanelWidth()
+        params.height = expandedPanelHeight(0)
         params.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
         params.y = 0
         windowManager?.updateViewLayout(root, params)
@@ -674,11 +726,23 @@ class MimiService : Service() {
     private fun resizeExpandedOverlay(historyCount: Int) {
         val root = overlayView ?: return
         val params = overlayParams ?: return
-        val desiredHeight = dp(230 + historyCount * 76)
-            .coerceAtMost((resources.displayMetrics.heightPixels * 0.64f).toInt())
-        if (params.height == desiredHeight) return
+        val desiredWidth = expandedPanelWidth()
+        val desiredHeight = expandedPanelHeight(historyCount)
+        if (params.width == desiredWidth && params.height == desiredHeight) return
+        params.width = desiredWidth
         params.height = desiredHeight
         windowManager?.updateViewLayout(root, params)
+    }
+
+    private fun expandedPanelWidth(): Int =
+        (resources.displayMetrics.widthPixels * 0.92f).toInt().coerceAtMost(dp(560))
+
+    private fun expandedPanelHeight(historyCount: Int): Int {
+        val landscape = resources.displayMetrics.widthPixels > resources.displayMetrics.heightPixels
+        val maxFraction = if (landscape && historyCount == 0) 0.48f
+            else if (landscape) 0.62f else 0.64f
+        return dp(230 + historyCount * 76)
+            .coerceAtMost((resources.displayMetrics.heightPixels * maxFraction).toInt())
     }
 
     private fun collapseOverlay() {
@@ -701,6 +765,7 @@ class MimiService : Service() {
         } catch (_: Exception) {
         }
         immersiveExitView = null
+        immersiveExitParams = null
         try {
             overlayView?.let { windowManager?.removeView(it) }
         } catch (_: Exception) {

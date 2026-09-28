@@ -34,9 +34,11 @@ translation for system audio. Pure Kotlin (no Tauri), single module.
   font-size control, collapse action, and immersive toggle. Its compact card has adjustable background alpha
   (0–90 %), text color presets, font size, and whole-window opacity. An optional
   immersive mode shows plain text with a contrast shadow and passes touches
-  through to the app below. A small control at the upper right exits immersive
+  through to the app below. A small control on the right edge can be moved
+  vertically and exits immersive
   mode without stopping the session; the app and foreground notification remain
-  backup controls.
+  backup controls. In landscape, the expanded panel stays centered and caps its
+  width at 560 dp; its covered area receives touches until it is collapsed.
 - **Native-subtitle behaviour** — only the current sentence is shown (drafts
   are clipped to the last sentence of the provider's cumulative buffer);
   English source speech shows source + translation lines, other languages show

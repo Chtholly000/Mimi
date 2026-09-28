@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
 import android.view.inspector.WindowInspector
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -30,6 +31,7 @@ class UiSmokeInstrumentation : Instrumentation() {
     private var theme = "light"
     private var demo = false
     private var overlayPreview = false
+    private var expectLandscape = false
     private var screenshots = 0
     private var restoreTarget: String? = null
     private var restoreFont: Int? = null
@@ -42,6 +44,7 @@ class UiSmokeInstrumentation : Instrumentation() {
         theme = arguments?.getString("theme") ?: "light"
         demo = arguments?.getString("demo") == "true"
         overlayPreview = arguments?.getString("overlay_preview") == "true"
+        expectLandscape = arguments?.getString("expect_landscape") == "true"
         restoreTarget = arguments?.getString("restore_target")?.takeIf { it in listOf("zh", "en", "ja") }
         restoreFont = arguments?.getString("restore_font")?.toIntOrNull()?.takeIf { it in 12..24 }
         restoreColor = arguments?.getString("restore_color")?.toIntOrNull()?.takeIf { it in 0..4 }
@@ -208,10 +211,30 @@ class UiSmokeInstrumentation : Instrumentation() {
                 .addCategory(Intent.CATEGORY_HOME)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             waitForIdleSync()
+            if (expectLandscape) {
+                var wide = false
+                for (attempt in 0 until 30) {
+                    val screenshot = checkNotNull(uiAutomation.takeScreenshot())
+                    wide = screenshot.width > screenshot.height
+                    screenshot.recycle()
+                    if (wide) break
+                    SystemClock.sleep(100)
+                }
+                check(wide) { "Landscape display did not settle before screenshot" }
+            }
             check(compact.isShown && !expanded.isShown)
             capture("overlay-before-compact-$theme")
             onUi { check(compact.performClick()) }
             check(expanded.isShown && !compact.isShown) { "Expanded floating overlay did not open" }
+            if (targetContext.resources.displayMetrics.widthPixels > targetContext.resources.displayMetrics.heightPixels) {
+                val params = overlay.layoutParams as WindowManager.LayoutParams
+                check(params.width <= (560 * targetContext.resources.displayMetrics.density).toInt()) {
+                    "Landscape panel is too wide"
+                }
+                check(params.height <= (targetContext.resources.displayMetrics.heightPixels * 0.48f).toInt()) {
+                    "Landscape panel blocks too much height"
+                }
+            }
             capture("overlay-after-expanded-default-$theme")
             val savedHistory = SettingsStore.historyLines(targetContext)
             targetContext.startService(Intent(targetContext, MimiService::class.java)
@@ -219,15 +242,30 @@ class UiSmokeInstrumentation : Instrumentation() {
             waitForIdleSync()
             check(SettingsStore.historyLines(targetContext) == savedHistory)
             capture("overlay-after-expanded-history-$theme")
-            onUi { check(expanded.findViewWithTag<View>("collapse-overlay").performClick()) }
+            onUi { check(expanded.findViewWithTag<View>("collapse-overlay").performClick()) { "Collapse click failed" } }
             check(compact.isShown && !expanded.isShown) { "Floating overlay did not collapse" }
-            onUi { check(compact.performClick()) }
-            onUi { check(expanded.findViewWithTag<View>("enter-immersive").performClick()) }
-            check(SettingsStore.immersiveSubtitles(targetContext))
+            onUi { check(compact.performClick()) { "Compact reopen click failed" } }
+            onUi { check(expanded.findViewWithTag<View>("enter-immersive").performClick()) { "Immersive entry click failed" } }
+            check(SettingsStore.immersiveSubtitles(targetContext)) { "Immersive entry did not update preference" }
             val exit = WindowInspector.getGlobalWindowViews()
                 .firstOrNull { it.tag == "exit-immersive" }
             check(exit?.isShown == true) { "Immersive mode has no in-overlay exit" }
+            var touchThrough = false
+            for (attempt in 0 until 30) {
+                waitForIdleSync()
+                touchThrough = WindowInspector.getGlobalWindowViews().any {
+                    it.tag == "mimi-overlay" &&
+                        (it.layoutParams as WindowManager.LayoutParams).flags and
+                            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE != 0
+                }
+                if (touchThrough) break
+                SystemClock.sleep(100)
+            }
+            check(touchThrough) { "Subtitle window is not touch-through" }
+            check((exit.layoutParams as WindowManager.LayoutParams).flags and
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE == 0) { "Exit control is not touchable" }
             capture("overlay-after-immersive-$theme")
+            dragExitControl(exit)
             onUi { check(exit.performClick()) { "Exit control click failed" } }
             waitForIdleSync()
             check(!SettingsStore.immersiveSubtitles(targetContext)) { "Exit did not clear immersive preference" }
@@ -268,6 +306,27 @@ class UiSmokeInstrumentation : Instrumentation() {
             SystemClock.sleep(100)
         }
         return null
+    }
+
+    private fun dragExitControl(exit: View) {
+        val location = IntArray(2)
+        onUi { exit.getLocationOnScreen(location) }
+        val x = location[0] + exit.width / 2f
+        val startY = location[1] + exit.height / 2f
+        val endY = (startY + 90f).coerceAtMost(targetContext.resources.displayMetrics.heightPixels - 70f)
+        val down = SystemClock.uptimeMillis()
+        fun event(action: Int, y: Float) {
+            val pointer = MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0)
+            sendPointerSync(pointer)
+            pointer.recycle()
+        }
+        event(MotionEvent.ACTION_DOWN, startY)
+        event(MotionEvent.ACTION_MOVE, endY)
+        event(MotionEvent.ACTION_UP, endY)
+        waitForIdleSync()
+        val after = IntArray(2)
+        onUi { exit.getLocationOnScreen(after) }
+        check(after[1] > location[1] + 20) { "Immersive exit control could not move away from app controls" }
     }
 
     private fun demonstrate() {
