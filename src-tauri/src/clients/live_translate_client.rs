@@ -4,11 +4,12 @@ use crate::clients::provider_events::ProviderEventSender;
 use crate::core::diagnostics::milliseconds;
 use crate::core::models::{SourceLanguage, TargetLanguage};
 use crate::core::protocols::live_translate::{
-    LiveTranslateEndpoint, LiveTranslateRequestEncoder, LiveTranslateServerEvent,
+    LiveTranslateEndpoint, LiveTranslateEventIdentity, LiveTranslateRequestEncoder,
+    LiveTranslateServerEvent,
 };
 use crate::pipeline_log;
 use futures_util::{SinkExt, StreamExt};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -307,17 +308,172 @@ async fn wait_for_setup(
     }
 }
 
+/// One utterance being paired: its recognized text, whether that text is the
+/// authoritative final, and the translation final of the response answering it.
+#[derive(Default)]
+struct TrackedUtterance {
+    source_text: String,
+    source_language: Option<String>,
+    source_final: bool,
+    translation_final: Option<String>,
+}
+
+/// Pairs live-translate recognition and translation finals by the provider's own
+/// conversation-item identity.
+///
+/// The protocol streams both sides independently and the two finals of one
+/// utterance arrive tens of milliseconds apart in either order, so arrival order
+/// cannot identify an utterance. Drafts never pass through this type: they keep
+/// streaming to the session exactly as the provider emits them, and only the
+/// durable pair waits for both authoritative finals. Tracking follows the
+/// recognition stream, so a session keeps at most the current utterance plus one
+/// a late translation still refers to.
+#[derive(Default)]
+struct LiveTranslatePairAligner {
+    /// The utterance the recognition stream is currently filling.
+    current_source_id: Option<String>,
+    utterances: HashMap<String, TrackedUtterance>,
+    /// Response item id -> the input item it answers.
+    responses: HashMap<String, String>,
+}
+
+impl LiveTranslatePairAligner {
+    /// Observes one decoded frame and returns the events to forward downstream.
+    fn observe(
+        &mut self,
+        event: &LiveTranslateServerEvent,
+        identity: &LiveTranslateEventIdentity,
+    ) -> Vec<LiveTranslateServerEvent> {
+        // A created item links a response item to the input item it answers.
+        if let (Some(item_id), Some(previous_item_id)) = (
+            identity.item_id.as_deref(),
+            identity.previous_item_id.as_deref(),
+        ) {
+            self.responses
+                .insert(item_id.to_string(), previous_item_id.to_string());
+            return Vec::new();
+        }
+
+        match event {
+            LiveTranslateServerEvent::SourceDraft { text, language }
+            | LiveTranslateServerEvent::SourceFinal { text, language } => {
+                let Some(item_id) = identity.item_id.as_deref() else {
+                    return vec![event.clone()];
+                };
+                let is_final = matches!(event, LiveTranslateServerEvent::SourceFinal { .. });
+                let mut events = self.start_utterance(item_id);
+                let utterance = self.track(item_id);
+                utterance.source_text = text.clone();
+                utterance.source_language = language.clone();
+                utterance.source_final |= is_final;
+                events.push(event.clone());
+                if is_final {
+                    events.extend(self.take_pair(item_id, false));
+                }
+                events
+            }
+            LiveTranslateServerEvent::TranslationFinal(text) => {
+                let Some(response_id) = identity.item_id.as_deref() else {
+                    // Without identity the legacy best-effort path still applies.
+                    return vec![event.clone()];
+                };
+                let Some(source_id) = self.responses.get(response_id).cloned() else {
+                    return vec![event.clone()];
+                };
+                // An utterance the recognition stream has already left can no
+                // longer receive its final, so its own text is the best source.
+                let allow_draft_source =
+                    matches!(&self.current_source_id, Some(current) if current != &source_id);
+                self.track(&source_id).translation_final = Some(text.clone());
+                self.take_pair(&source_id, allow_draft_source)
+            }
+            // A graceful close is the last point where an unmatched translation
+            // can be paired with the text its own utterance produced.
+            LiveTranslateServerEvent::SessionFinished => {
+                let mut events = self
+                    .current_source_id
+                    .clone()
+                    .map(|source_id| self.flush(&source_id))
+                    .unwrap_or_default();
+                events.push(event.clone());
+                events
+            }
+            _ => vec![event.clone()],
+        }
+    }
+
+    /// Moves the recognition stream to `source_id`, retiring the utterance before
+    /// it: a translation still waiting for that utterance's recognition final is
+    /// committed with the text the utterance produced instead of being dropped.
+    fn start_utterance(&mut self, source_id: &str) -> Vec<LiveTranslateServerEvent> {
+        if self.current_source_id.as_deref() == Some(source_id) {
+            return Vec::new();
+        }
+        let previous = self.current_source_id.replace(source_id.to_string());
+        previous
+            .map(|source_id| self.flush(&source_id))
+            .unwrap_or_default()
+    }
+
+    fn flush(&mut self, source_id: &str) -> Vec<LiveTranslateServerEvent> {
+        let pair = self.take_pair(source_id, true);
+        self.retire(source_id);
+        pair
+    }
+
+    /// Emits the pair for one utterance once both sides are authoritative. An
+    /// empty translation or an empty recognized result retires the utterance
+    /// without a pair and never consumes another utterance's text.
+    fn take_pair(
+        &mut self,
+        source_id: &str,
+        allow_draft_source: bool,
+    ) -> Vec<LiveTranslateServerEvent> {
+        let Some(utterance) = self.utterances.get(source_id) else {
+            return Vec::new();
+        };
+        let Some(translation) = utterance.translation_final.clone() else {
+            return Vec::new();
+        };
+        if !utterance.source_final && !allow_draft_source {
+            return Vec::new();
+        }
+        let source = utterance.source_text.trim().to_string();
+        let language = utterance.source_language.clone();
+        self.retire(source_id);
+        if source.is_empty() || translation.trim().is_empty() {
+            return Vec::new();
+        }
+        vec![LiveTranslateServerEvent::SubtitleFinalPair {
+            source,
+            language,
+            translation: translation.trim().to_string(),
+        }]
+    }
+
+    fn track(&mut self, source_id: &str) -> &mut TrackedUtterance {
+        self.utterances.entry(source_id.to_string()).or_default()
+    }
+
+    fn retire(&mut self, source_id: &str) {
+        self.utterances.remove(source_id);
+        self.responses.remove(source_id);
+        self.responses.retain(|_, source| source != source_id);
+    }
+}
+
 async fn receive_loop(
     mut stream: Stream,
     inner: Arc<Inner>,
     events: ProviderEventSender,
     setup: watch::Sender<SetupState>,
 ) {
+    let mut aligner = LiveTranslatePairAligner::default();
     while let Some(message) = stream.next().await {
         let decoded = match message {
-            Ok(Message::Text(text)) => LiveTranslateServerEvent::decode(&text),
+            Ok(Message::Text(text)) => LiveTranslateServerEvent::decode_with_identity(&text),
             Ok(Message::Binary(data)) => {
-                LiveTranslateServerEvent::decode(&String::from_utf8_lossy(&data))
+                LiveTranslateServerEvent::decode_with_identity(&String::from_utf8_lossy(&data))
             }
             Ok(Message::Pong(_)) => {
                 inner.pong_notify.notify_waiters();
@@ -334,8 +490,8 @@ async fn receive_loop(
             }
         };
 
-        let event = match decoded {
-            Ok(event) => event,
+        let (event, identity) = match decoded {
+            Ok(decoded) => decoded,
             Err(_) => {
                 fail_receive_loop(
                     &events,
@@ -346,8 +502,10 @@ async fn receive_loop(
                 return;
             }
         };
-        if !emit_server_event(&inner, &events, &setup, event) {
-            return;
+        for event in aligner.observe(&event, &identity) {
+            if !emit_server_event(&inner, &events, &setup, event) {
+                return;
+            }
         }
     }
 
@@ -532,5 +690,393 @@ mod tests {
     fn only_a_confirmed_session_finish_makes_socket_end_expected() {
         assert!(should_report_transport_end(false));
         assert!(!should_report_transport_end(true));
+    }
+
+    fn identity(item_id: &str, previous_item_id: Option<&str>) -> LiveTranslateEventIdentity {
+        LiveTranslateEventIdentity {
+            item_id: Some(item_id.to_string()),
+            previous_item_id: previous_item_id.map(String::from),
+        }
+    }
+
+    fn created_item() -> LiveTranslateServerEvent {
+        LiveTranslateServerEvent::Ignored {
+            kind: "conversation.item.created".into(),
+        }
+    }
+
+    #[test]
+    fn a_translation_final_waits_for_its_own_recognition_final() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        assert!(aligner
+            .observe(
+                &created_item(),
+                &identity("item_response", Some("item_source"))
+            )
+            .is_empty());
+
+        // The translation usually completes first; it must not be paired yet
+        // and must not fall back to the legacy best-effort path.
+        assert!(aligner
+            .observe(
+                &LiveTranslateServerEvent::TranslationFinal("你好。".into()),
+                &identity("item_response", None),
+            )
+            .is_empty());
+
+        let events = aligner.observe(
+            &LiveTranslateServerEvent::SourceFinal {
+                text: "Hello.".into(),
+                language: Some("en".into()),
+            },
+            &identity("item_source", None),
+        );
+        assert_eq!(
+            events,
+            vec![
+                LiveTranslateServerEvent::SourceFinal {
+                    text: "Hello.".into(),
+                    language: Some("en".into()),
+                },
+                LiveTranslateServerEvent::SubtitleFinalPair {
+                    source: "Hello.".into(),
+                    language: Some("en".into()),
+                    translation: "你好。".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_recognition_final_waits_for_its_own_translation_final() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        aligner.observe(
+            &created_item(),
+            &identity("item_response", Some("item_source")),
+        );
+
+        let events = aligner.observe(
+            &LiveTranslateServerEvent::SourceFinal {
+                text: "Hello.".into(),
+                language: None,
+            },
+            &identity("item_source", None),
+        );
+        assert_eq!(
+            events,
+            vec![LiveTranslateServerEvent::SourceFinal {
+                text: "Hello.".into(),
+                language: None,
+            }]
+        );
+
+        let events = aligner.observe(
+            &LiveTranslateServerEvent::TranslationFinal("你好。".into()),
+            &identity("item_response", None),
+        );
+        assert_eq!(
+            events,
+            vec![LiveTranslateServerEvent::SubtitleFinalPair {
+                source: "Hello.".into(),
+                language: None,
+                translation: "你好。".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn drafts_stream_through_untouched_while_the_pair_waits() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        aligner.observe(
+            &created_item(),
+            &identity("item_response", Some("item_source")),
+        );
+
+        let source_draft = LiveTranslateServerEvent::SourceDraft {
+            text: "Hello wor".into(),
+            language: Some("en".into()),
+        };
+        assert_eq!(
+            aligner.observe(&source_draft, &identity("item_source", None)),
+            vec![source_draft.clone()]
+        );
+        let translation_draft = LiveTranslateServerEvent::TranslationDraft("你好".into());
+        assert_eq!(
+            aligner.observe(&translation_draft, &identity("item_response", None)),
+            vec![translation_draft.clone()]
+        );
+        assert!(aligner
+            .observe(
+                &LiveTranslateServerEvent::TranslationFinal("你好。".into()),
+                &identity("item_response", None),
+            )
+            .is_empty());
+        let later_draft = LiveTranslateServerEvent::SourceDraft {
+            text: "Hello world".into(),
+            language: Some("en".into()),
+        };
+        assert_eq!(
+            aligner.observe(&later_draft, &identity("item_source", None)),
+            vec![later_draft.clone()]
+        );
+
+        // The pair keeps the authoritative recognition final, never a draft.
+        let events = aligner.observe(
+            &LiveTranslateServerEvent::SourceFinal {
+                text: "Hello world.".into(),
+                language: Some("en".into()),
+            },
+            &identity("item_source", None),
+        );
+        assert_eq!(
+            events,
+            vec![
+                LiveTranslateServerEvent::SourceFinal {
+                    text: "Hello world.".into(),
+                    language: Some("en".into()),
+                },
+                LiveTranslateServerEvent::SubtitleFinalPair {
+                    source: "Hello world.".into(),
+                    language: Some("en".into()),
+                    translation: "你好。".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_translation_final_never_consumes_another_utterance() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        aligner.observe(
+            &created_item(),
+            &identity("item_response_1", Some("item_source_1")),
+        );
+        aligner.observe(
+            &LiveTranslateServerEvent::SourceFinal {
+                text: "Um.".into(),
+                language: None,
+            },
+            &identity("item_source_1", None),
+        );
+        assert!(aligner
+            .observe(
+                &LiveTranslateServerEvent::TranslationFinal("  ".into()),
+                &identity("item_response_1", None),
+            )
+            .is_empty());
+
+        aligner.observe(
+            &created_item(),
+            &identity("item_response_2", Some("item_source_2")),
+        );
+        aligner.observe(
+            &LiveTranslateServerEvent::SourceFinal {
+                text: "I'm searching for someone.".into(),
+                language: None,
+            },
+            &identity("item_source_2", None),
+        );
+        assert_eq!(
+            aligner.observe(
+                &LiveTranslateServerEvent::TranslationFinal("我在寻找某人。".into()),
+                &identity("item_response_2", None),
+            ),
+            vec![LiveTranslateServerEvent::SubtitleFinalPair {
+                source: "I'm searching for someone.".into(),
+                language: None,
+                translation: "我在寻找某人。".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_missing_recognition_final_commits_with_its_own_utterance_text() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        aligner.observe(
+            &created_item(),
+            &identity("item_response_1", Some("item_source_1")),
+        );
+        aligner.observe(
+            &LiveTranslateServerEvent::SourceDraft {
+                text: "Hello wor".into(),
+                language: None,
+            },
+            &identity("item_source_1", None),
+        );
+        assert!(aligner
+            .observe(
+                &LiveTranslateServerEvent::TranslationFinal("你好。".into()),
+                &identity("item_response_1", None),
+            )
+            .is_empty());
+
+        // The next utterance starts while the first one never produced a
+        // recognition final: its translation is committed with its own text
+        // instead of being dropped or borrowing the next utterance.
+        assert_eq!(
+            aligner.observe(
+                &LiveTranslateServerEvent::SourceDraft {
+                    text: "Next utterance".into(),
+                    language: None,
+                },
+                &identity("item_source_2", None),
+            ),
+            vec![
+                LiveTranslateServerEvent::SubtitleFinalPair {
+                    source: "Hello wor".into(),
+                    language: None,
+                    translation: "你好。".into(),
+                },
+                LiveTranslateServerEvent::SourceDraft {
+                    text: "Next utterance".into(),
+                    language: None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_graceful_close_commits_the_pending_translation() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        aligner.observe(
+            &created_item(),
+            &identity("item_response", Some("item_source")),
+        );
+        aligner.observe(
+            &LiveTranslateServerEvent::SourceDraft {
+                text: "Hello".into(),
+                language: None,
+            },
+            &identity("item_source", None),
+        );
+        assert!(aligner
+            .observe(
+                &LiveTranslateServerEvent::TranslationFinal("你好。".into()),
+                &identity("item_response", None),
+            )
+            .is_empty());
+
+        assert_eq!(
+            aligner.observe(
+                &LiveTranslateServerEvent::SessionFinished,
+                &LiveTranslateEventIdentity::default(),
+            ),
+            vec![
+                LiveTranslateServerEvent::SubtitleFinalPair {
+                    source: "Hello".into(),
+                    language: None,
+                    translation: "你好。".into(),
+                },
+                LiveTranslateServerEvent::SessionFinished,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_translation_final_without_identity_keeps_the_legacy_path() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        let event = LiveTranslateServerEvent::TranslationFinal("你好。".into());
+        assert_eq!(
+            aligner.observe(&event, &LiveTranslateEventIdentity::default()),
+            vec![event.clone()]
+        );
+    }
+
+    #[test]
+    fn a_long_session_keeps_only_the_current_utterance_tracked() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        for index in 0..100 {
+            let response = format!("item_response_{index}");
+            let source = format!("item_source_{index}");
+            aligner.observe(&created_item(), &identity(&response, Some(&source)));
+            aligner.observe(
+                &LiveTranslateServerEvent::SourceDraft {
+                    text: format!("draft {index}"),
+                    language: None,
+                },
+                &identity(&source, None),
+            );
+            aligner.observe(
+                &LiveTranslateServerEvent::SourceFinal {
+                    text: format!("final {index}"),
+                    language: None,
+                },
+                &identity(&source, None),
+            );
+            aligner.observe(
+                &LiveTranslateServerEvent::TranslationFinal(format!("translation {index}")),
+                &identity(&response, None),
+            );
+        }
+
+        assert!(aligner.utterances.len() <= 1);
+        assert!(aligner.responses.len() <= 2);
+    }
+
+    /// Replays the captured Alibaba live-translate session the documentation
+    /// harness uses: the two finals of one utterance arrive tens of
+    /// milliseconds apart in either order, one utterance is never translated,
+    /// and drafts must keep streaming untouched.
+    #[test]
+    fn the_real_alibaba_capture_pairs_every_utterance_by_identity() {
+        let raw = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../docs/demos/english-film/response.json"
+        ))
+        .expect("the captured Alibaba response fixture is available");
+        let fixture: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+        let mut aligner = LiveTranslatePairAligner::default();
+        let mut pairs = Vec::new();
+        let (mut source_drafts, mut translation_drafts) = (0, 0);
+        let (mut source_finals, mut translation_finals) = (0, 0);
+        for event in fixture["events"].as_array().unwrap() {
+            let (decoded, identity) = LiveTranslateServerEvent::decode_value_with_identity(event)
+                .expect("the capture only contains documented events");
+            for forwarded in aligner.observe(&decoded, &identity) {
+                match forwarded {
+                    LiveTranslateServerEvent::SourceDraft { .. } => source_drafts += 1,
+                    LiveTranslateServerEvent::TranslationDraft(_) => translation_drafts += 1,
+                    LiveTranslateServerEvent::SourceFinal { .. } => source_finals += 1,
+                    LiveTranslateServerEvent::TranslationFinal(_) => translation_finals += 1,
+                    LiveTranslateServerEvent::SubtitleFinalPair {
+                        source,
+                        translation,
+                        ..
+                    } => pairs.push((source, translation)),
+                    _ => {}
+                }
+            }
+        }
+
+        assert_eq!((source_drafts, translation_drafts), (72, 77));
+        assert_eq!((source_finals, translation_finals), (8, 0));
+        assert_eq!(
+            pairs,
+            vec![
+                (
+                    "So. What brings you to the land of the gatekeepers?".to_string(),
+                    "那么，是什么风把你吹到了守门人的国度？".to_string()
+                ),
+                (
+                    "I'm searching for someone.".to_string(),
+                    "我在寻找某人。".to_string()
+                ),
+                (
+                    "Someone very dear.".to_string(),
+                    "一位非常亲爱的人。".to_string()
+                ),
+                ("A kindred spirit.".to_string(), "志同道合的人".to_string()),
+                ("A dragon.".to_string(), "一条龙".to_string()),
+                (
+                    "A dangerous quest for a lone hunter.".to_string(),
+                    "对独行猎手而言，这是一场危险的 quest。".to_string()
+                ),
+                (
+                    "I've been alone for as long as I can remember.".to_string(),
+                    "从我有记忆起，我就一直孤身一人。".to_string()
+                ),
+            ]
+        );
     }
 }
