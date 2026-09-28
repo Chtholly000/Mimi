@@ -45,6 +45,8 @@ pub enum BaiduTranslateClientError {
     TransportFailure,
     #[error("Baidu realtime translation rejected the session configuration.")]
     SessionSetupRejected,
+    #[error("Baidu realtime translation rejected the session configuration (code {0}).")]
+    SessionSetupRejectedWithCode(i64),
     #[error("Baidu realtime translation did not confirm the session in time.")]
     SessionSetupTimedOut,
 }
@@ -56,7 +58,7 @@ type Stream = futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<T
 enum SetupState {
     Awaiting,
     Ready,
-    Rejected,
+    Rejected(Option<i64>),
 }
 
 struct Inner {
@@ -205,7 +207,12 @@ impl BaiduTranslateClient {
             loop {
                 match *setup_rx.borrow() {
                     SetupState::Ready => return Ok(()),
-                    SetupState::Rejected => {
+                    SetupState::Rejected(Some(code)) => {
+                        return Err(BaiduTranslateClientError::SessionSetupRejectedWithCode(
+                            code,
+                        ))
+                    }
+                    SetupState::Rejected(None) => {
                         return Err(BaiduTranslateClientError::SessionSetupRejected)
                     }
                     SetupState::Awaiting => {}
@@ -508,7 +515,7 @@ fn handle_server_event(context: &ReceiveContext, event: BaiduTranslateServerEven
         }
         BaiduTranslateServerEvent::SessionFinished => {
             if *context.setup.borrow() == SetupState::Awaiting {
-                let _ = context.setup.send(SetupState::Rejected);
+                let _ = context.setup.send(SetupState::Rejected(None));
                 return true;
             }
             if !context.inner.is_closing.load(Ordering::SeqCst) {
@@ -534,7 +541,7 @@ fn handle_server_event(context: &ReceiveContext, event: BaiduTranslateServerEven
             is_recoverable,
         } => {
             if *context.setup.borrow() == SetupState::Awaiting {
-                let _ = context.setup.send(SetupState::Rejected);
+                let _ = context.setup.send(SetupState::Rejected(Some(code)));
                 return true;
             }
             if is_recoverable {
@@ -545,7 +552,7 @@ fn handle_server_event(context: &ReceiveContext, event: BaiduTranslateServerEven
             emit_if_current(
                 context,
                 LiveTranslateServerEvent::Error {
-                    code: format!("baidu_{code}"),
+                    code: format!("baidu_provider_{code}"),
                     message: GENERIC_PROVIDER_ERROR.into(),
                 },
             );
@@ -560,7 +567,7 @@ fn handle_server_event(context: &ReceiveContext, event: BaiduTranslateServerEven
 
 fn fail_receive_loop(context: &ReceiveContext, code: &str, message: &str) {
     if *context.setup.borrow() == SetupState::Awaiting {
-        let _ = context.setup.send(SetupState::Rejected);
+        let _ = context.setup.send(SetupState::Rejected(None));
     } else {
         emit_if_current(
             context,
@@ -826,5 +833,30 @@ mod tests {
                 .unwrap_err(),
             BaiduTranslateClientError::SessionSetupTimedOut
         );
+    }
+
+    #[tokio::test]
+    async fn setup_rejection_preserves_only_the_provider_error_code() {
+        let (client, _events) = test_client(|mut socket| {
+            Box::pin(async move {
+                let _ = socket.next().await;
+                socket
+                    .send(Message::Text(
+                        r#"{"code":31003,"msg":"private credential detail"}"#.into(),
+                    ))
+                    .await
+                    .unwrap();
+            })
+        })
+        .await;
+        let error = client
+            .connect_with_timeout(Duration::from_millis(500))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error,
+            BaiduTranslateClientError::SessionSetupRejectedWithCode(31_003)
+        );
+        assert!(!error.to_string().contains("private credential detail"));
     }
 }

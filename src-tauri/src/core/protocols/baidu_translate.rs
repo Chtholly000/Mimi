@@ -132,7 +132,7 @@ pub enum BaiduTranslateServerEvent {
     },
     SessionFinished,
     ProviderError {
-        code: String,
+        code: i64,
         is_recoverable: bool,
     },
     Ignored {
@@ -157,7 +157,7 @@ impl BaiduTranslateServerEvent {
             .ok_or(BaiduTranslateProtocolError::MissingEventField("code"))?;
         if code != 0 {
             return Ok(Self::ProviderError {
-                code: format!("provider_{code}"),
+                code,
                 is_recoverable: matches!(code, 20_311 | 20_312 | 20_313 | 20_315 | 20_316),
             });
         }
@@ -324,7 +324,7 @@ mod tests {
             )
             .unwrap(),
             BaiduTranslateServerEvent::ProviderError {
-                code: "provider_20312".into(),
+                code: 20_312,
                 is_recoverable: true,
             }
         );
@@ -334,7 +334,7 @@ mod tests {
             )
             .unwrap(),
             BaiduTranslateServerEvent::ProviderError {
-                code: "provider_31003".into(),
+                code: 31_003,
                 is_recoverable: false,
             }
         );
