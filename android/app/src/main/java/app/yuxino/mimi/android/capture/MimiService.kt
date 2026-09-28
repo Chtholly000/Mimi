@@ -67,6 +67,7 @@ class MimiService : Service() {
     private var windowManager: WindowManager? = null
     private var overlayView: View? = null
     private var overlayParams: WindowManager.LayoutParams? = null
+    private var immersiveExitView: View? = null
     private var compactView: View? = null
     private var expandedView: View? = null
     private var expanded = false
@@ -125,6 +126,12 @@ class MimiService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
             stopEverything()
+            return START_NOT_STICKY
+        }
+        if (intent?.action == ACTION_APPLY_APPEARANCE) {
+            if (overlayView != null && immersiveSession != SettingsStore.immersiveSubtitles(this)) {
+                rebuildOverlay()
+            } else if (overlayView == null && !isRunning) stopSelf()
             return START_NOT_STICKY
         }
         if (intent?.action == ACTION_UI_PREVIEW_HISTORY && previewMode &&
@@ -484,7 +491,39 @@ class MimiService : Service() {
         statusView = status
         sourceView = source
         translationView = translation
+        if (immersiveSession) showImmersiveExitControl(wm)
         renderBus()
+    }
+
+    private fun showImmersiveExitControl(wm: WindowManager) {
+        val exit = panelButton(getString(R.string.overlay_exit_immersive)).apply {
+            tag = "exit-immersive"
+            contentDescription = getString(R.string.overlay_exit_immersive)
+            alpha = 0.72f
+            setOnClickListener { setImmersiveMode(false) }
+        }
+        val params = WindowManager.LayoutParams(
+            dp(88), dp(40), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            x = dp(12)
+            y = dp(16)
+        }
+        wm.addView(exit, params)
+        immersiveExitView = exit
+    }
+
+    private fun setImmersiveMode(enabled: Boolean) {
+        if (immersiveSession == enabled) return
+        SettingsStore.setImmersiveSubtitles(this, enabled)
+        rebuildOverlay()
+    }
+
+    private fun rebuildOverlay() {
+        hideOverlay()
+        showOverlay()
     }
 
     private fun buildExpandedPanel(): View {
@@ -511,6 +550,11 @@ class MimiService : Service() {
                 updateOverlayFontSize()
             }
         }
+        val immersive = panelButton(getString(R.string.overlay_enter_immersive)).apply {
+            tag = "enter-immersive"
+            contentDescription = getString(R.string.overlay_enter_immersive)
+            setOnClickListener { setImmersiveMode(true) }
+        }
         val route = panelButton(
             "${languageName(sessionSourceLanguage)} → ${languageName(SettingsStore.targetLang(this))}",
         ).apply {
@@ -525,6 +569,7 @@ class MimiService : Service() {
         header.addView(collapse, LinearLayout.LayoutParams(dp(58), dp(38)))
         header.addView(route, LinearLayout.LayoutParams(0, dp(38), 1f).apply { marginStart = dp(8) })
         header.addView(font, LinearLayout.LayoutParams(dp(42), dp(38)).apply { marginStart = dp(8) })
+        header.addView(immersive, LinearLayout.LayoutParams(dp(58), dp(38)).apply { marginStart = dp(8) })
         panel.addView(header)
 
         expandedStatusView = TextView(this).apply {
@@ -652,6 +697,11 @@ class MimiService : Service() {
 
     private fun hideOverlay() {
         try {
+            immersiveExitView?.let { windowManager?.removeView(it) }
+        } catch (_: Exception) {
+        }
+        immersiveExitView = null
+        try {
             overlayView?.let { windowManager?.removeView(it) }
         } catch (_: Exception) {
         }
@@ -753,6 +803,7 @@ class MimiService : Service() {
         }
 
         const val ACTION_STOP = "app.yuxino.mimi.android.action.STOP"
+        const val ACTION_APPLY_APPEARANCE = "app.yuxino.mimi.android.action.APPLY_APPEARANCE"
         const val ACTION_UI_PREVIEW = "app.yuxino.mimi.android.action.UI_PREVIEW"
         const val ACTION_UI_PREVIEW_HISTORY = "app.yuxino.mimi.android.action.UI_PREVIEW_HISTORY"
         const val EXTRA_RESULT_CODE = "result_code"

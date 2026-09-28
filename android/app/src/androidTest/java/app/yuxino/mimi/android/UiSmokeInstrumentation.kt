@@ -187,6 +187,7 @@ class UiSmokeInstrumentation : Instrumentation() {
         SettingsStore.setTranslationColorIndex(targetContext, 1)
         SettingsStore.setOverlayBgAlpha(targetContext, 65)
         SettingsStore.setOverlayOpacity(targetContext, 100)
+        SettingsStore.setImmersiveSubtitles(targetContext, false)
         launchHome()
         try {
             check(targetContext.startService(Intent(targetContext, MimiService::class.java)
@@ -220,10 +221,53 @@ class UiSmokeInstrumentation : Instrumentation() {
             capture("overlay-after-expanded-history-$theme")
             onUi { check(expanded.findViewWithTag<View>("collapse-overlay").performClick()) }
             check(compact.isShown && !expanded.isShown) { "Floating overlay did not collapse" }
+            onUi { check(compact.performClick()) }
+            onUi { check(expanded.findViewWithTag<View>("enter-immersive").performClick()) }
+            check(SettingsStore.immersiveSubtitles(targetContext))
+            val exit = WindowInspector.getGlobalWindowViews()
+                .firstOrNull { it.tag == "exit-immersive" }
+            check(exit?.isShown == true) { "Immersive mode has no in-overlay exit" }
+            capture("overlay-after-immersive-$theme")
+            onUi { check(exit.performClick()) { "Exit control click failed" } }
+            waitForIdleSync()
+            check(!SettingsStore.immersiveSubtitles(targetContext)) { "Exit did not clear immersive preference" }
+            val restored = WindowInspector.getGlobalWindowViews()
+                .firstOrNull { it.tag == "mimi-overlay" }
+            check(restored?.findViewWithTag<View>("compact-subtitle")?.isShown == true) {
+                "Exit did not restore the compact overlay"
+            }
+            check(WindowInspector.getGlobalWindowViews().none { it.tag == "exit-immersive" }) {
+                "Exit control remained after leaving immersive mode"
+            }
+            SettingsStore.setImmersiveSubtitles(targetContext, true)
+            targetContext.startService(Intent(targetContext, MimiService::class.java)
+                .setAction(MimiService.ACTION_APPLY_APPEARANCE))
+            val settingsExit = waitForOverlayTag("exit-immersive")
+            check(settingsExit?.isShown == true) { "Settings change did not apply to the active overlay" }
+            onUi { SubtitleBus.hideLive() }
+            check(settingsExit.isShown) { "Immersive exit disappeared when speech paused" }
+            SettingsStore.setImmersiveSubtitles(targetContext, false)
+            targetContext.startService(Intent(targetContext, MimiService::class.java)
+                .setAction(MimiService.ACTION_APPLY_APPEARANCE))
+            for (attempt in 0 until 30) {
+                waitForIdleSync()
+                if (WindowInspector.getGlobalWindowViews().none { it.tag == "exit-immersive" }) break
+                SystemClock.sleep(100)
+            }
+            check(WindowInspector.getGlobalWindowViews().none { it.tag == "exit-immersive" })
         } finally {
             targetContext.startService(MimiService.stopIntent(targetContext))
             waitForIdleSync()
         }
+    }
+
+    private fun waitForOverlayTag(tag: String): View? {
+        repeat(30) {
+            waitForIdleSync()
+            WindowInspector.getGlobalWindowViews().firstOrNull { it.tag == tag }?.let { return it }
+            SystemClock.sleep(100)
+        }
+        return null
     }
 
     private fun demonstrate() {

@@ -31,12 +31,12 @@ translation for system audio. Pure Kotlin (no Tauri), single module.
   (position persists). Tap it to open a translucent reading panel with the
   current source and translation; confirmed lines appear there only when
   bounded history is enabled in settings. The panel has a language shortcut,
-  font-size control, and collapse action. Its compact card has adjustable background alpha
+  font-size control, collapse action, and immersive toggle. Its compact card has adjustable background alpha
   (0–90 %), text color presets, font size, and whole-window opacity. An optional
   immersive mode shows plain text with a contrast shadow and passes touches
-  through to the app below; change it in Subtitle appearance before starting
-  the next session. Use Mimi or its foreground notification to stop an
-  immersive session.
+  through to the app below. A small control at the upper right exits immersive
+  mode without stopping the session; the app and foreground notification remain
+  backup controls.
 - **Native-subtitle behaviour** — only the current sentence is shown (drafts
   are clipped to the last sentence of the provider's cumulative buffer);
   English source speech shows source + translation lines, other languages show
@@ -121,6 +121,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 adb shell am instrument -w -e theme light app.yuxino.mimi.android.test/app.yuxino.mimi.android.UiSmokeInstrumentation
 adb shell am instrument -w -e theme dark app.yuxino.mimi.android.test/app.yuxino.mimi.android.UiSmokeInstrumentation
+adb shell am instrument -w -e overlay_preview true -e theme light app.yuxino.mimi.android.test/app.yuxino.mimi.android.UiSmokeInstrumentation
 ```
 
 The checks exercise quick language selection/Undo, direct appearance access,

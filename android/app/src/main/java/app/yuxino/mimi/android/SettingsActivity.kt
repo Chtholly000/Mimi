@@ -1,5 +1,6 @@
 package app.yuxino.mimi.android
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.widget.AdapterView
@@ -13,6 +14,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.materialswitch.MaterialSwitch
+import app.yuxino.mimi.android.capture.MimiService
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -67,6 +69,10 @@ class SettingsActivity : AppCompatActivity() {
         immersiveSwitch.isChecked = SettingsStore.immersiveSubtitles(this)
         immersiveSwitch.setOnCheckedChangeListener { _, enabled ->
             SettingsStore.setImmersiveSubtitles(this, enabled)
+            if (MimiService.isRunning) {
+                startService(Intent(this, MimiService::class.java)
+                    .setAction(MimiService.ACTION_APPLY_APPEARANCE))
+            }
             refreshPreview()
         }
 
