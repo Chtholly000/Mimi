@@ -49,6 +49,11 @@ streams carry that item id. Drafts stay replaceable previews and are forwarded
 without waiting; durable history is committed only once the matched source and
 translation finals are available, an empty translation final never consumes
 another source utterance, and identity state is generation-local and bounded.
+When a new source starts, an older source without its translation stays pending
+for a late response. At most 64 source and 64 response identities are retained;
+older unmatched items are discarded without falling back to arrival-order
+pairing. This bounds long sessions even when the provider omits recognition
+events.
 The captured session in `docs/demos/english-film/response.json` completes the
 translation first for seven of eight utterances (source first once, +36 ms to
 +127 ms apart), which is why arrival order cannot identify an utterance.

@@ -9,7 +9,7 @@ use crate::core::protocols::live_translate::{
 };
 use crate::pipeline_log;
 use futures_util::{SinkExt, StreamExt};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,6 +28,7 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 const GENERIC_TRANSPORT_ERROR: &str = "The live translation connection closed.";
 const GENERIC_PROTOCOL_ERROR: &str = "The live translation service returned invalid data.";
+const MAX_TRACKED_ITEMS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum LiveTranslateClientError {
@@ -326,15 +327,17 @@ struct TrackedUtterance {
 /// cannot identify an utterance. Drafts never pass through this type: they keep
 /// streaming to the session exactly as the provider emits them, and only the
 /// durable pair waits for both authoritative finals. Tracking follows the
-/// recognition stream, so a session keeps at most the current utterance plus one
-/// a late translation still refers to.
+/// recognition stream. Pending items have a fixed capacity so delayed finals
+/// can still pair after the next source begins without unbounded retention.
 #[derive(Default)]
 struct LiveTranslatePairAligner {
     /// The utterance the recognition stream is currently filling.
     current_source_id: Option<String>,
     utterances: HashMap<String, TrackedUtterance>,
+    utterance_order: VecDeque<String>,
     /// Response item id -> the input item it answers.
     responses: HashMap<String, String>,
+    response_order: VecDeque<String>,
 }
 
 impl LiveTranslatePairAligner {
@@ -349,8 +352,16 @@ impl LiveTranslatePairAligner {
             identity.item_id.as_deref(),
             identity.previous_item_id.as_deref(),
         ) {
+            if !self.responses.contains_key(item_id) {
+                self.response_order.push_back(item_id.to_string());
+            }
             self.responses
                 .insert(item_id.to_string(), previous_item_id.to_string());
+            while self.responses.len() > MAX_TRACKED_ITEMS {
+                if let Some(oldest) = self.response_order.pop_front() {
+                    self.responses.remove(&oldest);
+                }
+            }
             return Vec::new();
         }
 
@@ -378,7 +389,9 @@ impl LiveTranslatePairAligner {
                     return vec![event.clone()];
                 };
                 let Some(source_id) = self.responses.get(response_id).cloned() else {
-                    return vec![event.clone()];
+                    // A known response with no source link must not fall back
+                    // to arrival-order pairing with another utterance.
+                    return Vec::new();
                 };
                 // An utterance the recognition stream has already left can no
                 // longer receive its final, so its own text is the best source.
@@ -402,15 +415,19 @@ impl LiveTranslatePairAligner {
         }
     }
 
-    /// Moves the recognition stream to `source_id`, retiring the utterance before
-    /// it: a translation still waiting for that utterance's recognition final is
-    /// committed with the text the utterance produced instead of being dropped.
+    /// Moves the recognition stream to `source_id`. Keep a previous source
+    /// without a translation so a late response can still find its own text.
     fn start_utterance(&mut self, source_id: &str) -> Vec<LiveTranslateServerEvent> {
         if self.current_source_id.as_deref() == Some(source_id) {
             return Vec::new();
         }
         let previous = self.current_source_id.replace(source_id.to_string());
         previous
+            .filter(|source_id| {
+                self.utterances
+                    .get(source_id)
+                    .is_some_and(|utterance| utterance.translation_final.is_some())
+            })
             .map(|source_id| self.flush(&source_id))
             .unwrap_or_default()
     }
@@ -452,13 +469,24 @@ impl LiveTranslatePairAligner {
     }
 
     fn track(&mut self, source_id: &str) -> &mut TrackedUtterance {
+        if !self.utterances.contains_key(source_id) {
+            self.utterance_order.push_back(source_id.to_string());
+            while self.utterance_order.len() > MAX_TRACKED_ITEMS {
+                if let Some(oldest) = self.utterance_order.pop_front() {
+                    self.retire(&oldest);
+                }
+            }
+        }
         self.utterances.entry(source_id.to_string()).or_default()
     }
 
     fn retire(&mut self, source_id: &str) {
         self.utterances.remove(source_id);
+        self.utterance_order.retain(|item| item != source_id);
         self.responses.remove(source_id);
         self.responses.retain(|_, source| source != source_id);
+        self.response_order
+            .retain(|item| self.responses.contains_key(item));
     }
 }
 
