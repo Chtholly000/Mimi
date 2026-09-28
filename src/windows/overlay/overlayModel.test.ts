@@ -9,6 +9,7 @@ import {
   computeVisibleRows,
   sourceLanguageButtonTitle,
   visibleLiveSubtitle,
+  visibleLiveSubtitles,
 } from "./overlayModel";
 
 const settings = {
@@ -346,5 +347,66 @@ describe("asynchronous bilingual stream arrival", () => {
       ),
       { ...settings, subtitleDisplayMode: "bilingual" }, "en", true, false,
     )).toEqual({ text: "Repeated lyric", isFinal: true, kind: "source" });
+  });
+});
+
+describe("bilingual preview rows", () => {
+  it("previews the original and its streaming translation together", () => {
+    expect(visibleLiveSubtitles(
+      subtitles(
+        { text: "We next bring our cautery device.", isFinal: false },
+        { text: "接下来，我们使用电凝设备。", isFinal: false },
+      ),
+      { ...settings, subtitleDisplayMode: "bilingual" }, "en", true, false,
+    )).toEqual([
+      { text: "We next bring our cautery device.", isFinal: false, kind: "source" },
+      { text: "接下来，我们使用电凝设备。", isFinal: false, kind: "translation" },
+    ]);
+  });
+
+  it("keeps one preview row outside bilingual mode", () => {
+    const snapshot = subtitles(
+      { text: "We next bring our cautery device.", isFinal: false },
+      { text: "接下来，我们使用电凝设备。", isFinal: false },
+    );
+    expect(visibleLiveSubtitles(snapshot, { ...settings, subtitleDisplayMode: "translation" }, "en", true, false))
+      .toEqual([{ text: "接下来，我们使用电凝设备。", isFinal: false, kind: "translation" }]);
+    expect(visibleLiveSubtitles(snapshot, { ...settings, subtitleDisplayMode: "original" }, "en", true, false))
+      .toEqual([{ text: "We next bring our cautery device.", isFinal: false, kind: "source" }]);
+  });
+
+  it("drops a committed pair from the previews and keeps the next translation", () => {
+    const committed = { source: "Previous source", translation: "上一句译文", createdAt: 1 };
+    expect(visibleLiveSubtitles(
+      subtitles({ text: "Previous source", isFinal: true }, { text: "上一句译文", isFinal: true }, [committed]),
+      { ...settings, subtitleDisplayMode: "bilingual" }, "en", false, false,
+    )).toEqual([]);
+    expect(visibleLiveSubtitles(
+      subtitles({ text: "Previous source", isFinal: true }, { text: "下一句译文", isFinal: false }, [committed]),
+      { ...settings, subtitleDisplayMode: "bilingual" }, "en", false, false,
+    )).toEqual([{ text: "下一句译文", isFinal: false, kind: "translation" }]);
+  });
+
+  it("never stacks the same recognition and translation text twice", () => {
+    expect(visibleLiveSubtitles(
+      subtitles(
+        { text: "今日は晴れです。", isFinal: false },
+        { text: "今日は晴れです。", isFinal: false },
+      ),
+      { sourceLanguage: "ja", targetLanguage: "original", subtitleDisplayMode: "bilingual" }, "ja", false, false,
+    )).toEqual([{ text: "今日は晴れです。", isFinal: false, kind: "source" }]);
+  });
+
+  it.each([
+    { sourceLanguage: "ja" as const, targetLanguage: "original" as const, detectedLanguage: "ja" },
+    { sourceLanguage: "auto" as const, targetLanguage: "ja" as const, detectedLanguage: "ja" },
+  ])("keeps one language when same-language drafts briefly differ", ({ sourceLanguage, targetLanguage, detectedLanguage }) => {
+    expect(visibleLiveSubtitles(
+      subtitles(
+        { text: "今日は晴れ", isFinal: false },
+        { text: "今日は晴れです。", isFinal: false },
+      ),
+      { sourceLanguage, targetLanguage, subtitleDisplayMode: "bilingual" }, detectedLanguage, false, false,
+    )).toEqual([{ text: "今日は晴れ", isFinal: false, kind: "source" }]);
   });
 });
