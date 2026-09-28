@@ -219,6 +219,18 @@ mod tests {
     }
 
     #[test]
+    fn custom_color_draft_accepts_rgb_and_rejects_invalid_values() {
+        let draft: SettingsDraft =
+            serde_json::from_str(r##"{"subtitleColor":"#a1b2c3"}"##).unwrap();
+        assert_eq!(
+            draft.subtitle_color,
+            Some(SubtitleColor::Custom([0xa1, 0xb2, 0xc3]))
+        );
+        assert!(ensure_settings_draft_allowed(&draft, true).is_ok());
+        assert!(serde_json::from_str::<SettingsDraft>(r##"{"subtitleColor":"#abc"}"##).is_err());
+    }
+
+    #[test]
     fn active_session_rejects_pipeline_settings_but_allows_visual_settings() {
         let pipeline = SettingsDraft {
             source_language: Some(SourceLanguage::Japanese),
@@ -228,7 +240,7 @@ mod tests {
 
         let visual = SettingsDraft {
             font_size: Some(19.0),
-            subtitle_color: Some(SubtitleColor::Yellow),
+            subtitle_color: Some(SubtitleColor::Custom([0x12, 0x34, 0x56])),
             subtitle_alignment: Some(SubtitleAlignment::Right),
             subtitle_display_mode: Some(SubtitleDisplayMode::Bilingual),
             subtitle_blends_with_background: Some(true),

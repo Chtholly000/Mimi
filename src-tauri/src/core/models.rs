@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Desktop subtitle palette shared with Android. Presentation only.
+/// Named presets or an opaque custom RGB color. Presentation only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(try_from = "String", into = "String")]
 pub enum SubtitleColor {
     #[default]
     White,
@@ -12,6 +12,50 @@ pub enum SubtitleColor {
     Yellow,
     Green,
     Pink,
+    Custom([u8; 3]),
+}
+
+impl TryFrom<String> for SubtitleColor {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "white" => Ok(Self::White),
+            "teal" => Ok(Self::Teal),
+            "yellow" => Ok(Self::Yellow),
+            "green" => Ok(Self::Green),
+            "pink" => Ok(Self::Pink),
+            _ => {
+                let bytes = value.as_bytes();
+                if bytes.len() != 7
+                    || bytes[0] != b'#'
+                    || !bytes[1..].iter().all(u8::is_ascii_hexdigit)
+                {
+                    return Err("Expected a subtitle preset or #RRGGBB color");
+                }
+                let mut rgb = [0; 3];
+                for (index, channel) in rgb.iter_mut().enumerate() {
+                    let start = 1 + index * 2;
+                    *channel = u8::from_str_radix(&value[start..start + 2], 16)
+                        .map_err(|_| "Invalid RGB channel")?;
+                }
+                Ok(Self::Custom(rgb))
+            }
+        }
+    }
+}
+
+impl From<SubtitleColor> for String {
+    fn from(value: SubtitleColor) -> Self {
+        match value {
+            SubtitleColor::White => "white".into(),
+            SubtitleColor::Teal => "teal".into(),
+            SubtitleColor::Yellow => "yellow".into(),
+            SubtitleColor::Green => "green".into(),
+            SubtitleColor::Pink => "pink".into(),
+            SubtitleColor::Custom([red, green, blue]) => format!("#{red:02X}{green:02X}{blue:02X}"),
+        }
+    }
 }
 
 /// Presentation only; this never changes provider recognition or translation.
@@ -52,6 +96,25 @@ mod display_mode_tests {
                 serde_json::from_value::<SubtitleColor>(name.into()).unwrap(),
                 color
             );
+        }
+    }
+
+    #[test]
+    fn custom_subtitle_colors_are_validated_and_normalized() {
+        let color: SubtitleColor = serde_json::from_str("\"#a1b2c3\"").unwrap();
+        assert_eq!(color, SubtitleColor::Custom([0xa1, 0xb2, 0xc3]));
+        assert_eq!(serde_json::to_value(color).unwrap(), "#A1B2C3");
+        for invalid in [
+            "",
+            "red",
+            "#fff",
+            "#12345678",
+            "#GG0011",
+            "123456",
+            "#é0011",
+            "url(x)",
+        ] {
+            assert!(serde_json::from_value::<SubtitleColor>(invalid.into()).is_err());
         }
     }
 

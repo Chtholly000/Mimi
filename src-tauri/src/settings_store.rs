@@ -2013,6 +2013,7 @@ mod tests {
             SubtitleColor::Yellow,
             SubtitleColor::Green,
             SubtitleColor::Pink,
+            SubtitleColor::Custom([0x12, 0x34, 0x56]),
         ] {
             store
                 .save_preferences_for_active_profile(|prefs| prefs.subtitle_color = color)
