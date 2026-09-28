@@ -12,6 +12,8 @@ import type {
   SessionStateEvent,
   SessionArchiveState,
   SessionExportKind,
+  TranscriptPage,
+  SessionHistoryItem,
   ServiceProvider,
   SettingsDraft,
   SettingsSnapshot,
@@ -233,8 +235,28 @@ export function sessionArchiveState(): Promise<SessionArchiveState> {
   return invoke("session_archive_state");
 }
 
-export function sessionExport(kind: SessionExportKind): Promise<boolean> {
-  return invoke("session_export", { kind });
+export function sessionTranscriptPage(query: string, page: number): Promise<TranscriptPage> {
+  return invoke("session_transcript_page", { query, page });
+}
+
+export function sessionHistoryList(): Promise<SessionHistoryItem[]> {
+  return invoke("session_history_list");
+}
+
+export function sessionHistoryPage(id: string, query: string, page: number): Promise<TranscriptPage> {
+  return invoke("session_history_page", { id, query, page });
+}
+
+export function sessionHistoryAudio(id: string): Promise<ArrayBuffer> {
+  return invoke("session_history_audio", { id });
+}
+
+export function sessionHistoryDelete(id: string): Promise<void> {
+  return invoke("session_history_delete", { id });
+}
+
+export function sessionExport(kind: SessionExportKind, id?: string): Promise<boolean> {
+  return invoke("session_export", { kind, id: id ?? null });
 }
 
 export function sessionArchiveClear(): Promise<void> {

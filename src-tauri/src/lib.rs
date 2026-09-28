@@ -9,6 +9,7 @@ mod desktop_shortcuts;
 #[cfg(target_os = "linux")]
 mod linux_startup;
 mod session_export;
+mod session_history;
 mod session_manager;
 mod settings_store;
 mod windows;
@@ -238,7 +239,17 @@ pub fn run() {
                     // has no tray host. Linux users minimize to keep running;
                     // closing Settings must not strand an invisible process.
                     if cfg!(target_os = "linux") {
-                        app.exit(0);
+                        if let Some(state) = app.try_state::<AppState>() {
+                            let session = Arc::clone(&state.session);
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                session.stop().await;
+                                if session.persist_current_history().is_ok() {
+                                    app.exit(0);
+                                }
+                            });
+                        }
+                        api.prevent_close();
                         return;
                     }
                     // Hiding instead of closing keeps the window alive so
@@ -312,6 +323,11 @@ pub fn run() {
             commands::profile_save_credentials,
             commands::profile_delete_api_key,
             crate::session_export::session_archive_state,
+            crate::session_export::session_transcript_page,
+            crate::session_export::session_history_list,
+            crate::session_export::session_history_page,
+            crate::session_export::session_history_audio,
+            crate::session_export::session_history_delete,
             crate::session_export::session_archive_clear,
             crate::session_export::session_export,
             commands::session_start,
@@ -640,7 +656,16 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     windows::TrayPanelManager::hide(app);
                     windows::ensure_settings_window(app);
                 }
-                "quit" => app.exit(0),
+                "quit" => {
+                    let session = Arc::clone(&state.session);
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        session.stop().await;
+                        if session.persist_current_history().is_ok() {
+                            app.exit(0);
+                        }
+                    });
+                }
                 _ => {}
             }
         })

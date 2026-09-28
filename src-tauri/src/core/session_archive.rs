@@ -1,11 +1,82 @@
-//! Explicitly opted-in, bounded, memory-only session exports. No disk or OS APIs.
+//! Explicitly opted-in, bounded session buffers and export formatting. No disk or OS APIs.
 use crate::core::models::SubtitlePair;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 
 pub const TRANSCRIPT_BYTE_LIMIT: usize = 2 * 1024 * 1024;
 pub const TRANSCRIPT_COUNT_LIMIT: usize = 10_000;
 pub const AUDIO_BYTE_LIMIT: usize = 64 * 1024 * 1024;
+pub const TRANSCRIPT_PAGE_SIZE: usize = 30;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptPageEntry {
+    pub index: usize,
+    pub source: String,
+    pub translation: String,
+    pub created_at_ms: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptPage {
+    pub total: usize,
+    pub page: usize,
+    pub entries: Vec<TranscriptPageEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedTranscript {
+    pub version: u32,
+    pub id: String,
+    pub started_at_ms: u64,
+    pub ended_at_ms: u64,
+    pub limited: bool,
+    pub entries: Vec<SubtitlePair>,
+}
+
+impl SavedTranscript {
+    pub fn page(&self, query: &str, requested_page: usize) -> TranscriptPage {
+        transcript_page(&self.entries, query, requested_page)
+    }
+
+    pub fn export(&self) -> Option<String> {
+        format_transcript(self.started_at_ms, &self.entries, self.limited)
+    }
+}
+
+fn transcript_page(entries: &[SubtitlePair], query: &str, requested_page: usize) -> TranscriptPage {
+    let query = query.trim().to_lowercase();
+    let matches: Vec<_> = entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, pair)| {
+            query.is_empty()
+                || pair.source.to_lowercase().contains(&query)
+                || pair.translation.to_lowercase().contains(&query)
+        })
+        .collect();
+    let total = matches.len();
+    let page = requested_page.min(total.saturating_sub(1) / TRANSCRIPT_PAGE_SIZE);
+    let entries = matches
+        .into_iter()
+        .skip(page * TRANSCRIPT_PAGE_SIZE)
+        .take(TRANSCRIPT_PAGE_SIZE)
+        .map(|(index, pair)| TranscriptPageEntry {
+            index: index + 1,
+            source: pair.source.clone(),
+            translation: pair.translation.clone(),
+            created_at_ms: pair.created_at_ms,
+        })
+        .collect();
+    TranscriptPage {
+        total,
+        page,
+        entries,
+    }
+}
 
 #[derive(Default)]
 pub struct TranscriptArchive {
@@ -35,6 +106,25 @@ impl TranscriptArchive {
         self.entries.len()
     }
 
+    pub fn last(&self) -> Option<&SubtitlePair> {
+        self.entries.last()
+    }
+
+    pub fn page(&self, query: &str, requested_page: usize) -> TranscriptPage {
+        transcript_page(&self.entries, query, requested_page)
+    }
+
+    pub fn snapshot(&self, id: String, ended_at_ms: u64) -> SavedTranscript {
+        SavedTranscript {
+            version: 1,
+            id,
+            started_at_ms: self.started_at_ms,
+            ended_at_ms,
+            limited: self.limited,
+            entries: self.entries.clone(),
+        }
+    }
+
     pub fn append(&mut self, pair: &SubtitlePair) {
         if !self.enabled || self.limited {
             return;
@@ -51,29 +141,37 @@ impl TranscriptArchive {
     }
 
     pub fn export(&self) -> Option<String> {
-        if self.entries.is_empty() {
-            return None;
-        }
-        let mut text = format!("Mimi transcript\nSession started: {}\nTimestamps mark final confirmation, not media playback positions.\n\n", utc_timestamp(self.started_at_ms));
-        for pair in &self.entries {
-            let elapsed = pair.created_at_ms.saturating_sub(self.started_at_ms);
-            let _ = writeln!(
-                text,
-                "[{} | +{:02}:{:02}:{:02}.{:03}]\n{}\n{}\n",
-                utc_timestamp(pair.created_at_ms),
-                elapsed / 3_600_000,
-                elapsed / 60_000 % 60,
-                elapsed / 1_000 % 60,
-                elapsed % 1_000,
-                pair.source,
-                pair.translation
-            );
-        }
-        if self.limited {
-            text.push_str("[Transcript limit reached; later entries were not retained.]\n");
-        }
-        Some(text)
+        format_transcript(self.started_at_ms, &self.entries, self.limited)
     }
+}
+
+fn format_transcript(
+    started_at_ms: u64,
+    entries: &[SubtitlePair],
+    limited: bool,
+) -> Option<String> {
+    if entries.is_empty() {
+        return None;
+    }
+    let mut text = format!("Mimi transcript\nSession started: {}\nTimestamps mark final confirmation, not media playback positions.\n\n", utc_timestamp(started_at_ms));
+    for pair in entries {
+        let elapsed = pair.created_at_ms.saturating_sub(started_at_ms);
+        let _ = writeln!(
+            text,
+            "[{} | +{:02}:{:02}:{:02}.{:03}]\n{}\n{}\n",
+            utc_timestamp(pair.created_at_ms),
+            elapsed / 3_600_000,
+            elapsed / 60_000 % 60,
+            elapsed / 1_000 % 60,
+            elapsed % 1_000,
+            pair.source,
+            pair.translation
+        );
+    }
+    if limited {
+        text.push_str("[Transcript limit reached; later entries were not retained.]\n");
+    }
+    Some(text)
 }
 
 fn utc_timestamp(ms: u64) -> String {
@@ -164,6 +262,7 @@ pub struct ArchiveState {
     pub audio_bytes: usize,
     pub audio_limited: bool,
     pub sample_rate: u32,
+    pub history_save_error: bool,
 }
 
 #[cfg(test)]
@@ -190,6 +289,27 @@ mod tests {
         audio.append(16000, &[1, 0]);
         audio.begin(false);
         assert!(audio.export().is_none());
+    }
+
+    #[test]
+    fn page_searches_confirmed_pairs_and_clamps_after_clear() {
+        let mut archive = TranscriptArchive::default();
+        archive.begin(true, 0);
+        for index in 0..35 {
+            archive.append(&SubtitlePair::new(
+                format!("Source {index}"),
+                format!("译文 {index}"),
+                index,
+            ));
+        }
+        let page = archive.page("", 1);
+        assert_eq!((page.total, page.page, page.entries.len()), (35, 1, 5));
+        assert_eq!(page.entries[0].index, 5);
+        let page = archive.page("译文 3", 20);
+        assert_eq!((page.total, page.page), (6, 0));
+        archive.clear();
+        let page = archive.page("", 20);
+        assert_eq!((page.total, page.page, page.entries.len()), (0, 0, 0));
     }
 
     #[test]

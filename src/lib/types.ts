@@ -421,6 +421,29 @@ export interface SessionArchiveState {
   audioBytes: number;
   audioLimited: boolean;
   sampleRate: number;
+  historySaveError: boolean;
+}
+
+export interface TranscriptPageEntry {
+  index: number;
+  source: string;
+  translation: string;
+  createdAtMs: number;
+}
+
+export interface TranscriptPage {
+  total: number;
+  page: number;
+  entries: TranscriptPageEntry[];
+}
+
+export interface SessionHistoryItem {
+  id: string;
+  startedAtMs: number;
+  endedAtMs: number;
+  count: number;
+  limited: boolean;
+  hasAudio: boolean;
 }
 
 export type SessionExportKind = "transcript" | "audio";

@@ -715,7 +715,10 @@ pub async fn session_clear_subtitles(state: State<'_, AppState>) -> Result<(), S
     // Clear from the tray/overlay must invalidate export snapshots atomically
     // with their acquisition and final write, just like settings-page clear.
     let _lifecycle = state.session.settings_mutation_guard(false).await?;
-    state.session.clear_subtitles();
+    state
+        .session
+        .clear_subtitles()
+        .map_err(|_| "Could not clear subtitles.")?;
     Ok(())
 }
 
@@ -948,7 +951,12 @@ pub fn app_show_settings(
 }
 
 #[tauri::command]
-pub fn app_quit(app: AppHandle) -> Result<(), String> {
+pub async fn app_quit(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.session.stop().await;
+    state
+        .session
+        .persist_current_history()
+        .map_err(|_| "Could not save session history before quitting.")?;
     app.exit(0);
     Ok(())
 }

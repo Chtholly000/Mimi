@@ -548,7 +548,7 @@ export function SettingsView() {
               id="session-export-panel"
               className={`settings-category-panel${activeCategory !== "export" ? " is-inactive" : ""}`}
             >
-              <SessionExport />
+              <SessionExport visible={activeCategory === "export"} />
             </div>
           </div>
         </div>
