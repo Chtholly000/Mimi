@@ -936,6 +936,58 @@ mod tests {
     }
 
     #[test]
+    fn a_late_translation_after_the_next_source_still_pairs_with_its_own_source() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        aligner.observe(&created_item(), &identity("response_a", Some("source_a")));
+        aligner.observe(
+            &LiveTranslateServerEvent::SourceFinal {
+                text: "First sentence.".into(),
+                language: Some("en".into()),
+            },
+            &identity("source_a", None),
+        );
+
+        // Recognition has moved to B before the response for A completes.
+        aligner.observe(
+            &LiveTranslateServerEvent::SourceDraft {
+                text: "Second sentence".into(),
+                language: Some("en".into()),
+            },
+            &identity("source_b", None),
+        );
+        assert_eq!(
+            aligner.observe(
+                &LiveTranslateServerEvent::TranslationFinal("第一句。".into()),
+                &identity("response_a", None),
+            ),
+            vec![LiveTranslateServerEvent::SubtitleFinalPair {
+                source: "First sentence.".into(),
+                language: Some("en".into()),
+                translation: "第一句。".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn orphaned_response_items_cannot_grow_without_bound() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        for index in 0..256 {
+            let response = format!("response_{index}");
+            let source = format!("source_{index}");
+            aligner.observe(&created_item(), &identity(&response, Some(&source)));
+            aligner.observe(
+                &LiveTranslateServerEvent::TranslationFinal("translated".into()),
+                &identity(&response, None),
+            );
+        }
+
+        // The provider may omit recognition events for some response items.
+        // A long-running session must retain only a bounded number of them.
+        assert!(aligner.responses.len() <= 64);
+        assert!(aligner.utterances.len() <= 64);
+    }
+
+    #[test]
     fn a_graceful_close_commits_the_pending_translation() {
         let mut aligner = LiveTranslatePairAligner::default();
         aligner.observe(
