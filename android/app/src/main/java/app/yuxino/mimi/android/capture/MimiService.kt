@@ -62,6 +62,7 @@ class MimiService : Service() {
 
     private var windowManager: WindowManager? = null
     private var overlayView: View? = null
+    private var immersiveSession = false
     private var sessionSourceLanguage = "auto"
     private var statusView: TextView? = null
     private var historyView: TextView? = null
@@ -328,21 +329,23 @@ class MimiService : Service() {
         super.onDestroy()
     }
 
-    /** Overlay window: draggable vertically, full width, translucent card. */
+    /** Compact subtitle card, or a plain-text overlay that passes touches to the video. */
     private fun showOverlay() {
         if (overlayView != null) return
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         windowManager = wm
 
-        val bgAlpha = SettingsStore.overlayBgAlpha(this)
+        immersiveSession = SettingsStore.immersiveSubtitles(this)
+        val bgAlpha = if (immersiveSession) 0 else SettingsStore.overlayBgAlpha(this)
         val container = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(12))
+            val horizontalPadding = if (immersiveSession) 3 else 14
+            setPadding(dp(horizontalPadding), dp(9), dp(horizontalPadding), dp(10))
             background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
+                cornerRadius = dp(12).toFloat()
                 setColor(((bgAlpha / 100.0) * 255).toInt() shl 24 or 0x101010)
             }
-            alpha = SettingsStore.overlayOpacity(this@MimiService) / 100f
+            alpha = if (immersiveSession) 1f else SettingsStore.overlayOpacity(this@MimiService) / 100f
         }
 
         val status = TextView(this).apply {
@@ -356,14 +359,18 @@ class MimiService : Service() {
             setLineSpacing(dp(2).toFloat(), 1f)
         }
         val source = TextView(this).apply {
-            setTextColor(Color.WHITE)
+            setTextColor(0xFFE7E7E7.toInt())
             textSize = SettingsStore.fontSize(this@MimiService).toFloat()
-            setTypeface(typeface, Typeface.BOLD)
+            maxLines = 2
+            maxWidth = (resources.displayMetrics.widthPixels * 0.88f).toInt()
+            if (immersiveSession) setShadowLayer(dp(4).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
         }
         val translation = TextView(this).apply {
             setTextColor(SettingsStore.translationColor(this@MimiService))
             textSize = (SettingsStore.fontSize(this@MimiService) + 3).toFloat()
             setTypeface(typeface, Typeface.BOLD)
+            maxLines = 3
+            if (immersiveSession) setShadowLayer(dp(4).toFloat(), 0f, dp(1).toFloat(), Color.BLACK)
             // Keep the card inside the screen in either orientation.
             maxWidth = (resources.displayMetrics.widthPixels * 0.92f).toInt()
         }
@@ -378,20 +385,24 @@ class MimiService : Service() {
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                or (if (immersiveSession) WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else 0),
             PixelFormat.TRANSLUCENT,
         ).apply {
             // Always horizontally centered over the video, offset from the
             // bottom edge; the card hugs its text in both directions.
             gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
             y = dp(SettingsStore.overlayYOffset(this@MimiService))
+            // Android 12+ passes touches through an untrusted overlay only when
+            // its window opacity stays at or below the system threshold (0.8).
+            if (immersiveSession) alpha = 0.8f
         }
 
         // Vertical drag only; horizontal centering is fixed so every sentence
         // length stays self-centered, like native video subtitles.
         var initialY = 0
         var initialTouchY = 0f
-        container.setOnTouchListener { _, event ->
+        if (!immersiveSession) container.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     initialY = params.y
@@ -444,7 +455,7 @@ class MimiService : Service() {
         }
         historyView?.apply {
             val maxLines = SettingsStore.historyLines(this@MimiService)
-            visibility = if (maxLines <= 0) View.GONE else View.VISIBLE
+            visibility = if (maxLines <= 0 || immersiveSession) View.GONE else View.VISIBLE
             setMaxLines(maxOf(maxLines, 1) * 2) // each history pair renders as two lines
             text = SubtitleBus.historySnapshot().takeLast(maxLines).joinToString("\n") { pair ->
                 "${pair.source}\n${pair.translation}"

@@ -28,9 +28,12 @@ translation for system audio. Pure Kotlin (no Tauri), single module.
   leaving a secret field empty preserves its saved value. Changes are written only with Save and use.
 - **Subtitle overlay** — `TYPE_APPLICATION_OVERLAY` floating window, text-hugging
   card, always horizontally centered over the video, vertically draggable
-  (position persists). Background alpha adjustable 0–90 % (0 = plain text over
-  video, like embedded subtitles), text color presets, font size, whole-window
-  opacity.
+  (position persists). Its compact card has adjustable background alpha
+  (0–90 %), text color presets, font size, and whole-window opacity. An optional
+  immersive mode shows plain text with a contrast shadow and passes touches
+  through to the app below; change it in Subtitle appearance before starting
+  the next session. Use Mimi or its foreground notification to stop an
+  immersive session.
 - **Native-subtitle behaviour** — only the current sentence is shown (drafts
   are clipped to the last sentence of the provider's cumulative buffer);
   English source speech shows source + translation lines, other languages show
@@ -103,7 +106,8 @@ build settings; this does not imply physical-device or all-provider validation.
 The Android interface reuses Mimi's existing character artwork and neutral
 light/dark palette. Languages can be changed directly on the home screen with Undo. Tapping the
 subtitle sample opens appearance settings, where changes are saved automatically
-and previewed without capture or a network session. The service tab lists all eight integrations and opens a separate editor with only that service’s fields.
+and previewed without capture or a network session. The appearance screen also
+previews the compact card and immersive text mode. The service tab lists all eight integrations and opens a separate editor with only that service’s fields.
 Credentials require explicit Save and use; changing appearance never saves credentials. Your own service credentials are still required for real translation.
 
 On a development emulator with no active subtitle session:

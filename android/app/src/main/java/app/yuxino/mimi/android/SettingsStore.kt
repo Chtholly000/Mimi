@@ -18,6 +18,7 @@ object SettingsStore {
     private const val KEY_MODEL_PREFIX = "model_"
     private const val KEY_OVERLAY_OPACITY = "overlay_opacity"
     private const val KEY_OVERLAY_BG_ALPHA = "overlay_bg_alpha"
+    private const val KEY_IMMERSIVE_SUBTITLES = "immersive_subtitles"
     private const val KEY_HISTORY_LINES = "history_lines"
     private const val KEY_HOTWORDS = "hotwords"
     private const val KEY_TRANSLATION_COLOR = "translation_color"
@@ -163,10 +164,17 @@ object SettingsStore {
 
     /** Subtitle card background alpha, 0 (invisible) .. 90 (nearly solid). */
     fun overlayBgAlpha(context: Context): Int =
-        get(context).getInt(KEY_OVERLAY_BG_ALPHA, 0).coerceIn(0, 90)
+        get(context).getInt(KEY_OVERLAY_BG_ALPHA, 65).coerceIn(0, 90)
 
     fun setOverlayBgAlpha(context: Context, value: Int) =
         get(context).edit().putInt(KEY_OVERLAY_BG_ALPHA, value.coerceIn(0, 90)).apply()
+
+    /** Plain, touch-through subtitles; changed appearance takes effect on the next session. */
+    fun immersiveSubtitles(context: Context): Boolean =
+        get(context).getBoolean(KEY_IMMERSIVE_SUBTITLES, false)
+
+    fun setImmersiveSubtitles(context: Context, enabled: Boolean) =
+        get(context).edit().putBoolean(KEY_IMMERSIVE_SUBTITLES, enabled).apply()
 
     /** Last overlay vertical offset from the bottom edge, persisted. */
     fun overlayYOffset(context: Context): Int =

@@ -21,6 +21,7 @@ import app.yuxino.mimi.android.capture.MimiService
 import app.yuxino.mimi.android.provider.ServiceProvider
 import app.yuxino.mimi.android.provider.SubtitleBus
 import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.materialswitch.MaterialSwitch
 import java.io.File
 
 /** Real emulator interactions. No credential is saved and no capture/provider session starts. */
@@ -98,6 +99,15 @@ class UiSmokeInstrumentation : Instrumentation() {
         check(SettingsStore.fontSize(targetContext) == initialFont)
         check(SettingsStore.translationColorIndex(targetContext) == initialColor)
         check(SettingsStore.historyLines(targetContext) == initialHistory)
+        val initialImmersive = SettingsStore.immersiveSubtitles(targetContext)
+        val immersive = settings.findViewById<MaterialSwitch>(R.id.immersive_subtitles)
+        check(immersive.isChecked == initialImmersive)
+        click(settings, R.id.immersive_subtitles)
+        check(SettingsStore.immersiveSubtitles(targetContext) != initialImmersive)
+        check(settings.findViewById<SeekBar>(R.id.overlay_bg_alpha).isEnabled == initialImmersive)
+        capture("settings-immersive-$theme")
+        click(settings, R.id.immersive_subtitles)
+        check(SettingsStore.immersiveSubtitles(targetContext) == initialImmersive)
         val seek = settings.findViewById<SeekBar>(R.id.font_size)
         drag(seek, if (initialFont < 20) 20 else 16)
         check(SettingsStore.fontSize(targetContext) == seek.progress) { "Font was not automatically saved" }
@@ -309,6 +319,7 @@ class UiSmokeInstrumentation : Instrumentation() {
         private val opacity = SettingsStore.overlayOpacity(targetContext)
         private val background = restoreBackground ?: SettingsStore.overlayBgAlpha(targetContext)
         private val history = SettingsStore.historyLines(targetContext)
+        private val immersive = SettingsStore.immersiveSubtitles(targetContext)
         fun restore() {
             SettingsStore.setSourceLang(targetContext, source)
             SettingsStore.setTargetLang(targetContext, target)
@@ -317,6 +328,7 @@ class UiSmokeInstrumentation : Instrumentation() {
             SettingsStore.setOverlayOpacity(targetContext, opacity)
             SettingsStore.setOverlayBgAlpha(targetContext, background)
             SettingsStore.setHistoryLines(targetContext, history)
+            SettingsStore.setImmersiveSubtitles(targetContext, immersive)
             SubtitleBus.clear()
         }
     }
