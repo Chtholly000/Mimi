@@ -16,7 +16,7 @@ interface PulseRingProps {
 // always has a ring mid-expansion. All active phases share one cadence; the
 // phase only changes the color, keeping every state's motion identical.
 const RING_COUNT = 3;
-const PULSE_PERIOD_MS = 1400;
+const PULSE_PERIOD_MS = 2200;
 
 /**
  * The recognition activity indicator: a glowing center dot with rings that
@@ -49,8 +49,8 @@ export const PulseRing = memo(function PulseRing({
       rings.forEach((ring, index) => {
         if (ring) {
           const t = index / RING_COUNT;
-          ring.style.transform = `scale(${0.35 + t * 0.25})`;
-          ring.style.opacity = String(0.3 - t * 0.08);
+          ring.style.transform = `scale(${0.34 + t * 0.22})`;
+          ring.style.opacity = String(0.26 - t * 0.07);
         }
       });
       if (dot) {
@@ -67,16 +67,19 @@ export const PulseRing = memo(function PulseRing({
         // own cadence independent of the phase table.
         const progress = (now % PULSE_PERIOD_MS) / PULSE_PERIOD_MS;
         if (dot) {
-          const breathe = 0.75 + 0.25 * Math.sin((now / 700) * Math.PI * 2);
+          // A slow, shallow breath reads as "listening" instead of blinking.
+          const breathe = 0.86 + 0.14 * Math.sin((now / 1600) * Math.PI * 2);
           dot.style.opacity = String(breathe);
         }
         rings.forEach((ring, index) => {
           if (!ring) return;
           const offset = index / RING_COUNT;
           const t = (progress + offset) % 1;
-          // Expand from center and fade out as it travels.
-          ring.style.transform = `scale(${0.2 + t * 1.1})`;
-          ring.style.opacity = String(0.55 * (1 - t));
+          // Ease the expansion and lengthen the fade so the ripple reads as a
+          // breath rather than a mechanical loop.
+          const eased = Math.pow(t, 0.65);
+          ring.style.transform = `scale(${0.24 + eased * 0.9})`;
+          ring.style.opacity = String(0.42 * Math.pow(1 - t, 1.4));
         });
       }
       lastNow = now;

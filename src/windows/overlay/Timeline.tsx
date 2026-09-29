@@ -123,7 +123,7 @@ export const Timeline = memo(function Timeline({
               // New blocks settle in with a brief rise-and-fade (CSS animation
               // runs once on mount; the key is stable per block, so streaming
               // text updates do not re-trigger it).
-              animation: "subtitle-row-enter 240ms ease-out",
+              animation: "subtitle-block-enter 180ms ease-out",
             }}
           >
             {!blendsWithBackground && block.createdAt !== null ? (
@@ -301,30 +301,33 @@ function CompactLane({
           position: "absolute",
           left: 0,
           right: 0,
-          bottom: 0,
+          // Text starts on the first line while it fits; once it fills the
+          // budget the same element stays pinned to the bottom so new content
+          // grows upward and the old content rolls off the top.
+          ...(overflowed ? { bottom: 0 } : { top: 0 }),
           textAlign: alignment,
           ...textStyle,
         }}
       >
         {text}
       </span>
-      {overflowed ? (
-        <span
-          aria-hidden="true"
-          style={{
-            position: "absolute",
-            left: 2,
-            top: 0,
-            width: 14,
-            textAlign: "center",
-            color: "rgba(255,255,255,0.42)",
-            fontSize: Math.max(10, textStyle.fontSize * 0.62),
-            lineHeight: textStyle.lineHeight,
-          }}
-        >
-          {"…"}
-        </span>
-      ) : null}
+      <span
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          left: 2,
+          top: 0,
+          width: 14,
+          textAlign: "center",
+          color: "rgba(255,255,255,0.42)",
+          fontSize: Math.max(10, textStyle.fontSize * 0.62),
+          lineHeight: textStyle.lineHeight,
+          opacity: overflowed ? 1 : 0,
+          transition: "opacity 180ms ease-out",
+        }}
+      >
+        {"…"}
+      </span>
     </div>
   );
 }
@@ -338,7 +341,9 @@ function useLaneOverflow(viewportRef: RefObject<HTMLDivElement | null>): boolean
     const measure = () => {
       const inner = viewport.firstElementChild;
       if (inner === null) return;
-      setOverflowed(inner.getBoundingClientRect().height > viewport.clientHeight + 1);
+      // Two pixels of hysteresis keep the marker from flickering on the
+      // exact boundary while the text streams in.
+      setOverflowed(inner.getBoundingClientRect().height > viewport.clientHeight + 2);
     };
     measure();
     const observer = new ResizeObserver(measure);
