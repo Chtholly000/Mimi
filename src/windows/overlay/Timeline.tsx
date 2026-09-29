@@ -1,60 +1,65 @@
-import { memo, useEffect, useRef } from "react";
+import { memo, useEffect, useMemo, useRef } from "react";
 import { hexToRgba } from "../../lib/types";
 import { subtitleColorHex } from "../../lib/subtitleColor";
-import type { SubtitleAlignment, SubtitleColor } from "../../lib/types";
+import type { SettingsSnapshot, SubtitleAlignment, SubtitleColor } from "../../lib/types";
 import { observeTimelineResize } from "./timelineResize";
 import { rowHorizontalPadding } from "./alignment";
-import { timelineClassName, type SubtitleRow } from "./overlayModel";
+import { timelineClassName, type SubtitleBlock } from "./overlayModel";
 
 const ACCENT = "#7AA8FF";
 const MONO_FONT =
   '"SF Mono", Menlo, Consolas, "Courier New", monospace';
+const IMMERSIVE_TEXT_SHADOW =
+  "0 2px 5px rgba(0,0,0,0.98), 0 0 2px rgba(0,0,0,0.95), 0 0 12px rgba(0,0,0,0.72)";
 
 interface TimelineProps {
-  rows: SubtitleRow[];
+  blocks: SubtitleBlock[];
   fontSize: number;
   alignment: SubtitleAlignment;
   color: SubtitleColor;
+  /** Lane hierarchy follows the display mode: bilingual keeps the recognized
+   * original as a neutral reference lane, single-language modes read in the
+   * user's subtitle color. */
+  displayMode: SettingsSnapshot["subtitleDisplayMode"];
   blendsWithBackground?: boolean;
-  /** True when the trailing row(s) are the live draft preview. Draft rows
-   * (id prefix `draft-`) render dimmed with a trailing ellipsis so the
-   * in-progress line does not dominate the stable history above it; history
-   * rows never take this style. */
-  draft?: boolean;
 }
 
-/** Scrolling subtitle history; auto-scrolls to the newest row. Memoized:
+/** Scrolling sentence blocks; auto-scrolls to the newest block. Memoized:
  * during live streaming the overlay re-renders on every session-state event,
- * but the timeline DOM only needs rebuilding when its rows actually change. */
+ * but the timeline DOM only needs rebuilding when its blocks actually
+ * change. */
 export const Timeline = memo(function Timeline({
-  rows,
+  blocks,
   fontSize,
   alignment,
   color,
+  displayMode,
   blendsWithBackground = false,
-  draft = false,
 }: TimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  // Keep the newest content pinned to the bottom: rows.length changes when a
-  // new row appears, and the last row's text length changes while a draft
-  // grows (wrapping into more lines) without changing the row count.
-  const lastTextLength = rows[rows.length - 1]?.text.length ?? 0;
-  const prevRowCountRef = useRef(rows.length);
+  // Keep the newest content pinned to the bottom: the block count changes when
+  // an utterance is committed, and the live lanes grow while streaming (the
+  // last block grows taller without changing the block count).
+  const lastTextLength = useMemo(() => {
+    const last = blocks[blocks.length - 1];
+    return (last?.source?.length ?? 0) + (last?.translation?.length ?? 0);
+  }, [blocks]);
+  const prevBlockCountRef = useRef(blocks.length);
 
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return;
-    if (rows.length !== prevRowCountRef.current) {
-      // A new row glides to the bottom. Skip draft-growth pinning in this
+    if (blocks.length !== prevBlockCountRef.current) {
+      // A new block glides to the bottom. Skip live-growth pinning in this
       // render so the two scroll updates never fight.
-      prevRowCountRef.current = rows.length;
+      prevBlockCountRef.current = blocks.length;
       element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
     } else {
-      // Same row, text grew: pin instantly so per-character streaming
+      // Same block, text grew: pin instantly so per-character streaming
       // never stutters.
       element.scrollTop = element.scrollHeight;
     }
-  }, [rows.length, lastTextLength, fontSize, alignment, blendsWithBackground]);
+  }, [blocks.length, lastTextLength, fontSize, alignment, blendsWithBackground]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -68,19 +73,12 @@ export const Timeline = memo(function Timeline({
       className={timelineClassName(blendsWithBackground)}
       style={{ overscrollBehavior: "contain" }}
     >
-      {rows.map((row, index) => {
-        const isLast = index === rows.length - 1;
-        const distance = rows.length - 1 - index;
-        const latestPairId = rows[rows.length - 1]?.pairId;
-        const isLatestPair = row.pairId !== undefined && row.pairId === latestPairId;
-        const isPairedSource = row.pairId !== undefined && row.kind === "source";
-        // Draft rows are the trailing `draft-*` rows of the live preview
-        // line (identified by id prefix, never by createdAt — history rows
-        // beyond the first segment also carry null timestamps).
-        const isDraftRow = draft && row.id.startsWith("draft-");
+      {blocks.map((block, index) => {
+        const isLast = index === blocks.length - 1;
+        const distance = blocks.length - 1 - index;
         return (
           <div
-            key={row.id}
+            key={block.id}
             className="relative"
             style={{
               paddingLeft: rowHorizontalPadding(
@@ -95,13 +93,16 @@ export const Timeline = memo(function Timeline({
               ),
               paddingTop: isLast ? 7 : 5,
               paddingBottom: isLast ? 7 : 5,
-              // New rows settle in with a brief rise-and-fade (CSS animation
-              // runs once on mount; the key is stable per row, so streaming
+              // One age fade for the whole utterance: a long sentence that
+              // wraps over several lines keeps a single visual level.
+              opacity: blockOpacity(distance),
+              // New blocks settle in with a brief rise-and-fade (CSS animation
+              // runs once on mount; the key is stable per block, so streaming
               // text updates do not re-trigger it).
               animation: "subtitle-row-enter 240ms ease-out",
             }}
           >
-            {!blendsWithBackground && row.createdAt !== null && !isDraftRow ? (
+            {!blendsWithBackground && block.createdAt !== null ? (
               <span
                 style={{
                   position: "absolute",
@@ -116,35 +117,31 @@ export const Timeline = memo(function Timeline({
                   color: hexToRgba(ACCENT, distance <= 1 ? 0.46 : 0.28),
                 }}
               >
-                {formatTimestamp(row.createdAt)}
+                {formatTimestamp(block.createdAt)}
               </span>
             ) : null}
-            <span
-              className="block min-w-0"
-              style={{
-                textAlign: alignment,
-                fontSize: isLatestPair
-                  ? isPairedSource ? Math.max(12, fontSize * 0.82) : fontSize
-                  : rowFontSize(index, rows.length, fontSize),
-                fontWeight: (isLast || isLatestPair) && !isPairedSource ? 500 : 400,
-                color: hexToRgba(
-                  subtitleColorHex(isPairedSource ? "white" : color),
-                  isDraftRow ? 0.72 : isLatestPair ? isPairedSource ? 0.72 : 1 : rowOpacity(distance),
-                ),
-                lineHeight: 1.45,
-                overflowWrap: "break-word",
-                textShadow: blendsWithBackground
-                  ? "0 2px 5px rgba(0,0,0,0.98), 0 0 2px rgba(0,0,0,0.95), 0 0 12px rgba(0,0,0,0.72)"
-                  : undefined,
-              }}
-            >
-              {row.text}
-              {isDraftRow && (
-                <span style={{ opacity: 0.55 }} aria-hidden="true">
-                  {"…"}
-                </span>
-              )}
-            </span>
+            {block.source !== null ? (
+              <Lane
+                text={block.source}
+                kind="source"
+                fontSize={fontSize}
+                alignment={alignment}
+                displayMode={displayMode}
+                color={color}
+                blendsWithBackground={blendsWithBackground}
+              />
+            ) : null}
+            {block.translation !== null ? (
+              <Lane
+                text={block.translation}
+                kind="translation"
+                fontSize={fontSize}
+                alignment={alignment}
+                displayMode={displayMode}
+                color={color}
+                blendsWithBackground={blendsWithBackground}
+              />
+            ) : null}
           </div>
         );
       })}
@@ -152,22 +149,56 @@ export const Timeline = memo(function Timeline({
   );
 });
 
-function rowFontSize(
-  index: number,
-  count: number,
-  fontSize: number,
-): number {
-  return index === count - 1 ? fontSize : Math.max(12, fontSize * 0.82);
+interface LaneProps {
+  text: string;
+  kind: "source" | "translation";
+  fontSize: number;
+  alignment: SubtitleAlignment;
+  displayMode: SettingsSnapshot["subtitleDisplayMode"];
+  color: SubtitleColor;
+  blendsWithBackground: boolean;
 }
 
-function rowOpacity(distance: number): number {
+function Lane({
+  text,
+  kind,
+  fontSize,
+  alignment,
+  displayMode,
+  color,
+  blendsWithBackground,
+}: LaneProps) {
+  const isSource = kind === "source";
+  // In bilingual mode the recognized original is the reference lane: neutral
+  // white, slightly smaller. In a single-language mode the visible lane is the
+  // reading target and uses the user's subtitle color.
+  const isReference = isSource && displayMode === "bilingual";
+  return (
+    <span
+      className="block min-w-0"
+      style={{
+        textAlign: alignment,
+        fontSize: isSource ? Math.max(12, fontSize * 0.82) : fontSize,
+        fontWeight: isSource ? 400 : 500,
+        color: hexToRgba(isReference ? "#FFFFFF" : subtitleColorHex(color), isReference ? 0.72 : 1),
+        lineHeight: 1.45,
+        overflowWrap: "break-word",
+        textShadow: blendsWithBackground ? IMMERSIVE_TEXT_SHADOW : undefined,
+      }}
+    >
+      {text}
+    </span>
+  );
+}
+
+function blockOpacity(distance: number): number {
   switch (distance) {
     case 0:
       return 1;
     case 1:
-      return 0.58;
+      return 0.68;
     default:
-      return 0.34;
+      return 0.44;
   }
 }
 

@@ -15,16 +15,28 @@ import {
   TARGET_LANGUAGE_DISPLAY_NAMES,
   sourceLanguageStatusDisplayName,
 } from "../../lib/types";
-import { segments } from "./segmenter";
 
-export interface SubtitleRow {
+export type SubtitleBlockPresentation = "history" | "latestCommitted" | "live";
+
+/** One spoken utterance: the unit the timeline groups, spaces and fades. */
+export interface SubtitleBlock {
   id: string;
-  text: string;
-  /** Epoch ms for the first row of a history pair; `null` otherwise. */
+  /** Epoch ms of the committed utterance; `null` while it is still live. */
   createdAt: number | null;
-  /** Shared only by the two sides of a committed bilingual pair. */
-  pairId?: string;
-  kind?: "source" | "translation";
+  /** Where this block sits in the live/history progression. */
+  presentation: SubtitleBlockPresentation;
+  /** Recognized original; `null` when the display mode omits this lane. */
+  source: string | null;
+  /** Translation; `null` while it has not arrived or the mode omits it. */
+  translation: string | null;
+}
+
+/** The live tail the overlay should render below the committed blocks. */
+export interface LiveTail {
+  source: string | null;
+  translation: string | null;
+  /** True while a lane is still streaming and may change again. */
+  isStreaming: boolean;
 }
 
 function isSameLanguageMode(
@@ -157,61 +169,59 @@ export function timelineClassName(blendsWithBackground: boolean): string {
     .join(" ");
 }
 
-/** Maximum characters per segment for the current target/display language. */
-export function subtitleSegmentLength(
-  targetLanguage: SettingsSnapshot["targetLanguage"],
-  detectedLanguage: string | null,
-): number {
-  switch (targetLanguage) {
-    case "zh":
-      return 28;
-    case "en":
-      return 64;
-    case "ja":
-      return 32;
-    case "original":
-      switch (detectedLanguage) {
-        case "en":
-          return 64;
-        case "ja":
-          return 32;
-        default:
-          return 28;
-      }
-  }
-}
-
-export function computeVisibleRows(
+/**
+ * Groups committed pairs and the live tail into the sentence blocks the
+ * timeline renders. The block — not an individual text row — carries the
+ * timestamp, the age fade and the spacing, so a long sentence that wraps over
+ * several lines keeps one visual level instead of reading as older subtitles.
+ *
+ * Lane selection follows the display mode: translation-only keeps just the
+ * translation, original-only just the recognition, and bilingual hides a
+ * translation that only repeats its original (same-language sessions). The
+ * newest committed block is marked `latestCommitted` until a live tail exists,
+ * which is what lets the live presentation stay compact without a separate
+ * lifecycle state.
+ */
+export function buildSubtitleBlocks(
   history: SubtitleSnapshot["history"],
-  segmentLength: number,
-  displayMode: SettingsSnapshot["subtitleDisplayMode"] = "translation",
-  sourceSegmentLength = segmentLength,
-): SubtitleRow[] {
-  const rows: SubtitleRow[] = [];
+  displayMode: SettingsSnapshot["subtitleDisplayMode"],
+  liveTail: LiveTail | null = null,
+): SubtitleBlock[] {
+  const blocks: SubtitleBlock[] = [];
 
   for (const pair of history) {
-    const pairId = `history-${pair.createdAt}`;
-    const showSource = displayMode !== "translation" && pair.source.trim() !== "";
-    const showTranslation = displayMode !== "original" &&
-      (!showSource || pair.source.trim() !== pair.translation.trim());
-    const bilingualPair = showSource && showTranslation && pair.translation.trim() !== "";
-    let first = true;
-    const append = (value: string, kind: "source" | "translation", length: number) => {
-      segments(value, length).forEach((text, index) => {
-        rows.push({
-          id: `${pairId}-${kind}-${index}`,
-          text,
-          createdAt: first ? pair.createdAt : null,
-          ...(bilingualPair ? { pairId, kind } : {}),
-        });
-        first = false;
-      });
-    };
-    if (showSource) append(pair.source, "source", sourceSegmentLength);
-    if (showTranslation) append(pair.translation, "translation", segmentLength);
+    const sameText = pair.source.trim() === pair.translation.trim();
+    const source = displayMode === "translation" || pair.source.trim() === "" ? null : pair.source;
+    const translation =
+      displayMode === "original" || sameText || pair.translation.trim() === ""
+        ? null
+        : pair.translation;
+    if (source === null && translation === null) continue;
+    blocks.push({
+      id: `history-${pair.createdAt}`,
+      createdAt: pair.createdAt,
+      presentation: "history",
+      source,
+      translation,
+    });
   }
 
-  return rows;
+  const isEmptyTail =
+    liveTail === null || (liveTail.source === null && liveTail.translation === null);
+  if (isEmptyTail) {
+    const newest = blocks[blocks.length - 1];
+    if (newest !== undefined) newest.presentation = "latestCommitted";
+    return blocks;
+  }
+
+  blocks.push({
+    id: "live",
+    createdAt: null,
+    presentation: "live",
+    source: liveTail.source,
+    translation: liveTail.translation,
+  });
+  return blocks;
 }
 
 /**

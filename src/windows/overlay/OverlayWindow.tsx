@@ -10,15 +10,13 @@ import { ResizeHandles } from "./ResizeHandles";
 import { Timeline } from "./Timeline";
 import { useStableText } from "./animation";
 import { overlayTopChromeLayout } from "./overlayChromeLayout";
-import { visibleDraftSegments } from "./segmenter";
 import {
+  buildSubtitleBlocks,
   computeActivityPhase,
-  computeVisibleRows,
   emptyStateDensity,
   emptyStateIsError,
   emptyStateText,
   hasSubtitleContent,
-  subtitleSegmentLength,
   visibleLiveSubtitles,
 } from "./overlayModel";
 
@@ -52,35 +50,11 @@ export function OverlayWindow() {
   const presentationCollapsed = collapsed && !blendsWithBackground;
   const phase = computeActivityPhase(session, settings);
   const detectedLanguage = session.detectedLanguage;
-  const segmentLength = subtitleSegmentLength(
-    settings.targetLanguage,
-    detectedLanguage,
-  );
-  const sourceSegmentLength = subtitleSegmentLength(
-    "original",
-    detectedLanguage ?? (settings.sourceLanguage === "auto" ? null : settings.sourceLanguage),
-  );
-  // Recompute rows only when HISTORY changes. The live draft streams at tens
-  // of events per second and must not re-run the segmenter over the whole
-  // history (that was the main cost during live listening). Rows depend on
-  // the history array reference, not the whole subtitles object.
-  const rows = useMemo(
-    () => computeVisibleRows(
-      session.subtitles.history,
-      segmentLength,
-      settings.subtitleDisplayMode,
-      sourceSegmentLength,
-    ),
-    // Keying on the history array reference (plus segmentLength) makes
-    // draft churn a no-op here.
-    [session.subtitles.history, segmentLength, sourceSegmentLength, settings.subtitleDisplayMode],
-  );
-  // The live preview rows are the timeline's LAST rows (dimmed with a trailing
-  // ellipsis), so they naturally follow history instead of piling up at the
-  // bottom of the panel. Text is stabilized: original-mode text settles
-  // quickly, translated text stays calmer, and confirmed/removed tails update
-  // immediately. Source and translation previews have separate stabilization
-  // identities so a display-mode change cannot retain the previous source.
+  // The live tail is stabilized before it becomes the newest sentence block:
+  // original-mode text settles quickly, translated text stays calmer, and
+  // confirmed/removed tails update immediately. Source and translation
+  // previews have separate stabilization identities so a display-mode change
+  // cannot retain the previous source.
   const livePreviews = useMemo(
     () =>
       visibleLiveSubtitles(
@@ -114,34 +88,28 @@ export function OverlayWindow() {
     1_500,
     `${settings.subtitleDisplayMode}-translation`,
   );
-  const hasLiveDraft =
-    (sourceDraftText !== "" && !sourcePreview?.isFinal) ||
-    (translationDraftText !== "" && !translationPreview?.isFinal);
-  // Full row list: history rows plus the stabilized draft segments as the
-  // trailing rows, original above translation. The `draft-` id prefix is what
-  // the timeline uses to dim unconfirmed text. Rebuilt only when history or
-  // the (settled) drafts change.
-  const allRows = useMemo(() => {
-    const draftRows = (
-      [
-        { text: sourceDraftText, kind: "source", length: sourceSegmentLength },
-        {
-          text: translationDraftText,
-          kind: "translation",
-          length: segmentLength,
-        },
-      ] as const
-    ).flatMap(({ text, kind, length }) =>
-      text === ""
-        ? []
-        : visibleDraftSegments(text, length, 2).map((segment, index) => ({
-            id: `draft-${kind}-${index}`,
-            text: segment,
-            createdAt: null,
-          })),
-    );
-    return draftRows.length === 0 ? rows : [...rows, ...draftRows];
-  }, [rows, sourceDraftText, translationDraftText, sourceSegmentLength, segmentLength]);
+  // Sentence blocks: committed utterances plus the live tail, original above
+  // translation. The block carries the timestamp, the age fade and the live
+  // line budget, so a long sentence that wraps over several lines stays one
+  // visual unit. Rebuilt from committed history and the (settled) live text.
+  const blocks = useMemo(
+    () =>
+      buildSubtitleBlocks(session.subtitles.history, settings.subtitleDisplayMode, {
+        source: sourceDraftText === "" ? null : sourceDraftText,
+        translation: translationDraftText === "" ? null : translationDraftText,
+        isStreaming:
+          (sourcePreview !== undefined && !sourcePreview.isFinal) ||
+          (translationPreview !== undefined && !translationPreview.isFinal),
+      }),
+    [
+      session.subtitles.history,
+      settings.subtitleDisplayMode,
+      sourceDraftText,
+      translationDraftText,
+      sourcePreview,
+      translationPreview,
+    ],
+  );
   const hasContent = hasSubtitleContent(session.subtitles);
 
   const phaseLabel = OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;
@@ -232,14 +200,14 @@ export function OverlayWindow() {
               height: "100%",
             }}
           >
-            {allRows.length > 0 && (
+            {blocks.length > 0 && (
               <Timeline
-                rows={allRows}
+                blocks={blocks}
                 fontSize={settings.fontSize}
                 color={settings.subtitleColor}
                 alignment={settings.subtitleAlignment}
+                displayMode={settings.subtitleDisplayMode}
                 blendsWithBackground
-                draft={hasLiveDraft}
               />
             )}
           </div>
@@ -372,7 +340,7 @@ export function OverlayWindow() {
               height: "100%",
             }}
           >
-          {allRows.length === 0 ? (
+          {blocks.length === 0 ? (
             <div
               className="flex flex-1 flex-col items-center justify-center"
               style={{ gap: emptyDensity === "comfortable" ? 12 : 4 }}
@@ -410,11 +378,11 @@ export function OverlayWindow() {
             </div>
           ) : (
             <Timeline
-              rows={allRows}
+              blocks={blocks}
               fontSize={settings.fontSize}
               color={settings.subtitleColor}
               alignment={settings.subtitleAlignment}
-              draft={hasLiveDraft}
+              displayMode={settings.subtitleDisplayMode}
             />
           )}
           </div>
