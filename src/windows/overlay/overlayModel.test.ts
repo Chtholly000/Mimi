@@ -6,6 +6,7 @@ import {
 } from "../../lib/types";
 import {
   buildSubtitleBlocks,
+  subtitleLaneBudget,
   computeActivityPhaseFromSignals,
   sourceLanguageButtonTitle,
   visibleLiveSubtitle,
@@ -253,6 +254,15 @@ describe("activity phase signals", () => {
   );
 });
 
+
+describe("compact lane budget", () => {
+  it("follows the display mode and lane role, never the window height", () => {
+    expect(subtitleLaneBudget("bilingual", true)).toEqual({ source: 1, translation: 2 });
+    expect(subtitleLaneBudget("bilingual", false)).toEqual({ source: 2, translation: 0 });
+    expect(subtitleLaneBudget("translation", true)).toEqual({ source: 0, translation: 2 });
+    expect(subtitleLaneBudget("original", false)).toEqual({ source: 2, translation: 0 });
+  });
+});
 
 describe("subtitle display preference", () => {
   const pair = { source: "Hello world", translation: "你好世界", createdAt: 1 };

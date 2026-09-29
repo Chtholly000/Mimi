@@ -170,6 +170,28 @@ export function timelineClassName(blendsWithBackground: boolean): string {
 }
 
 /**
+ * Visual-line budget for the compact presentation (the live tail and the
+ * newest committed block). It follows the display mode and lane role, never the
+ * window height: resizing the overlay reveals more history blocks instead of
+ * rewriting the sentence the user is currently reading.
+ */
+export function subtitleLaneBudget(
+  displayMode: SettingsSnapshot["subtitleDisplayMode"],
+  hasTranslation: boolean,
+): { source: number; translation: number } {
+  switch (displayMode) {
+    case "translation":
+      return { source: 0, translation: 2 };
+    case "original":
+      return { source: 2, translation: 0 };
+    default:
+      return hasTranslation
+        ? { source: 1, translation: 2 }
+        : { source: 2, translation: 0 };
+  }
+}
+
+/**
  * Groups committed pairs and the live tail into the sentence blocks the
  * timeline renders. The block — not an individual text row — carries the
  * timestamp, the age fade and the spacing, so a long sentence that wraps over
