@@ -63,6 +63,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
     setTranscriptError(false);
     setConfirmDelete(false);
     setSelectedId(id);
+    setQuery("");
     setPage(0);
     setTranscript(undefined);
   }
@@ -183,6 +184,8 @@ export function SessionExport({ visible }: { visible: boolean }) {
   const hasAudio = (archive?.audioBytes ?? 0) > 0;
   const canExportTranscript = selected ? selected.count > 0 : hasTranscript;
   const canExportAudio = selected ? selected.hasAudio : hasAudio;
+  const showCurrent = active || hasTranscript || hasAudio;
+  const showContent = selected || showCurrent;
 
   return (
     <SettingsSection
@@ -190,13 +193,9 @@ export function SessionExport({ visible }: { visible: boolean }) {
       title={I18N.settings.sessionExportTitle}
       hideHeading
     >
-      <p className="session-export__intro">
-        {I18N.settings.sessionExportIntro}
-      </p>
       <SettingsRow
         label={I18N.settings.retainSessionHistory}
         description={I18N.settings.retainSessionHistoryHelp}
-        hint={I18N.settings.retainSessionHistoryHint}
         align="start"
       >
         <Switch
@@ -212,7 +211,6 @@ export function SessionExport({ visible }: { visible: boolean }) {
       <SettingsRow
         label={I18N.settings.recordSessionAudio}
         description={I18N.settings.recordSessionAudioHelp}
-        hint={I18N.settings.recordSessionAudioHint}
         align="start"
       >
         <Switch
@@ -237,17 +235,6 @@ export function SessionExport({ visible }: { visible: boolean }) {
             {I18N.settings.sessionAudioEnabled}
           </InlineFeedback>
         )}
-        <div className="session-export__summary">
-          <h3>{I18N.settings.sessionExportBuffers}</h3>
-          {archive && (
-            <p className="settings-help">
-              {I18N.settings.sessionArchiveSummary(
-                archive.transcriptCount,
-                (archive.audioBytes / 1_048_576).toFixed(1),
-              )}
-            </p>
-          )}
-        </div>
         {archive?.transcriptLimited && (
           <InlineFeedback tone="info">
             {I18N.settings.sessionTranscriptLimit}
@@ -264,30 +251,29 @@ export function SessionExport({ visible }: { visible: boolean }) {
         <div className="session-history">
           <div className="session-history__heading">
             <h3>{I18N.settings.historyTitle}</h3>
-            <span>{I18N.settings.historySessionCount(history.length)}</span>
+            {history.length > 0 && <span>{I18N.settings.historySessionCount(history.length)}</span>}
           </div>
-          <button type="button" className={`session-history__item${selectedId === null ? " is-selected" : ""}`} onClick={() => selectHistory(null)}>
+          {showCurrent && <button type="button" className={`session-history__item${selectedId === null ? " is-selected" : ""}`} onClick={() => selectHistory(null)}>
             <span>{I18N.settings.historyCurrent}</span>
-            <small>{I18N.settings.transcriptCount(archive?.transcriptCount ?? 0)}</small>
-          </button>
+            {(hasTranscript || hasAudio) && <small>{hasTranscript ? I18N.settings.transcriptCount(archive?.transcriptCount ?? 0) : ""}{hasTranscript && hasAudio ? " · " : ""}{hasAudio ? I18N.settings.historyAudio : ""}</small>}
+          </button>}
           {groupHistory(history).map((group) => (
             <div className="session-history__group" key={group.day}>
               <h4>{group.label}</h4>
               {group.items.map((item) => (
                 <button type="button" key={item.id} className={`session-history__item${selectedId === item.id ? " is-selected" : ""}`} onClick={() => selectHistory(item.id)}>
                   <span>{new Intl.DateTimeFormat(effectiveUiLanguage(), { hour: "2-digit", minute: "2-digit" }).format(item.startedAtMs)}</span>
-                  <small>{I18N.settings.transcriptCount(item.count)}{item.hasAudio ? ` · ${I18N.settings.historyAudio}` : ""}</small>
+                  <small>{item.count > 0 ? I18N.settings.transcriptCount(item.count) : ""}{item.count > 0 && item.hasAudio ? " · " : ""}{item.hasAudio ? I18N.settings.historyAudio : ""}</small>
                 </button>
               ))}
             </div>
           ))}
           {historyError && <InlineFeedback tone="error">{I18N.settings.historyReadFailed}</InlineFeedback>}
         </div>
-        <div className="session-transcript">
+        {showContent ? <div className="session-transcript">
           <div className="session-transcript__heading">
             <div>
               <h3>{selected ? I18N.settings.historySelectedTitle : I18N.settings.transcriptBrowseTitle}</h3>
-              <p>{selected ? I18N.settings.historySelectedDescription : I18N.settings.transcriptBrowseDescription}</p>
             </div>
             <span>{I18N.settings.transcriptCount(availableCount)}</span>
           </div>
@@ -296,7 +282,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
             {!confirmDelete ? <button type="button" className="settings-button settings-button--text" disabled={busy} onClick={() => setConfirmDelete(true)}>{I18N.settings.historyDelete}</button> : <span className="session-history__confirm"><span>{I18N.settings.historyDeleteConfirm}</span><button type="button" onClick={() => setConfirmDelete(false)}>{I18N.settings.historyCancel}</button><button type="button" disabled={busy} onClick={() => { void sessionHistoryDelete(selected.id).then(() => { setHistory((items) => items.filter((item) => item.id !== selected.id)); selectHistory(null); }, () => setHistoryError(true)); }}>{I18N.settings.historyDelete}</button></span>}
           </div>}
           {audioError && <InlineFeedback tone="error">{I18N.settings.historyAudioFailed}</InlineFeedback>}
-          <div className="session-transcript__toolbar">
+          {availableCount > 0 && <div className="session-transcript__toolbar">
             <input
               type="search"
               value={query}
@@ -304,12 +290,11 @@ export function SessionExport({ visible }: { visible: boolean }) {
               placeholder={I18N.settings.transcriptSearch}
               aria-label={I18N.settings.transcriptSearch}
               onChange={(event) => { setQuery(event.target.value); setPage(0); setTranscript(undefined); setTranscriptError(false); }}
-              disabled={!availableCount}
             />
             {displayedTranscript && displayedTranscript.total > 0 && (
               <span>{I18N.settings.transcriptMatches(displayedTranscript.total)}</span>
             )}
-          </div>
+          </div>}
           <div className="session-transcript__list" aria-live="polite">
             {availableCount && transcriptError ? (
               <p className="session-transcript__empty">{I18N.settings.transcriptReadFailed}</p>
@@ -328,7 +313,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
               </article>
             )) : (
               <p className="session-transcript__empty">
-                {!availableCount ? (selected?.hasAudio ? I18N.settings.historyAudioOnly : I18N.settings.transcriptEmpty) : query ? I18N.settings.transcriptNoMatches : I18N.settings.transcriptLoading}
+                {!availableCount ? (canExportAudio ? I18N.settings.historyAudioOnly : I18N.settings.transcriptEmpty) : query ? I18N.settings.transcriptNoMatches : I18N.settings.transcriptLoading}
               </p>
             )}
           </div>
@@ -339,8 +324,8 @@ export function SessionExport({ visible }: { visible: boolean }) {
               <button type="button" disabled={(displayedTranscript.page + 1) * 30 >= displayedTranscript.total} onClick={() => { setPage(displayedTranscript.page + 1); setTranscript(undefined); }} aria-label={I18N.settings.transcriptNext}><Icon name="chevron-right" /></button>
             </nav>
           )}
-        </div>
-        <div className="session-export__actions">
+        </div> : <p className="session-export__empty">{history.length > 0 ? I18N.settings.historyChoose : I18N.settings.historyEmpty}</p>}
+        {showContent && <div className="session-export__actions">
           <button
             type="button"
             className="settings-button settings-button--quiet"
@@ -380,7 +365,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
           >
             {I18N.settings.clearSessionArchive}
           </button>}
-        </div>
+        </div>}
         {!isTauri && (
           <p className="settings-help">
             {I18N.settings.sessionExportNativeOnly}

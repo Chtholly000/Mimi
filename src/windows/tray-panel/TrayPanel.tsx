@@ -268,7 +268,7 @@ export function TrayPanel() {
         <span className="tray-card__divider" />
 
         <div className="tray-setting-row tray-setting-row--display" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>
-          <span className="tray-setting-row__icon" aria-hidden="true"><Icon name="languages" /></span>
+          <span className="tray-setting-row__icon" aria-hidden="true"><Icon name="captions-bubble" /></span>
           <span className="tray-setting-row__copy"><span>{I18N.settings.subtitleDisplay}</span></span>
           <span className="tray-select-wrap">
             <Select label={I18N.settings.subtitleDisplay} value={settings.subtitleDisplayMode}
