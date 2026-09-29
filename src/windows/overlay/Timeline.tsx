@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { hexToRgba } from "../../lib/types";
 import { subtitleColorHex } from "../../lib/subtitleColor";
 import type { SettingsSnapshot, SubtitleAlignment, SubtitleColor } from "../../lib/types";
 import { observeTimelineResize } from "./timelineResize";
+import { unitSpans } from "./animation";
 import { rowHorizontalPadding } from "./alignment";
 import {
   subtitleLaneBudget,
@@ -34,6 +35,8 @@ interface TimelineProps {
    * user's subtitle color. */
   displayMode: SettingsSnapshot["subtitleDisplayMode"];
   blendsWithBackground?: boolean;
+  /** Resolved motion setting: gates the roll-up glide. */
+  motionEnabled?: boolean;
 }
 
 /** Scrolling sentence blocks; auto-scrolls to the newest block. Memoized:
@@ -47,6 +50,7 @@ export const Timeline = memo(function Timeline({
   color,
   displayMode,
   blendsWithBackground = false,
+  motionEnabled = true,
 }: TimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Keep the newest content pinned to the bottom: the block count changes when
@@ -93,11 +97,16 @@ export const Timeline = memo(function Timeline({
         // presentation, so committing an utterance does not resize the panel;
         // it expands only once the next utterance starts.
         const compact = block.presentation !== "history";
+        // Only a sentence that appears for the first time animates in. A
+        // committed utterance replaces the live row it was already visible as,
+        // so animating it again would blink the text the user is reading.
+        const entering = block.presentation === "live";
+        const streaming = block.streaming === true;
         const budget = subtitleLaneBudget(displayMode, block.translation !== null);
         return (
           <div
             key={block.id}
-            className="relative"
+            className={entering ? "relative subtitle-block" : "relative"}
             style={{
               paddingLeft: rowHorizontalPadding(
                 alignment,
@@ -120,14 +129,15 @@ export const Timeline = memo(function Timeline({
               // One age fade for the whole utterance: a long sentence that
               // wraps over several lines keeps a single visual level.
               opacity: blockOpacity(distance),
-              // New blocks settle in with a brief rise-and-fade (CSS animation
-              // runs once on mount; the key is stable per block, so streaming
-              // text updates do not re-trigger it).
-              animation: "subtitle-block-enter 180ms ease-out",
+              // New blocks settle in with a brief rise-and-fade; the class runs
+              // the animation once on mount (the key is stable per block, so
+              // streaming text updates do not re-trigger it) and is skipped
+              // when motion is off.
             }}
           >
             {!blendsWithBackground && block.createdAt !== null ? (
               <span
+                className="subtitle-timestamp"
                 style={{
                   position: "absolute",
                   left: 18,
@@ -155,6 +165,9 @@ export const Timeline = memo(function Timeline({
                   displayMode={displayMode}
                   color={color}
                   blendsWithBackground={blendsWithBackground}
+                  motionEnabled={motionEnabled}
+                  entering={entering}
+                  streaming={streaming}
                 />
               ) : null}
               {block.translation !== null ? (
@@ -167,6 +180,9 @@ export const Timeline = memo(function Timeline({
                   displayMode={displayMode}
                   color={color}
                   blendsWithBackground={blendsWithBackground}
+                  motionEnabled={motionEnabled}
+                  entering={entering}
+                  streaming={streaming}
                 />
               ) : null}
             </div>
@@ -200,6 +216,37 @@ interface LaneProps {
   displayMode: SettingsSnapshot["subtitleDisplayMode"];
   color: SubtitleColor;
   blendsWithBackground: boolean;
+  motionEnabled: boolean;
+  /** Runs the lane fade only for text that was not on screen before. */
+  entering: boolean;
+  /** The lane may still change: it carries the streaming marker. */
+  streaming: boolean;
+}
+
+/**
+ * Lane text while it is still arriving: each unit is its own element keyed by
+ * its offset, so the CSS fade runs once per unit as it mounts and never replays
+ * for text that is already on screen. Settled rows render plain text instead,
+ * which leaves no wrappers behind once the stream ends.
+ */
+function renderLaneText(text: string, entering: boolean): ReactNode {
+  if (!entering) return text;
+  return unitSpans(text).map((unit) => (
+    <span key={unit.start} className="stream-chunk">
+      {unit.text}
+    </span>
+  ));
+}
+
+/** The typing wave that rides the end of the text still arriving. */
+function StreamingDots() {
+  return (
+    <span className="stream-dots" aria-hidden="true">
+      <span />
+      <span />
+      <span />
+    </span>
+  );
 }
 
 function Lane({
@@ -211,12 +258,19 @@ function Lane({
   displayMode,
   color,
   blendsWithBackground,
+  motionEnabled,
+  entering,
+  streaming,
 }: LaneProps) {
   const isSource = kind === "source";
   // In bilingual mode the recognized original is the reference lane: neutral
   // white, slightly smaller. In a single-language mode the visible lane is the
   // reading target and uses the user's subtitle color.
   const isReference = isSource && displayMode === "bilingual";
+  // The marker follows the text that is still arriving: the translation when
+  // there is one, otherwise the recognized original.
+  const streamingMarker = streaming && (kind === "translation" || displayMode === "original");
+  const body = renderLaneText(text, entering);
   const laneFontSize = isSource ? Math.max(12, fontSize * SOURCE_SCALE) : fontSize;
   const textStyle = {
     fontSize: laneFontSize,
@@ -230,10 +284,11 @@ function Lane({
   if (lines === null) {
     return (
       <span
-        className="block min-w-0"
-        style={{ textAlign: alignment, animation: "lane-enter 180ms ease-out", ...textStyle }}
+        className={entering ? "block min-w-0 subtitle-lane" : "block min-w-0"}
+        style={{ textAlign: alignment, ...textStyle }}
       >
-        {text}
+        {body}
+        {streamingMarker ? <StreamingDots /> : null}
       </span>
     );
   }
@@ -245,6 +300,9 @@ function Lane({
       lineHeightPx={laneFontSize * LINE_HEIGHT}
       alignment={alignment}
       textStyle={textStyle}
+      motionEnabled={motionEnabled}
+      entering={entering}
+      streamingMarker={streamingMarker}
     />
   );
 }
@@ -253,6 +311,9 @@ interface CompactLaneProps {
   text: string;
   lines: number;
   lineHeightPx: number;
+  motionEnabled: boolean;
+  entering: boolean;
+  streamingMarker: boolean;
   alignment: SubtitleAlignment;
   textStyle: {
     fontSize: number;
@@ -275,6 +336,9 @@ function CompactLane({
   text,
   lines,
   lineHeightPx,
+  motionEnabled,
+  entering,
+  streamingMarker,
   alignment,
   textStyle,
 }: CompactLaneProps) {
@@ -282,7 +346,8 @@ function CompactLane({
   const innerRef = useRef<HTMLSpanElement>(null);
   const { overflowed, innerHeight } = useLaneOverflow(viewportRef);
   // Let the text glide upward when a new line pushes it instead of jumping.
-  useRollupGlide(innerRef, innerHeight);
+  useRollupGlide(innerRef, innerHeight, motionEnabled);
+  const body = renderLaneText(text, entering);
   return (
     <div
       ref={viewportRef}
@@ -303,12 +368,12 @@ function CompactLane({
     >
       <span
         ref={innerRef}
+        className={entering ? "subtitle-lane" : undefined}
         aria-hidden="true"
         style={{
           position: "absolute",
           left: 0,
           right: 0,
-          animation: "lane-enter 180ms ease-out",
           // Text starts on the first line while it fits; once it fills the
           // budget the same element stays pinned to the bottom so new content
           // grows upward and the old content rolls off the top.
@@ -317,7 +382,8 @@ function CompactLane({
           ...textStyle,
         }}
       >
-        {text}
+        {body}
+        {streamingMarker ? <StreamingDots /> : null}
       </span>
       <span
         aria-hidden="true"
@@ -380,6 +446,7 @@ function useLaneOverflow(viewportRef: RefObject<HTMLDivElement | null>): {
 function useRollupGlide(
   innerRef: RefObject<HTMLSpanElement | null>,
   innerHeight: number,
+  enabled: boolean,
 ): void {
   const previousHeightRef = useRef(0);
   useEffect(() => {
@@ -387,14 +454,14 @@ function useRollupGlide(
     const previous = previousHeightRef.current;
     previousHeightRef.current = innerHeight;
     if (inner === null || previous === 0 || innerHeight === previous) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (!enabled) return;
     const shift = previous - innerHeight;
     inner.style.transition = "none";
     inner.style.transform = `translateY(${shift}px)`;
     void inner.offsetHeight;
     inner.style.transition = "transform 180ms ease-out";
     inner.style.transform = "translateY(0)";
-  }, [innerRef, innerHeight]);
+  }, [innerRef, innerHeight, enabled]);
 }
 
 function blockOpacity(distance: number): number {

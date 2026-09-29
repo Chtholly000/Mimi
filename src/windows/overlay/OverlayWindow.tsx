@@ -8,7 +8,7 @@ import { DragHandle } from "./DragHandle";
 import { PulseRing } from "./PulseRing";
 import { ResizeHandles } from "./ResizeHandles";
 import { Timeline } from "./Timeline";
-import { useStableText } from "./animation";
+import { useResolvedMotion, useStableText } from "./animation";
 import { overlayTopChromeLayout } from "./overlayChromeLayout";
 import {
   buildSubtitleBlocks,
@@ -47,6 +47,14 @@ export function OverlayWindow() {
 
   const collapsed = session.isOverlayCollapsed;
   const blendsWithBackground = settings.subtitleBlendsWithBackground;
+  // Resolved once per render: an explicit switch overrides the system, and the
+  // body class is what the CSS animations key off.
+  const pulseOn = useResolvedMotion(settings.pulseAnimation);
+  const motionOn = useResolvedMotion(settings.subtitleAnimation);
+  useEffect(() => {
+    document.body.classList.toggle("motion-reduced", !motionOn);
+    document.body.classList.toggle("pulse-off", !pulseOn);
+  }, [motionOn, pulseOn]);
   const presentationCollapsed = collapsed && !blendsWithBackground;
   const phase = computeActivityPhase(session, settings);
   const detectedLanguage = session.detectedLanguage;
@@ -97,13 +105,18 @@ export function OverlayWindow() {
       buildSubtitleBlocks(session.subtitles.history, settings.subtitleDisplayMode, {
         source: sourceDraftText === "" ? null : sourceDraftText,
         translation: translationDraftText === "" ? null : translationDraftText,
+        // Text only counts as still arriving while the session is actually
+        // working: a paused session keeps its frozen draft, but nothing is
+        // coming, so the typing wave must stop with it.
         isStreaming:
-          (sourcePreview !== undefined && !sourcePreview.isFinal) ||
-          (translationPreview !== undefined && !translationPreview.isFinal),
+          OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0 &&
+          ((sourcePreview !== undefined && !sourcePreview.isFinal) ||
+            (translationPreview !== undefined && !translationPreview.isFinal)),
       }),
     [
       session.subtitles.history,
       settings.subtitleDisplayMode,
+      phase,
       sourceDraftText,
       translationDraftText,
       sourcePreview,
@@ -207,6 +220,7 @@ export function OverlayWindow() {
                 color={settings.subtitleColor}
                 alignment={settings.subtitleAlignment}
                 displayMode={settings.subtitleDisplayMode}
+                motionEnabled={motionOn}
                 blendsWithBackground
               />
             )}
@@ -350,7 +364,7 @@ export function OverlayWindow() {
                   className="flex items-center"
                   style={{ height: compactEmptyPulse ? 24 : 56 }}
                 >
-                  <PulseRing phase={phase} compact={compactEmptyPulse} />
+                  <PulseRing phase={phase} compact={compactEmptyPulse} motionEnabled={pulseOn} />
                 </div>
               )}
               <div
@@ -426,7 +440,7 @@ export function OverlayWindow() {
           style={{ gap: 8, padding: "0 10px" }}
         >
           <DragHandle onToggleCollapsed={toggleCollapsed} compact />
-          <PulseRing phase={phase} compact />
+          <PulseRing phase={phase} compact motionEnabled={pulseOn} />
           <span
             className="truncate"
             style={{ fontSize: 11, fontWeight: 500, color: "rgba(255,255,255,0.76)" }}

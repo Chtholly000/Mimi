@@ -29,6 +29,8 @@ export interface SubtitleBlock {
   source: string | null;
   /** Translation; `null` while it has not arrived or the mode omits it. */
   translation: string | null;
+  /** Set on the live block while its lane may still change. */
+  streaming?: true;
 }
 
 /** The live tail the overlay should render below the committed blocks. */
@@ -242,6 +244,7 @@ export function buildSubtitleBlocks(
     presentation: "live",
     source: liveTail.source,
     translation: liveTail.translation,
+    ...(liveTail.isStreaming ? { streaming: true as const } : {}),
   });
   return blocks;
 }

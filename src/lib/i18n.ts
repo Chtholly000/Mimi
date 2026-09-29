@@ -288,6 +288,10 @@ const SETTINGS_ZH = {
   displayBilingual: "原文＋译文",
   displayOriginal: "仅原文",
   subtitleDisplayHelp: "切换显示方式，不会中断翻译。",
+  pulseAnimation: "呼吸灯",
+  pulseAnimationHelp: "翻译状态指示：呼吸圆点与扩散涟漪。未设置时跟随系统。",
+  textAnimation: "字幕动效",
+  textAnimationHelp: "新句渐入、译文滚动时平滑上移。未设置时跟随系统。",
 
   sessionAudioTiming: "WAV 会省略暂停和重连间隙，音频与字幕时间戳不直接对齐。",
   sessionTranscriptTiming: "TXT 时间戳表示字幕确认时距会话开始的时间，并非媒体播放位置。",
@@ -538,6 +542,10 @@ const SETTINGS_EN = {
   displayBilingual: "Original + translation",
   displayOriginal: "Original only",
   subtitleDisplayHelp: "Switch the display without interrupting translation.",
+  pulseAnimation: "Breathing light",
+  pulseAnimationHelp: "Status indicator: a breathing dot with ripples. Follows the system setting until you choose.",
+  textAnimation: "Subtitle motion",
+  textAnimationHelp: "New sentences fade in and text glides up while scrolling. Follows the system setting until you choose.",
 
   sessionAudioTiming: "WAV omits pauses and reconnect gaps. Its timeline does not directly align with subtitle timestamps.",
   sessionTranscriptTiming: "TXT timestamps mark final confirmation time since session start, not media playback positions.",
@@ -786,6 +794,10 @@ const SETTINGS_JA = {
   displayBilingual: "原文＋翻訳",
   displayOriginal: "原文のみ",
   subtitleDisplayHelp: "翻訳を中断せずに表示を切り替えます。",
+  pulseAnimation: "呼吸ライト",
+  pulseAnimationHelp: "状態表示の呼吸ドットと波紋。未設定ならシステム設定に従います。",
+  textAnimation: "字幕の動き",
+  textAnimationHelp: "新しい文のフェードインとスクロール時の動き。未設定ならシステム設定に従います。",
 
   sessionAudioTiming: "WAV は一時停止や再接続中の空白を省くため、字幕のタイムスタンプとは一致しません。",
   sessionTranscriptTiming: "TXT の時刻はセッション開始から字幕確定までの経過時間で、メディアの再生位置ではありません。",

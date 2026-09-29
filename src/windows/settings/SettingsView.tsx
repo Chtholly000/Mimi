@@ -30,6 +30,7 @@ import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
 import { useSettingsTheme } from "./useSettingsTheme";
 import { AppearancePicker } from "./AppearancePicker";
+import { useResolvedMotion } from "../overlay/animation";
 import {
   SettingsSessionActionCoordinator,
   settingsSessionControlState,
@@ -60,6 +61,10 @@ export function SettingsView() {
   const sessionIsActive = useStore((state) => state.session.isActive);
   const sessionIsPaused = useStore((state) => state.session.isPaused);
   const settings = useStore((state) => state.settings);
+  // A switch shows what the overlay actually does: an untouched switch follows
+  // the system's reduce-motion preference.
+  const pulseOn = useResolvedMotion(settings.pulseAnimation);
+  const motionOn = useResolvedMotion(settings.subtitleAnimation);
   const start = useStore((state) => state.start);
   const stop = useStore((state) => state.stop);
   const switchSourceLanguage = useStore((state) => state.switchSourceLanguage);
@@ -347,6 +352,32 @@ export function SettingsView() {
                           value={settings.subtitleDisplayMode}
                           options={SUBTITLE_DISPLAY_OPTIONS}
                           onChange={(value) => void saveSettings({ subtitleDisplayMode: value as SubtitleDisplayMode })}
+                        />
+                      </SettingsRow>
+                      <SettingsRow
+                        label={I18N.settings.pulseAnimation}
+                        description={I18N.settings.pulseAnimationHelp}
+                        align="start"
+                      >
+                        <Switch
+                          checked={pulseOn}
+                          aria-label={I18N.settings.pulseAnimation}
+                          onChange={(pulseAnimation) =>
+                            void saveSettings({ pulseAnimation })
+                          }
+                        />
+                      </SettingsRow>
+                      <SettingsRow
+                        label={I18N.settings.textAnimation}
+                        description={I18N.settings.textAnimationHelp}
+                        align="start"
+                      >
+                        <Switch
+                          checked={motionOn}
+                          aria-label={I18N.settings.textAnimation}
+                          onChange={(subtitleAnimation) =>
+                            void saveSettings({ subtitleAnimation })
+                          }
                         />
                       </SettingsRow>
                       <SettingsRow label={I18N.settings.subtitleColor}>

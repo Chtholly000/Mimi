@@ -7,8 +7,7 @@
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::ProviderCredentials;
 use crate::core::models::{
-    SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
-};
+    SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,};
 use crate::core::provider::{
     ProviderKind, ProviderPreferences, ServiceProfile, DEFAULT_ALIBABA_PROFILE_ID,
 };
@@ -70,6 +69,9 @@ pub struct Preferences {
     pub subtitle_color: SubtitleColor,
     pub subtitle_alignment: SubtitleAlignment,
     pub subtitle_display_mode: SubtitleDisplayMode,
+    /// Animation switches: `None` follows the system reduce-motion setting.
+    pub pulse_animation: Option<bool>,
+    pub subtitle_animation: Option<bool>,
     pub subtitle_blends_with_background: bool,
     pub overlay_locked: bool,
     pub overlay_frame: Option<OverlayFrame>,
@@ -91,6 +93,8 @@ impl Default for Preferences {
             subtitle_color: SubtitleColor::White,
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
+            pulse_animation: None,
+            subtitle_animation: None,
             subtitle_blends_with_background: false,
             overlay_locked: false,
             overlay_frame: None,
@@ -1160,6 +1164,27 @@ fn sync_directory(path: &Path) {
 
 #[cfg(not(unix))]
 fn sync_directory(_path: &Path) {}
+
+#[cfg(test)]
+mod animation_switch_tests {
+    use super::Preferences;
+
+    /// An explicit "off" is a choice, not an absent value: it must survive a
+    /// round trip even though the field defaults to `None` (follow the system).
+    #[test]
+    fn animation_switches_round_trip_explicit_values() {
+        let mut prefs = Preferences::default();
+        assert_eq!(prefs.pulse_animation, None);
+        assert_eq!(prefs.subtitle_animation, None);
+
+        prefs.pulse_animation = Some(false);
+        prefs.subtitle_animation = Some(true);
+        let json = serde_json::to_string(&prefs).unwrap();
+        let restored: Preferences = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.pulse_animation, Some(false));
+        assert_eq!(restored.subtitle_animation, Some(true));
+    }
+}
 
 #[cfg(test)]
 mod tests {

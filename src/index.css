@@ -75,24 +75,200 @@ body.settings-body {
   }
 }
 
-/* Decorations yield to the user's motion preference; state changes stay. */
+/* New sentences settle in and lanes fade in; both are skipped, not replaced,
+   when motion is off. */
+.subtitle-block {
+  animation: subtitle-block-enter 180ms ease-out;
+}
+
+.subtitle-lane {
+  animation: lane-enter 180ms ease-out;
+}
+
+/* Motion is resolved in JavaScript: the system's reduce-motion preference
+   unless the user picked an explicit value. Off means the surfaces keep every
+   state change but drop all decoration, so the overlay stays readable. */
+.motion-reduced .subtitle-block,
+.motion-reduced .subtitle-lane,
+.motion-reduced .subtitle-timestamp,
+.motion-reduced .stream-dots > span,
+.motion-reduced .pulse__ring,
+.motion-reduced .pulse__dot,
+.motion-reduced .overlay-swap-collapsed,
+.motion-reduced .overlay-swap-expanded {
+  animation: none !important;
+}
+
+.motion-reduced .subtitle-block {
+  transition: none;
+}
+
+/* Aging is a state change, not a decoration: glide between steps instead of
+   stepping in one frame, unless motion is off. */
+.subtitle-block {
+  transition: opacity 260ms ease;
+}
+
+/* A committed sentence replaces the live row it was already visible as; the
+   timestamp is the only new thing in that frame, so it fades in quietly. */
+.subtitle-timestamp {
+  animation: lane-enter 200ms ease-out;
+}
+
+/* The units that just arrived fade in, staggered by a few milliseconds per
+   unit: a streamed sentence reads as writing rather than as popping. Settled
+   rows render plain text, so the wrappers cost nothing after the stream. */
+.stream-chunk {
+  animation: stream-chunk-in 250ms ease-out both;
+}
+
+.motion-reduced .stream-chunk {
+  animation: none;
+}
+
+@keyframes stream-chunk-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The streaming marker: a three-dot typing wave riding the end of the text
+   that is still arriving (the staggered-dot loader pattern from the MIT
+   three-dots / SpinKit families, written here for inline caption text). It
+   breathes while the status light is on and holds a faint static row when the
+   switch is off, so the state stays readable without motion. */
+.stream-dots {
+  display: inline-block;
+  margin-left: 0.34em;
+  white-space: nowrap;
+  vertical-align: 0.04em;
+}
+
+.stream-dots > span {
+  display: inline-block;
+  width: 0.24em;
+  height: 0.24em;
+  margin-right: 0.18em;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.32;
+  transform-origin: center bottom;
+  animation: stream-dot-wave 1100ms cubic-bezier(0.34, 1.4, 0.64, 1) infinite;
+}
+
+.stream-dots > span:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.stream-dots > span:nth-child(3) {
+  animation-delay: 280ms;
+}
+
+.pulse-off .stream-dots > span {
+  animation: none;
+  opacity: 0.45;
+}
+
+@keyframes stream-dot-wave {
+  0%,
+  55%,
+  100% {
+    opacity: 0.28;
+    transform: translateY(0) scale(1);
+  }
+  25% {
+    opacity: 1;
+    transform: translateY(-0.16em) scale(1.25);
+  }
+}
+
+/* Settings chrome belongs to no caption surface: it always yields to the
+   system preference. */
 @media (prefers-reduced-motion: reduce) {
-  @keyframes subtitle-block-enter {
-    from {
-      opacity: 1;
-    }
-    to {
-      opacity: 1;
-    }
+  .settings-panel {
+    animation: none;
   }
-  @keyframes lane-enter {
-    from {
-      opacity: 1;
-    }
-    to {
-      opacity: 1;
-    }
+}
+
+/* The recognition pulse: a dot that breathes while rings ripple outward and
+   fade. Every frame is transform/opacity only, and the rings are staggered
+   with negative delays, so the loop lives on the compositor thread and keeps
+   breathing while the main thread renders streaming text. */
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.24);
+    opacity: 0.42;
   }
+  10% {
+    transform: scale(0.44);
+    opacity: 0.36;
+  }
+  20% {
+    transform: scale(0.56);
+    opacity: 0.31;
+  }
+  35% {
+    transform: scale(0.69);
+    opacity: 0.23;
+  }
+  50% {
+    transform: scale(0.81);
+    opacity: 0.16;
+  }
+  65% {
+    transform: scale(0.92);
+    opacity: 0.1;
+  }
+  80% {
+    transform: scale(1.02);
+    opacity: 0.04;
+  }
+  100% {
+    transform: scale(1.14);
+    opacity: 0;
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.pulse {
+  position: relative;
+}
+
+.pulse__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  transform-origin: center;
+  transform: scale(calc(0.34 + var(--ring-index) * 0.073));
+  opacity: calc(0.26 - var(--ring-index) * 0.023);
+}
+
+.pulse--active .pulse__ring {
+  animation: pulse-ring 2200ms linear infinite;
+}
+
+.pulse__dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  border-radius: 50%;
+  opacity: 0.9;
+}
+
+.pulse--active .pulse__dot {
+  animation: pulse-dot 2200ms ease-in-out infinite;
 }
 
 /* Thin, unobtrusive scrollbars for the overlay timeline. */

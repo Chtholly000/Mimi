@@ -304,6 +304,7 @@ describe("subtitle display preference", () => {
       presentation: "live",
       source: "Streaming",
       translation: null,
+      streaming: true,
     });
     // An empty tail is not a block: the newest committed utterance keeps the
     // compact presentation instead.
