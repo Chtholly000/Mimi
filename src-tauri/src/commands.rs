@@ -3,7 +3,8 @@
 
 use crate::core::credentials::ProviderCredentials;
 use crate::core::models::{
-    SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,};
+    SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
+};
 use crate::core::provider::{ProviderKind, ServiceProfile};
 use crate::session_manager::{SessionManager, SessionStateEvent};
 use crate::settings_store::{CredentialState, SettingsStore, SubtitleAlignment};
@@ -309,7 +310,6 @@ impl SettingsSnapshotPayload {
 
                     pulse_animation: prefs.pulse_animation,
 
-
                     subtitle_animation: prefs.subtitle_animation,
                     subtitle_blends_with_background: prefs.subtitle_blends_with_background,
                     is_overlay_locked: prefs.overlay_locked,
@@ -339,7 +339,6 @@ impl SettingsSnapshotPayload {
             subtitle_display_mode: prefs.subtitle_display_mode,
 
             pulse_animation: prefs.pulse_animation,
-
 
             subtitle_animation: prefs.subtitle_animation,
             subtitle_blends_with_background: prefs.subtitle_blends_with_background,

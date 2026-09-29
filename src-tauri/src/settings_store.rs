@@ -7,7 +7,8 @@
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::ProviderCredentials;
 use crate::core::models::{
-    SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,};
+    SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
+};
 use crate::core::provider::{
     ProviderKind, ProviderPreferences, ServiceProfile, DEFAULT_ALIBABA_PROFILE_ID,
 };
