@@ -229,7 +229,10 @@ function Lane({
 
   if (lines === null) {
     return (
-      <span className="block min-w-0" style={{ textAlign: alignment, ...textStyle }}>
+      <span
+        className="block min-w-0"
+        style={{ textAlign: alignment, animation: "lane-enter 180ms ease-out", ...textStyle }}
+      >
         {text}
       </span>
     );
@@ -276,7 +279,10 @@ function CompactLane({
   textStyle,
 }: CompactLaneProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
-  const overflowed = useLaneOverflow(viewportRef);
+  const innerRef = useRef<HTMLSpanElement>(null);
+  const { overflowed, innerHeight } = useLaneOverflow(viewportRef);
+  // Let the text glide upward when a new line pushes it instead of jumping.
+  useRollupGlide(innerRef, innerHeight);
   return (
     <div
       ref={viewportRef}
@@ -296,11 +302,13 @@ function CompactLane({
       }}
     >
       <span
+        ref={innerRef}
         aria-hidden="true"
         style={{
           position: "absolute",
           left: 0,
           right: 0,
+          animation: "lane-enter 180ms ease-out",
           // Text starts on the first line while it fits; once it fills the
           // budget the same element stays pinned to the bottom so new content
           // grows upward and the old content rolls off the top.
@@ -332,18 +340,25 @@ function CompactLane({
   );
 }
 
-/** True once the lane's full text is taller than the lines it may show. */
-function useLaneOverflow(viewportRef: RefObject<HTMLDivElement | null>): boolean {
-  const [overflowed, setOverflowed] = useState(false);
+/** Whether the lane's text overflows its budget, plus its laid-out height. */
+function useLaneOverflow(viewportRef: RefObject<HTMLDivElement | null>): {
+  overflowed: boolean;
+  innerHeight: number;
+} {
+  const [measured, setMeasured] = useState({ overflowed: false, innerHeight: 0 });
   useEffect(() => {
     const viewport = viewportRef.current;
     if (viewport === null) return;
     const measure = () => {
       const inner = viewport.firstElementChild;
       if (inner === null) return;
-      // Two pixels of hysteresis keep the marker from flickering on the
-      // exact boundary while the text streams in.
-      setOverflowed(inner.getBoundingClientRect().height > viewport.clientHeight + 2);
+      const height = Math.round(inner.getBoundingClientRect().height);
+      // Two pixels of hysteresis keep the marker from flickering on the exact
+      // boundary while the text streams in.
+      setMeasured({
+        overflowed: height > viewport.clientHeight + 2,
+        innerHeight: height,
+      });
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -354,7 +369,32 @@ function useLaneOverflow(viewportRef: RefObject<HTMLDivElement | null>): boolean
     if (inner !== null) observer.observe(inner);
     return () => observer.disconnect();
   }, [viewportRef]);
-  return overflowed;
+  return measured;
+}
+
+/**
+ * Bottom-anchored text moves up by one line whenever it grows past the
+ * budget. Shifting it back by the growth and releasing that offset turns the
+ * jump into a short glide, which is what makes a roll-up feel continuous.
+ */
+function useRollupGlide(
+  innerRef: RefObject<HTMLSpanElement | null>,
+  innerHeight: number,
+): void {
+  const previousHeightRef = useRef(0);
+  useEffect(() => {
+    const inner = innerRef.current;
+    const previous = previousHeightRef.current;
+    previousHeightRef.current = innerHeight;
+    if (inner === null || previous === 0 || innerHeight === previous) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const shift = previous - innerHeight;
+    inner.style.transition = "none";
+    inner.style.transform = `translateY(${shift}px)`;
+    void inner.offsetHeight;
+    inner.style.transition = "transform 180ms ease-out";
+    inner.style.transform = "translateY(0)";
+  }, [innerRef, innerHeight]);
 }
 
 function blockOpacity(distance: number): number {
