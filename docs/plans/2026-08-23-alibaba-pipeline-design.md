@@ -42,6 +42,24 @@ Server finals remain authoritative:
 - source and translation are committed together as one atomic
   `SubtitleFinalPair`, so history never observes a half-pair.
 
+The low-latency live-translate pipeline does not pair recognition and
+translation finals by arrival order: `conversation.item.created.previous_item_id`
+links a translation response item to the source item it answers, and both
+streams carry that item id. Drafts stay replaceable previews and are forwarded
+without waiting; durable history is committed only once the matched source and
+translation finals are available, an empty translation final never consumes
+another source utterance, and identity state is generation-local and bounded.
+When a new source starts, an older source without its translation stays pending
+for a late response. At most 64 source and 64 response identities are retained;
+older unmatched items are discarded without falling back to arrival-order
+pairing. This bounds long sessions even when the provider omits recognition
+events. Preview snapshots expose that identity as a normalized `utteranceId` on
+both lines — always the source item — and bilingual live rows combine only when
+both lines carry the same identity or neither carries one.
+The captured session in `docs/demos/english-film/response.json` completes the
+translation first for seven of eight utterances (source first once, +36 ms to
++127 ms apart), which is why arrival order cannot identify an utterance.
+
 The serial final-translation queue contains only authoritative server finals
 and an explicit session-finish fallback. It has a hard capacity and maximum
 request age. Crossing either bound emits one content-free recoverable overload
