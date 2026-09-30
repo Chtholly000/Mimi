@@ -606,6 +606,19 @@ impl SessionManager {
         }
     }
 
+    pub fn windows_audio_status(
+        &self,
+    ) -> Result<Option<crate::audio::AudioSourceSnapshot>, String> {
+        #[cfg(target_os = "windows")]
+        {
+            self.audio.lock().unwrap().snapshot().map(Some)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Ok(None)
+        }
+    }
+
     pub fn is_paused(&self) -> bool {
         self.is_paused.load(Ordering::SeqCst)
     }
@@ -940,6 +953,8 @@ impl SessionManager {
                     "System audio capture is already assigned to a session.".to_string()
                 })?;
             let capture = self.audio.lock().unwrap().clone();
+            #[cfg(target_os = "windows")]
+            capture.set_source(self.settings.preferences().windows_audio_source);
             match self
                 .run_while_generation_current(
                     generation,

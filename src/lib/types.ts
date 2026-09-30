@@ -74,6 +74,7 @@ export interface SettingsSnapshot {
   uiLanguage: UiLanguage | null;
   retainSessionHistory: boolean;
   recordSessionAudio: boolean;
+  windowsAudioSource: string;
 }
 
 export type UiLanguage = "system" | "zh" | "en" | "ja";
@@ -95,6 +96,7 @@ export interface SettingsDraft {
   uiLanguage?: UiLanguage;
   retainSessionHistory?: boolean;
   recordSessionAudio?: boolean;
+  windowsAudioSource?: string;
 }
 
 export type ServiceProvider =

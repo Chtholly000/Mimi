@@ -1,3 +1,4 @@
+import { audioSourceErrorMessage } from "./windowsAudioSource";
 import { credentialErrorMessage } from "./connectionDiagnostics";
 /**
  * Global zustand store. In Tauri it forwards every action to the Rust backend
@@ -98,6 +99,7 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   uiLanguage: null,
   retainSessionHistory: false,
   recordSessionAudio: false,
+  windowsAudioSource: "",
 };
 
 interface StoreState {
@@ -149,7 +151,7 @@ export function selectSessionStatusKind(state: SessionStoreSlice) {
 
 export function selectSessionErrorMessage(state: SessionStoreSlice) {
   return state.session.status.kind === "error"
-    ? credentialErrorMessage(state.session.status.message) ?? state.session.status.message
+    ? credentialErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? state.session.status.message
     : null;
 }
 

@@ -26,6 +26,7 @@ import { subtitleColorHex } from "../../lib/subtitleColor";
 import type { SubtitleDisplayMode } from "../../lib/types";
 import { SubtitleColorControl } from "./SubtitleColorControl";
 import { ServiceProfiles } from "./ServiceProfiles";
+import { WindowsAudioSource } from "./WindowsAudioSource";
 import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
 import { useSettingsTheme } from "./useSettingsTheme";
@@ -316,6 +317,7 @@ export function SettingsView() {
                   title={I18N.settings.subtitleTitle}
                   hideHeading
                 >
+                  <WindowsAudioSource />
                   <div
                     className="subtitle-preview"
                     data-immersive={settings.subtitleBlendsWithBackground}

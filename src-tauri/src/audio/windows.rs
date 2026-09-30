@@ -9,15 +9,22 @@ use crate::audio::streaming_resampler::StreamingPcm16Resampler;
 use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureError, SystemAudioCaptureFailure,
 };
+use crate::core::audio_source::{source_action, SourceAction};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub struct WindowsSystemAudioCapture {
     stream: Arc<Mutex<StreamSlot<cpal::Stream>>>,
     active: Arc<AtomicBool>,
+    control: Arc<Mutex<()>>,
+    generation: Arc<AtomicU64>,
+    source: Arc<Mutex<String>>,
+    current_device: Arc<Mutex<Option<String>>>,
+    last_sound: Arc<Mutex<Option<Instant>>>,
 }
 
 enum StreamSlotState<S> {
@@ -43,6 +50,7 @@ impl<S> Default for StreamSlot<S> {
 struct WindowsAudioProcessor {
     resampler: StreamingPcm16Resampler,
     normalized_samples: Vec<f32>,
+    last_sound: Arc<Mutex<Option<Instant>>>,
 }
 
 struct WindowsStreamContext {
@@ -57,6 +65,11 @@ impl WindowsSystemAudioCapture {
         Self {
             stream: Arc::new(Mutex::new(StreamSlot::default())),
             active: Arc::new(AtomicBool::new(false)),
+            control: Arc::new(Mutex::new(())),
+            generation: Arc::new(AtomicU64::new(0)),
+            source: Arc::new(Mutex::new(String::new())),
+            current_device: Arc::new(Mutex::new(None)),
+            last_sound: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -66,24 +79,117 @@ impl WindowsSystemAudioCapture {
         failure_tx: CaptureFailureSender,
         format: AudioCaptureFormat,
     ) -> Result<(), SystemAudioCaptureError> {
+        let _control = self.control.lock().unwrap();
+        let source = self.source.lock().unwrap().clone();
+        let device = resolve_output(&source)?;
+        self.install_device(&device, audio_ingress.clone(), failure_tx.clone(), format)?;
+        let generation = self
+            .generation
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        let capture = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                let _control = capture.control.lock().unwrap();
+                let generation_current = capture.generation.load(Ordering::SeqCst) == generation;
+                if !generation_current || failure_tx.has_reported() {
+                    break;
+                }
+                let device = resolve_output(&source).ok();
+                let id = device
+                    .as_ref()
+                    .and_then(|device| device.id().ok())
+                    .map(|id| id.to_string());
+                let bound = capture.current_device.lock().unwrap().clone();
+                match source_action(generation_current, bound.as_deref(), id.as_deref()) {
+                    SourceAction::StopMonitor => break,
+                    SourceAction::Keep => {}
+                    SourceAction::Unavailable => {
+                        stop_stream(&capture.stream, &capture.active);
+                        *capture.current_device.lock().unwrap() = None;
+                        failure_tx.report(SystemAudioCaptureFailure::NativeStopped);
+                        break;
+                    }
+                    SourceAction::Rebind => {
+                        stop_stream(&capture.stream, &capture.active);
+                        if capture
+                            .install_device(
+                                &device.unwrap(),
+                                audio_ingress.clone(),
+                                failure_tx.clone(),
+                                format,
+                            )
+                            .is_err()
+                        {
+                            *capture.current_device.lock().unwrap() = None;
+                            failure_tx.report(SystemAudioCaptureFailure::NativeStopped);
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
+    pub fn set_source(&self, source: String) {
+        *self.source.lock().unwrap() = source;
+    }
+
+    pub fn snapshot(&self) -> Result<crate::audio::AudioSourceSnapshot, String> {
+        let devices = cpal::default_host()
+            .output_devices()
+            .map_err(|_| "Sound outputs could not be loaded.".to_string())?
+            .filter_map(|device| {
+                Some(crate::audio::AudioSourceDevice {
+                    id: device.id().ok()?.to_string(),
+                    name: device.description().ok()?.name().to_string(),
+                })
+            })
+            .collect();
+        Ok(crate::audio::AudioSourceSnapshot {
+            devices,
+            current_device: self.current_device.lock().unwrap().clone(),
+            receiving_sound: self.active.load(Ordering::SeqCst)
+                && self
+                    .last_sound
+                    .lock()
+                    .unwrap()
+                    .is_some_and(|time| time.elapsed() < Duration::from_secs(2)),
+        })
+    }
+
+    fn install_device(
+        &self,
+        device: &cpal::Device,
+        ingress: AudioIngress,
+        failure: CaptureFailureSender,
+        format: AudioCaptureFormat,
+    ) -> Result<(), SystemAudioCaptureError> {
+        let id = device
+            .id()
+            .map_err(|_| SystemAudioCaptureError::NativeStartFailed)?
+            .to_string();
+        *self.last_sound.lock().unwrap() = None;
         build_install_and_play_stream(
             &self.stream,
             &self.active,
             || {
-                let host = cpal::default_host();
-                let output_device = host
-                    .default_output_device()
-                    .ok_or(SystemAudioCaptureError::NoPlaybackDevice)?;
                 build_stream_on_output_device(
-                    &output_device,
-                    audio_ingress,
-                    failure_tx,
+                    device,
+                    ingress,
+                    failure,
                     format,
                     Arc::clone(&self.active),
+                    Arc::clone(&self.last_sound),
                 )
             },
             |stream| stream.play().map_err(|_| ()),
-        )
+        )?;
+        *self.current_device.lock().unwrap() = Some(id);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -104,6 +210,7 @@ impl WindowsSystemAudioCapture {
                     failure_tx,
                     format,
                     Arc::clone(&self.active),
+                    Arc::clone(&self.last_sound),
                 )
             },
             |stream| stream.play().map_err(|_| ()),
@@ -111,7 +218,11 @@ impl WindowsSystemAudioCapture {
     }
 
     pub async fn stop(&self) {
+        let _control = self.control.lock().unwrap();
+        self.generation.fetch_add(1, Ordering::SeqCst);
         stop_stream(&self.stream, &self.active);
+        *self.current_device.lock().unwrap() = None;
+        *self.last_sound.lock().unwrap() = None;
     }
 }
 
@@ -121,6 +232,7 @@ fn build_stream_on_output_device(
     failure_tx: CaptureFailureSender,
     format: AudioCaptureFormat,
     active: Arc<AtomicBool>,
+    last_sound: Arc<Mutex<Option<Instant>>>,
 ) -> Result<cpal::Stream, SystemAudioCaptureError> {
     // CPAL enables WASAPI loopback when an input stream is built on an
     // output device. Its configuration must still come from that output
@@ -141,6 +253,7 @@ fn build_stream_on_output_device(
     let processor = Arc::new(Mutex::new(WindowsAudioProcessor {
         resampler: StreamingPcm16Resampler::new(sample_rate, format.sample_rate_hz, channel_count)?,
         normalized_samples: Vec::new(),
+        last_sound,
     }));
     let stream_context = WindowsStreamContext {
         active,
@@ -411,6 +524,7 @@ fn process_frames_f32(
         failure_tx.report(SystemAudioCaptureFailure::AudioProcessingFailed);
         return;
     };
+    observe_sound(data, &processor.last_sound);
     let Ok(buffers) = processor.resampler.push_interleaved(data) else {
         failure_tx.report(SystemAudioCaptureFailure::AudioProcessingFailed);
         return;
@@ -469,8 +583,10 @@ fn process_converted_frames<T>(
     let WindowsAudioProcessor {
         resampler,
         normalized_samples,
+        last_sound,
     } = &mut *processor;
     normalize(data, normalized_samples);
+    observe_sound(normalized_samples, last_sound);
     let buffers = resampler.push_interleaved(normalized_samples);
     // Keep the reusable allocation, but do not retain a logical copy of the
     // most recent system-audio callback after it enters the PCM pipeline.
@@ -1132,5 +1248,48 @@ mod tests {
         drop(tone_stream);
         capture.stop().await;
         pipeline.stop();
+    }
+}
+
+fn resolve_output(source: &str) -> Result<cpal::Device, SystemAudioCaptureError> {
+    let host = cpal::default_host();
+    let selected = if source.is_empty() {
+        host.default_output_device()
+            .and_then(|device| device.id().ok())
+            .map(|id| id.to_string())
+            .ok_or(SystemAudioCaptureError::NoPlaybackDevice)?
+    } else {
+        source.to_string()
+    };
+    // Resolve to a specific render endpoint even for Follow system. CPAL's
+    // default-device handle is dynamic and emits DeviceChanged errors itself;
+    // our generation-scoped monitor owns rebinding instead. Enumerating only
+    // render endpoints also rejects persisted microphone IDs.
+    host.output_devices()
+        .map_err(|_| SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)?
+        .find(|device| device.id().is_ok_and(|id| id.to_string() == selected))
+        .ok_or(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)
+}
+
+fn observe_sound(samples: &[f32], last_sound: &Mutex<Option<Instant>>) {
+    if samples
+        .iter()
+        .any(|sample| sample.is_finite() && sample.abs() > 0.001)
+    {
+        *last_sound.lock().unwrap() = Some(Instant::now());
+    }
+}
+
+#[cfg(test)]
+mod source_activity_tests {
+    use super::*;
+
+    #[test]
+    fn silence_and_non_finite_samples_do_not_claim_sound() {
+        let last_sound = Mutex::new(None);
+        observe_sound(&[0.0, 0.0001, f32::NAN, f32::INFINITY], &last_sound);
+        assert!(last_sound.lock().unwrap().is_none());
+        observe_sound(&[-0.02], &last_sound);
+        assert!(last_sound.lock().unwrap().is_some());
     }
 }

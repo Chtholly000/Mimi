@@ -29,6 +29,7 @@ const SETTINGS: SettingsSnapshot = {
   uiLanguage: null,
   retainSessionHistory: false,
   recordSessionAudio: false,
+  windowsAudioSource: "",
 };
 
 describe("mergeSettingsSnapshot", () => {

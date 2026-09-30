@@ -82,6 +82,7 @@ pub struct SettingsSnapshotPayload {
     pub ui_language: Option<String>,
     pub retain_session_history: bool,
     pub record_session_audio: bool,
+    pub windows_audio_source: String,
 }
 
 #[cfg(test)]
@@ -200,6 +201,7 @@ mod tests {
             ui_language: None,
             retain_session_history: false,
             record_session_audio: false,
+            windows_audio_source: String::new(),
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["activeProfileId"], "alibaba-default");
@@ -236,6 +238,18 @@ mod tests {
                 assert!(ensure_settings_draft_allowed(&draft, true).is_err());
                 assert!(ensure_settings_draft_allowed(&draft, false).is_ok());
             }
+        }
+    }
+
+    #[test]
+    fn audio_source_changes_require_stop_even_when_resetting_to_system() {
+        for source in ["wasapi:headphones", ""] {
+            let draft = SettingsDraft {
+                windows_audio_source: Some(source.into()),
+                ..Default::default()
+            };
+            assert!(ensure_settings_draft_allowed(&draft, true).is_err());
+            assert!(ensure_settings_draft_allowed(&draft, false).is_ok());
         }
     }
 
@@ -326,6 +340,7 @@ impl SettingsSnapshotPayload {
                     ui_language: prefs.ui_language,
                     retain_session_history: prefs.retain_session_history,
                     record_session_audio: prefs.record_session_audio,
+                    windows_audio_source: prefs.windows_audio_source,
                 }
             }
         }
@@ -352,6 +367,7 @@ impl SettingsSnapshotPayload {
             ui_language: prefs.ui_language,
             retain_session_history: prefs.retain_session_history,
             record_session_audio: prefs.record_session_audio,
+            windows_audio_source: prefs.windows_audio_source,
         })
     }
 }
@@ -371,6 +387,7 @@ pub struct SettingsDraft {
     pub ui_language: Option<String>,
     pub retain_session_history: Option<bool>,
     pub record_session_audio: Option<bool>,
+    pub windows_audio_source: Option<String>,
 }
 
 /// Reads public settings and per-profile credential presence. API-key values
@@ -460,10 +477,12 @@ pub async fn settings_save(
     state: State<'_, AppState>,
     draft: SettingsDraft,
 ) -> Result<SettingsSnapshotPayload, String> {
-    if (draft.retain_session_history.is_some() || draft.record_session_audio.is_some())
+    if (draft.retain_session_history.is_some()
+        || draft.record_session_audio.is_some()
+        || draft.windows_audio_source.is_some())
         && window.label() != "settings"
     {
-        return Err("Export preferences can only be changed in settings.".into());
+        return Err("Export and sound-source preferences can only be changed in settings.".into());
     }
     apply_settings_draft(&app, &state, draft).await
 }
@@ -477,7 +496,8 @@ async fn apply_settings_draft(
         || draft.target_language.is_some()
         || draft.translation_mode.is_some()
         || draft.retain_session_history.is_some()
-        || draft.record_session_audio.is_some();
+        || draft.record_session_audio.is_some()
+        || draft.windows_audio_source.is_some();
     let _lifecycle = state
         .session
         .settings_mutation_guard(changes_listening_settings)
@@ -507,7 +527,8 @@ fn apply_settings_draft_guarded(
         || draft.is_overlay_locked.is_some()
         || draft.ui_language.is_some()
         || draft.retain_session_history.is_some()
-        || draft.record_session_audio.is_some();
+        || draft.record_session_audio.is_some()
+        || draft.windows_audio_source.is_some();
     if !needs_save {
         return SettingsSnapshotPayload::try_from_store(&state.settings);
     }
@@ -526,6 +547,9 @@ fn apply_settings_draft_guarded(
             }
             if let Some(enabled) = draft.retain_session_history {
                 prefs.retain_session_history = enabled;
+            }
+            if let Some(source) = draft.windows_audio_source {
+                prefs.windows_audio_source = source;
             }
             if let Some(enabled) = draft.record_session_audio {
                 prefs.record_session_audio = enabled;
@@ -636,7 +660,8 @@ fn ensure_settings_draft_allowed(draft: &SettingsDraft, is_active: bool) -> Resu
             || draft.target_language.is_some()
             || draft.translation_mode.is_some()
             || draft.retain_session_history.is_some()
-            || draft.record_session_audio.is_some())
+            || draft.record_session_audio.is_some()
+            || draft.windows_audio_source.is_some())
     {
         Err(
             "Listening settings cannot be changed through settings while a session is active."
@@ -1049,4 +1074,11 @@ pub async fn profile_test_connection(
         Err(_) => "unreachable",
     };
     Ok(serde_json::json!({"credential": storage, "network": network}))
+}
+
+#[tauri::command]
+pub async fn windows_audio_status(
+    state: State<'_, AppState>,
+) -> Result<Option<crate::audio::AudioSourceSnapshot>, String> {
+    state.session.windows_audio_status()
 }

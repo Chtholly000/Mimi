@@ -14,3 +14,6 @@ pub mod provider;
 pub mod session;
 pub mod session_archive;
 pub mod subtitle_reducer;
+
+#[cfg(any(target_os = "windows", test))]
+pub mod audio_source;

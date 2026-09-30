@@ -18,6 +18,21 @@ pub mod linux;
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub mod unsupported;
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSourceDevice {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSourceSnapshot {
+    pub devices: Vec<AudioSourceDevice>,
+    pub current_device: Option<String>,
+    pub receiving_sound: bool,
+}
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -46,6 +61,9 @@ pub enum SystemAudioCaptureError {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[error("The previous system audio capture is still stopping.")]
     PreviousCaptureStopping,
+    #[cfg(target_os = "windows")]
+    #[error("The selected sound output is unavailable. Stop subtitles and choose another sound source in Settings.")]
+    SelectedPlaybackDeviceUnavailable,
     #[error("System audio capture could not be started.")]
     NativeStartFailed,
     #[cfg(any(target_os = "macos", target_os = "windows", test))]
