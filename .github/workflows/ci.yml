@@ -150,6 +150,9 @@ jobs:
       - name: Test
         run: npm run test
 
+      - name: Test AppImage permission regression
+        run: python3 scripts/check-appimage-permissions-test.py
+
       - name: Verify updater platform mapping
         run: node --test scripts/updater-manifest.node.mjs
 
@@ -199,7 +202,7 @@ jobs:
 
       - name: Build Linux packages
         if: runner.os == 'Linux'
-        run: npm run tauri -- build --config src-tauri/tauri.ci.conf.json -- --locked
+        run: ./scripts/build-linux-packages.sh --config src-tauri/tauri.ci.conf.json
 
       - name: Install and smoke-test Linux packages
         if: runner.os == 'Linux'
@@ -533,7 +536,7 @@ jobs:
         run: rm -rf src-tauri/target/release/bundle/deb src-tauri/target/release/bundle/appimage
 
       - name: Build signed Linux packages
-        run: npm run tauri -- build -- --locked
+        run: ./scripts/build-linux-packages.sh
 
       - name: Verify, install, and smoke-test signed Linux packages
         run: ./scripts/verify-linux-bundles.sh "$(node -p 'require("./package.json").version')" --signed
