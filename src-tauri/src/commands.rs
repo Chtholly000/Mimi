@@ -149,6 +149,7 @@ mod tests {
         for command in [
             "profile_test_connection",
             "windows_audio_status",
+            "audio_census",
             "support_diagnostics",
             "app_open_support_issue",
         ] {
@@ -1152,6 +1153,13 @@ pub async fn windows_audio_status(
     state: State<'_, AppState>,
 ) -> Result<Option<crate::audio::AudioSourceSnapshot>, String> {
     state.session.windows_audio_status()
+}
+
+/// Read-only audio census: render endpoints with levels, plus the application
+/// sessions currently attached to them. Never cached; callers poll.
+#[tauri::command]
+pub async fn audio_census() -> crate::audio::census::AudioCensus {
+    crate::audio::census::census()
 }
 
 #[tauri::command]

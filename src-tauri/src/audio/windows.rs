@@ -9,7 +9,10 @@ use crate::audio::streaming_resampler::StreamingPcm16Resampler;
 use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureError, SystemAudioCaptureFailure,
 };
-use crate::core::audio_source::{source_action, AudioActivity, SourceAction};
+use crate::core::audio_source::{
+    parse_default_role, source_action, AudioActivity, DefaultRole, FollowAudible, FollowDecision,
+    SourceAction,
+};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -23,6 +26,7 @@ pub struct WindowsSystemAudioCapture {
     control: Arc<Mutex<()>>,
     generation: Arc<AtomicU64>,
     source: Arc<Mutex<String>>,
+    follow: Arc<Mutex<FollowAudible>>,
     current_device: Arc<Mutex<Option<String>>>,
     activity: Arc<Mutex<AudioActivity>>,
 }
@@ -68,6 +72,7 @@ impl WindowsSystemAudioCapture {
             control: Arc::new(Mutex::new(())),
             generation: Arc::new(AtomicU64::new(0)),
             source: Arc::new(Mutex::new(String::new())),
+            follow: Arc::new(Mutex::new(FollowAudible::default())),
             current_device: Arc::new(Mutex::new(None)),
             activity: Arc::new(Mutex::new(AudioActivity::default())),
         }
@@ -80,7 +85,7 @@ impl WindowsSystemAudioCapture {
         format: AudioCaptureFormat,
     ) -> Result<(), SystemAudioCaptureError> {
         let source = self.source.lock().unwrap().clone();
-        let device = resolve_output(&source)?;
+        let device = resolve_capture_source(&source, &self.follow)?;
         let generation = self.install_device(
             &device,
             audio_ingress.clone(),
@@ -98,7 +103,7 @@ impl WindowsSystemAudioCapture {
                 if !generation_current || failure_tx.has_reported() {
                     break;
                 }
-                let device = resolve_output(&source).ok();
+                let device = resolve_capture_source(&source, &capture.follow).ok();
                 let id = device
                     .as_ref()
                     .and_then(|device| device.id().ok())
@@ -685,10 +690,26 @@ fn resolve_output(source: &str) -> Result<cpal::Device, SystemAudioCaptureError>
             .and_then(|device| device.id().ok())
             .map(|id| id.to_string())
             .ok_or(SystemAudioCaptureError::NoPlaybackDevice)?
+    } else if let Some(role) = parse_default_role(source) {
+        // CPAL always asks Windows for the *console* default endpoint, but a
+        // call headset is usually the *communications* default while media
+        // keeps playing to the speakers. Resolve the requested role ourselves
+        // and fall back to the console default when it cannot be resolved.
+        // Match the role endpoint against CPAL's devices by the *backend* id
+        // string (`IMMDevice::GetId`), which is the same value on both sides;
+        // the `Display` form adds a host prefix and would never compare equal.
+        let matched = default_endpoint_id(role).and_then(|wanted| {
+            host.output_devices()
+                .ok()?
+                .find(|device| device.id().is_ok_and(|id| id.id() == wanted))
+        });
+        return matched
+            .or_else(|| host.default_output_device())
+            .ok_or(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable);
     } else {
         source.to_string()
     };
-    // Resolve to a specific render endpoint even for Follow system. CPAL's
+    // Resolve to a specific render endpoint for persisted ids. CPAL's
     // default-device handle is dynamic and emits DeviceChanged errors itself;
     // our generation-scoped monitor owns rebinding instead. Enumerating only
     // render endpoints also rejects persisted microphone IDs.
@@ -698,10 +719,125 @@ fn resolve_output(source: &str) -> Result<cpal::Device, SystemAudioCaptureError>
         .ok_or(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)
 }
 
+/// The sentinel for "capture whichever render endpoint is currently audible".
+pub const FOLLOW_AUDIBLE: &str = "follow:audible";
+
+/// Resolves a persisted source value into a device. The audible sentinel
+/// consults the census and the shared follow policy, and falls back to the
+/// console default while nothing is audible, so it never reports the source as
+/// unavailable just because the room went quiet.
+fn resolve_capture_source(
+    source: &str,
+    follow: &Mutex<FollowAudible>,
+) -> Result<cpal::Device, SystemAudioCaptureError> {
+    if source != FOLLOW_AUDIBLE {
+        return resolve_output(source);
+    }
+    let census = crate::audio::census::census();
+    let candidates: Vec<(String, f32)> = census
+        .endpoints
+        .iter()
+        .map(|endpoint| (endpoint.id.clone(), endpoint.level))
+        .collect();
+    let chosen = {
+        let mut state = follow.lock().unwrap();
+        match state.decide(&candidates) {
+            FollowDecision::SwitchTo(id) => Some(id),
+            FollowDecision::Keep => state.bound().map(str::to_string),
+            FollowDecision::NothingAudible => None,
+        }
+    };
+    match chosen {
+        Some(id) => resolve_output(&id).or_else(|_| resolve_output("")),
+        None => resolve_output(""),
+    }
+}
+
+/// Windows' default render endpoint for the requested role, by endpoint id.
+fn default_endpoint_id(role: DefaultRole) -> Option<String> {
+    with_com(|| unsafe {
+        use windows::Win32::Media::Audio::{
+            eCommunications, eConsole, eMultimedia, eRender, IMMDeviceEnumerator,
+            MMDeviceEnumerator,
+        };
+        use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+        let role = match role {
+            DefaultRole::Console => eConsole,
+            DefaultRole::Multimedia => eMultimedia,
+            DefaultRole::Communications => eCommunications,
+        };
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+        let device = enumerator.GetDefaultAudioEndpoint(eRender, role).ok()?;
+        let id = device.GetId().ok()?;
+        id.to_string().ok()
+    })
+}
+
+/// COM must be initialized on the calling thread before any of these calls; the
+/// capture monitor runs on its own task thread, so initialize lazily per thread
+/// (a mismatched apartment is fine for device enumeration and is reported as
+/// `RPC_E_CHANGED_MODE`, which we ignore).
+pub(crate) fn with_com<R>(run: impl FnOnce() -> R) -> R {
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+    thread_local! {
+        static COM_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    COM_READY.with(|ready| {
+        if !ready.get() {
+            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            ready.set(true);
+        }
+    });
+    run()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::audio::send_pipeline::AudioSendPipeline;
+
+    /// The backend (WASAPI) id string, comparable with `IMMDevice::GetId`.
+    fn endpoint_id(device: &cpal::Device) -> Option<String> {
+        device.id().ok().map(|id| id.id().to_string())
+    }
+
+    #[test]
+    fn role_sources_resolve_to_a_render_endpoint_or_report_unavailable() {
+        // A real machine resolves each role; a headless CI machine may have no
+        // render endpoints at all, which must surface as an error, not a panic.
+        for source in ["role:communications", "role:multimedia", "role:console"] {
+            match resolve_output(source) {
+                Ok(device) => assert!(endpoint_id(&device).is_some()),
+                Err(SystemAudioCaptureError::NoPlaybackDevice)
+                | Err(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable) => {}
+                Err(other) => panic!("unexpected error for {source}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn audible_source_resolves_or_falls_back_without_panicking() {
+        let follow = Mutex::new(FollowAudible::default());
+        match resolve_capture_source(FOLLOW_AUDIBLE, &follow) {
+            Ok(device) => assert!(endpoint_id(&device).is_some()),
+            Err(SystemAudioCaptureError::NoPlaybackDevice)
+            | Err(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable) => {}
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn console_role_matches_the_cpal_default_device() {
+        // The role resolver must agree with CPAL for the role CPAL itself asks
+        // for, otherwise "follow system" and "follow console" would capture
+        // different endpoints on the same machine.
+        let (Ok(role), Ok(cpal_default)) = (resolve_output("role:console"), resolve_output(""))
+        else {
+            return; // headless machine without render endpoints
+        };
+        assert_eq!(endpoint_id(&role), endpoint_id(&cpal_default));
+    }
     use std::mem::size_of;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Barrier;
