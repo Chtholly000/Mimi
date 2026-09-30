@@ -361,6 +361,7 @@ pub struct SettingsStore {
     /// reads for the selected profile, and restart retries all failed reads.
     secret_cache: Mutex<HashMap<SecretCacheKey, Result<Option<String>, SecretStoreError>>>,
     is_ui_test: bool,
+    ui_test_preferences_writable: bool,
 }
 
 impl SettingsStore {
@@ -391,6 +392,10 @@ impl SettingsStore {
         profile_keychain_service: &'static str,
         migrate_legacy_alibaba: bool,
     ) -> Self {
+        if is_ui_test {
+            // UI fixtures never inspect the user's preferences, catalog or keychain.
+            return Self::in_memory_with_scope(secret, true, profile_keychain_service, false);
+        }
         let prefs_path = app_config_dir.join("preferences.json");
         let prefs = std::fs::read_to_string(&prefs_path)
             .ok()
@@ -434,6 +439,7 @@ impl SettingsStore {
             migrate_legacy_alibaba,
             secret_cache: Mutex::new(HashMap::new()),
             is_ui_test,
+            ui_test_preferences_writable: false,
         };
         if should_create_catalog && !is_ui_test && store.persist_catalog().is_err() {
             tracing::warn!("service profile catalog unavailable label=create_failed");
@@ -458,7 +464,6 @@ impl SettingsStore {
         Self::in_memory_with_scope(secret, is_ui_test, PROFILE_KEYCHAIN_SERVICE, true)
     }
 
-    #[cfg(test)]
     fn in_memory_with_scope(
         secret: Box<dyn SecretStore>,
         is_ui_test: bool,
@@ -476,7 +481,64 @@ impl SettingsStore {
             migrate_legacy_alibaba,
             secret_cache: Mutex::new(HashMap::new()),
             is_ui_test,
+            ui_test_preferences_writable: false,
         }
+    }
+
+    /// Explicit restart-test opt-in. Only non-secret preferences in an existing,
+    /// private temporary fixture directory may persist. Profiles remain in memory.
+    pub fn load_ui_test_preferences(directory: PathBuf) -> Result<Self, String> {
+        let reject =
+            || "UI-test preferences require a private temporary fixture directory".to_string();
+        let metadata = std::fs::symlink_metadata(&directory).map_err(|_| reject())?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            return Err(reject());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return Err(reject());
+            }
+        }
+        let directory = directory.canonicalize().map_err(|_| reject())?;
+        let temporary = std::env::temp_dir().canonicalize().map_err(|_| reject())?;
+        if !directory.starts_with(temporary)
+            || !directory
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("mimi-ui-test-"))
+        {
+            return Err(reject());
+        }
+        let prefs_path = directory.join("preferences.json");
+        let prefs = match std::fs::symlink_metadata(&prefs_path) {
+            Ok(metadata) => {
+                if !metadata.is_file()
+                    || metadata.file_type().is_symlink()
+                    || metadata.len() > 65536
+                {
+                    return Err(reject());
+                }
+                let bytes = std::fs::read(&prefs_path).map_err(|_| reject())?;
+                serde_json::from_slice::<Preferences>(&bytes).map_err(|_| reject())?
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Preferences::default(),
+            Err(_) => return Err(reject()),
+        };
+        let mut store = Self::in_memory_with_scope(
+            Box::new(KeyringSecretStore),
+            true,
+            DEVELOPMENT_PROFILE_KEYCHAIN_SERVICE,
+            false,
+        );
+        store.prefs_path = prefs_path;
+        store.ui_test_preferences_writable = true;
+        let font_size = prefs
+            .font_size
+            .clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end());
+        *store.prefs.lock().unwrap() = Preferences { font_size, ..prefs };
+        Ok(store)
     }
 
     #[cfg(test)]
@@ -1103,7 +1165,9 @@ impl SettingsStore {
     }
 
     fn persist_preferences_value(&self, prefs: &Preferences) -> Result<(), String> {
-        if self.is_ui_test || self.prefs_path.as_os_str().is_empty() {
+        if (self.is_ui_test && !self.ui_test_preferences_writable)
+            || self.prefs_path.as_os_str().is_empty()
+        {
             return Ok(());
         }
         let bytes =
@@ -2340,6 +2404,95 @@ mod tests {
         }
         store.delete_api_key(&profile.id).unwrap();
         assert_eq!(store.credential_state(&profile), CredentialState::Missing);
+    }
+
+    fn private_ui_fixture() -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("mimi-ui-test-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        directory
+    }
+
+    #[test]
+    fn ordinary_ui_test_does_not_read_or_write_existing_user_config() {
+        let directory = private_ui_fixture();
+        let preferences = directory.join("preferences.json");
+        let catalog = directory.join(PROFILE_CATALOG_FILE);
+        std::fs::write(&preferences, br#"{"pulse_style":"ribbon","font_size":20}"#).unwrap();
+        std::fs::write(&catalog, b"existing fixture catalog").unwrap();
+        let store =
+            SettingsStore::load(directory.clone(), true, DEVELOPMENT_APPLICATION_IDENTIFIER);
+        assert_eq!(store.preferences(), Preferences::default());
+        store
+            .save_preferences(|preferences| preferences.pulse_style = PulseStyle::Syllable)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(&preferences).unwrap(),
+            br#"{"pulse_style":"ribbon","font_size":20}"#
+        );
+        assert_eq!(
+            std::fs::read(&catalog).unwrap(),
+            b"existing fixture catalog"
+        );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn explicit_ui_fixture_restarts_non_secret_preferences_only() {
+        let directory = private_ui_fixture();
+        let store = SettingsStore::load_ui_test_preferences(directory.clone()).unwrap();
+        store
+            .save_preferences(|preferences| {
+                preferences.pulse_style = PulseStyle::Ribbon;
+                preferences.pulse_animation = Some(false);
+                preferences.subtitle_animation = Some(true);
+                preferences.ui_language = Some("ja".into());
+                preferences.windows_audio_source = "safe-fixture-endpoint".into();
+            })
+            .unwrap();
+        store
+            .create_profile(ProviderKind::OpenAIRealtime, "Synthetic fixture")
+            .unwrap();
+        let expected = store.preferences();
+        drop(store);
+        let restarted = SettingsStore::load_ui_test_preferences(directory.clone()).unwrap();
+        assert_eq!(restarted.preferences(), expected);
+        assert!(restarted.is_ui_test());
+        assert_eq!(restarted.profile_catalog().unwrap().1.len(), 1);
+        assert!(!directory.join(PROFILE_CATALOG_FILE).exists());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn explicit_ui_fixture_rejects_unbounded_or_invalid_preferences() {
+        let directory = private_ui_fixture();
+        let path = directory.join("preferences.json");
+        std::fs::write(&path, vec![b' '; 65537]).unwrap();
+        assert!(SettingsStore::load_ui_test_preferences(directory.clone()).is_err());
+        std::fs::write(&path, b"invalid").unwrap();
+        assert!(SettingsStore::load_ui_test_preferences(directory.clone()).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_ui_fixture_rejects_symlinks_and_shared_directories() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let directory = private_ui_fixture();
+        let path = directory.join("preferences.json");
+        let target = directory.join("fixture.json");
+        std::fs::write(&target, b"{}").unwrap();
+        symlink(&target, &path).unwrap();
+        assert!(SettingsStore::load_ui_test_preferences(directory.clone()).is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(SettingsStore::load_ui_test_preferences(directory.clone()).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

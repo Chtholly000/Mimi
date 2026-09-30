@@ -112,11 +112,18 @@ pub fn run() {
                     let _ = window.set_title("mimi UI test settings");
                 }
             }
-            let settings = Arc::new(SettingsStore::load(
-                app.path().app_config_dir().unwrap_or_default(),
-                is_ui_test,
-                &app.config().identifier,
-            ));
+            let settings = Arc::new(if is_ui_test {
+                match std::env::var_os("MIMI_UI_TEST_PREFERENCES_DIR") {
+                    Some(directory) => SettingsStore::load_ui_test_preferences(directory.into())?,
+                    None => SettingsStore::load(Default::default(), true, &app.config().identifier),
+                }
+            } else {
+                SettingsStore::load(
+                    app.path().app_config_dir().unwrap_or_default(),
+                    false,
+                    &app.config().identifier,
+                )
+            });
             // A deterministic standard-overlay fixture is useful for native
             // window-level checks. It changes only the in-memory UI-test
             // snapshot; `SettingsStore` never persists UI-test writes.
