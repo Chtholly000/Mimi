@@ -302,7 +302,7 @@ export function SettingsView() {
               {I18N.settings.sessionActionFailed}
             </p>
           )}
-          <SupportDiagnostics />
+          <SupportDiagnostics key={activeCategory} />
         </section>
       </aside>
       <div className="settings-console__scroll" ref={contentScrollRef}>
