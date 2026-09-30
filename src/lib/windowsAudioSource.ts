@@ -4,6 +4,8 @@ import { effectiveUiLanguage } from "./i18n";
 export const FOLLOW_SYSTEM = "";
 export const ROLE_COMMUNICATIONS = "role:communications";
 export const ROLE_MULTIMEDIA = "role:multimedia";
+/** Capture whichever device is currently producing sound. */
+export const FOLLOW_AUDIBLE = "follow:audible";
 
 /** True for the follow-system family (never a concrete endpoint id). */
 export function isRoleSource(value: string): boolean {
@@ -27,6 +29,7 @@ const copy = {
     title: "Sound source", system: "Follow system", unavailable: "Unavailable output",
     communications: "Follow the communications device (call headset)",
     multimedia: "Follow the media device",
+    audible: "Follow the device that is playing",
     help: "Choose the headphones or speakers your app plays through.",
     stop: "Stop subtitles before changing the sound source.",
     missing: "This output is unavailable. Choose another sound source.",
@@ -39,6 +42,7 @@ const copy = {
     title: "声音来源", system: "跟随系统", unavailable: "不可用的输出设备",
     communications: "跟随通信设备（通话耳机）",
     multimedia: "跟随媒体设备",
+    audible: "跟随当前有声音的设备",
     help: "选择应用实际播放声音的耳机或扬声器。",
     stop: "更换声音来源前，请先停止字幕。",
     missing: "此输出设备不可用，请选择其他声音来源。",
@@ -51,6 +55,7 @@ const copy = {
     title: "音声の取得元", system: "システムに合わせる", unavailable: "利用できない出力先",
     communications: "通信デバイスに合わせる（通話用ヘッドセット）",
     multimedia: "メディアデバイスに合わせる",
+    audible: "音が出ているデバイスに合わせる",
     help: "アプリが音声を再生しているヘッドホンやスピーカーを選んでください。",
     stop: "取得元を変更する前に、字幕を停止してください。",
     missing: "この出力先は利用できません。別の取得元を選んでください。",

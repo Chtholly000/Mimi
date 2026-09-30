@@ -10,7 +10,8 @@ use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureError, SystemAudioCaptureFailure,
 };
 use crate::core::audio_source::{
-    parse_default_role, source_action, AudioActivity, DefaultRole, SourceAction,
+    parse_default_role, source_action, AudioActivity, DefaultRole, FollowAudible, FollowDecision,
+    SourceAction,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample};
@@ -25,6 +26,7 @@ pub struct WindowsSystemAudioCapture {
     control: Arc<Mutex<()>>,
     generation: Arc<AtomicU64>,
     source: Arc<Mutex<String>>,
+    follow: Arc<Mutex<FollowAudible>>,
     current_device: Arc<Mutex<Option<String>>>,
     activity: Arc<Mutex<AudioActivity>>,
 }
@@ -70,6 +72,7 @@ impl WindowsSystemAudioCapture {
             control: Arc::new(Mutex::new(())),
             generation: Arc::new(AtomicU64::new(0)),
             source: Arc::new(Mutex::new(String::new())),
+            follow: Arc::new(Mutex::new(FollowAudible::default())),
             current_device: Arc::new(Mutex::new(None)),
             activity: Arc::new(Mutex::new(AudioActivity::default())),
         }
@@ -82,7 +85,7 @@ impl WindowsSystemAudioCapture {
         format: AudioCaptureFormat,
     ) -> Result<(), SystemAudioCaptureError> {
         let source = self.source.lock().unwrap().clone();
-        let device = resolve_output(&source)?;
+        let device = resolve_capture_source(&source, &self.follow)?;
         let generation = self.install_device(
             &device,
             audio_ingress.clone(),
@@ -100,7 +103,7 @@ impl WindowsSystemAudioCapture {
                 if !generation_current || failure_tx.has_reported() {
                     break;
                 }
-                let device = resolve_output(&source).ok();
+                let device = resolve_capture_source(&source, &capture.follow).ok();
                 let id = device
                     .as_ref()
                     .and_then(|device| device.id().ok())
@@ -716,6 +719,40 @@ fn resolve_output(source: &str) -> Result<cpal::Device, SystemAudioCaptureError>
         .ok_or(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)
 }
 
+/// The sentinel for "capture whichever render endpoint is currently audible".
+pub const FOLLOW_AUDIBLE: &str = "follow:audible";
+
+/// Resolves a persisted source value into a device. The audible sentinel
+/// consults the census and the shared follow policy, and falls back to the
+/// console default while nothing is audible, so it never reports the source as
+/// unavailable just because the room went quiet.
+fn resolve_capture_source(
+    source: &str,
+    follow: &Mutex<FollowAudible>,
+) -> Result<cpal::Device, SystemAudioCaptureError> {
+    if source != FOLLOW_AUDIBLE {
+        return resolve_output(source);
+    }
+    let census = crate::audio::census::census();
+    let candidates: Vec<(String, f32)> = census
+        .endpoints
+        .iter()
+        .map(|endpoint| (endpoint.id.clone(), endpoint.level))
+        .collect();
+    let chosen = {
+        let mut state = follow.lock().unwrap();
+        match state.decide(&candidates) {
+            FollowDecision::SwitchTo(id) => Some(id),
+            FollowDecision::Keep => state.bound().map(str::to_string),
+            FollowDecision::NothingAudible => None,
+        }
+    };
+    match chosen {
+        Some(id) => resolve_output(&id).or_else(|_| resolve_output("")),
+        None => resolve_output(""),
+    }
+}
+
 /// Windows' default render endpoint for the requested role, by endpoint id.
 fn default_endpoint_id(role: DefaultRole) -> Option<String> {
     with_com(|| unsafe {
@@ -776,6 +813,17 @@ mod tests {
                 | Err(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable) => {}
                 Err(other) => panic!("unexpected error for {source}: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn audible_source_resolves_or_falls_back_without_panicking() {
+        let follow = Mutex::new(FollowAudible::default());
+        match resolve_capture_source(FOLLOW_AUDIBLE, &follow) {
+            Ok(device) => assert!(endpoint_id(&device).is_some()),
+            Err(SystemAudioCaptureError::NoPlaybackDevice)
+            | Err(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable) => {}
+            Err(other) => panic!("unexpected error: {other:?}"),
         }
     }
 

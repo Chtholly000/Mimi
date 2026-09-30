@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { setStoredUiLanguage } from "./i18n";
-import { audioSourceCopy, audioSourceErrorMessage, FOLLOW_SYSTEM, ROLE_COMMUNICATIONS, ROLE_MULTIMEDIA, isDeviceSource, isRoleSource } from "./windowsAudioSource";
+import { audioSourceCopy, audioSourceErrorMessage, FOLLOW_AUDIBLE, FOLLOW_SYSTEM, ROLE_COMMUNICATIONS, ROLE_MULTIMEDIA, isDeviceSource, isRoleSource } from "./windowsAudioSource";
 
 afterEach(() => setStoredUiLanguage("en"));
 
@@ -23,6 +23,7 @@ it("keeps the role wire values stable for the Rust side", () => {
   expect(FOLLOW_SYSTEM).toBe("");
   expect(ROLE_COMMUNICATIONS).toBe("role:communications");
   expect(ROLE_MULTIMEDIA).toBe("role:multimedia");
+  expect(FOLLOW_AUDIBLE).toBe("follow:audible");
 });
 
 it("distinguishes role sources from device ids", () => {
