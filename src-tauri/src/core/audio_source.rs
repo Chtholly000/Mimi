@@ -1,4 +1,27 @@
 //! Device-change decisions, independent of WASAPI and the session lifecycle.
+
+/// Which of Windows' three default-output roles a "follow system" source binds
+/// to. Media players and meeting apps disagree about which role they own: a
+/// call headset is usually the *communications* default while media keeps
+/// playing to the speakers, so following the wrong role captures silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultRole {
+    Console,
+    Multimedia,
+    Communications,
+}
+
+/// Parses a persisted sound-source value. `None` means the value is an endpoint
+/// id (a manual choice); `Some(role)` is the "follow system default" family.
+pub fn parse_default_role(source: &str) -> Option<DefaultRole> {
+    match source.strip_prefix("role:") {
+        Some("console") => Some(DefaultRole::Console),
+        Some("multimedia") => Some(DefaultRole::Multimedia),
+        Some("communications") => Some(DefaultRole::Communications),
+        _ => None,
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum SourceAction {
     StopMonitor,
@@ -26,6 +49,29 @@ pub fn source_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_role_sources_and_leaves_endpoint_ids_alone() {
+        assert_eq!(
+            parse_default_role("role:communications"),
+            Some(DefaultRole::Communications)
+        );
+        assert_eq!(
+            parse_default_role("role:multimedia"),
+            Some(DefaultRole::Multimedia)
+        );
+        assert_eq!(
+            parse_default_role("role:console"),
+            Some(DefaultRole::Console)
+        );
+        // Everything else is a concrete endpoint id (manual choice).
+        assert_eq!(
+            parse_default_role("{0.0.0.00000000}.{823cf568-6294-403d-b7bf-c6db30f9ec3a}"),
+            None
+        );
+        assert_eq!(parse_default_role(""), None);
+        assert_eq!(parse_default_role("role:unknown"), None);
+    }
 
     #[test]
     fn follows_changed_default_and_keeps_stable_endpoint() {
