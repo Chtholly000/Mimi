@@ -35,7 +35,7 @@ jobs:
         run: '"${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"'
       - name: Unit tests, lint and Android build variants
         working-directory: android
-        run: ./gradlew --no-daemon testDebugUnitTest testReleaseUnitTest lintDebug lintRelease assembleDebug assembleRelease
+        run: ./gradlew --no-daemon testDebugUnitTest testReleaseUnitTest lintDebug lintRelease assembleDebug assembleRelease assembleDebugAndroidTest
       - name: Verify signing and rejection checks with a disposable test key
         run: |
           # This key is only a CI test fixture, never a release identity.
