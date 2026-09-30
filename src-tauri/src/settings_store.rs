@@ -745,6 +745,13 @@ impl SettingsStore {
     }
 
     #[cfg(test)]
+    fn load_api_key(&self) -> Result<Option<String>, String> {
+        let profile = self.active_profile()?;
+        self.load_api_key_for_profile(&profile)
+            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())
+    }
+
+    #[cfg(test)]
     pub fn save_api_key(&self, profile_id: &str, api_key: &str) -> Result<(), String> {
         self.save_credentials(profile_id, &ProviderCredentials::api_key(api_key))
     }

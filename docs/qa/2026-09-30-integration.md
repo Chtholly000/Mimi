@@ -6,12 +6,17 @@ at the user's request, preserving the contributor's sentence blocks and text mot
 Only separator/timestamp/phase hunks from the existing `113a340` candidate are
 adapted for review; the unapproved font/layout preview remains outside scope.
 
+The new pulse redesign is pending the parent thread's actual-motion review.
+It is not applied to production yet; its preview should freeze `42f7583`,
+which has the same PulseRing/Timeline/index.css as the DeepLX integration.
+
 ## Source and delivery ledger
 
 | Source | Exact head | Integration state |
 | --- | --- | --- |
 | #72 sound source, capture status, diagnostics and toast | `4a8e5502a06f66a1d04bd78310ff8afd35731f32` | Already merged as `7cbb763470be28816fb03b26a4e4b712ea0a98d7` |
 | #73 DeepLX and credential-form correction | `8437b9be385a85877f341b3b5e4d9b740b0856c8` | Already merged as `5c9cb685fb3c9ad7e20626f20d0032209a0054e6` |
+| DeepLX advanced selection follow-up / #70, #73 | `93442f07a277082ec603019f2f38b80b504fe1ff` (`482da0f` behavior) | Included; default follows service, advanced Alibaba Audio3 + DeepLX only |
 | #76 Android capture observations | `2471629c4a8917a16179e71633fa4b33f7b4f413` | Already merged as `d190877a6d3dfa3ca13f4ee05466b234e7ed26ed` |
 | #67 sentence blocks, text motion and independent preferences | `3128c46c0c594aaa1cd899c2dd5630182ac3154c` | Included via merge `15b346b`; source PR remains open |
 | #84 history export/deletion interaction | `42e2553990fd85f14cd74058818725a0c607d789` | Included here; source PR remains open |
@@ -33,6 +38,42 @@ Do not merge the remaining source PRs independently during integration review.
 | #84 / #77 | [History before/after and executable cases](https://github.com/yuxino/mimi/blob/42e2553990fd85f14cd74058818725a0c607d789/docs/qa/history-interaction.md) | Real React component with mocked IPC, ego-lite Chromium, English/light, 1000×1100, UTC; `5f2a595` versus implementation `01b01af`. Does not prove native save dialog or filesystem behavior. |
 | #86 / #82 | [Phone guide before/after](https://github.com/yuxino/mimi/pull/86#issuecomment-5910538568), [issue evidence](https://github.com/yuxino/mimi/issues/82#issuecomment-5910547866), [versions, APK hashes and commands](https://github.com/yuxino/mimi/blob/f1ca9db23532d4c5ec5c8a1ee5b0eb0242791a0e/README.md) | Actual API 35 Pixel 7, 1080×2400; baseline `2471629`, 48 Chinese/Japanese light and English dark guide screenshots at `b847050`; final `1e7de49` changes only xAI pricing URL. No live caption or physical-device claim. |
 
+### DeepLX advanced interaction follow-up
+
+Normal Alibaba setup remains one key, with advanced text translation following
+the service by default. Only the already-implemented Alibaba Audio3 + DeepLX
+chain can be selected separately. Historical profile IDs/provider accounts
+remain unchanged. Ordinary Alibaba keys remain raw in their existing secure
+items; the new endpoint/token use a separate profile-scoped secure destination,
+and the ASR key is not duplicated or returned to the WebView. Route switches,
+metadata and secure-item rollback are covered with synthetic stores.
+
+[Source handoff and verification boundary](https://github.com/yuxino/mimi/pull/88#issuecomment-5912410350).
+The source reported 224 frontend tests, typecheck/lint, 40 core tests and six
+selected fake-store transactions; those isolated native probes do not establish
+full app/keychain acceptance. Integration review restored the test-only
+`load_api_key` helper still used by old migration/credential tests, so exact-head
+remote CI can compile and exercise the complete existing test module.
+
+The earlier #73 Linux pair above only proves invalid-endpoint feedback; it does
+not show this advanced layout. New matching screenshots and signed native
+acceptance remain pending. When coordinated, check ordinary one-key setup,
+advanced DeepLX with no repeated key, invalid endpoint draft/focus, unsupported
+service choices absent, historical profile selection, route switching back,
+and isolated write/delete rollback. Do not use real credentials or providers
+to generate UI evidence while native access remains frozen.
+
+### External Windows feedback
+
+[LLLin000 reported Windows 11 observations on upstream #72](https://github.com/yuxino/mimi/issues/74#issuecomment-5912332669):
+Realtek to ToDesk Virtual Audio followed during runtime, with received-sound
+status and no reconnect/error; stopping the source showed no recent audio data.
+No exact SHA was supplied. This is contributor self-report, not independently
+retested or integrated-package evidence, and does not establish all three sound
+states, live captions, Teams/Bluetooth/hotplug acceptance. #74/#78 remain open.
+Role routing, silence billing, reconnect and per-app-capture suggestions need
+separate source/official verification and are not added to #88.
+
 All linked assets are safe public repository images with version/fixture
 boundaries. Library/private file URLs are not acceptance evidence. These are
 source-PR results; an integrated native screenshot is still pending.
@@ -46,7 +87,11 @@ settings intact. Independent regression `6ffdbff` fixes translation-only history
 disappearing when original and translated text are equal. The card Timeline
 receives its resolved motion preference and smooth new-block scrolling obeys it.
 
-The green results below belong to the earlier **pre-#67** tree. Exact new-head
+Exact head `42f758378e0d2b47bc65922ac105f0907f5a62f1` passed ten applicable
+[desktop/cross-platform](https://github.com/yuxino/mimi/actions/runs/36715331676)
+and [Android](https://github.com/yuxino/mimi/actions/runs/36715331394) jobs,
+including 214 frontend tests. These are pre-advanced-DeepLX results.
+The green local results below belong to the earlier **pre-#67** tree. Exact new-head
 remote CI must pass before acceptance. No local build, installation or launch
 was restarted to validate the expanded scope.
 

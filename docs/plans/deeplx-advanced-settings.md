@@ -1,6 +1,6 @@
 # DeepLX as an advanced text translation choice
 
-Related: #70, #73; integration acceptance: draft #88. Baseline: `42f758378e0d2b47bc65922ac105f0907f5a62f1`.
+Related: #70, #73; integration acceptance: #88. Baseline: `42f758378e0d2b47bc65922ac105f0907f5a62f1`.
 
 ## Confirmed experience
 
