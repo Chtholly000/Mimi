@@ -77,6 +77,7 @@ impl FollowAudible {
 
     /// No role preference: preserve a still-audible binding, otherwise choose
     /// the loudest audible endpoint. Used by callers without role information.
+    #[cfg(test)]
     pub fn decide(&mut self, candidates: &[(String, f32)]) -> FollowDecision {
         self.decide_with_roles(candidates, &[])
     }
