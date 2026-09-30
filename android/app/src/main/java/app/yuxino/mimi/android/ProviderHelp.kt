@@ -28,7 +28,7 @@ internal fun providerHelp(provider: ServiceProvider): ProviderHelp = when (provi
         "https://ai.baidu.com/ai-doc/MT/Tl9pjqsym")
     ServiceProvider.XAI -> ProviderHelp(R.string.guide_help_xai,
         "https://docs.x.ai/developers/quickstart",
-        "https://docs.x.ai/developers/models")
+        "https://docs.x.ai/developers/pricing")
 }
 
 internal fun providerTitle(context: android.content.Context, provider: ServiceProvider): String = context.getString(when (provider) {
