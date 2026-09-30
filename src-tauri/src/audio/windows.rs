@@ -741,7 +741,7 @@ fn default_endpoint_id(role: DefaultRole) -> Option<String> {
 /// capture monitor runs on its own task thread, so initialize lazily per thread
 /// (a mismatched apartment is fine for device enumeration and is reported as
 /// `RPC_E_CHANGED_MODE`, which we ignore).
-fn with_com<R>(run: impl FnOnce() -> R) -> R {
+pub(crate) fn with_com<R>(run: impl FnOnce() -> R) -> R {
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
     thread_local! {
         static COM_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
