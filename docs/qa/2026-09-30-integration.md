@@ -6,9 +6,12 @@ at the user's request, preserving the contributor's sentence blocks and text mot
 Only separator/timestamp/phase hunks from the existing `113a340` candidate are
 adapted for review; the unapproved font/layout preview remains outside scope.
 
-The new pulse redesign is pending the parent thread's actual-motion review.
-It is not applied to production yet; its preview should freeze `42f7583`,
-which has the same PulseRing/Timeline/index.css as the DeepLX integration.
+The user watched the continuous-phase video and approved publication and
+inclusion as an integration candidate. Source `3fb4665` is independently
+cherry-picked as `259bce1`, with no old task15 history or unrelated changes.
+Its reference indicator is exact `42f7583`; DeepLX `fcdc1a9` uses the same
+PulseRing/Timeline/index.css. This is still pending installed-package/native
+acceptance; there is no merge or release authorization.
 
 ## Source and delivery ledger
 
@@ -19,6 +22,7 @@ which has the same PulseRing/Timeline/index.css as the DeepLX integration.
 | DeepLX advanced selection follow-up / #70, #73 | `93442f07a277082ec603019f2f38b80b504fe1ff` (`482da0f` behavior) | Included; default follows service, advanced Alibaba Audio3 + DeepLX only |
 | #76 Android capture observations | `2471629c4a8917a16179e71633fa4b33f7b4f413` | Already merged as `d190877a6d3dfa3ca13f4ee05466b234e7ed26ed` |
 | #67 sentence blocks, text motion and independent preferences | `3128c46c0c594aaa1cd899c2dd5630182ac3154c` | Included via merge `15b346b`; source PR remains open |
+| Continuous phase candidate / #87 | source `3fb46654e7a3d4f053462e71c61ad5b6987f6d2e`, integration `259bce16902b48f73ae1debc404d94ad51908259` | Candidate only; user visual confirmation, native/Linux pending |
 | #84 history export/deletion interaction | `42e2553990fd85f14cd74058818725a0c607d789` | Included here; source PR remains open |
 | #86 Android first-run guide | `1e7de491646929871cfd1854f46b1ce3dd3c7c6a` | Included here above #76; source PR remains open |
 
@@ -37,6 +41,38 @@ Do not merge the remaining source PRs independently during integration review.
 | #76 / #78 | [API 35 before/after](https://github.com/yuxino/mimi/pull/76#issuecomment-5910539044), [issue evidence](https://github.com/yuxino/mimi/issues/78#issuecomment-5910548336) | Actual Pixel 7 emulator, 1080×2400; `5f2a595` versus `2471629`, idle home/diagnostic entry. No capture/provider session or physical route proof. |
 | #84 / #77 | [History before/after and executable cases](https://github.com/yuxino/mimi/blob/42e2553990fd85f14cd74058818725a0c607d789/docs/qa/history-interaction.md) | Real React component with mocked IPC, ego-lite Chromium, English/light, 1000×1100, UTC; `5f2a595` versus implementation `01b01af`. Does not prove native save dialog or filesystem behavior. |
 | #86 / #82 | [Phone guide before/after](https://github.com/yuxino/mimi/pull/86#issuecomment-5910538568), [issue evidence](https://github.com/yuxino/mimi/issues/82#issuecomment-5910547866), [versions, APK hashes and commands](https://github.com/yuxino/mimi/blob/f1ca9db23532d4c5ec5c8a1ee5b0eb0242791a0e/README.md) | Actual API 35 Pixel 7, 1080×2400; baseline `2471629`, 48 Chinese/Japanese light and English dark guide screenshots at `b847050`; final `1e7de49` changes only xAI pricing URL. No live caption or physical-device claim. |
+
+### Continuous-phase candidate — new evidence
+
+[Fixed public original image/video and provenance](https://github.com/yuxino/mimi/blob/e7a1a38a6a5b9c956dcd8bac987049134a5d9191/README.md).
+Actual Mac Chromium component capture, exact reference indicator `42f7583`
+versus candidate `3fb4665`, with identical baseline Timeline/style/font and
+synthetic bilingual content/seven phase inputs. No native window, real audio
+or Linux installed package is shown. Image SHA256
+`fc5d44ec266167c08ab245a04b58f5f7e9a01c7ff61ba25b7ed9f5351d5f3aa9`;
+video SHA256 `958df845ab52994ff0a2e3bc7d193312abf0b014b647031b5c79852e7d919a11`.
+H.264 1440×1032 MP4, 20.445s, variable original screencast timestamps; 1016
+recorded frames, 17.556s changing-frame span at 57.814fps average. Static gaps
+and the final 2.887s remain; no interpolation or speed change, no fixed/native
+60fps claim. Source implementer and user watched the actual video.
+
+Only PulseRing and component CSS change. Seven clocks persist through active
+phase crossfades; pause/error/idle settle for 520ms then pause, resume continues;
+resolved motion off is immediate. Existing #67 text/sentence motion, two
+independent preferences, 18/40px boxes, settings, capture and compact labels
+remain. Source typecheck/component lint and browser identity/pause/resume/off
+checks passed; exact aggregate CI is a separate requirement.
+
+User explicitly approved posting these materials and adding the candidate to
+#88 for acceptance. The older three-row local-baseline material stays historical
+and must not stand in for this new exact-indicator comparison.
+
+Linux follow-up requires the exact integration commit/artifact SHA256, isolated
+credential-free UI-only data, same-size screenshots and observed state sequence
+in the actual installed app. Current nativeGUI/install freeze still applies;
+no launch/install is attempted here or hidden behind a Linux test route.
+Signed WebKit, Linux installed UI, real service/audio/physical routes remain
+untested. Do not claim CI bundle compilation proves them.
 
 ### DeepLX advanced interaction follow-up
 
@@ -146,7 +182,7 @@ Use references here, without broad automatic closing keywords.
 | #77 history interaction | `yuxino` | Candidate to close after merged integration and native synthetic export acceptance; component regressions pass, native cancellation/save remains pending. |
 | #78 cross-platform capture | `yuxino` | Keep open: Android 10/14/15 physical capture, Bluetooth, macOS routing/TCC and Linux physical PulseAudio/PipeWire routes remain untested. |
 | #82 first run | `yuxino` | Keep open: desktop #85 held for user visual review; live first-caption and relevant platform acceptance are incomplete. Android #86 is reviewed independently. |
-| #87 subtitle detail review | `yuxino` | Keep open: candidate hunks included for review, final visual choice and integrated native/reduced-motion acceptance pending. |
+| #87 subtitle detail review | `yuxino` | Keep open: continuous-phase visual candidate accepted for integration review; exact installed/native, reduced-motion and Linux acceptance pending. |
 | #83 repeated Keychain prompts | `yuxino` | Keep open: actual reinstall/authorization root cause is unresolved. Local `a9858e8` improves safe classification only; it is not included or claimed as an authentication fix. |
 
 The minimal local font commit `8243b24` remains outside this integration:
