@@ -76,7 +76,7 @@ Install Rust 1.88+, Node.js 22.13+, and the native dependencies listed by
 ```bash
 npm ci
 ./scripts/check.sh
-npm run tauri -- build --config src-tauri/tauri.ci.conf.json -- --locked
+./scripts/build-linux-packages.sh --config src-tauri/tauri.ci.conf.json
 ```
 
 The CI config disables updater signing for development bundles. Formal release
@@ -104,3 +104,15 @@ the system output, and displayed Chinese translations. This is a functional
 check, not a provider latency benchmark. Physical Linux audio hardware, public
 x86_64 artifacts, and other GNOME/KDE/Wayland compositors remain separate
 acceptance checks.
+
+### AppImage launcher permissions
+
+Use `scripts/build-linux-packages.sh` for x86_64 Linux packages, including
+signed release builds. It prepares Tauri's upstream AppRun cache with mode
+755 before bundling and updater signing. Tauri otherwise creates it as 770;
+linuxdeploy preserves that mode as `AppRun.wrapped`, blocking execution by
+users outside the build owner's UID/group (reported in #66).
+`verify-linux-bundles.sh` extracts the final AppImage and checks read/execute
+bits for owner, group, and other on both launchers and `usr/bin/mimi` before
+running the existing tray-free X11 smoke tests. FUSE availability, runtime
+library dependencies, and glibc compatibility remain separate checks.

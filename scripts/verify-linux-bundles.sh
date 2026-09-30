@@ -22,6 +22,14 @@ dpkg-deb --field "$deb" Depends | tr ',' '\n' | grep -Eq '^ *libpulse0( |$)'
 dpkg-deb --field "$deb" Depends | tr ',' '\n' | grep -Eq '^ *xdg-utils( |$)'
 file "$appimage" | grep -q 'ELF 64-bit.*x86-64'
 
+# Inspect the final compressed artifact, not the AppDir left by the bundler.
+# -x alone tests the build user's access and misses mode 770 on AppRun.wrapped.
+appimage="$(realpath "$appimage")"
+extracted="$(mktemp -d -t mimi-appimage-permissions.XXXXXX)"
+trap 'rm -rf "$extracted"' EXIT
+(cd "$extracted" && "$appimage" --appimage-extract >/dev/null)
+python3 scripts/check-appimage-permissions.py "$extracted/squashfs-root"
+
 if [[ "${2:-}" == --signed ]]; then
   [[ -s "$appimage.sig" ]]
   public_key="$(node -p 'require("./src-tauri/tauri.conf.json").plugins.updater.pubkey')"
