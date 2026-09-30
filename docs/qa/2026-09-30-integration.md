@@ -11,10 +11,33 @@ clearing on stop, not established as a production defect. The minimal opt-in
 addresses only that acceptance entrance; native dialog results on its exact
 new package are pending. Seven-phase/streaming fixture coverage remains absent.
 
+Follow-up cloud QA at exact `38bc4dfb065827ef8f1f8b365029343b43d719a0`
+verified artifact11107067102 and its zip SHA256
+`dd7781f7a27fe0a7c0242546d070a11e57b7cb1296f4af8411ac45c902181173`.
+Stopped-state synthetic archive retention, native save-dialog cancel with
+retained/re-exportable content, actual bilingual timestamped TXT save, invalid
+path feedback and corrected-path retry all passed; both saved files matched.
+An invalid file-as-directory is native picker/path feedback, not evidence of
+backend disk-write failure. Backend disk-write failure, seven phases/streaming
+and real provider/audio remain untested. The isolated app exited normally.
+
 The latest user visual feedback asks for a sound-like pulse indicator. The
 published continuous-ring video remains the previous candidate for comparison,
 not final visual acceptance. A waveform candidate is being reviewed separately;
 all other integrated features retain this same PR acceptance entrance.
+
+The user then explicitly chose to keep both sound directions from `d72d5be`,
+with a persisted selector and recoverable classic light. This supersedes the
+source preview note suggesting selection of just one. Integration adapts the
+source shapes without importing the preview branch history, keeps classic as
+the migration default, and applies existing independent motion settings to
+preview/overlay. See [implementation and new acceptance boundaries](../plans/2026-09-30-selectable-sound-pulse.md).
+The diagnostic help note moves into optional details. Android and held desktop
+guide copy is shorter in all three languages while true first-caption proof
+stays unchanged; new exact-head screenshots remain pending. The existing
+onboarding screenshots are previous-copy evidence, not the new after state.
+Desktop copy-only PR85 follow-up is `4177c48a05c46c842ff98372c37f3df64a28ed23`,
+still held outside integration; three-screen art/character redesign is absent.
 Desktop onboarding #85 is on hold after user visual feedback. PR #67 is included
 at the user's request, preserving the contributor's sentence blocks and text motion.
 Only separator/timestamp/phase hunks from the existing `113a340` candidate are

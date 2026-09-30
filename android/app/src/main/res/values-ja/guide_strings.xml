@@ -20,10 +20,9 @@
     <string name="guide_see_caption">字幕を確認</string>
     <string name="guide_start_trial">試用開始 · 画面を共有</string>
     <string name="guide_complete_title">最初の字幕が届きました</string>
-    <string name="guide_wait_caption_title">最初の字幕を待つ</string>
-    <string name="guide_complete_hint">このセッションで音声を送信し、重ねて表示する字幕に翻訳が出ました。そのまま視聴できます。</string>
-    <string name="guide_wait_caption_hint">音声がサービスに届き、画面に実際の翻訳が表示されて初めて完了です。サンプル字幕は含みません。</string>
-    <string name="guide_stopped">音声取得は終了しました。画面ロック、共有の取り消し、停止後には画面共有を再度許可してください。</string>
+    <string name="guide_wait_caption_title">翻訳を待っています</string>
+    <string name="guide_complete_hint">そのまま視聴できます。</string>
+    <string name="guide_stopped">画面共有が終了しました。もう一度オンにしてください。</string>
     <string name="guide_finish">完了</string>
     <string name="guide_waiting_back">待ちながら再生画面に戻る</string>
     <string name="guide_retry">試用をやり直す</string>
@@ -82,4 +81,5 @@
     <string name="guide_field_endpoint">リソースの接続先</string>
     <string name="guide_field_deployment">翻訳のデプロイ名</string>
     <string name="guide_field_transcription">文字起こしのデプロイ名</string>
+    <string name="guide_reopen_sharing">画面共有をオンにする</string>
 </resources>

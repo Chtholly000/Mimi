@@ -25,6 +25,7 @@ const SETTINGS: SettingsSnapshot = {
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
   pulseAnimation: null,
+  pulseStyle: "classic",
   subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
@@ -35,6 +36,12 @@ const SETTINGS: SettingsSnapshot = {
 };
 
 describe("mergeSettingsSnapshot", () => {
+  it("changes pulse style without changing explicit motion or unrelated choices", () => {
+    const previous = { ...SETTINGS, pulseAnimation: false, subtitleAnimation: true, fontSize: 19 };
+    const changed = mergeSettingsSnapshot(previous, { pulseStyle: "ribbon" });
+    expect(changed).toMatchObject({ pulseStyle: "ribbon", pulseAnimation: false, subtitleAnimation: true, fontSize: 19 });
+    expect(mergeSettingsSnapshot(changed, { fontSize: 20 }).pulseStyle).toBe("ribbon");
+  });
   it("merges runtime-safe subtitle presentation preferences", () => {
     expect(
       mergeSettingsSnapshot(SETTINGS, {

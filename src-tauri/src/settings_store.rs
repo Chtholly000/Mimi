@@ -59,6 +59,16 @@ pub enum SubtitleAlignment {
     Right,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PulseStyle {
+    #[default]
+    #[serde(other)]
+    Classic,
+    Syllable,
+    Ribbon,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct OverlayFrame {
     pub x: f64,
@@ -79,6 +89,7 @@ pub struct Preferences {
     pub subtitle_display_mode: SubtitleDisplayMode,
     /// Animation switches: `None` follows the system reduce-motion setting.
     pub pulse_animation: Option<bool>,
+    pub pulse_style: PulseStyle,
     pub subtitle_animation: Option<bool>,
     pub subtitle_blends_with_background: bool,
     pub overlay_locked: bool,
@@ -104,6 +115,7 @@ impl Default for Preferences {
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
             pulse_animation: None,
+            pulse_style: PulseStyle::Classic,
             subtitle_animation: None,
             subtitle_blends_with_background: false,
             overlay_locked: false,
@@ -2875,6 +2887,53 @@ mod tests {
             SubtitleDisplayMode::Translation
         );
         assert!(!preferences.subtitle_blends_with_background);
+        assert_eq!(preferences.pulse_style, PulseStyle::Classic);
+    }
+
+    #[test]
+    fn pulse_style_migration_preserves_existing_motion_choices() {
+        for json in [
+            r#"{"font_size":19,"pulse_animation":false,"subtitle_animation":true}"#,
+            r#"{"font_size":19,"pulse_animation":false,"subtitle_animation":true,"pulse_style":"futureStyle"}"#,
+        ] {
+            let prefs: Preferences = serde_json::from_str(json).unwrap();
+            assert_eq!(prefs.pulse_style, PulseStyle::Classic);
+            assert_eq!(prefs.font_size, 19.0);
+            assert_eq!(prefs.pulse_animation, Some(false));
+            assert_eq!(prefs.subtitle_animation, Some(true));
+        }
+    }
+
+    #[test]
+    fn pulse_styles_survive_disk_reload_and_unrelated_updates_without_secret_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        for style in [
+            PulseStyle::Syllable,
+            PulseStyle::Ribbon,
+            PulseStyle::Classic,
+        ] {
+            let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+            store
+                .save_preferences(|prefs| {
+                    prefs.pulse_animation = Some(false);
+                    prefs.subtitle_animation = Some(true);
+                })
+                .unwrap();
+            store
+                .save_preferences_for_active_profile(|prefs| prefs.pulse_style = style)
+                .unwrap();
+            store
+                .save_preferences_for_active_profile(|prefs| prefs.font_size = 19.0)
+                .unwrap();
+            let restored = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+            let prefs = restored.preferences();
+            assert_eq!(prefs.pulse_style, style);
+            assert_eq!(prefs.font_size, 19.0);
+            assert_eq!(prefs.pulse_animation, Some(false));
+            assert_eq!(prefs.subtitle_animation, Some(true));
+        }
+        assert!(fake.state.lock().unwrap().loads.is_empty());
     }
 
     #[test]

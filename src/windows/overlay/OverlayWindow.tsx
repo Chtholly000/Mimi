@@ -364,7 +364,7 @@ export function OverlayWindow() {
                   className="flex items-center"
                   style={{ height: compactEmptyPulse ? 24 : 56 }}
                 >
-                  <PulseRing phase={phase} compact={compactEmptyPulse} motionEnabled={pulseOn} />
+                  <PulseRing phase={phase} compact={compactEmptyPulse} motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
                 </div>
               )}
               <div
@@ -441,7 +441,7 @@ export function OverlayWindow() {
           style={{ gap: 8, padding: "0 10px" }}
         >
           <DragHandle onToggleCollapsed={toggleCollapsed} compact />
-          <PulseRing phase={phase} compact motionEnabled={pulseOn} />
+          <PulseRing phase={phase} compact motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
           <span
             className="truncate"
             style={{ fontSize: 11, fontWeight: 500, color: "rgba(255,255,255,0.76)" }}

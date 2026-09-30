@@ -105,7 +105,6 @@ export function SupportDiagnostics() {
       <button type="button" className="settings-button settings-button--quiet settings-button--compact" disabled={busy}
         onClick={() => void perform("issue")}>{text.issue}</button>
     </div>
-    <p className="settings-support-diagnostics__note">{text.note}</p>
     {feedback && <div className="settings-diagnostic-toast" data-error={failed} role={failed ? "alert" : "status"} aria-live={failed ? "assertive" : "polite"} aria-atomic="true">
       {failed ? <AlertCircle size={18} aria-hidden="true" /> : <Check size={18} aria-hidden="true" />}
       <span>{text[feedback]}</span>
@@ -116,6 +115,7 @@ export function SupportDiagnostics() {
       if (event.currentTarget.open && !operation.current) void perform("details");
     }}>
       <summary>{text.details}</summary>
+      {detailsOpen && <p className="settings-support-diagnostics__note">{text.note}</p>}
       {report && <textarea aria-label={text.preview} value={report} readOnly rows={7} wrap="off" spellCheck={false} />}
     </details>
   </section>;

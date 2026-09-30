@@ -4,6 +4,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FirstRunEvidenceTest {
+    @Test fun sharingRecoveryDoesNotAppearForFreshOrUnrelatedFailures() {
+        assertFalse(projectionSharingEnded(false, null))
+        assertFalse(projectionSharingEnded(false, "capture.read_failed"))
+        assertFalse(projectionSharingEnded(true, "capture.projection_stopped"))
+        assertTrue(projectionSharingEnded(false, "capture.projection_stopped"))
+        assertTrue(projectionSharingEnded(false, "capture.permission_or_lock_changed"))
+    }
     @Test fun requiresSoundSubmittedAndRealVisibleCaptionInSameSession() {
         val proof = FirstRunEvidence()
         proof.rendered(true, true, false)

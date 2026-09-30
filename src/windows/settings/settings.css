@@ -1781,6 +1781,7 @@
   border-radius: 9px;
   background: #242424;
 }
+.subtitle-preview__pulse { display: flex; justify-content: center; padding-bottom: 8px; }
 .subtitle-preview__text {
   display: grid;
   gap: 5px;

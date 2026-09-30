@@ -1,5 +1,9 @@
 package app.yuxino.mimi.android
 
+/** Sharing recovery is shown only for a stopped, invalidated capture session. */
+internal fun projectionSharingEnded(running: Boolean, captureError: String?): Boolean =
+    !running && captureError in setOf("capture.projection_stopped", "capture.permission_or_lock_changed")
+
 /** Content-free proof, scoped to one capture session. Preview UI cannot complete setup. */
 class FirstRunEvidence {
     var audioSubmitted = false

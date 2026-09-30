@@ -20,10 +20,9 @@
     <string name="guide_see_caption">Look for captions</string>
     <string name="guide_start_trial">Start trial · share screen</string>
     <string name="guide_complete_title">Your first caption is here</string>
-    <string name="guide_wait_caption_title">Wait for your first caption</string>
-    <string name="guide_complete_hint">This session sent audio containing sound and displayed a translation in the overlay. Enjoy your content.</string>
-    <string name="guide_wait_caption_hint">Setup finishes when a translation is actually displayed in the overlay after audio reaches the service. Sample captions do not count.</string>
-    <string name="guide_stopped">Capture ended. After locking the phone, revoking sharing or stopping, screen sharing needs fresh consent.</string>
+    <string name="guide_wait_caption_title">Waiting for translation</string>
+    <string name="guide_complete_hint">You can keep watching.</string>
+    <string name="guide_stopped">Screen sharing ended. Turn it on again.</string>
     <string name="guide_finish">Done</string>
     <string name="guide_waiting_back">Keep waiting · return to playback</string>
     <string name="guide_retry">Retry trial</string>
@@ -82,4 +81,5 @@
     <string name="guide_field_endpoint">Resource endpoint</string>
     <string name="guide_field_deployment">Translation deployment name</string>
     <string name="guide_field_transcription">Transcription deployment name</string>
+    <string name="guide_reopen_sharing">Turn on screen sharing</string>
 </resources>

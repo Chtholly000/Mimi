@@ -179,6 +179,23 @@ class UiSmokeInstrumentation : Instrumentation() {
         val guide = FirstRunGuide(home) { error("Fixture must not request a real capture") }
         onUi { guide.open(3) }; capture("guide-audio-not-started-$theme")
         onUi { guide.dismiss(); guide.open(4) }; capture("guide-caption-not-complete-$theme")
+        // UI-only recovery fixture: no MediaProjection or provider is started.
+        val previousCaptureError = MimiService.lastCaptureError
+        try {
+            onUi {
+                MimiService.lastCaptureError = "capture.projection_stopped"
+                guide.refresh()
+            }
+            capture("guide-sharing-ended-$theme")
+            onUi {
+                val action = WindowInspector.getGlobalWindowViews().firstNotNullOfOrNull {
+                    it.findViewWithTag<TextView>("guide-finish")
+                }
+                check(action?.text == targetContext.getString(R.string.guide_reopen_sharing))
+            }
+        } finally {
+            onUi { MimiService.lastCaptureError = previousCaptureError; guide.refresh() }
+        }
         onUi { guide.dismiss() }
         check(!MimiService.isRunning && !MimiService.firstRunEvidence.complete)
         check(!guidePrefs.getBoolean("completed", false))

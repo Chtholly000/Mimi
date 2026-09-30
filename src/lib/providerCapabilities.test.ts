@@ -37,6 +37,7 @@ const BASE_SETTINGS: SettingsSnapshot = {
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
   pulseAnimation: null,
+  pulseStyle: "classic",
   subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,

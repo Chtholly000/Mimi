@@ -32,6 +32,8 @@ import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
 import { useSettingsTheme } from "./useSettingsTheme";
 import { AppearancePicker } from "./AppearancePicker";
+import { PulseRing } from "../overlay/PulseRing";
+import type { PulseStyle } from "../../lib/types";
 import { useResolvedMotion } from "../overlay/animation";
 import {
   SettingsSessionActionCoordinator,
@@ -337,6 +339,9 @@ export function SettingsView() {
                       className="subtitle-preview__stage"
                       style={{ textAlign: settings.subtitleAlignment }}
                     >
+                      <div className="subtitle-preview__pulse">
+                        <PulseRing phase="listening" pulseStyle={settings.pulseStyle} motionEnabled={pulseOn} />
+                      </div>
                       <div
                         className="subtitle-preview__text"
                         style={{ fontSize: settings.fontSize, color: subtitleColorHex(settings.subtitleColor) }}
@@ -356,6 +361,18 @@ export function SettingsView() {
                           value={settings.subtitleDisplayMode}
                           options={SUBTITLE_DISPLAY_OPTIONS}
                           onChange={(value) => void saveSettings({ subtitleDisplayMode: value as SubtitleDisplayMode })}
+                        />
+                      </SettingsRow>
+                      <SettingsRow label={I18N.settings.pulseStyle}>
+                        <SettingsSelect
+                          label={I18N.settings.pulseStyle}
+                          value={settings.pulseStyle}
+                          options={[
+                            { value: "classic", label: I18N.settings.pulseStyleClassic },
+                            { value: "syllable", label: I18N.settings.pulseStyleSyllable },
+                            { value: "ribbon", label: I18N.settings.pulseStyleRibbon },
+                          ]}
+                          onChange={(value) => void saveSettings({ pulseStyle: value as PulseStyle })}
                         />
                       </SettingsRow>
                       <SettingsRow
