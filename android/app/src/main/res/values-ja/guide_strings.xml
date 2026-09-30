@@ -9,7 +9,7 @@
     <string name="guide_check_permissions">端末の権限を確認</string>
     <string name="guide_permission_title">画面に字幕を表示する</string>
     <string name="guide_permission_audio">再生音声の取得にも Android の録音権限が必要です。mimi はメディアとゲームの再生音声だけを取得し、マイクは使用しません。</string>
-    <string name="guide_permission_hint">重ねて表示と音声の権限を許可してから、画面共有を許可します。拒否や戻る操作では完了になりません。後でやり直せます。</string>
+    <string name="guide_permission_hint">重ねて表示と音声の権限を許可してから、画面共有をオンにしてください。後で続けることもできます。</string>
     <string name="guide_grant">端末の権限を許可</string>
     <string name="guide_trial_next">試用に進む</string>
     <string name="guide_play_title">声のある動画を少し再生する</string>

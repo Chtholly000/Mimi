@@ -9,7 +9,7 @@
     <string name="guide_check_permissions">Check phone permissions</string>
     <string name="guide_permission_title">Let captions appear over your content</string>
     <string name="guide_permission_audio">Android also requires audio recording permission for playback capture. mimi captures media and game playback, without using the microphone.</string>
-    <string name="guide_permission_hint">Allow overlays and audio first, then approve screen sharing. Denying or going back leaves setup unfinished; you can retry later.</string>
+    <string name="guide_permission_hint">Allow overlays and audio first, then turn on screen sharing. You can continue later.</string>
     <string name="guide_grant">Allow phone permissions</string>
     <string name="guide_trial_next">Continue to trial</string>
     <string name="guide_play_title">Play a short clip with speech</string>
