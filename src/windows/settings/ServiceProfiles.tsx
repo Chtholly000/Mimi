@@ -6,6 +6,7 @@ import { I18N, providerDisplayName } from "../../lib/i18n";
 import { SERVICE_PROVIDERS, subtitlePreferencesChanged } from "../../lib/providerCapabilities";
 import {
   buildProviderCredentials,
+  deepLXEndpointIsValid,
   credentialEditorStateAfterDeleteRequest,
   credentialFieldsForProvider,
   emptyCredentialDraft,
@@ -298,6 +299,7 @@ export function ServiceProfiles({
             inputId={`profile-api-key-${selectedProfile.id}`}
             disabled={mutationsDisabled}
             busy={pendingAction === "save-key" || pendingAction === "delete-key"}
+            feedback={feedback}
             onSave={(replacement) => handleSaveCredential(selectedProfile.id, replacement)}
             onRequestDelete={() => requestCredentialDelete(selectedProfile.id)}
             onConfirmDelete={() => confirmCredentialDelete(selectedProfile.id)}
@@ -450,7 +452,7 @@ export function ServiceProfiles({
           )}
         </div>
       )}
-      {feedback && <InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback>}
+      {feedback && !(showsEditor && selectedProfile && !showsProviderPicker) && <InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback>}
     </SettingsSection>
   );
 }
@@ -460,6 +462,7 @@ function CredentialEditor({
   inputId,
   disabled,
   busy,
+  feedback,
   onSave,
   onRequestDelete,
   onConfirmDelete,
@@ -470,6 +473,7 @@ function CredentialEditor({
   inputId: string;
   disabled: boolean;
   busy: boolean;
+  feedback: Feedback | null;
   onSave: (credentials: ProviderCredentialsInput) => Promise<unknown>;
   onRequestDelete: () => void;
   onConfirmDelete: () => Promise<unknown>;
@@ -478,17 +482,42 @@ function CredentialEditor({
 }) {
   const [draft, setDraft] = useState<CredentialDraft>(emptyCredentialDraft);
   const [editingSavedCredential, setEditingSavedCredential] = useState(false);
+  const [endpointInvalid, setEndpointInvalid] = useState(false);
+  const endpointRef = useRef<HTMLInputElement>(null);
+  const feedbackRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (endpointInvalid) {
+      endpointRef.current?.focus({ preventScroll: true });
+      endpointRef.current?.closest("label")?.scrollIntoView({ block: "center" });
+    }
+  }, [endpointInvalid]);
+  useEffect(() => {
+    if (feedback?.tone === "error") {
+      feedbackRef.current?.scrollIntoView({ block: "center" });
+      feedbackRef.current?.focus({ preventScroll: true });
+    }
+  }, [feedback]);
+  const saveFeedback = feedback && <div ref={feedbackRef} tabIndex={-1}><InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback></div>;
   const noteId = `${inputId}-storage-note`;
   const credentials = buildProviderCredentials(profile.provider, draft);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!credentials) return;
-    // Discard plaintext before secure storage I/O and never restore it after a
-    // failure. The editor remains a write-only credential surface.
-    setDraft(emptyCredentialDraft());
+    if (profile.provider === "deepLX" && !deepLXEndpointIsValid(draft.endpoint)) {
+      setEndpointInvalid(true);
+      endpointRef.current?.focus();
+      return;
+    }
+    setEndpointInvalid(false);
+    setEditingSavedCredential(true);
+    // Keep only the user's current unsaved draft on failure. Never read back
+    // stored credentials; discard this draft after a successful save/use.
     void onSave(credentials).then((saved) => {
-      if (saved) setEditingSavedCredential(false);
+      if (saved) {
+        setDraft(emptyCredentialDraft());
+        setEditingSavedCredential(false);
+      }
     });
   };
 
@@ -522,6 +551,7 @@ function CredentialEditor({
             {I18N.settings.deleteCredentials}
           </button>
         </span>
+        {saveFeedback}
         {confirmingDelete && (
           <DestructiveConfirmation
             message={I18N.settings.deleteCredentialsConfirm}
@@ -578,21 +608,23 @@ function CredentialEditor({
                 <span>{copy.label}</span>
                 <input
                   id={fieldId}
+                  ref={profile.provider === "deepLX" && field === "endpoint" ? endpointRef : undefined}
+                  aria-invalid={field === "endpoint" && endpointInvalid ? true : undefined}
                   type={copy.secret ? "password" : "text"}
                   inputMode={field === "appId" ? "numeric" : undefined}
                   value={draft[field]}
                   autoComplete="new-password"
                   spellCheck={false}
-                  aria-describedby={noteId}
+                  aria-describedby={field === "endpoint" && endpointInvalid ? `${fieldId}-error ${noteId}` : noteId}
                   disabled={disabled}
                   placeholder={copy.placeholder}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      [field]: event.target.value,
-                    }))
-                  }
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setDraft((current) => ({ ...current, [field]: value }));
+                    if (field === "endpoint" && endpointInvalid) setEndpointInvalid(!deepLXEndpointIsValid(value));
+                  }}
                 />
+                {field === "endpoint" && endpointInvalid && <span id={`${fieldId}-error`} role="alert" className="credential-unavailable">{I18N.settings.deepLXEndpointInvalid}</span>}
               </label>
             );
           })}
@@ -601,6 +633,7 @@ function CredentialEditor({
           <Icon name="shield-check" />
           <span>{I18N.settings.credentialNote}</span>
         </p>
+        {saveFeedback}
         <span className="credential-form__actions">
           {profile.credentialState === "present" && (
             <button

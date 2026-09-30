@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildProviderCredentials,
+  deepLXEndpointIsValid,
   credentialEditorStateAfterDeleteRequest,
   credentialFieldsForProvider,
   emptyCredentialDraft,
@@ -75,4 +76,13 @@ it("keeps DeepLX recognition credentials separate and makes its token optional",
   expect(buildProviderCredentials("deepLX", { ...draft, asrApiKey: "" })).toBeNull();
   expect(buildProviderCredentials("deepLX", { ...draft, endpoint: "" })).toBeNull();
   expect(buildProviderCredentials("deepLX", { ...draft, token: " synthetic-token " })?.kind).toBe("deepLX");
+});
+
+ it("rejects unsafe or invalid DeepLX endpoints before credential submission", () => {
+  for (const endpoint of ["not-a-url", "bad", "http://example.com", "https://user:password@example.com", "https://example.com?token=synthetic", "https://example.com#fragment", "https://example.com?", "https://example.com#", "https://example.com\n", "https://example.com/" + "x".repeat(2048)]) {
+    expect(deepLXEndpointIsValid(endpoint), endpoint).toBe(false);
+  }
+  for (const endpoint of ["https://example.com", "https://example.com/api/translate", " http://localhost:1188/translate ", "http://127.0.0.1:1188", "http://[::1]:1188"]) {
+    expect(deepLXEndpointIsValid(endpoint), endpoint).toBe(true);
+  }
 });

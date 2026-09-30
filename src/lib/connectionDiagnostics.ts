@@ -102,6 +102,6 @@ export function credentialErrorMessage(error: unknown): string | null {
   return null;
 }
 export function profileErrorMessage(error: unknown): string {
-  if (typeof error === "string" && error.startsWith("Use an HTTPS DeepLX endpoint")) return I18N.settings.deepLXNote;
+  if (typeof error === "string" && error.startsWith("Use an HTTPS DeepLX endpoint")) return I18N.settings.deepLXEndpointInvalid;
   return credentialErrorMessage(error) ?? I18N.settings.profileActionFailed;
 }

@@ -36,3 +36,10 @@ authentication and malformed responses fail with an actionable next step.
 The credential-free connection diagnostic skips private endpoints, as Azure
 does; it reports network/authentication as untested. Validation uses synthetic
 loopback servers and native UI-only mode without provider connections or audio.
+
+Invalid endpoint submissions are validated next to the Endpoint field before
+credential storage I/O. The field receives focus and its error is scrolled
+into view. Failed saves retain only the user's unsaved editor draft; successful
+save/use clears it. Stored secrets are never read back. Save and storage errors
+appear inside the credential form and receive focus, rather than below the
+profile rename/delete controls.

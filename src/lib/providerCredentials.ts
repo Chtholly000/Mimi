@@ -112,3 +112,16 @@ export function buildProviderCredentials(
       return { kind: "apiKey", apiKey: values.apiKey };
   }
 }
+
+/** Mirrors native DeepLX endpoint safety checks before any credential I/O. */
+export function deepLXEndpointIsValid(value: string): boolean {
+  if (new TextEncoder().encode(value).length > 2048 || Array.from(value).some((char) => { const code = char.codePointAt(0)!; return code < 32 || (code >= 127 && code <= 159); })) return false;
+  try {
+    const url = new URL(value.trim());
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    return (url.protocol === "https:" || (url.protocol === "http:" && local)) &&
+      !!url.hostname && !url.username && !url.password && !value.includes("?") && !value.includes("#");
+  } catch {
+    return false;
+  }
+}

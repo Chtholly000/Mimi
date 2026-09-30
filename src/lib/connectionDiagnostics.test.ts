@@ -24,3 +24,15 @@ it("reports independent storage and network failures", () => {
   expect(connectionDiagnosticMessage({ credential: "unavailable", network: "timeout" })).toContain("timed out");
   expect(connectionDiagnosticMessage({ credential: "invalid", network: "reachable" })).toContain("could not be read");
 });
+
+it("shows a short endpoint correction instead of the whole provider description", () => {
+  for (const language of ["en", "zh", "ja"] as const) {
+    setStoredUiLanguage(language);
+    const message = profileErrorMessage("Use an HTTPS DeepLX endpoint (or HTTP on localhost), without URL credentials, query or fragment.");
+    expect(message).toContain("HTTPS");
+    expect(message).toContain("localhost");
+    expect(message).toContain("?");
+    expect(message).toContain("#");
+    expect(message).not.toContain("Audio 3.0");
+  }
+});
