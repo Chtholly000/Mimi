@@ -9,7 +9,7 @@ use crate::audio::streaming_resampler::StreamingPcm16Resampler;
 use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureError, SystemAudioCaptureFailure,
 };
-use crate::core::audio_source::{source_action, SourceAction};
+use crate::core::audio_source::{source_action, AudioActivity, SourceAction};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -24,7 +24,7 @@ pub struct WindowsSystemAudioCapture {
     generation: Arc<AtomicU64>,
     source: Arc<Mutex<String>>,
     current_device: Arc<Mutex<Option<String>>>,
-    last_sound: Arc<Mutex<Option<Instant>>>,
+    activity: Arc<Mutex<AudioActivity>>,
 }
 
 enum StreamSlotState<S> {
@@ -50,7 +50,7 @@ impl<S> Default for StreamSlot<S> {
 struct WindowsAudioProcessor {
     resampler: StreamingPcm16Resampler,
     normalized_samples: Vec<f32>,
-    last_sound: Arc<Mutex<Option<Instant>>>,
+    activity: Arc<Mutex<AudioActivity>>,
 }
 
 struct WindowsStreamContext {
@@ -69,7 +69,7 @@ impl WindowsSystemAudioCapture {
             generation: Arc::new(AtomicU64::new(0)),
             source: Arc::new(Mutex::new(String::new())),
             current_device: Arc::new(Mutex::new(None)),
-            last_sound: Arc::new(Mutex::new(None)),
+            activity: Arc::new(Mutex::new(AudioActivity::default())),
         }
     }
 
@@ -149,15 +149,13 @@ impl WindowsSystemAudioCapture {
                 })
             })
             .collect();
+        let (receiving_audio_data, receiving_sound) =
+            self.activity.lock().unwrap().state(Instant::now());
         Ok(crate::audio::AudioSourceSnapshot {
             devices,
             current_device: self.current_device.lock().unwrap().clone(),
-            receiving_sound: self.active.load(Ordering::SeqCst)
-                && self
-                    .last_sound
-                    .lock()
-                    .unwrap()
-                    .is_some_and(|time| time.elapsed() < Duration::from_secs(2)),
+            receiving_sound: self.active.load(Ordering::SeqCst) && receiving_sound,
+            receiving_audio_data: self.active.load(Ordering::SeqCst) && receiving_audio_data,
         })
     }
 
@@ -172,7 +170,7 @@ impl WindowsSystemAudioCapture {
             .id()
             .map_err(|_| SystemAudioCaptureError::NativeStartFailed)?
             .to_string();
-        *self.last_sound.lock().unwrap() = None;
+        *self.activity.lock().unwrap() = AudioActivity::default();
         build_install_and_play_stream(
             &self.stream,
             &self.active,
@@ -183,7 +181,7 @@ impl WindowsSystemAudioCapture {
                     failure,
                     format,
                     Arc::clone(&self.active),
-                    Arc::clone(&self.last_sound),
+                    Arc::clone(&self.activity),
                 )
             },
             |stream| stream.play().map_err(|_| ()),
@@ -210,7 +208,7 @@ impl WindowsSystemAudioCapture {
                     failure_tx,
                     format,
                     Arc::clone(&self.active),
-                    Arc::clone(&self.last_sound),
+                    Arc::clone(&self.activity),
                 )
             },
             |stream| stream.play().map_err(|_| ()),
@@ -222,7 +220,7 @@ impl WindowsSystemAudioCapture {
         self.generation.fetch_add(1, Ordering::SeqCst);
         stop_stream(&self.stream, &self.active);
         *self.current_device.lock().unwrap() = None;
-        *self.last_sound.lock().unwrap() = None;
+        *self.activity.lock().unwrap() = AudioActivity::default();
     }
 }
 
@@ -232,7 +230,7 @@ fn build_stream_on_output_device(
     failure_tx: CaptureFailureSender,
     format: AudioCaptureFormat,
     active: Arc<AtomicBool>,
-    last_sound: Arc<Mutex<Option<Instant>>>,
+    activity: Arc<Mutex<AudioActivity>>,
 ) -> Result<cpal::Stream, SystemAudioCaptureError> {
     // CPAL enables WASAPI loopback when an input stream is built on an
     // output device. Its configuration must still come from that output
@@ -253,7 +251,7 @@ fn build_stream_on_output_device(
     let processor = Arc::new(Mutex::new(WindowsAudioProcessor {
         resampler: StreamingPcm16Resampler::new(sample_rate, format.sample_rate_hz, channel_count)?,
         normalized_samples: Vec::new(),
-        last_sound,
+        activity,
     }));
     let stream_context = WindowsStreamContext {
         active,
@@ -524,7 +522,11 @@ fn process_frames_f32(
         failure_tx.report(SystemAudioCaptureFailure::AudioProcessingFailed);
         return;
     };
-    observe_sound(data, &processor.last_sound);
+    processor
+        .activity
+        .lock()
+        .unwrap()
+        .observe(data, Instant::now());
     let Ok(buffers) = processor.resampler.push_interleaved(data) else {
         failure_tx.report(SystemAudioCaptureFailure::AudioProcessingFailed);
         return;
@@ -583,10 +585,13 @@ fn process_converted_frames<T>(
     let WindowsAudioProcessor {
         resampler,
         normalized_samples,
-        last_sound,
+        activity,
     } = &mut *processor;
     normalize(data, normalized_samples);
-    observe_sound(normalized_samples, last_sound);
+    activity
+        .lock()
+        .unwrap()
+        .observe(normalized_samples, Instant::now());
     let buffers = resampler.push_interleaved(normalized_samples);
     // Keep the reusable allocation, but do not retain a logical copy of the
     // most recent system-audio callback after it enters the PCM pipeline.
@@ -1269,27 +1274,4 @@ fn resolve_output(source: &str) -> Result<cpal::Device, SystemAudioCaptureError>
         .map_err(|_| SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)?
         .find(|device| device.id().is_ok_and(|id| id.to_string() == selected))
         .ok_or(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)
-}
-
-fn observe_sound(samples: &[f32], last_sound: &Mutex<Option<Instant>>) {
-    if samples
-        .iter()
-        .any(|sample| sample.is_finite() && sample.abs() > 0.001)
-    {
-        *last_sound.lock().unwrap() = Some(Instant::now());
-    }
-}
-
-#[cfg(test)]
-mod source_activity_tests {
-    use super::*;
-
-    #[test]
-    fn silence_and_non_finite_samples_do_not_claim_sound() {
-        let last_sound = Mutex::new(None);
-        observe_sound(&[0.0, 0.0001, f32::NAN, f32::INFINITY], &last_sound);
-        assert!(last_sound.lock().unwrap().is_none());
-        observe_sound(&[-0.02], &last_sound);
-        assert!(last_sound.lock().unwrap().is_some());
-    }
 }

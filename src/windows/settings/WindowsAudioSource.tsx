@@ -29,7 +29,7 @@ export function WindowsAudioSource() {
         if (!disposed) {
           setFailed(true);
           if (/Windows/i.test(navigator.userAgent)) {
-            setSnapshot((value) => value ?? { devices: [], currentDevice: null, receivingSound: false });
+            setSnapshot((value) => value ?? { devices: [], currentDevice: null, receivingSound: false, receivingAudioData: false });
             timer = setTimeout(() => void refresh(), 1000);
           }
         }
@@ -42,7 +42,7 @@ export function WindowsAudioSource() {
   const missing = selected !== "" && !snapshot.devices.some((device) => device.id === selected);
   const current = snapshot.devices.find((device) => device.id === snapshot.currentDevice)?.name;
   const status = failed ? text.failed : missing || snapshot.devices.length === 0 ? text.missing
-    : active && !paused ? snapshot.receivingSound ? text.receiving : text.silent : text.idle;
+    : active && !paused ? snapshot.receivingSound ? text.receiving : snapshot.receivingAudioData ? text.silent : text.noData : text.idle;
   return (
     <SettingsRow label={text.title} description={active ? text.stop : text.help}>
       <span>

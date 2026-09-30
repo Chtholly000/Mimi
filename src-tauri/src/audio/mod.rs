@@ -31,6 +31,7 @@ pub struct AudioSourceSnapshot {
     pub devices: Vec<AudioSourceDevice>,
     pub current_device: Option<String>,
     pub receiving_sound: bool,
+    pub receiving_audio_data: bool,
 }
 
 use std::sync::atomic::{AtomicBool, Ordering};

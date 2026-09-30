@@ -1,3 +1,4 @@
+import { audio3ErrorMessage } from "./audio3Errors";
 import { audioSourceErrorMessage } from "./windowsAudioSource";
 import { credentialErrorMessage } from "./connectionDiagnostics";
 /**
@@ -151,7 +152,7 @@ export function selectSessionStatusKind(state: SessionStoreSlice) {
 
 export function selectSessionErrorMessage(state: SessionStoreSlice) {
   return state.session.status.kind === "error"
-    ? credentialErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? state.session.status.message
+    ? credentialErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? audio3ErrorMessage(state.session.status.message) ?? state.session.status.message
     : null;
 }
 

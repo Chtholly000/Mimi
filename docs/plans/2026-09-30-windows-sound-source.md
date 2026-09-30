@@ -19,3 +19,13 @@ Pure policy tests cover default changes, stable endpoints, missing selections, a
 CI and policy tests do not prove physical headphones, default-device changes, unplug/replug behavior, or Teams routing. Windows hardware acceptance still requires: start with speakers; change default to headphones while listening; choose the actual Teams output after stopping; unplug a pinned device; reconnect it; reopen settings with an unavailable saved choice; verify silence/playing/paused states. No merge or release is authorized by this draft PR.
 
 The concurrent DeepLX work is independent. Shared preference, IPC, settings view, and type files may need conflict resolution when separately reviewed; this branch does not include or merge that work.
+
+## Audio presence and Audio3 failure follow-up
+
+Data arrival and sound amplitude are separate observations: a callback with silent samples confirms data, not speech. No recent callback reports no data without claiming the device was selected incorrectly. Activity expires after two seconds.
+
+The [official Audio3 client protocol](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events) specifies that `heartbeat=true` keeps a connection alive while silent audio continues to arrive. Audio3 therefore sends 100 ms PCM16 silence blocks, paced at 100 ms, only when no successful audio send happened during that interval. It uses the existing socket send lock, skips missed timer ticks, never queues a catch-up burst, and stops before finish/disconnect or after a terminal failure. Synthetic silence bypasses capture activity and optional recording; it cannot make the UI report real sound. This maintains the service's audio-duration flow while an already-started session is quiet.
+
+The [server-event reference](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events) documents `CLIENT_ERROR` with `request timeout after 23 seconds.`. Only that anchored numeric grammar is classified as a timeout; arbitrary response prose is discarded. Code values use an exact allowlist, with unknown values mapped to `OTHER`. Errors retain setup/recognition phase, classification, and safe code. A timeout does not establish no audio or incorrect output routing. Authentication remains terminal; a pending terminal provider event owns teardown and cannot be replaced by a secondary audio-pipeline reconnect error. There is no silence-driven error loop or new automatic retry policy.
+
+Mock WebSocket tests verify paced idle silence, real PCM preservation, stop/finish behavior, setup authentication, and runtime timeout classification. They do not establish live DashScope behavior or the original Teams failure's cause.
