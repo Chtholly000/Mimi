@@ -87,6 +87,16 @@ class UiSmokeInstrumentation : Instrumentation() {
 
     private fun smoke() {
         val home = launchHome()
+        click(home, R.id.copy_capture_diagnostics)
+        onUi {
+            val clipboard = targetContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            val diagnostic = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: error("No diagnostic copied")
+            check(diagnostic.startsWith("mimi Android capture diagnostics v1\n"))
+            check("source=android_playback_capture" in diagnostic)
+            check("microphone=false" in diagnostic && "observation=STOPPED" in diagnostic)
+            check(diagnostic.lines().size == 10) { "Unexpected diagnostic fields" }
+            clipboard.clearPrimaryClip()
+        }
         val originalTarget = SettingsStore.targetLang(targetContext)
         val testTarget = if (originalTarget == "ja") "en" else "ja"
         click(home, R.id.target_language_action)

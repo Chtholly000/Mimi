@@ -92,6 +92,11 @@
         <TextView android:id="@+id/status_hint" android:layout_width="match_parent" android:layout_height="wrap_content"
             android:layout_marginTop="6dp" android:text="@string/home_setup_hint"
             android:textSize="12sp" android:textColor="@color/mimi_muted" android:lineSpacingExtra="3dp" />
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/copy_capture_diagnostics"
+            style="?attr/borderlessButtonStyle"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="@string/copy_capture_diagnostics" android:textAllCaps="false" />
         <com.google.android.material.button.MaterialButton android:id="@+id/start_stop"
             style="@style/Widget.Mimi.Button.Primary" android:layout_width="match_parent" android:layout_height="52dp"
             android:layout_marginTop="16dp" android:text="@string/start_capture"
