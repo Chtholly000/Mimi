@@ -20,6 +20,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import app.yuxino.mimi.android.capture.MimiService
+import app.yuxino.mimi.android.capture.CaptureHealth
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.snackbar.Snackbar
@@ -53,6 +54,20 @@ class MainActivity : AppCompatActivity() {
                 startActivity(Intent(this@MainActivity, SettingsActivity::class.java)
                     .putExtra("settings_section", "appearance"))
             }
+        }
+        findViewById<View>(R.id.copy_capture_diagnostics).setOnClickListener {
+            val observation = MimiService.captureObservation
+            val report = "mimi Android capture diagnostics v1\n" +
+                "androidApi=${Build.VERSION.SDK_INT}\n" +
+                "source=android_playback_capture\nusage=media,game,unknown\nmicrophone=false\n" +
+                "running=${MimiService.isRunning}\n" +
+                "observation=${observation?.state?.name ?: "STOPPED"}\n" +
+                "pcmAgeMs=${observation?.pcmAgeMs ?: "unknown"}\n" +
+                "soundAgeMs=${observation?.soundAgeMs ?: "unknown"}\n" +
+                "captureError=${MimiService.lastCaptureError ?: "none"}"
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("mimi capture diagnostics", report))
+            Toast.makeText(this, R.string.capture_diagnostics_copied, Toast.LENGTH_SHORT).show()
         }
         startStop.setOnClickListener {
             if (MimiService.isRunning) {
@@ -92,6 +107,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshUi() {
         val running = MimiService.isRunning
+        val captureState = MimiService.captureObservation?.state
         val keyOk = SettingsStore.isConfigured(this)
         val overlayOk = Settings.canDrawOverlays(this)
         startStop.isEnabled = !starting
@@ -107,12 +123,16 @@ class MainActivity : AppCompatActivity() {
         })
         findViewById<TextView>(R.id.status).setText(when {
             starting -> R.string.home_starting_status
-            running -> R.string.home_running_status
+            running && captureState == CaptureHealth.State.AUDIO -> R.string.capture_audio_detected
+            running && captureState == CaptureHealth.State.NO_PCM -> R.string.capture_no_pcm
+            running && captureState == CaptureHealth.State.SILENT -> R.string.capture_silent
+            running -> R.string.capture_waiting
             !keyOk -> R.string.home_setup_status
             else -> R.string.home_ready_status
         })
         findViewById<TextView>(R.id.status_hint).setText(when {
-            running -> R.string.home_running_hint
+            running && (captureState == CaptureHealth.State.NO_PCM || captureState == CaptureHealth.State.SILENT) -> R.string.capture_no_sound_hint
+            running -> R.string.capture_source_hint
             !keyOk -> R.string.home_setup_hint
             !overlayOk -> R.string.home_overlay_hint
             else -> R.string.home_ready_hint

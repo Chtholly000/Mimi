@@ -27,6 +27,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Build
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
@@ -61,6 +62,17 @@ class MimiService : Service() {
     private var audioRecord: AudioRecord? = null
     private var captureThread: Thread? = null
     private var capturing: AtomicBoolean? = null
+    private var health: CaptureHealth? = null
+    private val healthTick = object : Runnable {
+        override fun run() {
+            health?.let {
+                captureObservation = it.snapshot(SystemClock.elapsedRealtime())
+                stateListeners.forEach { listener -> listener() }
+                renderBus()
+                mainHandler.postDelayed(this, 1_000)
+            }
+        }
+    }
     private var generation = 0
     private var projectionCallback: MediaProjection.Callback? = null
     private var engine: ProviderEngine? = null
@@ -174,12 +186,14 @@ class MimiService : Service() {
         val projectionManager =
             getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         try {
+            lastCaptureError = null
             startAsForeground()
             val projection = checkNotNull(projectionManager.getMediaProjection(resultCode, resultData))
             mediaProjection = projection
             startCapture(projection)
             setRunning(true)
         } catch (_: Exception) {
+            lastCaptureError = "capture.start_failed"
             Log.w(TAG, "capture_start_failed")
             Toast.makeText(this, R.string.capture_failed, Toast.LENGTH_LONG).show()
             stopEverything()
@@ -227,7 +241,10 @@ class MimiService : Service() {
         SubtitleBus.setHistoryLimit(SettingsStore.historyLines(this))
         val callback = object : MediaProjection.Callback() {
             override fun onStop() {
-                if (generation == sessionGeneration) stopEverything()
+                if (generation == sessionGeneration) {
+                    lastCaptureError = "capture.projection_stopped"
+                    stopEverything()
+                }
             }
         }
         projectionCallback = callback
@@ -311,9 +328,13 @@ class MimiService : Service() {
         val captureActive = AtomicBoolean(true)
         capturing = captureActive
         val sessionEngine = checkNotNull(engine)
+        val sessionHealth = CaptureHealth(SystemClock.elapsedRealtime())
+        health = sessionHealth
+        captureObservation = sessionHealth.snapshot(SystemClock.elapsedRealtime())
         record.startRecording()
         check(record.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "capture_not_started" }
         showOverlay()
+        mainHandler.post(healthTick)
         captureThread = thread(name = "mimi-capture") {
             try {
                 android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
@@ -323,11 +344,13 @@ class MimiService : Service() {
                     check(read >= 0) { "capture_read_failed" }
                     if (read == 0) continue
                     val pcm = resampler.push(readBuffer.copyOf(read))
+                    sessionHealth.observe(pcm, SystemClock.elapsedRealtime())
                     if (captureActive.get() && pcm.isNotEmpty()) sessionEngine.sendAudio(pcm)
                 }
             } catch (_: Exception) {
                 mainHandler.post {
                     if (generation == sessionGeneration) {
+                        lastCaptureError = "capture.read_failed"
                         Toast.makeText(this, R.string.capture_failed, Toast.LENGTH_LONG).show()
                         stopEverything()
                     }
@@ -340,6 +363,8 @@ class MimiService : Service() {
 
     private fun releaseSession() {
         ++generation
+        health = null
+        captureObservation = null
         mainHandler.removeCallbacksAndMessages(null)
         capturing?.set(false)
         capturing = null
@@ -785,7 +810,10 @@ class MimiService : Service() {
     }
 
     private fun renderBus() {
-        val statusLine = SubtitleBus.statusLine
+        val observation = captureObservation?.state
+        val statusLine = if (observation == CaptureHealth.State.NO_PCM || observation == CaptureHealth.State.SILENT) {
+            getString(R.string.capture_no_sound_hint)
+        } else SubtitleBus.statusLine
         statusView?.apply {
             visibility = if (statusLine.isEmpty()) View.GONE else View.VISIBLE
             text = statusLine
@@ -858,6 +886,10 @@ class MimiService : Service() {
         private const val AUTO_HIDE_MS = 600L
         private const val WATCHDOG_MS = 3_000L
         @Volatile var isRunning: Boolean = false
+            private set
+        @Volatile var captureObservation: CaptureHealth.Snapshot? = null
+            private set
+        @Volatile var lastCaptureError: String? = null
             private set
         private val stateListeners = CopyOnWriteArraySet<() -> Unit>()
         fun addStateListener(listener: () -> Unit) { stateListeners.add(listener) }
