@@ -1,6 +1,20 @@
 # Stable feature integration — 2026-09-30
 
 This is one review and acceptance entry point for today's stable changes.
+
+Latest cloud Linux QA at exact `197f165` reports: DeepLX bad endpoint retains
+draft and nearby focused error; localhost endpoint with empty token saves using
+the in-memory ASR key, and Follow restores the route. Synthetic subtitles and
+pause/resume pass. Export cancel/save/failure were blocked by UI-only archive
+clearing on stop, not established as a production defect. The minimal opt-in
+[`MIMI_UI_TEST_EXPORT=1` fixture](../plans/2026-09-30-ui-test-export-fixture.md)
+addresses only that acceptance entrance; native dialog results on its exact
+new package are pending. Seven-phase/streaming fixture coverage remains absent.
+
+The latest user visual feedback asks for a sound-like pulse indicator. The
+published continuous-ring video remains the previous candidate for comparison,
+not final visual acceptance. A waveform candidate is being reviewed separately;
+all other integrated features retain this same PR acceptance entrance.
 Desktop onboarding #85 is on hold after user visual feedback. PR #67 is included
 at the user's request, preserving the contributor's sentence blocks and text motion.
 Only separator/timestamp/phase hunks from the existing `113a340` candidate are
