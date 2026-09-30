@@ -31,6 +31,7 @@ const COMMITTED: SubtitleBlock = {
 function render(blocks: SubtitleBlock[], displayMode: "bilingual" | "original" = "bilingual") {
   return renderToStaticMarkup(
     <Timeline
+      showTimestamps
       blocks={blocks}
       fontSize={18}
       alignment="center"
@@ -93,7 +94,7 @@ describe("committed row", () => {
     expect(markup).toContain("它并未附着");
   });
 
-  it("keeps its timestamp, which the live row does not have", () => {
+  it("keeps its optional timestamp, which the live row does not have", () => {
     expect(render([COMMITTED])).toContain("subtitle-timestamp");
     expect(render([LIVE_STREAMING])).not.toContain("subtitle-timestamp");
   });
@@ -125,4 +126,12 @@ describe("streaming units", () => {
       "It is not attached",
     );
   });
+});
+
+// Hiding metadata does not remove any subtitle sentence or language lane.
+it("hides timestamps by default without hiding either subtitle lane", () => {
+  const html = renderToStaticMarkup(<Timeline blocks={[COMMITTED]} fontSize={18} alignment="center" color="white" displayMode="bilingual" />);
+  expect(html).not.toContain("subtitle-timestamp");
+  expect(html).toContain("It is not attached");
+  expect(html).toContain("它并未附着");
 });

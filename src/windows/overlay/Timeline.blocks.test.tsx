@@ -75,9 +75,9 @@ describe("sentence block presentation", () => {
   });
 
   it("draws a sentence separator in the card presentation only", () => {
-    expect(render([HISTORY, LIVE])).toContain("background:rgba(255,255,255,0.12)");
+    expect(render([HISTORY, LIVE])).toContain("subtitle-separator");
     expect(render([HISTORY, LIVE], "bilingual", true)).not.toContain(
-      "background:rgba(255,255,255,0.12)",
+      "subtitle-separator",
     );
   });
 });

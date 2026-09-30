@@ -397,6 +397,7 @@ export function OverlayWindow() {
               color={settings.subtitleColor}
               alignment={settings.subtitleAlignment}
               displayMode={settings.subtitleDisplayMode}
+              motionEnabled={motionOn}
             />
           )}
           </div>

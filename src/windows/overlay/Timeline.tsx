@@ -23,7 +23,7 @@ const LANE_GAP = 2;
 const BLOCK_PADDING_Y = 4;
 const LAST_BLOCK_PADDING_Y = 7;
 /** Separator gap for the card presentation; immersive mode uses space only. */
-const SEPARATOR_MARGIN_Y = 6;
+const SEPARATOR_MARGIN_Y = 8;
 const IMMERSIVE_BLOCK_GAP = 12;
 interface TimelineProps {
   blocks: SubtitleBlock[];
@@ -34,6 +34,8 @@ interface TimelineProps {
    * original as a neutral reference lane, single-language modes read in the
    * user's subtitle color. */
   displayMode: SettingsSnapshot["subtitleDisplayMode"];
+  /** Optional metadata; hidden by default so sentence boundaries lead. */
+  showTimestamps?: boolean;
   blendsWithBackground?: boolean;
   /** Resolved motion setting: gates the roll-up glide. */
   motionEnabled?: boolean;
@@ -51,6 +53,7 @@ export const Timeline = memo(function Timeline({
   displayMode,
   blendsWithBackground = false,
   motionEnabled = true,
+  showTimestamps = false,
 }: TimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Keep the newest content pinned to the bottom: the block count changes when
@@ -69,13 +72,13 @@ export const Timeline = memo(function Timeline({
       // A new block glides to the bottom. Skip live-growth pinning in this
       // render so the two scroll updates never fight.
       prevBlockCountRef.current = blocks.length;
-      element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
+      element.scrollTo({ top: element.scrollHeight, behavior: motionEnabled ? "smooth" : "instant" });
     } else {
       // Same block, text grew: pin instantly so per-character streaming
       // never stutters.
       element.scrollTop = element.scrollHeight;
     }
-  }, [blocks.length, lastTextLength, fontSize, alignment, blendsWithBackground]);
+  }, [blocks.length, lastTextLength, fontSize, alignment, blendsWithBackground, motionEnabled]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -111,12 +114,12 @@ export const Timeline = memo(function Timeline({
               paddingLeft: rowHorizontalPadding(
                 alignment,
                 "left",
-                blendsWithBackground,
+                blendsWithBackground || !showTimestamps,
               ),
               paddingRight: rowHorizontalPadding(
                 alignment,
                 "right",
-                blendsWithBackground,
+                blendsWithBackground || !showTimestamps,
               ),
               paddingTop: isFirst
                 ? blendsWithBackground
@@ -135,7 +138,7 @@ export const Timeline = memo(function Timeline({
               // when motion is off.
             }}
           >
-            {!blendsWithBackground && block.createdAt !== null ? (
+            {showTimestamps && !blendsWithBackground && block.createdAt !== null ? (
               <span
                 className="subtitle-timestamp"
                 style={{
@@ -191,10 +194,10 @@ export const Timeline = memo(function Timeline({
             {!isLast && !blendsWithBackground ? (
               <div
                 aria-hidden="true"
+                className="subtitle-separator"
                 style={{
                   height: 1,
-                  margin: `${SEPARATOR_MARGIN_Y}px 24px ${SEPARATOR_MARGIN_Y}px 0`,
-                  background: "rgba(255,255,255,0.12)",
+                  margin: `${SEPARATOR_MARGIN_Y}px 0`,
                 }}
               />
             ) : null}

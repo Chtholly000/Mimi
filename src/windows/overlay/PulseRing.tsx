@@ -13,19 +13,9 @@ interface PulseRingProps {
   motionEnabled: boolean;
 }
 
-// Three rings spread across the pulse cycle (0°, 120°, 240°), so the wave
-// always has a ring mid-expansion. All active phases share one cadence; the
-// phase only changes the color, keeping every state's motion identical.
-const RING_COUNT = 3;
-const PULSE_PERIOD_S = 2.2;
-const RING_STAGGER_S = PULSE_PERIOD_S / RING_COUNT;
-
-/**
- * The recognition activity indicator: a glowing center dot that breathes while
- * rings ripple outward and fade. The loop is pure CSS on `transform` and
- * `opacity`, staggered with negative delays, so it runs on the compositor
- * thread and keeps breathing while the overlay's main thread is busy rendering
- * streaming text. Compact is the identical animation scaled down.
+/** Decorative session phase indicator, never an audio meter or progress value.
+ * Listening rests in a small halo; recognition releases rings; connection and
+ * translation use arcs. Transform/opacity motion remains compositor-friendly.
  */
 export const PulseRing = memo(function PulseRing({
   phase,
@@ -36,22 +26,28 @@ export const PulseRing = memo(function PulseRing({
     motionEnabled && OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0;
   const base = compact ? 18 : 40;
   const color = overlayPhaseColor(phase, 1);
+  const period = phase === "recognizing" ? 2.4 : phase === "translating" ? 4.8 : 6;
 
   return (
     <div
-      className={animating ? "pulse pulse--active" : "pulse"}
-      style={{ width: base, height: base }}
+      className={`pulse pulse--${phase}${animating ? " pulse--active" : " pulse--still"}`}
+      data-phase={phase}
+      style={{
+        width: base,
+        height: base,
+        ["--phase-period" as string]: `${period}s`,
+      }}
       aria-hidden="true"
     >
       {/* Ripple rings; the rest state is a small stack around the dot. */}
-      {Array.from({ length: RING_COUNT }, (_, index) => (
+      {Array.from({ length: 3 }, (_, index) => (
         <div
           key={index}
           className="pulse__ring"
           style={{
-            border: `${compact ? 1 : 1.5}px solid ${color}`,
+            border: `${compact ? 0.75 : 1}px solid ${color}`,
             ["--ring-index" as string]: index,
-            animationDelay: `${(-index * RING_STAGGER_S).toFixed(3)}s`,
+            animationDelay: `${(-index * period / 3).toFixed(3)}s`,
           }}
         />
       ))}
@@ -59,12 +55,12 @@ export const PulseRing = memo(function PulseRing({
       <div
         className="pulse__dot"
         style={{
-          width: compact ? 7 : 14,
-          height: compact ? 7 : 14,
-          marginLeft: compact ? -3.5 : -7,
-          marginTop: compact ? -3.5 : -7,
+          width: compact ? 5 : 10,
+          height: compact ? 5 : 10,
+          marginLeft: compact ? -2.5 : -5,
+          marginTop: compact ? -2.5 : -5,
           background: color,
-          boxShadow: `0 0 ${compact ? 6 : 12}px ${overlayPhaseColor(phase, 0.6)}`,
+          boxShadow: `0 0 ${compact ? 3 : 6}px ${overlayPhaseColor(phase, 0.25)}`,
         }}
       />
     </div>
