@@ -1986,3 +1986,16 @@
   font-size: 11px;
   line-height: 1.5;
 }
+
+.settings-support-diagnostics textarea {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: 18rem;
+  padding: 8px;
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: 11px/1.5 ui-monospace, monospace;
+  resize: vertical;
+}

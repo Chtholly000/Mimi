@@ -26,6 +26,7 @@ import { subtitleColorHex } from "../../lib/subtitleColor";
 import type { SubtitleDisplayMode } from "../../lib/types";
 import { SubtitleColorControl } from "./SubtitleColorControl";
 import { ServiceProfiles } from "./ServiceProfiles";
+import { SupportDiagnostics } from "./SupportDiagnostics";
 import { WindowsAudioSource } from "./WindowsAudioSource";
 import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
@@ -301,6 +302,7 @@ export function SettingsView() {
               {I18N.settings.sessionActionFailed}
             </p>
           )}
+          <SupportDiagnostics />
         </section>
       </aside>
       <div className="settings-console__scroll" ref={contentScrollRef}>

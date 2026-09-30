@@ -15,6 +15,10 @@ use crate::core::models::{SessionStatus, SourceLanguage, TranslationMode, Uttera
 use crate::core::protocols::live_translate::LiveTranslateServerEvent;
 use crate::core::provider::ProviderKind;
 use crate::core::session::{TranslationSessionController, TranslationSessionState};
+use crate::core::support_diagnostics::{
+    Availability, CaptureObservation, DiagnosticFacts, DiagnosticStatus, OutputSelection,
+    RecoveryAction, SafeFailure,
+};
 use crate::pipeline_log;
 use crate::session_history::SessionHistory;
 use crate::settings_store::SettingsStore;
@@ -23,7 +27,7 @@ use serde::Serialize;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{Mutex as TokioMutex, Notify, OwnedMutexGuard};
 use tokio::task::JoinHandle;
@@ -452,6 +456,10 @@ struct LocalCaptureStats {
 #[derive(Clone)]
 pub struct SessionManager {
     app: AppHandle,
+    diagnostic_epoch: Instant,
+    diagnostic_error: Arc<Mutex<Option<(SafeFailure, Instant)>>>,
+    diagnostic_recovery: Arc<Mutex<Option<(RecoveryAction, Instant)>>>,
+    diagnostic_capture: Arc<Mutex<Option<(CaptureObservation, Instant)>>>,
     settings: Arc<SettingsStore>,
     controller: Arc<Mutex<TranslationSessionController>>,
     audio: Arc<Mutex<SystemAudioCapture>>,
@@ -523,6 +531,10 @@ impl SessionManager {
         );
         Arc::new(Self {
             app,
+            diagnostic_epoch: Instant::now(),
+            diagnostic_error: Default::default(),
+            diagnostic_recovery: Default::default(),
+            diagnostic_capture: Default::default(),
             settings,
             controller: Arc::new(Mutex::new(TranslationSessionController::default())),
             audio: Arc::new(Mutex::new(audio_capture)),
@@ -606,12 +618,140 @@ impl SessionManager {
         }
     }
 
+    fn record_diagnostic_failure(&self, error: &str) {
+        *self.diagnostic_error.lock().unwrap() =
+            Some((SafeFailure::from_error(error), Instant::now()));
+    }
+
+    fn record_recovery_action(&self, action: RecoveryAction) {
+        *self.diagnostic_recovery.lock().unwrap() = Some((action, Instant::now()));
+    }
+
+    fn current_capture_observation(&self) -> Option<CaptureObservation> {
+        self.audio_pipeline
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|pipeline| {
+                let (pcm_data_recent, sound_recent) = pipeline.input_activity();
+                CaptureObservation {
+                    pcm_data_recent,
+                    sound_recent,
+                }
+            })
+    }
+
+    pub fn support_diagnostics(&self) -> String {
+        let now = Instant::now();
+        let prefs = self.settings.preferences();
+        let provider = self
+            .settings
+            .active_profile()
+            .ok()
+            .map(|profile| profile.provider);
+        let (provider, mode) = self
+            .active_settings
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|config| (Some(config.provider), config.effective_translation_mode()))
+            .unwrap_or((provider, prefs.translation_mode));
+        let (status, translation_pending, translation_timed_out) = {
+            let controller = self.controller.lock().unwrap();
+            let status = match controller.state.status {
+                SessionStatus::Idle => DiagnosticStatus::Idle,
+                SessionStatus::Connecting => DiagnosticStatus::Connecting,
+                SessionStatus::Stopping => DiagnosticStatus::Stopping,
+                SessionStatus::Listening if self.is_paused() => DiagnosticStatus::Paused,
+                SessionStatus::Listening => DiagnosticStatus::Listening,
+                SessionStatus::Error(_) => DiagnosticStatus::Error,
+            };
+            (
+                status,
+                controller.state.is_translation_pending,
+                controller.state.is_translation_timed_out,
+            )
+        };
+        let capture = self
+            .current_capture_observation()
+            .map(|capture| (capture, 0))
+            .or_else(|| {
+                self.diagnostic_capture
+                    .lock()
+                    .unwrap()
+                    .map(|(capture, at)| (capture, crate::core::diagnostics::milliseconds(at, now)))
+            });
+        #[cfg(target_os = "windows")]
+        let (output_selection, output_availability) = {
+            let selected = prefs.windows_audio_source;
+            let availability = self
+                .windows_audio_status()
+                .ok()
+                .flatten()
+                .map(|snapshot| {
+                    if selected.is_empty() {
+                        // An active bound endpoint is known; before start, the
+                        // default role cannot be inferred from the device list.
+                        if snapshot.current_device.is_some() {
+                            Availability::Available
+                        } else {
+                            Availability::Unknown
+                        }
+                    } else if snapshot.devices.iter().any(|device| device.id == selected) {
+                        Availability::Available
+                    } else {
+                        Availability::Unavailable
+                    }
+                })
+                .unwrap_or(Availability::Unknown);
+            (
+                if selected.is_empty() {
+                    OutputSelection::SystemDefault
+                } else {
+                    OutputSelection::ManualOutput
+                },
+                availability,
+            )
+        };
+        #[cfg(not(target_os = "windows"))]
+        let (output_selection, output_availability) =
+            (OutputSelection::PlatformSystemAudio, Availability::Unknown);
+        crate::core::support_diagnostics::render(DiagnosticFacts {
+            provider,
+            mode,
+            status,
+            output_selection,
+            output_availability,
+            capture,
+            translation_pending,
+            translation_timed_out,
+            last_error: self
+                .diagnostic_error
+                .lock()
+                .unwrap()
+                .map(|(error, at)| (error, crate::core::diagnostics::milliseconds(at, now))),
+            recovery: self
+                .diagnostic_recovery
+                .lock()
+                .unwrap()
+                .map(|(action, at)| (action, crate::core::diagnostics::milliseconds(at, now))),
+            elapsed_ms: crate::core::diagnostics::milliseconds(self.diagnostic_epoch, now),
+        })
+    }
+
     pub fn windows_audio_status(
         &self,
     ) -> Result<Option<crate::audio::AudioSourceSnapshot>, String> {
         #[cfg(target_os = "windows")]
         {
-            self.audio.lock().unwrap().snapshot().map(Some)
+            let mut snapshot = self.audio.lock().unwrap().snapshot()?;
+            // Sound reaching the provider is measured after mono/resampling,
+            // independently of raw callback arrival or synthetic keepalive.
+            snapshot.receiving_sound = snapshot.current_device.is_some()
+                && self
+                    .current_capture_observation()
+                    .is_some_and(|capture| capture.sound_recent);
+            Ok(Some(snapshot))
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -729,6 +869,7 @@ impl SessionManager {
         }
         if let Err(error) = self.settings.prepare_for_listening() {
             if self.invalidate_generation(request_generation) {
+                self.record_diagnostic_failure(&error);
                 self.controller.lock().unwrap().did_fail(error.clone());
                 self.publish_state();
                 return Err(error);
@@ -740,6 +881,7 @@ impl SessionManager {
             Err(error) => {
                 pipeline_log!("session settings failed label=settings_configuration");
                 if self.invalidate_generation(request_generation) {
+                    self.record_diagnostic_failure(&error);
                     self.controller.lock().unwrap().did_fail(error.clone());
                     self.publish_state();
                     return Err(error);
@@ -822,6 +964,7 @@ impl SessionManager {
                 if !is_recovering {
                     self.clear_active_settings_for_generation(generation);
                 }
+                self.record_diagnostic_failure(&error);
                 apply_establish_failure_state(
                     &mut self.controller.lock().unwrap(),
                     error.clone(),
@@ -993,6 +1136,7 @@ impl SessionManager {
     }
 
     pub async fn stop(self: &Arc<Self>) {
+        self.record_recovery_action(RecoveryAction::UserStopped);
         let _operation = self.begin_lifecycle_operation();
         let _stop_request = self.next_lifecycle_request();
         let stopping_generation = self.active_generation.swap(NO_GENERATION, Ordering::SeqCst);
@@ -1612,6 +1756,10 @@ impl SessionManager {
             }
         }
 
+        if let LiveTranslateServerEvent::Error { message, .. } = &event {
+            self.record_diagnostic_failure(message);
+        }
+
         if let LiveTranslateServerEvent::Error { code, message } = &event {
             if provider_error_is_retryable(code) {
                 let _teardown = self.begin_teardown_operation();
@@ -1932,6 +2080,7 @@ impl SessionManager {
         if !self.is_lifecycle_request_current(recovery_generation) {
             return;
         }
+        self.record_recovery_action(RecoveryAction::Retrying);
         pipeline_log!("session recovery started");
         self.is_recovering.store(true, Ordering::SeqCst);
         self.recovery_retry_generation
@@ -1978,6 +2127,7 @@ impl SessionManager {
             drop(lifecycle);
             match self.establish_session(false, recovery_generation).await {
                 Ok(()) => {
+                    self.record_recovery_action(RecoveryAction::Recovered);
                     recovered = true;
                     break;
                 }
@@ -2021,6 +2171,8 @@ impl SessionManager {
                 clear_recovery_atoms(&self.is_recovering, &self.recovery_retry_generation);
                 return;
             }
+            self.record_recovery_action(RecoveryAction::RetriesExhausted);
+            self.record_diagnostic_failure(&failure_message);
             pipeline_log!("session recovery exhausted");
             self.clear_active_settings_for_generation(recovery_generation);
             clear_recovery_atoms(&self.is_recovering, &self.recovery_retry_generation);
@@ -2304,7 +2456,18 @@ impl SessionManager {
         }
         self.audio_pipeline_generation
             .store(NO_GENERATION, Ordering::SeqCst);
-        slot.take()
+        let pipeline = slot.take();
+        if let Some(pipeline) = &pipeline {
+            let (pcm_data_recent, sound_recent) = pipeline.input_activity();
+            *self.diagnostic_capture.lock().unwrap() = Some((
+                CaptureObservation {
+                    pcm_data_recent,
+                    sound_recent,
+                },
+                Instant::now(),
+            ));
+        }
+        pipeline
     }
 
     fn install_pump(&self, generation: u64, pump: JoinHandle<()>) {
@@ -2358,6 +2521,9 @@ impl SessionManager {
             .is_err()
         {
             return;
+        }
+        if let Some(observation) = self.current_capture_observation() {
+            *self.diagnostic_capture.lock().unwrap() = Some((observation, Instant::now()));
         }
         let capture = self.audio.lock().unwrap().clone();
         if tokio::time::timeout(Duration::from_secs(2), capture.stop())

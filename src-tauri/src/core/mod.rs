@@ -17,3 +17,5 @@ pub mod subtitle_reducer;
 
 #[cfg(any(target_os = "windows", test))]
 pub mod audio_source;
+
+pub mod support_diagnostics;

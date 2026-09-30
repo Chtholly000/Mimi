@@ -1082,3 +1082,8 @@ pub async fn windows_audio_status(
 ) -> Result<Option<crate::audio::AudioSourceSnapshot>, String> {
     state.session.windows_audio_status()
 }
+
+#[tauri::command]
+pub async fn support_diagnostics(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.session.support_diagnostics())
+}

@@ -79,14 +79,15 @@ impl WindowsSystemAudioCapture {
         failure_tx: CaptureFailureSender,
         format: AudioCaptureFormat,
     ) -> Result<(), SystemAudioCaptureError> {
-        let _control = self.control.lock().unwrap();
         let source = self.source.lock().unwrap().clone();
         let device = resolve_output(&source)?;
-        self.install_device(&device, audio_ingress.clone(), failure_tx.clone(), format)?;
-        let generation = self
-            .generation
-            .fetch_add(1, Ordering::SeqCst)
-            .wrapping_add(1);
+        let generation = self.install_device(
+            &device,
+            audio_ingress.clone(),
+            failure_tx.clone(),
+            format,
+            None,
+        )?;
         let capture = self.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -114,17 +115,23 @@ impl WindowsSystemAudioCapture {
                     }
                     SourceAction::Rebind => {
                         stop_stream(&capture.stream, &capture.active);
+                        *capture.current_device.lock().unwrap() = None;
+                        drop(_control);
                         if capture
                             .install_device(
                                 &device.unwrap(),
                                 audio_ingress.clone(),
                                 failure_tx.clone(),
                                 format,
+                                Some(generation),
                             )
                             .is_err()
                         {
-                            *capture.current_device.lock().unwrap() = None;
-                            failure_tx.report(SystemAudioCaptureFailure::NativeStopped);
+                            let _control = capture.control.lock().unwrap();
+                            if capture.generation.load(Ordering::SeqCst) == generation {
+                                *capture.current_device.lock().unwrap() = None;
+                                failure_tx.report(SystemAudioCaptureFailure::NativeStopped);
+                            }
                             break;
                         }
                     }
@@ -165,29 +172,54 @@ impl WindowsSystemAudioCapture {
         ingress: AudioIngress,
         failure: CaptureFailureSender,
         format: AudioCaptureFormat,
-    ) -> Result<(), SystemAudioCaptureError> {
+        expected_generation: Option<u64>,
+    ) -> Result<u64, SystemAudioCaptureError> {
         let id = device
             .id()
             .map_err(|_| SystemAudioCaptureError::NativeStartFailed)?
             .to_string();
-        *self.activity.lock().unwrap() = AudioActivity::default();
-        build_install_and_play_stream(
-            &self.stream,
-            &self.active,
-            || {
-                build_stream_on_output_device(
-                    device,
-                    ingress,
-                    failure,
-                    format,
-                    Arc::clone(&self.active),
-                    Arc::clone(&self.activity),
-                )
-            },
-            |stream| stream.play().map_err(|_| ()),
-        )?;
+        let (token, generation) = {
+            let _control = self.control.lock().unwrap();
+            if expected_generation
+                .is_some_and(|generation| self.generation.load(Ordering::SeqCst) != generation)
+            {
+                return Err(SystemAudioCaptureError::NativeStartFailed);
+            }
+            let token = reserve_stream_start(&self.stream, &self.active)?;
+            let generation = expected_generation.unwrap_or_else(|| {
+                self.generation
+                    .fetch_add(1, Ordering::SeqCst)
+                    .wrapping_add(1)
+            });
+            *self.activity.lock().unwrap() = AudioActivity::default();
+            (token, generation)
+        };
+        // Native build is outside the control lock: stop can invalidate both
+        // reservations while WASAPI initializes, preserving cancellable start.
+        let stream = match build_stream_on_output_device(
+            device,
+            ingress,
+            failure,
+            format,
+            Arc::clone(&self.active),
+            Arc::clone(&self.activity),
+        ) {
+            Ok(stream) => stream,
+            Err(error) => {
+                cancel_stream_start(&self.stream, token);
+                return Err(error);
+            }
+        };
+        let _control = self.control.lock().unwrap();
+        if self.generation.load(Ordering::SeqCst) != generation {
+            cancel_stream_start(&self.stream, token);
+            return Err(SystemAudioCaptureError::NativeStartFailed);
+        }
+        install_and_play_reserved_stream(&self.stream, &self.active, token, stream, |stream| {
+            stream.play().map_err(|_| ())
+        })?;
         *self.current_device.lock().unwrap() = Some(id);
-        Ok(())
+        Ok(generation)
     }
 
     #[cfg(test)]
@@ -323,6 +355,7 @@ fn supports_sample_format(sample_format: cpal::SampleFormat) -> bool {
 /// Reserves the capture slot before any native build work. A concurrent stop
 /// changes `Starting(token)` back to `Idle`, so the completed build can only
 /// be installed when it still owns the same token.
+#[cfg(test)]
 fn build_install_and_play_stream<S, E>(
     stream_slot: &Mutex<StreamSlot<S>>,
     active: &AtomicBool,
@@ -643,6 +676,26 @@ fn emit_buffers(
             Err(AudioIngressError::Closed) => return,
         }
     }
+}
+
+fn resolve_output(source: &str) -> Result<cpal::Device, SystemAudioCaptureError> {
+    let host = cpal::default_host();
+    let selected = if source.is_empty() {
+        host.default_output_device()
+            .and_then(|device| device.id().ok())
+            .map(|id| id.to_string())
+            .ok_or(SystemAudioCaptureError::NoPlaybackDevice)?
+    } else {
+        source.to_string()
+    };
+    // Resolve to a specific render endpoint even for Follow system. CPAL's
+    // default-device handle is dynamic and emits DeviceChanged errors itself;
+    // our generation-scoped monitor owns rebinding instead. Enumerating only
+    // render endpoints also rejects persisted microphone IDs.
+    host.output_devices()
+        .map_err(|_| SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)?
+        .find(|device| device.id().is_ok_and(|id| id.to_string() == selected))
+        .ok_or(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)
 }
 
 #[cfg(test)]
@@ -1254,24 +1307,4 @@ mod tests {
         capture.stop().await;
         pipeline.stop();
     }
-}
-
-fn resolve_output(source: &str) -> Result<cpal::Device, SystemAudioCaptureError> {
-    let host = cpal::default_host();
-    let selected = if source.is_empty() {
-        host.default_output_device()
-            .and_then(|device| device.id().ok())
-            .map(|id| id.to_string())
-            .ok_or(SystemAudioCaptureError::NoPlaybackDevice)?
-    } else {
-        source.to_string()
-    };
-    // Resolve to a specific render endpoint even for Follow system. CPAL's
-    // default-device handle is dynamic and emits DeviceChanged errors itself;
-    // our generation-scoped monitor owns rebinding instead. Enumerating only
-    // render endpoints also rejects persisted microphone IDs.
-    host.output_devices()
-        .map_err(|_| SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)?
-        .find(|device| device.id().is_ok_and(|id| id.to_string() == selected))
-        .ok_or(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)
 }
