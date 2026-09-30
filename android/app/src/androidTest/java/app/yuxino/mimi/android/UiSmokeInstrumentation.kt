@@ -119,6 +119,8 @@ class UiSmokeInstrumentation : Instrumentation() {
                 val views = WindowInspector.getGlobalWindowViews()
                 check(views.any { root -> containsText(root, home.getString(R.string.guide_wait_caption_title)) })
                 setCaptureErrorFixture("capture.projection_stopped")
+                check(MimiService.lastCaptureError == "capture.projection_stopped") { "Fixture error was not retained" }
+                check(projectionSharingEnded(MimiService.isRunning, MimiService.lastCaptureError)) { "Sharing-ended predicate mismatch" }
                 guide.refresh()
             }
             capture("guide-sharing-ended-$guideLocale-$theme")
@@ -126,7 +128,7 @@ class UiSmokeInstrumentation : Instrumentation() {
                 val control = WindowInspector.getGlobalWindowViews().firstNotNullOfOrNull {
                     it.findViewWithTag<View>("guide-finish")
                 } as? TextView ?: error("Reopen sharing button missing")
-                check(control.text.toString() == home.getString(R.string.guide_reopen_sharing))
+                check(control.text.toString() == home.getString(R.string.guide_reopen_sharing)) { "Expected reopen-sharing control, got: ${control.text}" }
                 check(control.performClick())
                 check(requests == 1)
                 check(!MimiService.isRunning)

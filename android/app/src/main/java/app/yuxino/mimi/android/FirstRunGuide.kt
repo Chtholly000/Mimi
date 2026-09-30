@@ -42,7 +42,7 @@ internal class FirstRunGuide(private val activity: AppCompatActivity, private va
                 }
             }
             setContentView(ScrollView(activity).apply { addView(body) })
-            setOnDismissListener { dialog = null }
+            setOnDismissListener { if (dialog === this) dialog = null }
             show()
             behavior.state = com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
         }
