@@ -218,7 +218,7 @@ export function buildSubtitleBlocks(
     const sameText = pair.source.trim() === pair.translation.trim();
     const source = displayMode === "translation" || pair.source.trim() === "" ? null : pair.source;
     const translation =
-      displayMode === "original" || sameText || pair.translation.trim() === ""
+      displayMode === "original" || (source !== null && sameText) || pair.translation.trim() === ""
         ? null
         : pair.translation;
     if (source === null && translation === null) continue;

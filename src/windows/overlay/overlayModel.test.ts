@@ -13,6 +13,34 @@ import {
   visibleLiveSubtitles,
 } from "./overlayModel";
 
+describe("same-text committed subtitles", () => {
+  const pair = { source: "Mimi", translation: "Mimi", createdAt: 1 };
+
+  it("keeps the translation when the original lane is hidden", () => {
+    expect(buildSubtitleBlocks([pair], "translation")).toEqual([
+      {
+        id: "history-1",
+        createdAt: 1,
+        presentation: "latestCommitted",
+        source: null,
+        translation: "Mimi",
+      },
+    ]);
+  });
+
+  it.each(["bilingual", "original"] as const)("keeps one original lane in %s mode", (mode) => {
+    expect(buildSubtitleBlocks([pair], mode)).toEqual([
+      {
+        id: "history-1",
+        createdAt: 1,
+        presentation: "latestCommitted",
+        source: "Mimi",
+        translation: null,
+      },
+    ]);
+  });
+});
+
 const settings = {
   sourceLanguage: "auto" as const,
   targetLanguage: "zh" as const,
