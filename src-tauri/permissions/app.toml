@@ -13,6 +13,8 @@ identifier = "app-settings"
 description = "Allows the settings window to manage the live-subtitle session, preferences, profiles, updater fixture mode, and fixed release recovery source."
 commands.allow = [
   "settings_save",
+  "windows_audio_status",
+  "support_diagnostics",
   "app_is_ui_test",
   "app_is_portable",
   "app_is_linux_package",

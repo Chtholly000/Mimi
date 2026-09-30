@@ -136,24 +136,29 @@ mod tests {
     }
 
     #[test]
-    fn connection_diagnostic_is_registered_and_allowed_only_in_settings() {
-        let command = "profile_test_connection";
-        assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
-        let permissions = include_str!("../permissions/app.toml");
-        let permitted: Vec<_> = permissions
-            .split("[[permission]]")
-            .filter(|entry| entry.contains(&format!("\"{command}\"")))
-            .collect();
-        assert_eq!(permitted.len(), 1);
-        assert!(permitted[0].contains("identifier = \"app-settings\""));
-        let capability: serde_json::Value =
-            serde_json::from_str(include_str!("../capabilities/settings.json")).unwrap();
-        assert!(capability["permissions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|permission| permission == "app-settings"));
-        assert_eq!(capability["windows"], serde_json::json!(["settings"]));
+    fn diagnostics_are_registered_and_allowed_only_in_settings() {
+        for command in [
+            "profile_test_connection",
+            "windows_audio_status",
+            "support_diagnostics",
+        ] {
+            assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
+            let permissions = include_str!("../permissions/app.toml");
+            let permitted: Vec<_> = permissions
+                .split("[[permission]]")
+                .filter(|entry| entry.contains(&format!("\"{command}\"")))
+                .collect();
+            assert_eq!(permitted.len(), 1);
+            assert!(permitted[0].contains("identifier = \"app-settings\""));
+            let capability: serde_json::Value =
+                serde_json::from_str(include_str!("../capabilities/settings.json")).unwrap();
+            assert!(capability["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|permission| permission == "app-settings"));
+            assert_eq!(capability["windows"], serde_json::json!(["settings"]));
+        }
     }
 
     #[test]
