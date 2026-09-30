@@ -64,6 +64,9 @@
                         android:fontFamily="sans-serif-medium" android:textColor="@color/mimi_text" />
                 </LinearLayout>
             </LinearLayout>
+            <com.google.android.material.button.MaterialButton android:id="@+id/first_run_guide"
+                style="?attr/borderlessButtonStyle" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/guide_open" android:textAllCaps="false" android:layout_marginTop="12dp" />
             <View android:layout_width="match_parent" android:layout_height="1dp"
                 android:layout_marginTop="22dp" android:background="@color/mimi_border" />
             <LinearLayout android:id="@+id/service_settings" android:layout_width="match_parent" android:layout_height="72dp"

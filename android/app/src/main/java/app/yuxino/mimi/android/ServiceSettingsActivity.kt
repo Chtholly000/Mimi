@@ -21,6 +21,7 @@ class ServiceSettingsActivity : AppCompatActivity() {
     private val inputs = linkedMapOf<String, Pair<TextInputLayout,TextInputEditText>>()
     private lateinit var provider: ServiceProvider
     private lateinit var saved: ServiceConfiguration
+    private var storageUnavailable = false
     private lateinit var endpointInput: TextInputEditText
     private lateinit var modelInput: TextInputEditText
     private var hotwordsInput: TextInputEditText? = null
@@ -30,7 +31,7 @@ class ServiceSettingsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         provider=ServiceProvider.fromId(intent.getStringExtra("provider").orEmpty())
-        saved=SettingsStore.configuration(this,provider)
+        saved=runCatching { SettingsStore.configuration(this,provider) }.getOrElse { storageUnavailable = true; ServiceConfiguration(provider, emptyMap()) }
         val root=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL }
         val header=LinearLayout(this).apply { gravity=Gravity.CENTER_VERTICAL; setPadding(dp(12),0,dp(24),0) }
         header.addView(ImageButton(this).apply {
@@ -38,15 +39,34 @@ class ServiceSettingsActivity : AppCompatActivity() {
             imageTintList=ContextCompat.getColorStateList(context,R.color.mimi_text)
             contentDescription=getString(R.string.settings_back); setOnClickListener { finish() }
         },LinearLayout.LayoutParams(dp(48),dp(48)))
-        header.addView(ServiceSettingsUi.label(this,provider.title,21f))
+        header.addView(ServiceSettingsUi.label(this,providerTitle(this, provider),21f))
         root.addView(header,LinearLayout.LayoutParams(-1,dp(64)))
         val scroll=ScrollView(this).apply { isFillViewport=true }
         val content=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(24),dp(12),dp(24),dp(24)) }
-        content.addView(ServiceSettingsUi.label(this,provider.description,14f,true))
-        status=ServiceSettingsUi.label(this,getString(if(SettingsStore.isConfigured(this,provider)) R.string.service_saved_hint else R.string.service_setup_hint),13f,true)
+        content.addView(ServiceSettingsUi.label(this,providerDescription(this, provider),14f,true))
+        status=ServiceSettingsUi.label(this,getString(if(runCatching { SettingsStore.isConfigured(this,provider) }.getOrDefault(false)) R.string.service_saved_hint else R.string.service_setup_hint),13f,true)
+        if (storageUnavailable) status.text = getString(R.string.guide_storage_unavailable)
         content.addView(status,LinearLayout.LayoutParams(-1,-2).apply { topMargin=dp(10); bottomMargin=dp(24) })
+        val help = providerHelp(provider)
+        content.addView(ServiceSettingsUi.label(this, getString(help.setup), 13f, true))
+        listOf(getString(R.string.guide_official) to help.documentation, getString(R.string.guide_billing) to help.billing).forEach { (title, url) ->
+            content.addView(MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
+                text = title; isAllCaps = false
+                setOnClickListener {
+                    try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+                    catch (_: android.content.ActivityNotFoundException) { Toast.makeText(this@ServiceSettingsActivity, getString(R.string.guide_no_browser), Toast.LENGTH_SHORT).show() }
+                }
+            })
+        }
+        content.addView(ServiceSettingsUi.label(this, getString(R.string.guide_local_save), 12f, true))
         provider.fields.forEach { field ->
-            val pair=field(content,field.id,field.label,field.secret)
+            val title = when (field.id) {
+                "endpoint" -> getString(R.string.guide_field_endpoint)
+                "deployment" -> getString(R.string.guide_field_deployment)
+                "transcriptionDeployment" -> getString(R.string.guide_field_transcription)
+                else -> field.label
+            }
+            val pair=field(content,field.id,title,field.secret)
             if(field.secret) {
                 if(saved.value(field.id).isNotBlank()) pair.first.helperText=getString(R.string.service_secret_saved)
             } else pair.second.setText(saved.value(field.id))
@@ -68,7 +88,7 @@ class ServiceSettingsActivity : AppCompatActivity() {
         modelInput.setText(saved.model); modelInput.hint=provider.model
         if(provider == ServiceProvider.DASHSCOPE) {
             hotwordsInput=field(advanced,"hotwords",getString(R.string.service_glossary),false).second.apply {
-                setText(SettingsStore.hotwordsText(this@ServiceSettingsActivity)); hint="Mimi=mimi"
+                setText(runCatching { SettingsStore.hotwordsText(this@ServiceSettingsActivity) }.getOrDefault("")); hint="Mimi=mimi"
             }
         }
         if(provider.hasAdvanced) content.addView(advanced)
@@ -106,14 +126,16 @@ class ServiceSettingsActivity : AppCompatActivity() {
         }
         if(!valid) return
         val config=ServiceConfiguration(provider,values,endpointInput.text.toString().trim(),modelInput.text.toString().trim())
+        val (source, target) = runCatching {
+            provider.normalize(SettingsStore.sourceLang(this), SettingsStore.targetLang(this))
+        }.getOrElse { status.text = getString(R.string.guide_storage_unavailable); return }
         // Validate URL/signing requirements locally without contacting a provider or logging secrets.
         try {
             if(provider.hasAdvanced && config.endpoint.isNotBlank()) endpoint(config)
-            val (source,target)=provider.normalize(SettingsStore.sourceLang(this),SettingsStore.targetLang(this))
             if(provider !in listOf(ServiceProvider.DASHSCOPE,ServiceProvider.OPENAI)) createProtocol(config,source,target).request()
         } catch (_:Exception) { status.text=getString(R.string.service_invalid); return }
-        if(!SettingsStore.saveConfiguration(this,config) || !SettingsStore.activateProvider(this,provider)) {
-            status.text=getString(R.string.service_save_failed); return
+        if(!runCatching { SettingsStore.saveConfiguration(this,config) && SettingsStore.activateProvider(this,provider) }.getOrDefault(false)) {
+            status.text=getString(R.string.guide_storage_unavailable); return
         }
         hotwordsInput?.let { SettingsStore.setHotwords(this,it.text.toString()) }
         Toast.makeText(this,R.string.settings_saved,Toast.LENGTH_SHORT).show(); finish()
