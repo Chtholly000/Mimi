@@ -1,5 +1,7 @@
 import type {
   ProviderCredentialsInput,
+  ServiceProfile,
+  TextTranslation,
   ServiceProvider,
 } from "./types";
 
@@ -111,6 +113,15 @@ export function buildProviderCredentials(
     default:
       return { kind: "apiKey", apiKey: values.apiKey };
   }
+}
+
+/** Alibaba retains its profile-scoped key; an empty replacement reuses it natively. */
+export function buildAlibabaTranslationCredentials(profile: ServiceProfile, draft: CredentialDraft, translation: TextTranslation): ProviderCredentialsInput | null {
+  if (profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") return null;
+  if (!draft.apiKey.trim() && profile.credentialState !== "present") return null;
+  const savedDeepLX = profile.credentialState === "present" && (profile.textTranslation ?? (profile.provider === "deepLX" ? "deepLX" : "followService")) === "deepLX";
+  if (translation === "deepLX" && !draft.endpoint.trim() && !savedDeepLX) return null;
+  return { kind: "alibabaTranslation", apiKey: draft.apiKey.trim(), textTranslation: translation, endpoint: translation === "deepLX" ? draft.endpoint.trim() : "", token: translation === "deepLX" ? draft.token.trim() : "" };
 }
 
 /** Mirrors native DeepLX endpoint safety checks before any credential I/O. */

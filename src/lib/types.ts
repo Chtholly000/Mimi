@@ -115,8 +115,11 @@ export type ServiceProvider =
   | "xAIRealtime"
   | "deepLX";
 
+export type TextTranslation = "followService" | "deepLX";
+
 /** Write-only payload sent to the native secure credential store. */
 export type ProviderCredentialsInput =
+  | { kind: "alibabaTranslation"; apiKey: string; textTranslation: TextTranslation; endpoint: string; token: string }
   | { kind: "deepLX"; asrApiKey: string; endpoint: string; token: string }
   | { kind: "apiKey"; apiKey: string }
   | {
@@ -146,6 +149,8 @@ export interface ServiceProfile {
   name: string;
   provider: ServiceProvider;
   credentialState: CredentialState;
+  /** Optional for historical/native fixture snapshots; inferred from provider when absent. */
+  textTranslation?: TextTranslation;
 }
 
 export interface ProviderCapabilities {

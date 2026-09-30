@@ -703,7 +703,7 @@ impl SessionManager {
             .settings
             .active_profile()
             .ok()
-            .map(|profile| profile.provider);
+            .map(|profile| profile.effective_provider());
         let (provider, mode) = self
             .active_settings
             .lock()
@@ -1385,7 +1385,7 @@ impl SessionManager {
         let provider = self
             .settings
             .active_profile()
-            .map(|profile| profile.provider)
+            .map(|profile| profile.effective_provider())
             .unwrap_or(ProviderKind::AlibabaCloud);
         if !provider.capabilities().source_languages.contains(&language) {
             return;
@@ -1476,7 +1476,7 @@ impl SessionManager {
         let provider = self
             .settings
             .active_profile()
-            .map(|profile| profile.provider)
+            .map(|profile| profile.effective_provider())
             .unwrap_or(ProviderKind::AlibabaCloud);
         if !provider.capabilities().translation_modes.contains(&mode) {
             return;

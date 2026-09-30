@@ -10,7 +10,7 @@ use crate::core::models::{
     SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
 };
 use crate::core::provider::{
-    ProviderKind, ProviderPreferences, ServiceProfile, DEFAULT_ALIBABA_PROFILE_ID,
+    ProviderKind, ProviderPreferences, ServiceProfile, TextTranslation, DEFAULT_ALIBABA_PROFILE_ID,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -38,6 +38,13 @@ const CREDENTIAL_STORE_UNAVAILABLE: &str = "credential_store_unavailable";
 const PREFERENCES_UNAVAILABLE: &str = "Settings could not be saved.";
 const PROFILE_NOT_FOUND: &str = "The service profile does not exist.";
 const LAST_PROFILE: &str = "At least one service profile is required.";
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TextTranslationDestination {
+    endpoint: String,
+    token: String,
+}
 
 pub const MAXIMUM_PROFILE_COUNT: usize = 20;
 pub const FONT_SIZE_RANGE: std::ops::RangeInclusive<f64> = 14.0..=20.0;
@@ -422,7 +429,7 @@ impl SettingsStore {
         if !store.catalog_write_blocked {
             let provider = store
                 .active_profile()
-                .map(|profile| profile.provider)
+                .map(|profile| profile.effective_provider())
                 .unwrap_or(ProviderKind::AlibabaCloud);
             let mut prefs = store.prefs.lock().unwrap();
             let original = prefs.clone();
@@ -500,7 +507,7 @@ impl SettingsStore {
         &self,
         update: impl FnOnce(&mut Preferences),
     ) -> Result<(), String> {
-        let provider = self.active_profile()?.provider;
+        let provider = self.active_profile()?.effective_provider();
         self.save_preferences(|prefs| {
             update(prefs);
             normalize_preferences_value(prefs, provider);
@@ -557,8 +564,9 @@ impl SettingsStore {
                 .iter_mut()
                 .find(|profile| profile.id == profile_id)
                 .ok_or_else(|| PROFILE_NOT_FOUND.to_string())?;
-            let updated = ServiceProfile::new(current.id.clone(), name, current.provider)
-                .map_err(|error| error.to_string())?;
+            let mut updated = current.clone();
+            updated.name = name.trim().to_string();
+            let updated = updated.validated().map_err(|error| error.to_string())?;
             *current = updated.clone();
             Ok(updated)
         })
@@ -575,7 +583,7 @@ impl SettingsStore {
             .profiles
             .iter()
             .find(|profile| profile.id == profile_id)
-            .map(|profile| profile.provider)
+            .map(|profile| profile.effective_provider())
             .ok_or_else(|| PROFILE_NOT_FOUND.to_string())?;
         next_catalog.active_profile_id = profile_id.to_string();
         next_catalog
@@ -619,6 +627,8 @@ impl SettingsStore {
             .load_api_key_for_profile(&profile)
             .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
 
+        let previous_destination = self.destination_value(&profile)?;
+
         let previous_catalog = catalog.clone();
         let mut next_catalog = previous_catalog.clone();
         next_catalog
@@ -636,7 +646,7 @@ impl SettingsStore {
             .profiles
             .iter()
             .find(|candidate| candidate.id == next_catalog.active_profile_id)
-            .map(|candidate| candidate.provider)
+            .map(|candidate| candidate.effective_provider())
             .ok_or_else(|| PROFILE_CATALOG_UNAVAILABLE.to_string())?;
         let mut prefs = self.prefs.lock().unwrap();
         let previous_prefs = prefs.clone();
@@ -647,7 +657,7 @@ impl SettingsStore {
         // The old provider also accepts the current providers' normalized
         // subset, and startup revalidates both documents after a crash.
         self.persist_preferences_value(&next_prefs)?;
-        if self.delete_api_key_for_profile(&profile).is_err() {
+        if self.delete_profile_credentials(&profile).is_err() {
             let secret_restored = previous_secret
                 .as_deref()
                 .map(|value| self.save_api_key_for_profile(&profile, value))
@@ -656,7 +666,12 @@ impl SettingsStore {
             if self.persist_preferences_value(&previous_prefs).is_err() {
                 tracing::warn!("preferences unavailable label=profile_delete_rollback_failed");
             }
-            if !secret_restored {
+            let destination_restored = previous_destination
+                .as_deref()
+                .map(|value| self.write_destination_value(&profile, Some(value)))
+                .transpose()
+                .is_ok();
+            if !secret_restored || !destination_restored {
                 tracing::warn!("service profile delete rollback failed label=credential_restore");
             }
             return Err(CREDENTIAL_STORE_UNAVAILABLE.to_string());
@@ -673,7 +688,12 @@ impl SettingsStore {
             if self.persist_preferences_value(&previous_prefs).is_err() {
                 tracing::warn!("preferences unavailable label=profile_delete_rollback_failed");
             }
-            if !secret_restored {
+            let destination_restored = previous_destination
+                .as_deref()
+                .map(|value| self.write_destination_value(&profile, Some(value)))
+                .transpose()
+                .is_ok();
+            if !secret_restored || !destination_restored {
                 tracing::warn!("service profile delete rollback failed label=credential_restore");
             }
             return Err(error);
@@ -692,7 +712,10 @@ impl SettingsStore {
             .lock()
             .unwrap()
             .retain(|(service, slot), result| {
-                let selected = service == self.profile_keychain_service && slot == &account;
+                let selected = service == self.profile_keychain_service
+                    && (slot == &account
+                        || (profile.provider == ProviderKind::AlibabaCloud
+                            && slot == &Self::destination_account(profile)));
                 let migration = retry_legacy
                     && ((service == self.profile_keychain_service
                         && slot == LEGACY_MIGRATION_TOMBSTONE_ACCOUNT)
@@ -705,36 +728,20 @@ impl SettingsStore {
                             )));
                 result.is_ok() || !(selected || migration)
             });
-        match self.load_api_key_for_profile(profile) {
-            Err(_) => "unavailable",
+        match self.credentials_for_profile(profile) {
+            Err(error) if error == CREDENTIAL_STORE_UNAVAILABLE => "unavailable",
+            Err(_) => "invalid",
             Ok(None) => "missing",
-            Ok(Some(value)) => {
-                match ProviderCredentials::decode_from_keychain(profile.provider, &value) {
-                    Ok(_) => "present",
-                    Err(_) => "invalid",
-                }
-            }
+            Ok(Some(_)) => "present",
         }
     }
 
     pub fn credential_state(&self, profile: &ServiceProfile) -> CredentialState {
-        match self.load_api_key_for_profile(profile) {
-            Ok(Some(value)) => {
-                match ProviderCredentials::decode_from_keychain(profile.provider, &value) {
-                    Ok(_) => CredentialState::Present,
-                    Err(_) => CredentialState::Unavailable,
-                }
-            }
+        match self.credentials_for_profile(profile) {
+            Ok(Some(_)) => CredentialState::Present,
             Ok(None) => CredentialState::Missing,
             Err(_) => CredentialState::Unavailable,
         }
-    }
-
-    #[cfg(test)]
-    fn load_api_key(&self) -> Result<Option<String>, String> {
-        let profile = self.active_profile()?;
-        self.load_api_key_for_profile(&profile)
-            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())
     }
 
     #[cfg(test)]
@@ -748,15 +755,295 @@ impl SettingsStore {
         credentials: &ProviderCredentials,
     ) -> Result<(), String> {
         let profile = self.profile(profile_id)?;
+        if let ProviderCredentials::AlibabaTranslation {
+            api_key,
+            text_translation,
+            endpoint,
+            token,
+        } = credentials
+        {
+            return self.save_text_translation(
+                &profile,
+                api_key,
+                *text_translation,
+                endpoint,
+                token,
+            );
+        }
         let value = credentials
             .encode_for_keychain(profile.provider)
             .map_err(|error| error.to_string())?;
         self.save_api_key_for_profile(&profile, &value)
     }
 
+    fn destination_account(profile: &ServiceProfile) -> String {
+        format!(
+            "provider-profile:{}:{}:text-translation",
+            profile.id,
+            profile.provider.wire_value()
+        )
+    }
+
+    fn destination_value(&self, profile: &ServiceProfile) -> Result<Option<String>, String> {
+        if profile.provider != ProviderKind::AlibabaCloud {
+            return Ok(None);
+        }
+        self.load_secret(
+            self.profile_keychain_service,
+            &Self::destination_account(profile),
+        )
+        .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())
+    }
+
+    fn write_destination_value(
+        &self,
+        profile: &ServiceProfile,
+        value: Option<&str>,
+    ) -> Result<(), String> {
+        let account = Self::destination_account(profile);
+        match value {
+            Some(value) => {
+                self.save_secret(self.profile_keychain_service, &account, value)
+                    .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+                let verified = self
+                    .load_secret_uncached(self.profile_keychain_service, &account)
+                    .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+                if verified.as_deref() != Some(value) {
+                    self.secret_cache
+                        .lock()
+                        .unwrap()
+                        .remove(&cache_key(self.profile_keychain_service, &account));
+                    return Err(CREDENTIAL_STORE_UNAVAILABLE.to_string());
+                }
+                self.cache_secret(self.profile_keychain_service, &account, verified);
+                Ok(())
+            }
+            None => self
+                .delete_secret(self.profile_keychain_service, &account)
+                .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string()),
+        }
+    }
+
+    fn credentials_for_profile(
+        &self,
+        profile: &ServiceProfile,
+    ) -> Result<Option<ProviderCredentials>, String> {
+        let Some(value) = self
+            .load_api_key_for_profile(profile)
+            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?
+        else {
+            return Ok(None);
+        };
+        let credentials = ProviderCredentials::decode_for_profile(profile, &value)
+            .map_err(|error| error.to_string())?;
+        if profile.provider == ProviderKind::AlibabaCloud
+            && profile.effective_provider() == ProviderKind::DeepLX
+        {
+            let destination = self.destination_value(profile)?.ok_or_else(|| {
+                crate::core::credentials::ProviderCredentialsError::InvalidStoredValue.to_string()
+            })?;
+            let destination: TextTranslationDestination = serde_json::from_str(&destination)
+                .map_err(|_| {
+                    crate::core::credentials::ProviderCredentialsError::InvalidStoredValue
+                        .to_string()
+                })?;
+            return ProviderCredentials::DeepLX {
+                asr_api_key: credentials.alibaba_key().unwrap_or_default().into(),
+                endpoint: destination.endpoint,
+                token: destination.token,
+            }
+            .validated_for(ProviderKind::DeepLX)
+            .map(Some)
+            .map_err(|error| error.to_string());
+        }
+        Ok(Some(credentials))
+    }
+
+    fn save_text_translation(
+        &self,
+        profile: &ServiceProfile,
+        api_key: &str,
+        translation: TextTranslation,
+        endpoint: &str,
+        token: &str,
+    ) -> Result<(), String> {
+        if !matches!(
+            profile.provider,
+            ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+        ) {
+            return Err("DeepLX text translation requires Alibaba speech recognition.".into());
+        }
+        if translation == TextTranslation::DeepLX && !endpoint.trim().is_empty() {
+            crate::core::protocols::deeplx::endpoint(endpoint).map_err(|_| {
+                crate::core::credentials::ProviderCredentialsError::InvalidDeepLXEndpoint
+                    .to_string()
+            })?;
+        }
+        let previous = self
+            .load_api_key_for_profile(profile)
+            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+        let previous_credentials = previous
+            .as_deref()
+            .map(|value| ProviderCredentials::decode_for_profile(profile, value))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let previous_destination = self.destination_value(profile)?;
+        let retained = if profile.provider == ProviderKind::AlibabaCloud {
+            previous_destination
+                .as_deref()
+                .map(serde_json::from_str::<TextTranslationDestination>)
+                .transpose()
+                .map_err(|_| {
+                    crate::core::credentials::ProviderCredentialsError::InvalidStoredValue
+                        .to_string()
+                })?
+        } else {
+            previous_credentials
+                .as_ref()
+                .and_then(|credentials| match credentials {
+                    ProviderCredentials::DeepLX {
+                        endpoint, token, ..
+                    } => Some(TextTranslationDestination {
+                        endpoint: endpoint.clone(),
+                        token: token.clone(),
+                    }),
+                    _ => None,
+                })
+        };
+        let key = if api_key.trim().is_empty() {
+            previous_credentials
+                .as_ref()
+                .and_then(ProviderCredentials::alibaba_key)
+                .unwrap_or_default()
+        } else {
+            api_key
+        };
+        let key = ProviderCredentials::api_key(key)
+            .encode_for_keychain(ProviderKind::AlibabaCloud)
+            .map_err(|error| error.to_string())?;
+        let destination = if translation == TextTranslation::DeepLX && !endpoint.trim().is_empty() {
+            Some(TextTranslationDestination {
+                endpoint: endpoint.into(),
+                token: token.into(),
+            })
+        } else {
+            retained.map(|mut destination| {
+                if translation == TextTranslation::DeepLX && !token.trim().is_empty() {
+                    destination.token = token.into();
+                }
+                destination
+            })
+        };
+        if translation == TextTranslation::DeepLX && destination.is_none() {
+            return Err(
+                crate::core::credentials::ProviderCredentialsError::InvalidDeepLXEndpoint
+                    .to_string(),
+            );
+        }
+        let validated = destination
+            .map(|destination| {
+                ProviderCredentials::DeepLX {
+                    asr_api_key: key.clone(),
+                    endpoint: destination.endpoint,
+                    token: destination.token,
+                }
+                .validated_for(ProviderKind::DeepLX)
+            })
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let (key_value, destination_value) = if profile.provider == ProviderKind::AlibabaCloud {
+            let destination = validated
+                .as_ref()
+                .map(|credentials| match credentials {
+                    ProviderCredentials::DeepLX {
+                        endpoint, token, ..
+                    } => serde_json::to_string(&TextTranslationDestination {
+                        endpoint: endpoint.clone(),
+                        token: token.clone(),
+                    }),
+                    _ => unreachable!(),
+                })
+                .transpose()
+                .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+            (key, destination)
+        } else {
+            let value = match validated {
+                Some(credentials) => credentials
+                    .encode_for_keychain(ProviderKind::DeepLX)
+                    .map_err(|error| error.to_string())?,
+                None => key,
+            };
+            (value, None)
+        };
+        if self.catalog_write_blocked {
+            return Err(PROFILE_CATALOG_UNAVAILABLE.into());
+        }
+        let mut catalog = self.catalog.lock().unwrap();
+        let mut next = catalog.clone();
+        let updated = next
+            .profiles
+            .iter_mut()
+            .find(|candidate| candidate.id == profile.id)
+            .ok_or_else(|| PROFILE_NOT_FOUND.to_string())?;
+        updated.text_translation = Some(translation);
+        let destination_changed = profile.provider == ProviderKind::AlibabaCloud
+            && destination_value != previous_destination;
+        let key_changed = previous.as_deref() != Some(key_value.as_str());
+        let write_result = (|| {
+            if destination_changed {
+                self.write_destination_value(profile, destination_value.as_deref())?;
+            }
+            if key_changed {
+                self.save_api_key_for_profile(profile, &key_value)?;
+            }
+            self.persist_catalog_value(&next)
+        })();
+        if let Err(error) = write_result {
+            // Restore in place, never delete/recreate an existing key or widen its ACL.
+            if destination_changed
+                && self
+                    .write_destination_value(profile, previous_destination.as_deref())
+                    .is_err()
+            {
+                tracing::warn!("credential update rollback failed label=text_destination");
+            }
+            if key_changed {
+                let rollback = match previous {
+                    Some(previous) => self.save_api_key_for_profile(profile, &previous),
+                    None => self.delete_api_key_for_profile(profile),
+                };
+                if rollback.is_err() {
+                    tracing::warn!("credential update rollback failed label=text_key");
+                }
+            }
+            return Err(error);
+        }
+        *catalog = next;
+        Ok(())
+    }
+
     pub fn delete_api_key(&self, profile_id: &str) -> Result<(), String> {
         let profile = self.profile(profile_id)?;
-        self.delete_api_key_for_profile(&profile)
+        self.delete_profile_credentials(&profile)
+    }
+
+    fn delete_profile_credentials(&self, profile: &ServiceProfile) -> Result<(), String> {
+        let destination = self.destination_value(profile)?;
+        if destination.is_some() {
+            self.write_destination_value(profile, None)?;
+        }
+        if let Err(error) = self.delete_api_key_for_profile(profile) {
+            if let Some(destination) = destination {
+                if self
+                    .write_destination_value(profile, Some(&destination))
+                    .is_err()
+                {
+                    tracing::warn!("credential delete rollback failed label=text_destination");
+                }
+            }
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// The validated configuration used to start a session. The provider is
@@ -764,14 +1051,20 @@ impl SettingsStore {
     pub fn configuration(&self) -> Result<LiveTranslationConfiguration, String> {
         let prefs = self.prefs.lock().unwrap().clone();
         let profile = self.active_profile()?;
-        let api_key = self
-            .load_api_key_for_profile(&profile)
-            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?
-            .unwrap_or_default();
-        let credentials = ProviderCredentials::decode_from_keychain(profile.provider, &api_key)
-            .map_err(|error| error.to_string())?;
+        let credentials = self.credentials_for_profile(&profile)?.ok_or_else(|| {
+            crate::core::credentials::ProviderCredentialsError::Missing(
+                profile.effective_provider(),
+            )
+            .to_string()
+        })?;
+        let provider = profile.effective_provider();
+        let credentials = if provider == ProviderKind::AlibabaCloud {
+            ProviderCredentials::api_key(credentials.alibaba_key().unwrap_or_default())
+        } else {
+            credentials
+        };
         LiveTranslationConfiguration::with_credentials(
-            profile.provider,
+            provider,
             credentials,
             prefs.source_language,
             prefs.target_language,
@@ -785,7 +1078,7 @@ impl SettingsStore {
     pub fn prepare_for_listening(&self) -> Result<(), String> {
         let provider = self
             .active_profile()
-            .map(|profile| profile.provider)
+            .map(|profile| profile.effective_provider())
             .unwrap_or(ProviderKind::AlibabaCloud);
         self.save_preferences(|prefs| normalize_preferences_value(prefs, provider))
     }
@@ -1659,6 +1952,343 @@ mod tests {
 
     fn settings(fake: &FakeSecretStore) -> SettingsStore {
         SettingsStore::in_memory(Box::new(fake.clone()), false)
+    }
+
+    fn translation_request(
+        translation: TextTranslation,
+        key: &str,
+        endpoint: &str,
+        token: &str,
+    ) -> ProviderCredentials {
+        ProviderCredentials::AlibabaTranslation {
+            api_key: key.into(),
+            text_translation: translation,
+            endpoint: endpoint.into(),
+            token: token.into(),
+        }
+    }
+
+    #[test]
+    fn alibaba_advanced_translation_reuses_one_raw_key_and_retains_the_destination() {
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::in_memory(Box::new(fake.clone()), false);
+        let profile = store
+            .create_profile(ProviderKind::AlibabaCloud, "Work")
+            .unwrap();
+        store.save_api_key(&profile.id, "synthetic-asr").unwrap();
+        let account = credential_account(&profile);
+        let destination_account = SettingsStore::destination_account(&profile);
+        store
+            .save_credentials(
+                &profile.id,
+                &translation_request(
+                    TextTranslation::DeepLX,
+                    "",
+                    "https://example.com/api",
+                    "synthetic-token",
+                ),
+            )
+            .unwrap();
+        store.select_profile(&profile.id).unwrap();
+        assert_eq!(
+            fake.value(PROFILE_KEYCHAIN_SERVICE, &account).as_deref(),
+            Some("synthetic-asr")
+        );
+        let destination = fake
+            .value(PROFILE_KEYCHAIN_SERVICE, &destination_account)
+            .unwrap();
+        assert!(!destination.contains("synthetic-asr"));
+        assert!(destination.contains("synthetic-token"));
+        assert_eq!(
+            store.configuration().unwrap().provider,
+            ProviderKind::DeepLX
+        );
+        let snapshot = serde_json::to_string(&store.profile_catalog().unwrap()).unwrap();
+        for secret in ["synthetic-asr", "synthetic-token", "example.com"] {
+            assert!(!snapshot.contains(secret));
+        }
+        store.update_profile(&profile.id, "Renamed").unwrap();
+        assert_eq!(
+            store.profile(&profile.id).unwrap().text_translation(),
+            TextTranslation::DeepLX
+        );
+        store
+            .save_credentials(
+                &profile.id,
+                &translation_request(TextTranslation::FollowService, "", "", ""),
+            )
+            .unwrap();
+        store.select_profile(&profile.id).unwrap();
+        assert_eq!(
+            store.configuration().unwrap().provider,
+            ProviderKind::AlibabaCloud
+        );
+        assert_eq!(
+            fake.value(PROFILE_KEYCHAIN_SERVICE, &destination_account)
+                .as_deref(),
+            Some(destination.as_str())
+        );
+        store
+            .save_credentials(
+                &profile.id,
+                &translation_request(TextTranslation::DeepLX, "", "", "new-synthetic-token"),
+            )
+            .unwrap();
+        store.select_profile(&profile.id).unwrap();
+        assert!(
+            matches!(store.configuration().unwrap().credentials, ProviderCredentials::DeepLX { asr_api_key, endpoint, token } if asr_api_key == "synthetic-asr" && endpoint == "https://example.com/api/translate" && token == "new-synthetic-token")
+        );
+        store.delete_api_key(&profile.id).unwrap();
+        assert_eq!(fake.value(PROFILE_KEYCHAIN_SERVICE, &account), None);
+        assert_eq!(
+            fake.value(PROFILE_KEYCHAIN_SERVICE, &destination_account),
+            None
+        );
+    }
+
+    #[test]
+    fn legacy_deeplx_profile_keeps_its_id_account_and_secret_on_default_loading() {
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::in_memory(Box::new(fake.clone()), false);
+        let profile = store
+            .create_profile(ProviderKind::DeepLX, "Existing custom name")
+            .unwrap();
+        store
+            .save_credentials(
+                &profile.id,
+                &ProviderCredentials::DeepLX {
+                    asr_api_key: "synthetic-asr".into(),
+                    endpoint: "https://example.com".into(),
+                    token: "synthetic-token".into(),
+                },
+            )
+            .unwrap();
+        let account = credential_account(&profile);
+        let original = fake.value(PROFILE_KEYCHAIN_SERVICE, &account);
+        store.select_profile(&profile.id).unwrap();
+        assert_eq!(
+            store.configuration().unwrap().provider,
+            ProviderKind::DeepLX
+        );
+        assert_eq!(store.profile(&profile.id).unwrap().text_translation, None);
+        assert_eq!(fake.value(PROFILE_KEYCHAIN_SERVICE, &account), original);
+        store
+            .save_credentials(
+                &profile.id,
+                &translation_request(TextTranslation::FollowService, "", "", ""),
+            )
+            .unwrap();
+        store.select_profile(&profile.id).unwrap();
+        assert_eq!(
+            store.configuration().unwrap().provider,
+            ProviderKind::AlibabaCloud
+        );
+        assert_eq!(fake.value(PROFILE_KEYCHAIN_SERVICE, &account), original);
+        store
+            .save_credentials(
+                &profile.id,
+                &translation_request(TextTranslation::DeepLX, "", "", ""),
+            )
+            .unwrap();
+        store.select_profile(&profile.id).unwrap();
+        assert_eq!(
+            store.configuration().unwrap().provider,
+            ProviderKind::DeepLX
+        );
+        assert_eq!(
+            store.profile(&profile.id).unwrap().provider,
+            ProviderKind::DeepLX
+        );
+        assert_eq!(fake.value(PROFILE_KEYCHAIN_SERVICE, &account), original);
+    }
+
+    #[test]
+    fn advanced_translation_rejects_unsupported_providers_invalid_destinations_and_missing_keys() {
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::in_memory(Box::new(fake.clone()), false);
+        let other = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Other")
+            .unwrap();
+        assert!(store
+            .save_credentials(
+                &other.id,
+                &translation_request(
+                    TextTranslation::DeepLX,
+                    "synthetic",
+                    "https://example.com",
+                    ""
+                )
+            )
+            .is_err());
+        let profile = store
+            .create_profile(ProviderKind::AlibabaCloud, "Ali")
+            .unwrap();
+        let before_loads = fake.state.lock().unwrap().loads.len();
+        assert!(store
+            .save_credentials(
+                &profile.id,
+                &translation_request(TextTranslation::DeepLX, "synthetic", "bad", "")
+            )
+            .is_err());
+        assert_eq!(fake.state.lock().unwrap().loads.len(), before_loads);
+        assert!(store
+            .save_credentials(
+                &profile.id,
+                &translation_request(TextTranslation::DeepLX, "", "https://example.com", "")
+            )
+            .is_err());
+        assert_eq!(
+            fake.value(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile)),
+            None
+        );
+        assert_eq!(
+            fake.value(
+                PROFILE_KEYCHAIN_SERVICE,
+                &SettingsStore::destination_account(&profile)
+            ),
+            None
+        );
+        assert_eq!(store.profile(&profile.id).unwrap().text_translation, None);
+    }
+
+    #[test]
+    fn advanced_translation_survives_restart_without_secret_metadata() {
+        let fake = FakeSecretStore::default();
+        let directory = std::env::temp_dir().join(format!(
+            "mimi-text-translation-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let store = SettingsStore::at_path(directory.clone(), Box::new(fake.clone()));
+        let profile = store
+            .create_profile(ProviderKind::AlibabaCloud, "Ali")
+            .unwrap();
+        store
+            .save_credentials(
+                &profile.id,
+                &translation_request(
+                    TextTranslation::DeepLX,
+                    "synthetic-asr",
+                    "http://localhost:1188",
+                    "",
+                ),
+            )
+            .unwrap();
+        store.select_profile(&profile.id).unwrap();
+        drop(store);
+        let reloaded = SettingsStore::at_path(directory.clone(), Box::new(fake.clone()));
+        assert_eq!(
+            reloaded.configuration().unwrap().provider,
+            ProviderKind::DeepLX
+        );
+        assert_eq!(reloaded.active_profile().unwrap().id, profile.id);
+        assert_eq!(
+            fake.value(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile))
+                .as_deref(),
+            Some("synthetic-asr")
+        );
+        let metadata = std::fs::read_to_string(directory.join(PROFILE_CATALOG_FILE)).unwrap();
+        for secret in ["synthetic-asr", "localhost", "endpoint", "token"] {
+            assert!(!metadata.contains(secret));
+        }
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn failed_advanced_catalog_write_restores_key_destination_and_selection() {
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::in_memory(Box::new(fake.clone()), false);
+        let profile = store
+            .create_profile(ProviderKind::AlibabaCloud, "Ali")
+            .unwrap();
+        store.save_api_key(&profile.id, "synthetic-old").unwrap();
+        store
+            .save_credentials(
+                &profile.id,
+                &translation_request(
+                    TextTranslation::DeepLX,
+                    "",
+                    "https://example.com/old",
+                    "old-token",
+                ),
+            )
+            .unwrap();
+        let previous_key = fake.value(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile));
+        let previous_destination = fake.value(
+            PROFILE_KEYCHAIN_SERVICE,
+            &SettingsStore::destination_account(&profile),
+        );
+        let directory = std::env::temp_dir().join(format!(
+            "mimi-text-write-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut store = store;
+        // A directory cannot be replaced by the atomic catalog file write.
+        store.catalog_path = directory.clone();
+        assert!(store
+            .save_credentials(
+                &profile.id,
+                &translation_request(
+                    TextTranslation::DeepLX,
+                    "synthetic-new",
+                    "https://example.com/new",
+                    "new-token"
+                )
+            )
+            .is_err());
+        assert_eq!(
+            fake.value(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile)),
+            previous_key
+        );
+        assert_eq!(
+            fake.value(
+                PROFILE_KEYCHAIN_SERVICE,
+                &SettingsStore::destination_account(&profile)
+            ),
+            previous_destination
+        );
+        assert_eq!(
+            store.profile(&profile.id).unwrap().text_translation(),
+            TextTranslation::DeepLX
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn failed_destination_delete_preserves_profile_and_key() {
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::in_memory(Box::new(fake.clone()), false);
+        let profile = store
+            .create_profile(ProviderKind::AlibabaCloud, "Ali")
+            .unwrap();
+        store
+            .save_credentials(
+                &profile.id,
+                &translation_request(
+                    TextTranslation::DeepLX,
+                    "synthetic-asr",
+                    "https://example.com",
+                    "",
+                ),
+            )
+            .unwrap();
+        fake.make_delete_unavailable(
+            PROFILE_KEYCHAIN_SERVICE,
+            &SettingsStore::destination_account(&profile),
+        );
+        assert!(store.delete_profile(&profile.id).is_err());
+        assert!(store.profile(&profile.id).is_ok());
+        assert_eq!(
+            fake.value(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile))
+                .as_deref(),
+            Some("synthetic-asr")
+        );
+        assert!(fake
+            .value(
+                PROFILE_KEYCHAIN_SERVICE,
+                &SettingsStore::destination_account(&profile)
+            )
+            .is_some());
     }
 
     fn openai_profile(store: &SettingsStore, name: &str) -> ServiceProfile {

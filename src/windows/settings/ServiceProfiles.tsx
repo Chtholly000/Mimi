@@ -3,7 +3,7 @@ import { diagnosticCopy, connectionDiagnosticMessage, profileErrorMessage } from
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
-import { SERVICE_PROVIDERS, subtitlePreferencesChanged } from "../../lib/providerCapabilities";
+import { SERVICE_PROVIDERS, subtitlePreferencesChanged, textTranslationForProfile } from "../../lib/providerCapabilities";
 import {
   buildProviderCredentials,
   deepLXEndpointIsValid,
@@ -22,6 +22,9 @@ import type {
   SettingsSnapshot,
 } from "../../lib/types";
 import { InlineFeedback, SettingsSection } from "./SettingsPrimitives";
+
+import { DestructiveConfirmation } from "./DestructiveConfirmation";
+import { AlibabaCredentialEditor } from "./AlibabaCredentialEditor";
 
 import { saveAndSelectProfile } from "./saveAndSelectProfile";
 
@@ -80,6 +83,8 @@ export function ServiceProfiles({
     setFeedback(null);
     setPendingConfirmation(null);
   }
+
+  const SelectedCredentialEditor = selectedProfile && ["alibabaCloud", "deepLX"].includes(selectedProfile.provider) ? AlibabaCredentialEditor : CredentialEditor;
 
   const mutationsDisabled = sessionIsActive || pendingAction !== null;
   const atProfileLimit = settings.profiles.length >= 20;
@@ -254,8 +259,8 @@ export function ServiceProfiles({
           <div className="service-detail__identity">
             <ProviderMark provider={selectedProfile.provider} />
             <span>
-              <h2>{selectedProfile.name}</h2>
-              <small>{providerDescription(selectedProfile.provider)}</small>
+              <h2>{selectedProfile.provider === "deepLX" && selectedProfile.name === "DeepLX (Audio 3.0 ASR)" ? providerDisplayName("alibabaCloud") : selectedProfile.name}</h2>
+              <small>{providerDescription(selectedProfile.provider === "deepLX" ? "alibabaCloud" : selectedProfile.provider)}</small>
             </span>
           </div>
           <div className="service-detail__status">
@@ -293,7 +298,7 @@ export function ServiceProfiles({
               <p>{diagnosticCopy().details}</p>
             </details>
           </div>
-          <CredentialEditor
+          <SelectedCredentialEditor
             key={selectedProfile.id}
             profile={selectedProfile}
             inputId={`profile-api-key-${selectedProfile.id}`}
@@ -418,8 +423,8 @@ export function ServiceProfiles({
                 >
                   <ProviderMark provider={profile.provider} />
                   <span className="service-row__copy">
-                    <strong>{profile.name}</strong>
-                    <small>{providerDisplayName(profile.provider)}</small>
+                    <strong>{profile.provider === "deepLX" && profile.name === "DeepLX (Audio 3.0 ASR)" ? providerDisplayName("alibabaCloud") : profile.name}</strong>
+                    <small>{textTranslationForProfile(profile) === "deepLX" ? I18N.settings.deepLXChain : providerDisplayName(profile.provider)}</small>
                   </span>
                   <span className="service-row__state">
                     <CredentialBadge state={profile.credentialState} />
@@ -551,6 +556,11 @@ function CredentialEditor({
             {I18N.settings.deleteCredentials}
           </button>
         </span>
+        <details className="settings-advanced">
+          <summary>{I18N.settings.advancedTranslation}</summary>
+          <p>{I18N.settings.textTranslationLabel}: {I18N.settings.textTranslationFollow}</p>
+          <p className="settings-caption">{I18N.settings.textTranslationUnsupported}</p>
+        </details>
         {saveFeedback}
         {confirmingDelete && (
           <DestructiveConfirmation
@@ -597,7 +607,11 @@ function CredentialEditor({
         />
       )}
 
-      {profile.provider === "deepLX" && <p className="settings-caption">{I18N.settings.deepLXNote}</p>}
+      <details className="settings-advanced">
+        <summary>{I18N.settings.advancedTranslation}</summary>
+        <p>{I18N.settings.textTranslationLabel}: {I18N.settings.textTranslationFollow}</p>
+        <p className="settings-caption">{I18N.settings.textTranslationUnsupported}</p>
+      </details>
       <form className="credential-form" onSubmit={handleSubmit}>
         <div className="credential-form__fields">
           {credentialFieldsForProvider(profile.provider).map((field) => {
@@ -724,47 +738,6 @@ function credentialFieldCopy(field: CredentialFieldName, provider: ServiceProvid
   }
 }
 
-function DestructiveConfirmation({
-  message,
-  disabled,
-  onCancel,
-  onConfirm,
-}: {
-  message: string;
-  disabled: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const confirmationRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const confirmation = confirmationRef.current;
-    if (!confirmation) return;
-    confirmation.focus({ preventScroll: true });
-    confirmation.scrollIntoView({ block: "nearest" });
-  }, []);
-
-  return (
-    <div ref={confirmationRef} className="destructive-confirmation" role="alert" tabIndex={-1}>
-      <small>{message}</small>
-      <span className="destructive-confirmation__actions">
-        <button type="button" className="settings-link" disabled={disabled} onClick={onCancel}>
-          {I18N.settings.cancel}
-        </button>
-        <button
-          type="button"
-          className="settings-button settings-button--danger settings-button--compact"
-          disabled={disabled}
-          onClick={onConfirm}
-        >
-          <Icon name="trash" />
-          {I18N.settings.confirmDelete}
-        </button>
-      </span>
-    </div>
-  );
-}
-
 function ProviderPicker({
   disabled,
   onChoose,
@@ -823,7 +796,7 @@ function ProviderMark({
     >
       <Icon
         name={
-          provider === "alibabaCloud" || provider === "azureOpenAIRealtime"
+          provider === "alibabaCloud" || provider === "deepLX" || provider === "azureOpenAIRealtime"
             ? "cloud"
             : provider === "xAIRealtime"
               ? "waves"

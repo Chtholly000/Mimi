@@ -40,25 +40,30 @@ pub struct ServiceProfilePayload {
     pub name: String,
     pub provider: ProviderKind,
     pub credential_state: CredentialState,
+    pub text_translation: crate::core::provider::TextTranslation,
 }
 
 impl ServiceProfilePayload {
     fn from_profile(store: &SettingsStore, profile: ServiceProfile) -> Self {
         let credential_state = store.credential_state(&profile);
+        let text_translation = profile.text_translation();
         Self {
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
             credential_state,
+            text_translation,
         }
     }
 
     fn unavailable(profile: ServiceProfile) -> Self {
+        let text_translation = profile.text_translation();
         Self {
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
             credential_state: CredentialState::Unavailable,
+            text_translation,
         }
     }
 }
@@ -211,6 +216,7 @@ mod tests {
                 name: "Alibaba Cloud".into(),
                 provider: ProviderKind::AlibabaCloud,
                 credential_state: CredentialState::Present,
+                text_translation: crate::core::provider::TextTranslation::FollowService,
             }],
             active_profile_id: "alibaba-default".into(),
             source_language: SourceLanguage::Japanese,
@@ -233,6 +239,10 @@ mod tests {
         assert_eq!(json["activeProfileId"], "alibaba-default");
         assert_eq!(json["profiles"][0]["provider"], "alibabaCloud");
         assert_eq!(json["profiles"][0]["credentialState"], "present");
+        assert_eq!(json["profiles"][0]["textTranslation"], "followService");
+        for secret_field in ["apiKey", "asrApiKey", "endpoint", "token"] {
+            assert!(json["profiles"][0].get(secret_field).is_none());
+        }
         assert_eq!(json["subtitleAlignment"], "center");
         assert_eq!(json["subtitleColor"], "white");
         assert_eq!(json["subtitleDisplayMode"], "translation");
@@ -1102,7 +1112,7 @@ pub async fn profile_test_connection(
         return Ok(serde_json::json!({"credential": storage, "network": "notTested"}));
     }
     use crate::core::provider::ProviderKind;
-    let endpoint = match profile.provider {
+    let endpoint = match profile.effective_provider() {
         ProviderKind::AlibabaCloud => "https://dashscope.aliyuncs.com/api-ws/v1/realtime",
         ProviderKind::OpenAIRealtime => "https://api.openai.com/v1/realtime/translations",
         ProviderKind::GoogleGeminiLive => "https://generativelanguage.googleapis.com/",

@@ -8,5 +8,5 @@ export async function saveAndSelectProfile(
   select: (id: string) => Promise<SettingsSnapshot>,
 ): Promise<SettingsSnapshot> {
   const saved = await save(profileId, credentials);
-  return saved.activeProfileId === profileId ? saved : select(profileId);
+  return saved.activeProfileId === profileId && credentials.kind !== "alibabaTranslation" ? saved : select(profileId);
 }
