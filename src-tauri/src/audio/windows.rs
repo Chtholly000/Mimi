@@ -730,27 +730,50 @@ fn resolve_capture_source(
     source: &str,
     follow: &Mutex<FollowAudible>,
 ) -> Result<cpal::Device, SystemAudioCaptureError> {
-    if source != FOLLOW_AUDIBLE {
+    // An empty source used to mean "the console default", which is exactly how
+    // the conference-call silence bug shipped. It now means the smart default.
+    if !(source.is_empty() || source == FOLLOW_AUDIBLE) {
         return resolve_output(source);
     }
+    smart_default_device(follow)
+}
+
+/// The smart default behind an unspecified source: follow whichever render
+/// endpoint is audible, preferring the role chain (communications, multimedia,
+/// console) so a call arriving on the headset wins over background media, and
+/// fall back to the chain while everything is quiet. Resolution never fails
+/// while any render endpoint exists, so a silent room cannot invalidate the
+/// source.
+fn smart_default_device(
+    follow: &Mutex<FollowAudible>,
+) -> Result<cpal::Device, SystemAudioCaptureError> {
     let census = crate::audio::census::census();
     let candidates: Vec<(String, f32)> = census
         .endpoints
         .iter()
         .map(|endpoint| (endpoint.id.clone(), endpoint.level))
         .collect();
+    let preferred: Vec<String> = [
+        DefaultRole::Communications,
+        DefaultRole::Multimedia,
+        DefaultRole::Console,
+    ]
+    .into_iter()
+    .filter_map(default_endpoint_id)
+    .collect();
     let chosen = {
         let mut state = follow.lock().unwrap();
-        match state.decide(&candidates) {
+        match state.decide(&candidates, &preferred) {
             FollowDecision::SwitchTo(id) => Some(id),
             FollowDecision::Keep => state.bound().map(str::to_string),
             FollowDecision::NothingAudible => None,
         }
     };
-    match chosen {
-        Some(id) => resolve_output(&id).or_else(|_| resolve_output("")),
-        None => resolve_output(""),
-    }
+    chosen
+        .and_then(|id| resolve_output(&id).ok())
+        .or_else(|| preferred.iter().find_map(|id| resolve_output(id).ok()))
+        .or_else(|| resolve_output("").ok())
+        .ok_or(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)
 }
 
 /// Windows' default render endpoint for the requested role, by endpoint id.

@@ -1,10 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  FOLLOW_AUDIBLE,
   FOLLOW_SYSTEM,
-  ROLE_COMMUNICATIONS,
-  ROLE_MULTIMEDIA,
   audioSourceCopy,
   isDeviceSource,
   type AudioSourceSnapshot,
@@ -58,9 +55,6 @@ export function WindowsAudioSource() {
           onChange={(value) => void save({ windowsAudioSource: value })}
           options={[
             { value: FOLLOW_SYSTEM, label: text.system },
-            { value: ROLE_COMMUNICATIONS, label: text.communications },
-            { value: ROLE_MULTIMEDIA, label: text.multimedia },
-            { value: FOLLOW_AUDIBLE, label: text.audible },
             ...snapshot.devices.map((device) => ({ value: device.id, label: device.name })),
             ...(missing ? [{ value: selected, label: text.unavailable }] : []),
           ]} />

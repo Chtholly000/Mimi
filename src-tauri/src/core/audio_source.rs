@@ -75,8 +75,11 @@ impl FollowAudible {
         self.bound.as_deref()
     }
 
-    /// `candidates` are `(endpoint id, level)` pairs in any order.
-    pub fn decide(&mut self, candidates: &[(String, f32)]) -> FollowDecision {
+    /// `candidates` are `(endpoint id, level)` pairs in any order. `preferred`
+    /// lists the role-chain endpoints (communications, multimedia, console):
+    /// an audible preferred endpoint takes over immediately, because a call
+    /// arriving on the headset must win over background music on the speakers.
+    pub fn decide(&mut self, candidates: &[(String, f32)], preferred: &[String]) -> FollowDecision {
         let level_of = |id: &str| {
             candidates
                 .iter()
@@ -84,6 +87,30 @@ impl FollowAudible {
                 .map(|(_, level)| *level)
                 .unwrap_or(0.0)
         };
+        let chain_rank = |id: &str| preferred.iter().position(|candidate| candidate == id);
+        // An audible role-chain endpoint outranks everything else, but only when
+        // it sits *earlier* in the chain than the current binding: a call on the
+        // headset (communications) must win over media on the speakers, and once
+        // the headset is bound, louder media must not take it back.
+        let best_preferred = preferred
+            .iter()
+            .filter(|id| level_of(id) >= AUDIBLE_HIGH_WATERMARK)
+            .min_by_key(|id| chain_rank(id).unwrap_or(usize::MAX));
+        if let Some(id) = best_preferred {
+            let better = match (
+                self.bound.as_deref().and_then(chain_rank),
+                chain_rank(id.as_str()),
+            ) {
+                (Some(bound_rank), Some(best_rank)) => best_rank < bound_rank,
+                (None, _) => self.bound.as_deref() != Some(id.as_str()),
+                _ => false,
+            };
+            if better {
+                self.bound = Some(id.clone());
+                self.ticks_on_bound = 0;
+                return FollowDecision::SwitchTo(id.clone());
+            }
+        }
         // A binding that is still audible is kept, even if something is louder:
         // the point is a stable capture, not the loudest possible one.
         if let Some(bound) = self.bound.clone() {
@@ -173,16 +200,16 @@ mod tests {
     fn follow_audible_keeps_a_binding_that_is_still_audible() {
         let mut follow = FollowAudible::new(2);
         assert_eq!(
-            follow.decide(&[("a".into(), 0.0)]),
+            follow.decide(&[("a".into(), 0.0)], &[]),
             FollowDecision::NothingAudible
         );
         assert_eq!(
-            follow.decide(&[("a".into(), 0.5)]),
+            follow.decide(&[("a".into(), 0.5)], &[]),
             FollowDecision::SwitchTo("a".into())
         );
         // "b" is louder, but "a" is still above the low watermark: keep it.
         assert_eq!(
-            follow.decide(&[("a".into(), 0.05), ("b".into(), 0.9)]),
+            follow.decide(&[("a".into(), 0.05), ("b".into(), 0.9)], &[]),
             FollowDecision::Keep
         );
         assert_eq!(follow.bound(), Some("a"));
@@ -193,36 +220,67 @@ mod tests {
         let mut follow = FollowAudible::new(2);
         let quiet_then_loud = [("a".to_string(), 0.0), ("b".to_string(), 0.5)];
         assert_eq!(
-            follow.decide(&[("a".into(), 0.5)]),
+            follow.decide(&[("a".into(), 0.5)], &[]),
             FollowDecision::SwitchTo("a".into())
         );
         // "a" goes quiet while "b" is loud. The dwell is counted from the last
         // move, so the first two decisions must stay put.
-        assert_eq!(follow.decide(&quiet_then_loud), FollowDecision::Keep);
-        assert_eq!(follow.decide(&quiet_then_loud), FollowDecision::Keep);
+        assert_eq!(follow.decide(&quiet_then_loud, &[]), FollowDecision::Keep);
+        assert_eq!(follow.decide(&quiet_then_loud, &[]), FollowDecision::Keep);
         assert_eq!(
-            follow.decide(&quiet_then_loud),
+            follow.decide(&quiet_then_loud, &[]),
             FollowDecision::SwitchTo("b".into())
         );
         // A fresh binding starts its own dwell window.
-        assert_eq!(follow.decide(&quiet_then_loud), FollowDecision::Keep);
+        assert_eq!(follow.decide(&quiet_then_loud, &[]), FollowDecision::Keep);
     }
 
     #[test]
     fn follow_audible_ignores_endpoints_below_the_high_watermark() {
         let mut follow = FollowAudible::new(0);
         assert_eq!(
-            follow.decide(&[("a".into(), 0.01)]),
+            follow.decide(&[("a".into(), 0.01)], &[]),
             FollowDecision::NothingAudible
         );
         assert_eq!(
-            follow.decide(&[("a".into(), 0.02)]),
+            follow.decide(&[("a".into(), 0.02)], &[]),
             FollowDecision::SwitchTo("a".into())
         );
         // Silence releases the binding so the next audible endpoint binds at once.
         assert_eq!(
-            follow.decide(&[("a".into(), 0.0), ("b".into(), 0.03)]),
+            follow.decide(&[("a".into(), 0.0), ("b".into(), 0.03)], &[]),
             FollowDecision::SwitchTo("b".into())
+        );
+    }
+
+    #[test]
+    fn follow_audible_promotes_an_audible_preferred_endpoint() {
+        let mut follow = FollowAudible::new(2);
+        let speakers = "speakers".to_string();
+        let headset = "headset".to_string();
+        // Background music on the speakers is bound.
+        assert_eq!(
+            follow.decide(
+                &[(speakers.clone(), 0.4)],
+                &[headset.clone(), speakers.clone()]
+            ),
+            FollowDecision::SwitchTo(speakers.clone())
+        );
+        // A call starts on the headset: it takes over immediately, no dwell.
+        assert_eq!(
+            follow.decide(
+                &[(speakers.clone(), 0.4), (headset.clone(), 0.05)],
+                &[headset.clone(), speakers.clone()]
+            ),
+            FollowDecision::SwitchTo(headset.clone())
+        );
+        // Both audible and preferred: stay on the bound one instead of flapping.
+        assert_eq!(
+            follow.decide(
+                &[(speakers.clone(), 0.6), (headset.clone(), 0.4)],
+                &[headset.clone(), speakers.clone()]
+            ),
+            FollowDecision::Keep
         );
     }
 
