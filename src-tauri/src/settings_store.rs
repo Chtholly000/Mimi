@@ -62,11 +62,11 @@ pub enum SubtitleAlignment {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PulseStyle {
+    Syllable,
+    Ribbon,
     #[default]
     #[serde(other)]
     Classic,
-    Syllable,
-    Ribbon,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
