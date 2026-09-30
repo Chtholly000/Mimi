@@ -321,6 +321,7 @@ pub fn run() {
             commands::profile_select,
             commands::profile_delete,
             commands::profile_save_credentials,
+            commands::profile_test_connection,
             commands::profile_delete_api_key,
             crate::session_export::session_archive_state,
             crate::session_export::session_transcript_page,

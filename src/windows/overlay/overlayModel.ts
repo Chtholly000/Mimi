@@ -1,3 +1,4 @@
+import { credentialErrorMessage } from "../../lib/connectionDiagnostics";
 /**
  * Pure derived state for the subtitle overlay. Keeping these transformations
  * outside React makes the phase and row logic deterministic and testable.
@@ -125,7 +126,7 @@ export function emptyStateText(
     case "stopping":
       return I18N.overlay.stopping;
     case "error":
-      return session.status.message;
+      return credentialErrorMessage(session.status.message) ?? session.status.message;
     case "idle":
       return I18N.overlay.idle;
   }

@@ -27,6 +27,8 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum OpenAIRealtimeClientError {
+    #[error("credential_authentication_failed")]
+    AuthenticationFailed,
     #[error("Add an OpenAI API key in Settings.")]
     MissingAPIKey,
     #[error("OpenAI Realtime Translation requires a translated output language.")]
@@ -147,7 +149,13 @@ impl OpenAIRealtimeClient {
         let (socket, _) = tokio::time::timeout(Duration::from_secs(15), connect_async(request))
             .await
             .map_err(|_| OpenAIRealtimeClientError::TransportFailure)?
-            .map_err(|_| OpenAIRealtimeClientError::TransportFailure)?;
+            .map_err(|error| {
+                if super::connection_diagnostics::authentication_rejected(&error) {
+                    OpenAIRealtimeClientError::AuthenticationFailed
+                } else {
+                    OpenAIRealtimeClientError::TransportFailure
+                }
+            })?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);

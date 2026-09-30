@@ -34,7 +34,7 @@ const PROFILE_CATALOG_SCHEMA_VERSION: u32 = 1;
 const LEGACY_MIGRATION_TOMBSTONE_ACCOUNT: &str = "migration:legacy-alibaba:v1";
 const LEGACY_MIGRATION_TOMBSTONE_VALUE: &str = "complete";
 const PROFILE_CATALOG_UNAVAILABLE: &str = "Service profile settings are unavailable.";
-const CREDENTIAL_STORE_UNAVAILABLE: &str = "The system credential store is unavailable.";
+const CREDENTIAL_STORE_UNAVAILABLE: &str = "credential_store_unavailable";
 const PREFERENCES_UNAVAILABLE: &str = "Settings could not be saved.";
 const PROFILE_NOT_FOUND: &str = "The service profile does not exist.";
 const LAST_PROFILE: &str = "At least one service profile is required.";
@@ -146,7 +146,18 @@ fn credential_entry(service: &str, account: &str) -> Result<keyring_core::Entry,
             .map_err(|_| SecretStoreError::Unavailable)
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "linux")]
+    {
+        // keyring's compatibility Entry caches its first store initialization
+        // in a LazyLock, including failure. A desktop Secret Service can appear
+        // later, so use the same backend directly with a fresh encrypted session.
+        use keyring_core::api::CredentialStoreApi;
+        zbus_secret_service_keyring_store::Store::new()
+            .and_then(|store| store.build(service, account, None))
+            .map_err(|_| SecretStoreError::Unavailable)
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         keyring::Entry::new(service, account)
             .map(|entry| entry.inner)
@@ -319,7 +330,8 @@ pub struct SettingsStore {
     migrate_legacy_alibaba: bool,
     /// Every first read is cached, including unavailable results. This keeps
     /// concurrent windows from triggering repeated OS authorization prompts.
-    /// Explicit saves/deletes replace the cached state, and restart retries it.
+    /// Explicit saves/deletes replace the cached state; diagnostics retry failed
+    /// reads for the selected profile, and restart retries all failed reads.
     secret_cache: Mutex<HashMap<SecretCacheKey, Result<Option<String>, SecretStoreError>>>,
     is_ui_test: bool,
 }
@@ -662,6 +674,39 @@ impl SettingsStore {
         *catalog = next_catalog;
         *prefs = next_prefs;
         Ok(())
+    }
+
+    /// Content-free diagnostic distinguishes unreadable storage from malformed data.
+    pub fn credential_diagnostic(&self, profile: &ServiceProfile) -> &'static str {
+        let account = credential_account(profile);
+        let retry_legacy = is_default_alibaba(profile) && self.migrate_legacy_alibaba;
+        self.secret_cache
+            .lock()
+            .unwrap()
+            .retain(|(service, slot), result| {
+                let selected = service == self.profile_keychain_service && slot == &account;
+                let migration = retry_legacy
+                    && ((service == self.profile_keychain_service
+                        && slot == LEGACY_MIGRATION_TOMBSTONE_ACCOUNT)
+                        || (slot == LEGACY_KEYCHAIN_ACCOUNT
+                            && matches!(
+                                service.as_str(),
+                                LEGACY_KEYCHAIN_SERVICE_V3
+                                    | LEGACY_KEYCHAIN_SERVICE_V2
+                                    | LEGACY_KEYCHAIN_SERVICE
+                            )));
+                result.is_ok() || !(selected || migration)
+            });
+        match self.load_api_key_for_profile(profile) {
+            Err(_) => "unavailable",
+            Ok(None) => "missing",
+            Ok(Some(value)) => {
+                match ProviderCredentials::decode_from_keychain(profile.provider, &value) {
+                    Ok(_) => "present",
+                    Err(_) => "invalid",
+                }
+            }
+        }
     }
 
     pub fn credential_state(&self, profile: &ServiceProfile) -> CredentialState {
@@ -1183,6 +1228,106 @@ mod tests {
         assert!(store.load(service, &account).unwrap().as_deref() == Some("updated-test-value"));
         store.delete(service, &account).unwrap();
         assert_eq!(store.load(service, &account).unwrap(), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a private non-activating D-Bus session; starts synthetic Secret Service"]
+    fn linux_secret_service_recovers_without_restart() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        assert_eq!(
+            std::env::var("MIMI_TEST_SECRET_SERVICE_RECOVERY").as_deref(),
+            Ok("1")
+        );
+        let directory = std::env::var("MIMI_TEST_PRIVATE_KEYRING_DIRECTORY").unwrap();
+        assert!(std::env::var("DBUS_SESSION_BUS_ADDRESS")
+            .unwrap()
+            .contains(&directory));
+        // Reproduce the dependency's permanently cached first failure too.
+        assert!(keyring::Entry::store_status().is_err());
+        let store = SettingsStore::in_memory_with_scope(
+            Box::new(KeyringSecretStore),
+            false,
+            "app.yuxino.mimi.test.secret-service-recovery",
+            false,
+        );
+        let profile = store.active_profile().unwrap();
+        assert_eq!(store.credential_diagnostic(&profile), "unavailable");
+
+        struct Daemon(std::process::Child);
+        impl Drop for Daemon {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut daemon = Daemon(
+            Command::new("gnome-keyring-daemon")
+                .args([
+                    "--foreground",
+                    "--unlock",
+                    "--components=secrets",
+                    "--control-directory",
+                ])
+                .arg(Path::new(&directory).join("control"))
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        daemon
+            .0
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"mimi-ci-synthetic-recovery")
+            .unwrap();
+        let mut unlocked = false;
+        for _ in 0..40 {
+            let result = Command::new("gdbus")
+                .args([
+                    "call",
+                    "--session",
+                    "--dest",
+                    "org.freedesktop.secrets",
+                    "--object-path",
+                    "/org/freedesktop/secrets/collection/login",
+                    "--method",
+                    "org.freedesktop.DBus.Properties.Get",
+                    "org.freedesktop.Secret.Collection",
+                    "Locked",
+                ])
+                .output()
+                .unwrap();
+            if result.status.success() && String::from_utf8_lossy(&result.stdout).contains("false")
+            {
+                unlocked = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        assert!(unlocked, "synthetic Secret Service did not unlock");
+        assert!(keyring::Entry::store_status().is_err());
+        assert_eq!(store.credential_diagnostic(&profile), "missing");
+        assert_eq!(store.credential_state(&profile), CredentialState::Missing);
+        store
+            .save_api_key(&profile.id, "synthetic-recovery-value")
+            .unwrap();
+        assert_eq!(store.credential_diagnostic(&profile), "present");
+        assert!(
+            KeyringSecretStore
+                .load(
+                    store.profile_keychain_service,
+                    &credential_account(&profile)
+                )
+                .unwrap()
+                .as_deref()
+                == Some("synthetic-recovery-value")
+        );
+        store.delete_api_key(&profile.id).unwrap();
+        assert_eq!(store.credential_diagnostic(&profile), "missing");
     }
 
     #[test]
@@ -1789,6 +1934,35 @@ mod tests {
             fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&default)),
             1
         );
+    }
+
+    #[test]
+    fn explicit_diagnostic_recovers_failed_storage_without_restart() {
+        let fake = FakeSecretStore::default();
+        let profile = ServiceProfile::alibaba_default();
+        let account = credential_account(&profile);
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &account);
+        let store = settings(&fake);
+        assert_eq!(store.credential_diagnostic(&profile), "unavailable");
+        fake.state.lock().unwrap().unavailable.clear();
+        assert_eq!(store.credential_diagnostic(&profile), "missing");
+        store
+            .save_api_key(&profile.id, "synthetic-test-value")
+            .unwrap();
+        assert_eq!(store.credential_diagnostic(&profile), "present");
+    }
+
+    #[test]
+    fn diagnostic_does_not_retry_another_profiles_failed_slot() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let other = openai_profile(&store, "Synthetic other profile");
+        let account = credential_account(&other);
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &account);
+        assert_eq!(store.credential_state(&other), CredentialState::Unavailable);
+        store.credential_diagnostic(&ServiceProfile::alibaba_default());
+        assert_eq!(store.credential_state(&other), CredentialState::Unavailable);
+        assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, &account), 1);
     }
 
     #[test]

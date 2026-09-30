@@ -135,6 +135,27 @@ mod tests {
     }
 
     #[test]
+    fn connection_diagnostic_is_registered_and_allowed_only_in_settings() {
+        let command = "profile_test_connection";
+        assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
+        let permissions = include_str!("../permissions/app.toml");
+        let permitted: Vec<_> = permissions
+            .split("[[permission]]")
+            .filter(|entry| entry.contains(&format!("\"{command}\"")))
+            .collect();
+        assert_eq!(permitted.len(), 1);
+        assert!(permitted[0].contains("identifier = \"app-settings\""));
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/settings.json")).unwrap();
+        assert!(capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|permission| permission == "app-settings"));
+        assert_eq!(capability["windows"], serde_json::json!(["settings"]));
+    }
+
+    #[test]
     fn frontend_readiness_markers_are_test_only_and_window_scoped() {
         let directory =
             std::env::temp_dir().join(format!("mimi-ui-ready-{}", uuid::Uuid::new_v4()));
@@ -984,4 +1005,48 @@ pub async fn app_quit(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
         .map_err(|_| "Could not save session history before quitting.")?;
     app.exit(0);
     Ok(())
+}
+
+/// Explicit, credential-free reachability check. No session, audio, or auth request.
+#[tauri::command]
+pub async fn profile_test_connection(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    profile_id: String,
+) -> Result<serde_json::Value, String> {
+    let (_, profiles) = state.settings.profile_catalog()?;
+    let profile = profiles
+        .iter()
+        .find(|p| p.id == profile_id)
+        .ok_or("profile_not_found")?;
+    let storage = state.settings.credential_diagnostic(profile);
+    emit_settings_snapshot(&app, &state.settings)?;
+    let client = crate::clients::connection_diagnostics::reachability_client()
+        .map_err(|_| "connection_check_failed")?;
+    if app_is_ui_test() {
+        return Ok(serde_json::json!({"credential": storage, "network": "notTested"}));
+    }
+    use crate::core::provider::ProviderKind;
+    let endpoint = match profile.provider {
+        ProviderKind::AlibabaCloud => "https://dashscope.aliyuncs.com/api-ws/v1/realtime",
+        ProviderKind::OpenAIRealtime => "https://api.openai.com/v1/realtime/translations",
+        ProviderKind::GoogleGeminiLive => "https://generativelanguage.googleapis.com/",
+        ProviderKind::VolcanoEngine => "https://openspeech.bytedance.com/",
+        ProviderKind::TencentCloud => "https://asr.cloud.tencent.com/",
+        ProviderKind::BaiduTranslate => "https://aip.baidubce.com/",
+        ProviderKind::XAIRealtime => "https://api.x.ai/v1/realtime",
+        // Azure requires the private resource endpoint; this check never reads it.
+        ProviderKind::AzureOpenAIRealtime => {
+            return Ok(serde_json::json!({
+                "credential": storage, "network": "notTested"
+            }))
+        }
+    };
+    let network = match client.head(endpoint).send().await {
+        // Every HTTP response, including 401/403/405, proves TLS + server reachability.
+        Ok(_) => "reachable",
+        Err(error) if error.is_timeout() => "timeout",
+        Err(_) => "unreachable",
+    };
+    Ok(serde_json::json!({"credential": storage, "network": network}))
 }

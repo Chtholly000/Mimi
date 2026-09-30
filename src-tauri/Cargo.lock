@@ -2604,6 +2604,7 @@ dependencies = [
  "windows",
  "windows-sys 0.61.2",
  "x11-dl",
+ "zbus-secret-service-keyring-store",
 ]
 
 [[package]]

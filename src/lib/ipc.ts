@@ -272,3 +272,11 @@ export interface DesktopShortcutCommands {
 export function appDesktopShortcutCommands(): Promise<DesktopShortcutCommands | null> {
   return invoke("app_desktop_shortcut_commands");
 }
+
+export interface ConnectionDiagnostic {
+  credential: "present" | "missing" | "unavailable" | "invalid";
+  network: "reachable" | "timeout" | "unreachable" | "notTested";
+}
+export function testProfileConnection(profileId: string): Promise<ConnectionDiagnostic> {
+  return invoke("profile_test_connection", { profileId });
+}

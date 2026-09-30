@@ -32,6 +32,8 @@ const MAX_TRACKED_ITEMS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum LiveTranslateClientError {
+    #[error("credential_authentication_failed")]
+    AuthenticationFailed,
     #[error("Add an Alibaba Cloud Model Studio API key in Settings.")]
     MissingAPIKey,
     #[error("The live translation session is not connected.")]
@@ -171,7 +173,13 @@ impl LiveTranslateClient {
         let (socket, _response) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
             .await
             .map_err(|_| LiveTranslateClientError::ConnectionTimedOut)?
-            .map_err(|_| LiveTranslateClientError::TransportFailure)?;
+            .map_err(|error| {
+                if super::connection_diagnostics::authentication_rejected(&error) {
+                    LiveTranslateClientError::AuthenticationFailed
+                } else {
+                    LiveTranslateClientError::TransportFailure
+                }
+            })?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner

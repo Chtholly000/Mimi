@@ -1,3 +1,4 @@
+import { credentialErrorMessage } from "./connectionDiagnostics";
 /**
  * Global zustand store. In Tauri it forwards every action to the Rust backend
  * and applies `session-state` / `settings-changed` events as they arrive. In a
@@ -148,7 +149,7 @@ export function selectSessionStatusKind(state: SessionStoreSlice) {
 
 export function selectSessionErrorMessage(state: SessionStoreSlice) {
   return state.session.status.kind === "error"
-    ? state.session.status.message
+    ? credentialErrorMessage(state.session.status.message) ?? state.session.status.message
     : null;
 }
 

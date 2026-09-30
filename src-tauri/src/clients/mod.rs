@@ -13,3 +13,5 @@ pub mod tencent_cloud_client;
 pub mod translation_client;
 pub mod volcano_engine_client;
 pub mod xai_realtime_client;
+
+pub mod connection_diagnostics;

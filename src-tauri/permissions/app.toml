@@ -30,6 +30,7 @@ commands.allow = [
   "profile_select",
   "profile_delete",
   "profile_save_credentials",
+  "profile_test_connection",
   "profile_delete_api_key",
   "session_start",
   "session_stop",

@@ -1,3 +1,5 @@
+import { testProfileConnection } from "../../lib/ipc";
+import { diagnosticCopy, connectionDiagnosticMessage, profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
@@ -23,7 +25,7 @@ import { InlineFeedback, SettingsSection } from "./SettingsPrimitives";
 import { saveAndSelectProfile } from "./saveAndSelectProfile";
 
 type Feedback = { tone: "success" | "error" | "info"; message: string };
-type PendingAction = "create" | "rename" | "select" | "delete" | "save-key" | "delete-key" | null;
+type PendingAction = "create" | "rename" | "select" | "delete" | "save-key" | "delete-key" | "test-connection" | null;
 type PendingConfirmation =
   | { kind: "profile"; profileId: string; name: string }
   | { kind: "credential"; profileId: string }
@@ -96,10 +98,10 @@ export function ServiceProfiles({
           : successFeedback(snapshot),
       );
       return snapshot;
-    } catch {
+    } catch (error) {
       setFeedback({
         tone: "error",
-        message: I18N.settings.profileActionFailed,
+        message: profileErrorMessage(error),
       });
       return null;
     } finally {
@@ -263,6 +265,32 @@ export function ServiceProfiles({
                 {I18N.settings.activeProfile}
               </span>
             )}
+          </div>
+          <div className="credential-panel">
+            <button
+              type="button"
+              className="settings-button settings-button--quiet"
+              disabled={mutationsDisabled}
+              onClick={() => {
+                setPendingAction("test-connection");
+                setFeedback(null);
+                void testProfileConnection(selectedProfile.id)
+                  .then((result) => {
+                    setFeedback({ tone: "info", message: connectionDiagnosticMessage(result) });
+                  })
+                  .catch((error: unknown) => {
+                    setFeedback({ tone: "error", message: profileErrorMessage(error) });
+                  })
+                  .finally(() => setPendingAction(null));
+              }}
+            >
+              {pendingAction === "test-connection" ? diagnosticCopy().testing : diagnosticCopy().test}
+            </button>
+            <small>{diagnosticCopy().note}</small>
+            <details>
+              <summary>{diagnosticCopy().help}</summary>
+              <p>{diagnosticCopy().details}</p>
+            </details>
           </div>
           <CredentialEditor
             key={selectedProfile.id}
@@ -526,7 +554,7 @@ function CredentialEditor({
 
       {profile.credentialState === "unavailable" && (
         <p className="credential-unavailable" role="status">
-          {I18N.settings.credentialUnavailableHelp}
+          {diagnosticCopy().storage}
         </p>
       )}
 

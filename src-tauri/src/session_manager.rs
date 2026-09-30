@@ -1570,7 +1570,7 @@ impl SessionManager {
 
     // MARK: event handling
 
-    async fn handle_event(self: &Arc<Self>, generation: u64, event: LiveTranslateServerEvent) {
+    async fn handle_event(self: &Arc<Self>, generation: u64, mut event: LiveTranslateServerEvent) {
         if !self.accepts_event(generation, &event) || self.is_paused() {
             return;
         }
@@ -1583,6 +1583,18 @@ impl SessionManager {
             LiveTranslateServerEvent::SessionCreated | LiveTranslateServerEvent::SessionUpdated
         ) {
             return;
+        }
+
+        if let LiveTranslateServerEvent::Error { code, message } = &mut event {
+            if matches!(
+                code.as_str(),
+                "invalid_api_key"
+                    | "authentication_error"
+                    | "unauthorized"
+                    | "translation_authentication_failed"
+            ) {
+                *message = "credential_authentication_failed".into();
+            }
         }
 
         if let LiveTranslateServerEvent::Error { code, message } = &event {

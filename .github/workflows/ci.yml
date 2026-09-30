@@ -61,6 +61,10 @@ jobs:
         if: runner.os == 'Linux'
         run: ./scripts/linux-keyring-smoke.sh
 
+      - name: Test Linux credential recovery after Secret Service appears
+        if: runner.os == 'Linux'
+        run: ./scripts/linux-keyring-recovery-smoke.sh
+
       - name: Check Intel macOS target
         if: runner.os == 'macOS'
         run: |
