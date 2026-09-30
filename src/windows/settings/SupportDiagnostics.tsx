@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { effectiveUiLanguage } from "../../lib/i18n";
 import { isTauri } from "../../lib/ipc";
+import { writeDiagnosticClipboard } from "../../lib/diagnosticClipboard";
 
 const copy = {
   en: {
@@ -62,11 +63,11 @@ export function SupportDiagnostics() {
         setFeedback(issue.requiresPaste ? "paste" : "opened");
       } else {
         // A visible preview is frozen; otherwise copy a fresh observation.
-        const value = action === "copy" && detailsOpen && report ? report : await prepare();
+        const value = action === "copy" && detailsOpen && report ? Promise.resolve(report) : prepare();
         if (action === "copy") {
-          try { await navigator.clipboard.writeText(value); setFeedback("copied"); }
+          try { await writeDiagnosticClipboard(value); setFeedback("copied"); }
           catch { setFeedback("failed"); }
-        }
+        } else await value;
       }
     } catch { setFeedback(action === "issue" ? "openFailed" : "prepareFailed"); }
     finally { operation.current = false; setBusy(false); }
