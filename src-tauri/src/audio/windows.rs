@@ -85,6 +85,7 @@ impl WindowsSystemAudioCapture {
         format: AudioCaptureFormat,
     ) -> Result<(), SystemAudioCaptureError> {
         let source = self.source.lock().unwrap().clone();
+        *self.follow.lock().unwrap() = FollowAudible::default();
         let device = resolve_capture_source(&source, &self.follow)?;
         let generation = self.install_device(
             &device,
@@ -722,17 +723,23 @@ fn resolve_output(source: &str) -> Result<cpal::Device, SystemAudioCaptureError>
 /// The sentinel for "capture whichever render endpoint is currently audible".
 pub const FOLLOW_AUDIBLE: &str = "follow:audible";
 
-/// Resolves a persisted source value into a device. The audible sentinel
-/// consults the census and the shared follow policy, and falls back to the
-/// console default while nothing is audible, so it never reports the source as
-/// unavailable just because the room went quiet.
+/// The normal default and legacy audible sentinel share the same policy.
+/// Role ids and census ids are raw WASAPI ids, not CPAL's display/persisted ids.
 fn resolve_capture_source(
     source: &str,
     follow: &Mutex<FollowAudible>,
 ) -> Result<cpal::Device, SystemAudioCaptureError> {
-    if source != FOLLOW_AUDIBLE {
+    if !source.is_empty() && source != FOLLOW_AUDIBLE {
         return resolve_output(source);
     }
+    let roles: Vec<String> = [
+        DefaultRole::Communications,
+        DefaultRole::Multimedia,
+        DefaultRole::Console,
+    ]
+    .into_iter()
+    .filter_map(default_endpoint_id)
+    .collect();
     let census = crate::audio::census::census();
     let candidates: Vec<(String, f32)> = census
         .endpoints
@@ -741,16 +748,35 @@ fn resolve_capture_source(
         .collect();
     let chosen = {
         let mut state = follow.lock().unwrap();
-        match state.decide(&candidates) {
+        match state.decide_with_roles(&candidates, &roles) {
             FollowDecision::SwitchTo(id) => Some(id),
             FollowDecision::Keep => state.bound().map(str::to_string),
             FollowDecision::NothingAudible => None,
         }
     };
-    match chosen {
-        Some(id) => resolve_output(&id).or_else(|_| resolve_output("")),
-        None => resolve_output(""),
-    }
+    chosen
+        .as_deref()
+        .and_then(resolve_backend_endpoint)
+        .or_else(|| roles.iter().find_map(|id| resolve_backend_endpoint(id)))
+        .or_else(|| cpal::default_host().output_devices().ok()?.next())
+        .ok_or(SystemAudioCaptureError::NoPlaybackDevice)
+}
+
+fn resolve_backend_endpoint(wanted: &str) -> Option<cpal::Device> {
+    cpal::default_host()
+        .output_devices()
+        .ok()?
+        .find(|device| device.id().is_ok_and(|id| id.id() == wanted))
+}
+
+/// IMMDevice::GetId owns a COM allocation; copy then release it on every scan.
+pub(crate) unsafe fn com_endpoint_id(
+    device: &windows::Win32::Media::Audio::IMMDevice,
+) -> Option<String> {
+    let id = device.GetId().ok()?;
+    let value = id.to_string().ok();
+    windows::Win32::System::Com::CoTaskMemFree(Some(id.0.cast()));
+    value
 }
 
 /// Windows' default render endpoint for the requested role, by endpoint id.
@@ -769,8 +795,7 @@ fn default_endpoint_id(role: DefaultRole) -> Option<String> {
         let enumerator: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
         let device = enumerator.GetDefaultAudioEndpoint(eRender, role).ok()?;
-        let id = device.GetId().ok()?;
-        id.to_string().ok()
+        com_endpoint_id(&device)
     })
 }
 
@@ -819,11 +844,27 @@ mod tests {
     #[test]
     fn audible_source_resolves_or_falls_back_without_panicking() {
         let follow = Mutex::new(FollowAudible::default());
-        match resolve_capture_source(FOLLOW_AUDIBLE, &follow) {
-            Ok(device) => assert!(endpoint_id(&device).is_some()),
-            Err(SystemAudioCaptureError::NoPlaybackDevice)
-            | Err(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable) => {}
-            Err(other) => panic!("unexpected error: {other:?}"),
+        for source in ["", FOLLOW_AUDIBLE] {
+            match resolve_capture_source(source, &follow) {
+                Ok(device) => assert!(endpoint_id(&device).is_some()),
+                Err(SystemAudioCaptureError::NoPlaybackDevice)
+                | Err(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable) => {}
+                Err(other) => panic!("unexpected error: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn raw_census_ids_resolve_the_exact_cpal_render_endpoint() {
+        let Ok(devices) = cpal::default_host().output_devices() else {
+            return;
+        };
+        for device in devices {
+            let Some(id) = endpoint_id(&device) else {
+                continue;
+            };
+            let resolved = resolve_backend_endpoint(&id).expect("raw WASAPI id must resolve");
+            assert_eq!(endpoint_id(&resolved), Some(id));
         }
     }
 

@@ -38,7 +38,7 @@ pub struct AudioCensus {
 #[cfg(target_os = "windows")]
 mod platform {
     use super::{AudioCensus, EndpointCensus, SessionCensus};
-    use crate::audio::windows::with_com;
+    use crate::audio::windows::{com_endpoint_id, with_com};
     use windows::core::Interface;
     use windows::Win32::Foundation::PROPERTYKEY;
     use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
@@ -46,11 +46,13 @@ mod platform {
         eRender, IAudioSessionControl2, IAudioSessionEnumerator, IAudioSessionManager2, IMMDevice,
         IMMDeviceEnumerator, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
     };
+    use windows::Win32::System::Com::StructuredStorage::PropVariantClear;
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL, STGM_READ};
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    use windows::Win32::System::Variant::VT_LPWSTR;
     use windows::Win32::UI::Shell::PropertiesSystem::IPropertyStore;
 
     const PKEY_DEVICE_FRIENDLY_NAME: PROPERTYKEY = PROPERTYKEY {
@@ -76,10 +78,7 @@ mod platform {
                 let Ok(device) = collection.Item(index) else {
                     continue;
                 };
-                let Ok(id) = device.GetId().and_then(|id| {
-                    id.to_string()
-                        .map_err(|_| windows::core::Error::from_win32())
-                }) else {
+                let Some(id) = com_endpoint_id(&device) else {
                     continue;
                 };
                 let level = meter_of(&device)
@@ -98,12 +97,19 @@ mod platform {
 
     unsafe fn friendly_name(device: &IMMDevice) -> Option<String> {
         let store: IPropertyStore = device.OpenPropertyStore(STGM_READ).ok()?;
-        let value = store.GetValue(&PKEY_DEVICE_FRIENDLY_NAME).ok()?;
-        let wide = value.Anonymous.Anonymous.Anonymous.pwszVal;
-        if wide.is_null() {
-            return None;
-        }
-        wide.to_string().ok()
+        let mut value = store.GetValue(&PKEY_DEVICE_FRIENDLY_NAME).ok()?;
+        let name = if value.Anonymous.Anonymous.vt == VT_LPWSTR {
+            let wide = value.Anonymous.Anonymous.Anonymous.pwszVal;
+            if wide.is_null() {
+                None
+            } else {
+                wide.to_string().ok()
+            }
+        } else {
+            None
+        };
+        let _ = PropVariantClear(&mut value);
+        name
     }
 
     unsafe fn meter_of(device: &IMMDevice) -> Option<IAudioMeterInformation> {

@@ -1,6 +1,6 @@
 import { effectiveUiLanguage } from "./i18n";
 
-/** Follow-system sources. Empty string stays the console/media default. */
+/** Follow-system sources. Empty string follows audible outputs with communications/media/console priority. */
 export const FOLLOW_SYSTEM = "";
 export const ROLE_COMMUNICATIONS = "role:communications";
 export const ROLE_MULTIMEDIA = "role:multimedia";
@@ -9,7 +9,7 @@ export const FOLLOW_AUDIBLE = "follow:audible";
 
 /** True for the follow-system family (never a concrete endpoint id). */
 export function isRoleSource(value: string): boolean {
-  return value === FOLLOW_SYSTEM || value.startsWith("role:");
+  return [FOLLOW_SYSTEM, ROLE_COMMUNICATIONS, ROLE_MULTIMEDIA, "role:console", FOLLOW_AUDIBLE].includes(value);
 }
 
 /** True when the value names a device the snapshot can be checked against. */

@@ -42,6 +42,11 @@ describe("mergeSettingsSnapshot", () => {
     expect(changed).toMatchObject({ pulseStyle: "ribbon", pulseAnimation: false, subtitleAnimation: true, fontSize: 19 });
     expect(mergeSettingsSnapshot(changed, { fontSize: 20 }).pulseStyle).toBe("ribbon");
   });
+  it("keeps an optimistic Windows source choice without changing pulse preferences", () => {
+    const changed = mergeSettingsSnapshot({ ...SETTINGS, pulseStyle: "ribbon", pulseAnimation: false }, { windowsAudioSource: "synthetic-render-endpoint" });
+    expect(changed).toMatchObject({ windowsAudioSource: "synthetic-render-endpoint", pulseStyle: "ribbon", pulseAnimation: false });
+    expect(mergeSettingsSnapshot(changed, { fontSize: 20 }).windowsAudioSource).toBe("synthetic-render-endpoint");
+  });
   it("merges runtime-safe subtitle presentation preferences", () => {
     expect(
       mergeSettingsSnapshot(SETTINGS, {

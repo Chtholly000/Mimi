@@ -30,6 +30,9 @@ it("distinguishes role sources from device ids", () => {
   expect(isRoleSource(FOLLOW_SYSTEM)).toBe(true);
   expect(isRoleSource(ROLE_COMMUNICATIONS)).toBe(true);
   expect(isDeviceSource(ROLE_COMMUNICATIONS)).toBe(false);
+  expect(isDeviceSource(FOLLOW_AUDIBLE)).toBe(false);
+  expect(isDeviceSource("role:console")).toBe(false);
+  expect(isDeviceSource("role:unknown")).toBe(true);
   expect(isDeviceSource("")).toBe(false);
   expect(isDeviceSource("{0.0.0.00000000}.{823cf568-6294-403d-b7bf-c6db30f9ec3a}")).toBe(true);
 });

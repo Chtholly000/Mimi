@@ -1159,6 +1159,9 @@ pub async fn windows_audio_status(
 /// sessions currently attached to them. Never cached; callers poll.
 #[tauri::command]
 pub async fn audio_census() -> crate::audio::census::AudioCensus {
+    if app_is_ui_test() {
+        return crate::audio::census::AudioCensus::default();
+    }
     crate::audio::census::census()
 }
 
