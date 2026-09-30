@@ -118,7 +118,7 @@ class UiSmokeInstrumentation : Instrumentation() {
             onUi {
                 val views = WindowInspector.getGlobalWindowViews()
                 check(views.any { root -> containsText(root, home.getString(R.string.guide_wait_caption_title)) })
-                MimiService.lastCaptureError = "projection_stopped"
+                setCaptureErrorFixture("capture.projection_stopped")
                 guide.refresh()
             }
             capture("guide-sharing-ended-$guideLocale-$theme")
@@ -132,7 +132,16 @@ class UiSmokeInstrumentation : Instrumentation() {
                 check(!MimiService.isRunning)
             }
         } finally {
-            onUi { guide.dismiss(); MimiService.lastCaptureError = previousError; home.finish() }
+            onUi { guide.dismiss(); setCaptureErrorFixture(previousError); home.finish() }
+        }
+    }
+
+    // Instrumentation-only injection; keep the production setter private.
+    private fun setCaptureErrorFixture(value: String?) {
+        check(!MimiService.isRunning)
+        MimiService::class.java.getDeclaredField("lastCaptureError").apply {
+            isAccessible = true
+            set(null, value)
         }
     }
 
@@ -226,7 +235,7 @@ class UiSmokeInstrumentation : Instrumentation() {
         val previousCaptureError = MimiService.lastCaptureError
         try {
             onUi {
-                MimiService.lastCaptureError = "capture.projection_stopped"
+                setCaptureErrorFixture("capture.projection_stopped")
                 guide.refresh()
             }
             capture("guide-sharing-ended-$theme")
@@ -237,7 +246,7 @@ class UiSmokeInstrumentation : Instrumentation() {
                 check(action?.text == targetContext.getString(R.string.guide_reopen_sharing))
             }
         } finally {
-            onUi { MimiService.lastCaptureError = previousCaptureError; guide.refresh() }
+            onUi { setCaptureErrorFixture(previousCaptureError); guide.refresh() }
         }
         onUi { guide.dismiss() }
         check(!MimiService.isRunning && !MimiService.firstRunEvidence.complete)
