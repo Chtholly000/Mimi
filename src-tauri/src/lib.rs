@@ -311,6 +311,8 @@ pub fn run() {
             commands::settings_get,
             commands::windows_audio_status,
             commands::support_diagnostics,
+            commands::app_open_support_issue,
+            commands::capture_status,
             commands::app_is_ui_test,
             commands::app_ui_test_frontend_ready,
             commands::app_is_portable,

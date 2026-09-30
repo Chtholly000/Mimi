@@ -1990,7 +1990,7 @@
 .settings-support-diagnostics textarea {
   box-sizing: border-box;
   width: 100%;
-  max-height: 18rem;
+  max-height: 10rem;
   padding: 8px;
   border: 1px solid var(--settings-border);
   border-radius: 6px;
@@ -1998,4 +1998,50 @@
   color: inherit;
   font: 11px/1.5 ui-monospace, monospace;
   resize: vertical;
+}
+
+.settings-support-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+  padding-top: 18px;
+  border-top: 1px solid var(--settings-border);
+  font-size: 12px;
+}
+
+.settings-support-diagnostics > strong {
+  color: var(--settings-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-support-diagnostics__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-support-diagnostics__actions .settings-button {
+  width: 100%;
+  justify-content: center;
+  min-height: 32px;
+}
+
+.settings-support-diagnostics__note,
+.settings-support-diagnostics__feedback {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--settings-text-faint);
+}
+
+.settings-support-diagnostics__feedback {
+  color: var(--settings-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-support-diagnostics__feedback[data-error="true"] {
+  color: #cf3f37;
 }

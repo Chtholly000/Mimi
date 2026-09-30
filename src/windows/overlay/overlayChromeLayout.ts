@@ -4,9 +4,9 @@ interface OverlayTopChromeLayout {
   showActions: boolean;
 }
 
-const DRAG_HANDLE_MIN_WIDTH = 48;
+const DRAG_HANDLE_MIN_WIDTH = 40;
 const DRAG_HANDLE_MAX_WIDTH = 120;
-const CONTROL_ISLAND_RIGHT = 18 + 236;
+const CONTROL_ISLAND_RIGHT = 18 + 280;
 const ACTION_ROW_RIGHT_MARGIN = 10;
 const ACTION_BUTTON_WIDTH = 24;
 const ACTION_BUTTON_GAP = 4;

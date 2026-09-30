@@ -4,6 +4,34 @@ use crate::core::models::TranslationMode;
 use crate::core::provider::ProviderKind;
 use serde::Serialize;
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SupportIssue {
+    pub url: String,
+    pub report: String,
+    pub requires_paste: bool,
+}
+
+/// Fixed destination and typed facts only; never accept a frontend URL/body.
+pub fn issue_link(facts: DiagnosticFacts) -> SupportIssue {
+    let report = render(facts);
+    let body = format!("## What happened?\nPlease describe what you expected and what happened. Review this public report before submitting.\n\n## Safe diagnostics\n```json\n{report}\n```\n\nRefs #74, #75\n");
+    let mut url = url::Url::parse("https://github.com/yuxino/mimi/issues/new").unwrap();
+    url.query_pairs_mut()
+        .append_pair("title", "Mimi troubleshooting report")
+        .append_pair("body", &body);
+    let requires_paste = url.as_str().len() > 6000;
+    if requires_paste {
+        url.set_query(None);
+        url.query_pairs_mut().append_pair("title", "Mimi troubleshooting report").append_pair("body", "## What happened?\nDescribe the problem.\n\n## Safe diagnostics\nPaste the diagnostic snapshot copied from Mimi here. Review before submitting.\n\nRefs #74, #75\n");
+    }
+    SupportIssue {
+        url: url.into(),
+        report,
+        requires_paste,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryAction {
@@ -181,6 +209,35 @@ pub fn render(facts: DiagnosticFacts) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn issue_link_has_a_fixed_public_destination_and_only_safe_facts() {
+        let issue = issue_link(DiagnosticFacts {
+            last_error: Some((
+                SafeFailure::from_error(
+                    "private-token /Users/private https://private.invalid original-text",
+                ),
+                7,
+            )),
+            ..Default::default()
+        });
+        let url = url::Url::parse(&issue.url).unwrap();
+        assert_eq!(url.host_str(), Some("github.com"));
+        assert_eq!(url.path(), "/yuxino/mimi/issues/new");
+        assert!(issue.url.len() <= 6000);
+        let body = url.query_pairs().find(|(key, _)| key == "body").unwrap().1;
+        assert!(body.contains(&issue.report));
+        for secret in [
+            "private-token",
+            "/Users/private",
+            "private.invalid",
+            "original-text",
+        ] {
+            assert!(!body.contains(secret));
+        }
+        assert!(body.contains("before submitting"));
+        assert!(!issue.requires_paste);
+    }
 
     #[test]
     fn windows_output_categories_are_values_not_private_names() {

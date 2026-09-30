@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { overlayTopChromeLayout } from "./overlayChromeLayout";
 
-const CONTROL_ISLAND_RIGHT = 254;
+const CONTROL_ISLAND_RIGHT = 298;
 const CHROME_GAP = 6;
 
 function handleEdges(layout: ReturnType<typeof overlayTopChromeLayout>) {
@@ -34,11 +34,11 @@ describe("overlay top chrome layout", () => {
   });
 
   it("restores actions without shifting the handle off the window center", () => {
-    const layout = overlayTopChromeLayout(520, true);
+    const layout = overlayTopChromeLayout(552, true);
 
     expect(layout.showActions).toBe(true);
-    expect(layout.dragHandleCenterX).toBe(260);
-    expect(layout.dragHandleWidth).toBe(80);
+    expect(layout.dragHandleCenterX).toBe(276);
+    expect(layout.dragHandleWidth).toBe(68);
   });
 
   it("preserves the centered 120px handle and all actions at 640px", () => {

@@ -9,6 +9,7 @@ import {
 } from "../../lib/types";
 import { PulseRing } from "../overlay/PulseRing";
 import type { LanguageStatus } from "../overlay/overlayModel";
+import { capsuleLabels } from "./capsuleLabels";
 
 interface LanguageStatusCapsuleProps {
   phase: OverlayActivityPhaseKind;
@@ -47,13 +48,15 @@ export function LanguageStatusCapsule({
   const actionLabel = expanded
     ? I18N.overlay.closeControls
     : I18N.overlay.openControls;
+  const compact = capsuleLabels(settings, effectiveMode, phase === "error" || phase === "idle" ? phase : isPaused ? "paused" : isWaitingForFinalTranslation ? "translating" : null);
+  const fullLabel = `${transientLabel ? `${transientLabel} · ` : ""}${status.source} ${status.separator} ${status.target} · ${modeLabel}`;
 
   return (
     <button
       type="button"
       className={expanded ? "overlay-control-header" : "overlay-control-island"}
       onClick={onToggle}
-      title={actionLabel}
+      title={`${fullLabel}. ${actionLabel}`}
       aria-label={`${OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel}${I18N.overlay.accessibilityCurrentLanguagePrefix}${status.source} ${status.separator} ${status.target}, ${modeLabel}. ${actionLabel}`}
       aria-haspopup={expanded ? undefined : "dialog"}
       aria-expanded={expanded ? undefined : false}
@@ -61,15 +64,15 @@ export function LanguageStatusCapsule({
     >
       <PulseRing phase={phase} compact />
       {transientLabel && (
-        <span className="overlay-control-island__phase">{transientLabel}</span>
+        <span className="overlay-control-island__phase">{compact.phase}</span>
       )}
       <span className="overlay-control-island__summary">
-        <strong>{status.source}</strong>
+        <strong>{compact.source}</strong>
         <span aria-hidden="true">{status.separator}</span>
-        <span>{status.target}</span>
+        <span>{compact.target}</span>
       </span>
       <span className="overlay-control-island__divider" aria-hidden="true" />
-      <span className="overlay-control-island__mode">{modeLabel}</span>
+      <span className="overlay-control-island__mode">{compact.mode}</span>
       <Icon name={expanded ? "chevron-up" : "chevron-down"} />
     </button>
   );

@@ -3,6 +3,23 @@
 
 pub mod send_pipeline;
 
+/// Local presentation only. Device names never enter support diagnostics.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureStatus {
+    pub kind: &'static str,
+    pub strategy: &'static str,
+    pub actual_device_name: Option<String>,
+    pub observation: Option<CaptureSignal>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureSignal {
+    pub pcm_data_recent: bool,
+    pub sound_recent: bool,
+}
+
 #[cfg(any(target_os = "windows", test))]
 mod streaming_resampler;
 

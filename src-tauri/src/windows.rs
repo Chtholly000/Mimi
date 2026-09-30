@@ -1971,9 +1971,9 @@ const OVERLAY_CONTROL_MODE_EVENT: &str = "overlay-control-mode";
 pub struct OverlayControlWindowManager;
 
 impl OverlayControlWindowManager {
-    pub const ISLAND_WIDTH: f64 = 236.0;
+    pub const ISLAND_WIDTH: f64 = 280.0;
     pub const ISLAND_HEIGHT: f64 = 30.0;
-    pub const PANEL_WIDTH: f64 = 276.0;
+    pub const PANEL_WIDTH: f64 = 320.0;
     // Matches the first-open height of the full Alibaba control set; React
     // immediately replaces it with the measured provider/locale-specific
     // height, but this default avoids a visible clipped first frame.
@@ -2339,6 +2339,7 @@ fn overlay_control_geometry(
             OverlayControlWindowManager::ISLAND_HEIGHT,
         ),
     };
+    let width = width.min((work_area.width - margin * 2.0).max(1.0));
     let available_height = (work_area.height - margin * 2.0).max(1.0);
     let height = requested_height.min(available_height);
     let min_x = work_area.x + work_area.coordinate_distance(margin);
@@ -3178,7 +3179,7 @@ mod geometry_tests {
         let geometry =
             overlay_control_geometry(OverlayControlMode::Panel, 400.0, 900.0, 356.0, WORK_AREA);
         assert_eq!(geometry.y, 900.0 + 30.0 - 356.0);
-        assert_eq!(geometry.width, 276.0);
+        assert_eq!(geometry.width, 320.0);
         assert_eq!(geometry.height, 356.0);
     }
 
@@ -3220,7 +3221,8 @@ mod geometry_tests {
         };
         let geometry =
             overlay_control_geometry(OverlayControlMode::Panel, 400.0, 160.0, 520.0, work_area);
-        assert_eq!(geometry.x, 136.0);
+        assert_eq!(geometry.x, 108.0);
+        assert_eq!(geometry.width, 304.0);
         assert_eq!(geometry.y, 58.0);
         assert_eq!(geometry.height, 164.0);
     }

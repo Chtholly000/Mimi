@@ -141,6 +141,7 @@ mod tests {
             "profile_test_connection",
             "windows_audio_status",
             "support_diagnostics",
+            "app_open_support_issue",
         ] {
             assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
             let permissions = include_str!("../permissions/app.toml");
@@ -159,6 +160,21 @@ mod tests {
                 .any(|permission| permission == "app-settings"));
             assert_eq!(capability["windows"], serde_json::json!(["settings"]));
         }
+    }
+
+    #[test]
+    fn capture_status_is_readable_in_settings_and_control_panel_only() {
+        let permissions = include_str!("../permissions/app.toml");
+        let permitted: Vec<_> = permissions
+            .split("[[permission]]")
+            .filter(|entry| entry.contains("\"capture_status\""))
+            .collect();
+        assert_eq!(permitted.len(), 2);
+        assert!(permitted
+            .iter()
+            .all(|entry| entry.contains("identifier = \"app-settings\"")
+                || entry.contains("identifier = \"app-overlay-control\"")));
+        assert!(include_str!("lib.rs").contains("commands::capture_status,"));
     }
 
     #[test]
@@ -1091,4 +1107,23 @@ pub async fn windows_audio_status(
 #[tauri::command]
 pub async fn support_diagnostics(state: State<'_, AppState>) -> Result<String, String> {
     Ok(state.session.support_diagnostics())
+}
+
+#[tauri::command]
+pub async fn app_open_support_issue(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::core::support_diagnostics::SupportIssue, String> {
+    let issue = state.session.support_issue();
+    app.opener()
+        .open_url(&issue.url, None::<&str>)
+        .map_err(|_| "support_issue_open_failed".to_string())?;
+    Ok(issue)
+}
+
+#[tauri::command]
+pub async fn capture_status(
+    state: State<'_, AppState>,
+) -> Result<crate::audio::CaptureStatus, String> {
+    Ok(state.session.capture_status())
 }

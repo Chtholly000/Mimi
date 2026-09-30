@@ -22,6 +22,7 @@ import {
   type LanguageStatus,
 } from "../overlay/overlayModel";
 import { LanguageStatusCapsule } from "./LanguageStatusCapsule";
+import { CaptureStatusRow } from "./CaptureStatusRow";
 import type { OverlayControlPanelModel } from "./overlayControlModel";
 
 type PendingAction =
@@ -155,6 +156,8 @@ export function OverlayControlPanel({
           expanded
           onToggle={onDismiss}
         />
+
+        <CaptureStatusRow />
 
         <div className="overlay-control-display">
           <span>{I18N.settings.subtitleDisplay}{nativeShortcuts && <kbd>{subtitleDisplayShortcut()}</kbd>}</span>

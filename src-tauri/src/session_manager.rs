@@ -641,7 +641,62 @@ impl SessionManager {
             })
     }
 
+    pub fn capture_status(&self) -> crate::audio::CaptureStatus {
+        let observation =
+            self.current_capture_observation()
+                .map(|capture| crate::audio::CaptureSignal {
+                    pcm_data_recent: capture.pcm_data_recent,
+                    sound_recent: capture.sound_recent,
+                });
+        #[cfg(target_os = "windows")]
+        {
+            let snapshot = self.windows_audio_status().ok().flatten();
+            let actual_device_name = snapshot.and_then(|snapshot| {
+                snapshot.current_device.and_then(|id| {
+                    snapshot
+                        .devices
+                        .into_iter()
+                        .find(|device| device.id == id)
+                        .map(|device| device.name)
+                })
+            });
+            crate::audio::CaptureStatus {
+                kind: "windows_output",
+                strategy: if self.settings.preferences().windows_audio_source.is_empty() {
+                    "follow_system"
+                } else {
+                    "manual_output"
+                },
+                actual_device_name,
+                observation,
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            crate::audio::CaptureStatus {
+                kind: if cfg!(target_os = "macos") {
+                    "macos_system_mix"
+                } else if cfg!(target_os = "linux") {
+                    "linux_output_monitor"
+                } else {
+                    "unknown"
+                },
+                strategy: "platform_capture",
+                actual_device_name: None,
+                observation,
+            }
+        }
+    }
+
     pub fn support_diagnostics(&self) -> String {
+        crate::core::support_diagnostics::render(self.diagnostic_facts())
+    }
+
+    pub fn support_issue(&self) -> crate::core::support_diagnostics::SupportIssue {
+        crate::core::support_diagnostics::issue_link(self.diagnostic_facts())
+    }
+
+    fn diagnostic_facts(&self) -> DiagnosticFacts {
         let now = Instant::now();
         let prefs = self.settings.preferences();
         let provider = self
@@ -716,7 +771,7 @@ impl SessionManager {
         #[cfg(not(target_os = "windows"))]
         let (output_selection, output_availability) =
             (OutputSelection::PlatformSystemAudio, Availability::Unknown);
-        crate::core::support_diagnostics::render(DiagnosticFacts {
+        DiagnosticFacts {
             provider,
             mode,
             status,
@@ -736,7 +791,7 @@ impl SessionManager {
                 .unwrap()
                 .map(|(action, at)| (action, crate::core::diagnostics::milliseconds(at, now))),
             elapsed_ms: crate::core::diagnostics::milliseconds(self.diagnostic_epoch, now),
-        })
+        }
     }
 
     pub fn windows_audio_status(
