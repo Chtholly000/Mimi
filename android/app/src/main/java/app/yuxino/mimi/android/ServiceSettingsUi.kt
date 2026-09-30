@@ -34,7 +34,7 @@ internal object ServiceSettingsUi {
             val select = LinearLayout(activity).apply {
                 orientation=LinearLayout.HORIZONTAL; gravity=Gravity.CENTER_VERTICAL
                 minimumHeight=dp(activity,72); isClickable=true; isFocusable=true
-                contentDescription="${provider.title}，${activity.getString(if(active) R.string.service_active else if(configured) R.string.service_configured else R.string.service_missing)}"
+                contentDescription="${providerTitle(activity, provider)}，${activity.getString(if(active) R.string.service_active else if(configured) R.string.service_configured else R.string.service_missing)}"
             }
             val mark = android.widget.ImageView(activity).apply {
                 setImageResource(if(active) R.drawable.ic_check else when(provider) {
@@ -48,8 +48,8 @@ internal object ServiceSettingsUi {
             }
             select.addView(mark, LinearLayout.LayoutParams(dp(activity,40),dp(activity,40)).apply { marginEnd=dp(activity,12) })
             val copy=LinearLayout(activity).apply { orientation=LinearLayout.VERTICAL }
-            copy.addView(label(activity,provider.title,16f).apply { setTypeface(typeface,if(active) Typeface.BOLD else Typeface.NORMAL) })
-            copy.addView(label(activity, if(active) activity.getString(R.string.service_active) else if(configured) activity.getString(R.string.service_configured) else provider.description,12f,true))
+            copy.addView(label(activity,providerTitle(activity, provider),16f).apply { setTypeface(typeface,if(active) Typeface.BOLD else Typeface.NORMAL) })
+            copy.addView(label(activity, if(active) activity.getString(R.string.service_active) else if(configured) activity.getString(R.string.service_configured) else providerDescription(activity, provider),12f,true))
             select.addView(copy,LinearLayout.LayoutParams(0,-2,1f))
             fun edit() { activity.startActivity(Intent(activity,ServiceSettingsActivity::class.java).putExtra("provider",provider.id)) }
             select.setOnClickListener {
@@ -64,7 +64,7 @@ internal object ServiceSettingsUi {
             val edit=MaterialButton(activity,null,com.google.android.material.R.attr.borderlessButtonStyle).apply {
                 text=activity.getString(if(configured) R.string.service_edit else R.string.service_configure)
                 textSize=13f; isAllCaps=false; minWidth=0; minimumWidth=0; tag="configure-${provider.id}"
-                contentDescription=activity.getString(R.string.service_edit_named,provider.title)
+                contentDescription=activity.getString(R.string.service_edit_named,providerTitle(activity, provider))
                 setTextColor(ContextCompat.getColor(activity,R.color.mimi_text))
                 setOnClickListener { if(MimiService.isRunning) Toast.makeText(activity,R.string.service_stop_first,Toast.LENGTH_SHORT).show() else edit() }
             }

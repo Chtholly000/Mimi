@@ -29,6 +29,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var startStop: MaterialButton
     private var starting = false
+    private lateinit var guide: FirstRunGuide
     private val stateListener: () -> Unit = { runOnUiThread { refreshUi() } }
 
     private val projectionManager: MediaProjectionManager by lazy {
@@ -38,10 +39,19 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         starting = savedInstanceState?.getBoolean("starting") ?: false
+        permissionOnly = savedInstanceState?.getBoolean("permission_only") ?: false
+        val firstRunPrefs = getSharedPreferences("first_run", 0)
+        if (!firstRunPrefs.contains("seen") && java.io.File(applicationInfo.dataDir, "shared_prefs/mimi_secure.xml").exists()) {
+            firstRunPrefs.edit().putBoolean("seen", true).apply()
+        }
         setContentView(R.layout.activity_main)
         applySystemBarInsets()
 
+        guide = FirstRunGuide(this) { beginStartFlow(permissionOnly = guide.step == 2) }
         startStop = findViewById(R.id.start_stop)
+        findViewById<View>(R.id.first_run_guide).setOnClickListener { guide.open() }
+        if (savedInstanceState?.getBoolean("guide_open") == true) guide.open(savedInstanceState.getInt("guide_step"), savedInstanceState.getString("guide_provider"))
+        else if (guide.shouldOpen()) guide.open()
         findViewById<MaterialButton>(R.id.go_settings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
@@ -93,6 +103,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("starting", starting)
+        outState.putBoolean("permission_only", permissionOnly)
+        outState.putBoolean("guide_open", guide.showing)
+        outState.putInt("guide_step", guide.step)
+        outState.putString("guide_provider", guide.providerId)
         super.onSaveInstanceState(outState)
     }
 
@@ -106,6 +120,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshUi() {
+        try { refreshAvailableUi() } catch (_: Exception) {
+            startStop.isEnabled = false
+            findViewById<TextView>(R.id.status).setText(R.string.service_save_failed)
+            findViewById<TextView>(R.id.status_hint).setText(R.string.guide_storage_unavailable)
+        }
+    }
+
+    private fun refreshAvailableUi() {
+        guide.refresh()
         val running = MimiService.isRunning
         val captureState = MimiService.captureObservation?.state
         val keyOk = SettingsStore.isConfigured(this)
@@ -139,7 +162,7 @@ class MainActivity : AppCompatActivity() {
         })
         findViewById<TextView>(R.id.source_summary).text = languageLabel(SettingsStore.sourceLang(this))
         findViewById<TextView>(R.id.target_summary).text = languageLabel(SettingsStore.targetLang(this))
-        val provider = app.yuxino.mimi.android.provider.ServiceProvider.fromId(SettingsStore.provider(this)).title
+        val provider = providerTitle(this, app.yuxino.mimi.android.provider.ServiceProvider.fromId(SettingsStore.provider(this)))
         findViewById<TextView>(R.id.provider_summary).text = getString(
             if (keyOk) R.string.home_service_ready else R.string.home_service_unset, provider,
         )
@@ -233,8 +256,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun beginStartFlow() {
+    private var permissionOnly = false
+
+    private fun beginStartFlow(permissionOnly: Boolean = false) {
         if (starting || MimiService.isRunning) return
+        this.permissionOnly = permissionOnly
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, R.string.need_overlay_permission, Toast.LENGTH_LONG).show()
             starting = true
@@ -255,10 +281,13 @@ class MainActivity : AppCompatActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
+            starting = true
+            refreshUi()
             Toast.makeText(this, R.string.need_audio_permission, Toast.LENGTH_LONG).show()
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO)
             return
         }
+        if (permissionOnly) { refreshUi(); return }
         starting = true
         refreshUi()
         projectionManager.createScreenCaptureIntent().let {
@@ -268,8 +297,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_AUDIO) starting = false
         if (requestCode == REQ_AUDIO && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            beginStartFlow()
+            beginStartFlow(permissionOnly)
+        } else if (requestCode == REQ_AUDIO) {
+            getSharedPreferences("first_run", 0).edit().putBoolean("audio-denied", true).apply()
+            Toast.makeText(this, getString(R.string.guide_audio_denied), Toast.LENGTH_LONG).show()
+            refreshUi()
         }
     }
 
@@ -278,7 +312,8 @@ class MainActivity : AppCompatActivity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQ_OVERLAY) {
             starting = false
-            if (Settings.canDrawOverlays(this)) beginStartFlow()
+            if (Settings.canDrawOverlays(this)) beginStartFlow(permissionOnly)
+            else getSharedPreferences("first_run", 0).edit().putBoolean("overlay-denied", true).apply()
             refreshUi()
         }
         if (requestCode == REQ_PROJECTION) {
@@ -288,6 +323,9 @@ class MainActivity : AppCompatActivity() {
                     this, MimiService.startIntent(this, resultCode, data),
                 )
                 requestNotificationPermissionIfNeeded()
+            } else {
+                getSharedPreferences("first_run", 0).edit().putBoolean("projection-denied", true).apply()
+                Toast.makeText(this, getString(R.string.guide_projection_denied), Toast.LENGTH_LONG).show()
             }
             refreshUi()
         }

@@ -65,6 +65,14 @@ class MimiService : Service() {
     private var health: CaptureHealth? = null
     private val healthTick = object : Runnable {
         override fun run() {
+            if (health != null && (!android.provider.Settings.canDrawOverlays(this@MimiService) ||
+                ContextCompat.checkSelfPermission(this@MimiService, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED ||
+                getSystemService(android.app.KeyguardManager::class.java).isDeviceLocked ||
+                !getSystemService(android.os.PowerManager::class.java).isInteractive)) {
+                lastCaptureError = "capture.permission_or_lock_changed"
+                stopEverything()
+                return
+            }
             health?.let {
                 captureObservation = it.snapshot(SystemClock.elapsedRealtime())
                 stateListeners.forEach { listener -> listener() }
@@ -236,6 +244,9 @@ class MimiService : Service() {
         check(ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             "audio_permission_required"
         }
+        check(android.provider.Settings.canDrawOverlays(this) &&
+            getSystemService(android.os.PowerManager::class.java).isInteractive &&
+            !getSystemService(android.app.KeyguardManager::class.java).isDeviceLocked) { "capture_permission_or_lock_changed" }
         val sessionGeneration = ++generation
         SubtitleBus.clear()
         SubtitleBus.setHistoryLimit(SettingsStore.historyLines(this))
@@ -329,6 +340,7 @@ class MimiService : Service() {
         capturing = captureActive
         val sessionEngine = checkNotNull(engine)
         val sessionHealth = CaptureHealth(SystemClock.elapsedRealtime())
+        synchronized(firstRunEvidence) { firstRunEvidence.reset() }
         health = sessionHealth
         captureObservation = sessionHealth.snapshot(SystemClock.elapsedRealtime())
         record.startRecording()
@@ -345,7 +357,10 @@ class MimiService : Service() {
                     if (read == 0) continue
                     val pcm = resampler.push(readBuffer.copyOf(read))
                     sessionHealth.observe(pcm, SystemClock.elapsedRealtime())
-                    if (captureActive.get() && pcm.isNotEmpty()) sessionEngine.sendAudio(pcm)
+                    if (captureActive.get() && pcm.isNotEmpty()) {
+                        sessionEngine.sendAudio(pcm)
+                        synchronized(firstRunEvidence) { if (captureActive.get()) firstRunEvidence.submitted(pcm) }
+                    }
                 }
             } catch (_: Exception) {
                 mainHandler.post {
@@ -375,6 +390,7 @@ class MimiService : Service() {
         val worker = captureThread
         captureThread = null
         if (worker != null) worker.join(600) else record?.release()
+        synchronized(firstRunEvidence) { firstRunEvidence.reset() }
         engine?.stop()
         engine = null
         val projection = mediaProjection
@@ -532,6 +548,23 @@ class MimiService : Service() {
         statusView = status
         sourceView = source
         translationView = translation
+        // Observe the real overlay drawing once per overlay, without accumulating listeners.
+        val renderGeneration = generation
+        overlayView?.viewTreeObserver?.addOnDrawListener {
+            val caption = if (expanded) expandedTranslationView else translationView
+            val newlyComplete = synchronized(firstRunEvidence) {
+                val wasComplete = firstRunEvidence.complete
+                if (generation == renderGeneration && isRunning && caption != null) {
+                    firstRunEvidence.rendered(!caption.text.isNullOrBlank(), caption.isShown &&
+                        caption.width > 0 && caption.height > 0 && android.provider.Settings.canDrawOverlays(this), previewMode)
+                }
+                !wasComplete && firstRunEvidence.complete
+            }
+            if (newlyComplete) mainHandler.post {
+                getSharedPreferences("first_run", 0).edit().putBoolean("completed", true).apply()
+                stateListeners.forEach { it() }
+            }
+        }
         if (immersiveSession) showImmersiveExitControl(wm)
         renderBus()
     }
@@ -879,6 +912,7 @@ class MimiService : Service() {
     }
 
     companion object {
+        val firstRunEvidence = app.yuxino.mimi.android.FirstRunEvidence()
         private const val TAG = "MimiService"
         private const val CHANNEL_ID = "capture"
         private const val NOTIFICATION_ID = 41
