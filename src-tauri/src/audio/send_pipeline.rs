@@ -49,8 +49,15 @@ impl AudioIngress {
         if !self.accepting.load(Ordering::SeqCst) {
             return Err(AudioIngressError::Closed);
         }
+        let has_data = !data.is_empty();
+        let has_sound = peak_pcm16_sample(&data) > 32;
         match self.tx.try_send(data) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if has_data {
+                    self.progress.captured(has_sound, Instant::now());
+                }
+                Ok(())
+            }
             Err(mpsc::error::TrySendError::Full(_)) => {
                 self.accepting.store(false, Ordering::SeqCst);
                 if !self.failed.swap(true, Ordering::SeqCst) {
@@ -90,6 +97,8 @@ pub struct AudioSendPipeline {
 struct SendProgress {
     epoch: Instant,
     last_completed_ms: AtomicU64,
+    last_pcm_ms: AtomicU64,
+    last_sound_ms: AtomicU64,
 }
 
 impl SendProgress {
@@ -97,7 +106,28 @@ impl SendProgress {
         Self {
             epoch,
             last_completed_ms: AtomicU64::new(0),
+            last_pcm_ms: AtomicU64::new(0),
+            last_sound_ms: AtomicU64::new(0),
         }
+    }
+
+    fn captured(&self, sound: bool, at: Instant) {
+        let stamp = milliseconds(self.epoch, at).saturating_add(1);
+        self.last_pcm_ms.fetch_max(stamp, Ordering::SeqCst);
+        if sound {
+            self.last_sound_ms.fetch_max(stamp, Ordering::SeqCst);
+        }
+    }
+
+    fn input_activity(&self, now: Instant) -> (bool, bool) {
+        let recent = |stamp: u64| {
+            stamp != 0 && milliseconds(self.epoch, now).saturating_sub(stamp - 1) < 2000
+        };
+        // Read sound first: its publication follows PCM, so concurrent reads
+        // cannot claim sound without a corresponding data observation.
+        let sound = recent(self.last_sound_ms.load(Ordering::SeqCst));
+        let pcm = recent(self.last_pcm_ms.load(Ordering::SeqCst));
+        (pcm, sound)
     }
 
     fn completed(&self, at: Instant) {
@@ -215,6 +245,10 @@ impl AudioSendPipeline {
             worker: Mutex::new(Some(AbortOnDropTask(worker))),
             abort_worker,
         }
+    }
+
+    pub fn input_activity(&self) -> (bool, bool) {
+        self.progress.input_activity(Instant::now())
     }
 
     pub fn ingress(&self) -> Option<AudioIngress> {
@@ -480,5 +514,47 @@ mod tests {
 
         assert_eq!(backpressure_count, 1);
         pipeline.stop();
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+    #[test]
+    fn concurrent_activity_does_not_claim_sound_without_pcm() {
+        let now = Instant::now();
+        let progress = Arc::new(SendProgress::new(now));
+        std::thread::scope(|scope| {
+            let writer = Arc::clone(&progress);
+            scope.spawn(move || {
+                for _ in 0..1000 {
+                    writer.captured(true, now);
+                }
+            });
+            for _ in 0..1000 {
+                let (pcm, sound) = progress.input_activity(now);
+                assert!(!sound || pcm);
+            }
+        });
+    }
+
+    #[test]
+    fn real_ingress_progress_separates_pcm_from_sound_and_expires() {
+        let now = Instant::now();
+        let progress = SendProgress::new(now);
+        assert_eq!(progress.input_activity(now), (false, false));
+        progress.captured(false, now);
+        assert_eq!(progress.input_activity(now), (true, false));
+        progress.captured(true, now);
+        assert_eq!(progress.input_activity(now), (true, true));
+        progress.captured(false, now + Duration::from_secs(3));
+        assert_eq!(
+            progress.input_activity(now + Duration::from_secs(3)),
+            (true, false)
+        );
+        assert_eq!(
+            progress.input_activity(now + Duration::from_secs(5)),
+            (false, false)
+        );
     }
 }

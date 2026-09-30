@@ -79,6 +79,8 @@ pub struct Preferences {
     pub ui_language: Option<String>,
     pub retain_session_history: bool,
     pub record_session_audio: bool,
+    /// Empty means follow the Windows default output, including live changes.
+    pub windows_audio_source: String,
 }
 
 impl Default for Preferences {
@@ -98,6 +100,7 @@ impl Default for Preferences {
             ui_language: None,
             retain_session_history: false,
             record_session_audio: false,
+            windows_audio_source: String::new(),
         }
     }
 }
@@ -1328,6 +1331,22 @@ mod tests {
         );
         store.delete_api_key(&profile.id).unwrap();
         assert_eq!(store.credential_diagnostic(&profile), "missing");
+    }
+
+    #[test]
+    fn windows_source_defaults_to_system_and_preserves_stable_id() {
+        let legacy: super::Preferences = serde_json::from_str("{}").unwrap();
+        assert!(legacy.windows_audio_source.is_empty());
+        let preferences = super::Preferences {
+            windows_audio_source: "wasapi:stable-render-id".into(),
+            ..Default::default()
+        };
+        let restored: super::Preferences =
+            serde_json::from_str(&serde_json::to_string(&preferences).unwrap()).unwrap();
+        assert_eq!(
+            restored.windows_audio_source,
+            preferences.windows_audio_source
+        );
     }
 
     #[test]

@@ -30,6 +30,7 @@ const BASE_SETTINGS: SettingsSnapshot = {
   uiLanguage: null,
   retainSessionHistory: false,
   recordSessionAudio: false,
+  windowsAudioSource: "",
 };
 
 describe("overlay control panel model", () => {

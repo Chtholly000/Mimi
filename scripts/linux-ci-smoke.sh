@@ -118,7 +118,7 @@ assert_control_attached() {
     read -r ox oy ow oh < <(window_geometry "$overlay_window")
     read -r cx cy cw ch < <(window_geometry "$control_window")
     if [[ "$cx" == "$((ox + 18))" && "$cy" == "$((oy + 16))" \
-      && "$cw" == 236 && "$ch" == 30 \
+      && "$cw" == 280 && "$ch" == 30 \
       && ( -z "${1:-}" || ( "$ox" == "$1" && "$oy" == "$2" ) ) ]] \
       && window_is_visible "$overlay_window" && window_is_visible "$control_window"; then return; fi
     sleep 0.25

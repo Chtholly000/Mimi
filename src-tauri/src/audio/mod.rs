@@ -3,6 +3,23 @@
 
 pub mod send_pipeline;
 
+/// Local presentation only. Device names never enter support diagnostics.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureStatus {
+    pub kind: &'static str,
+    pub strategy: &'static str,
+    pub actual_device_name: Option<String>,
+    pub observation: Option<CaptureSignal>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureSignal {
+    pub pcm_data_recent: bool,
+    pub sound_recent: bool,
+}
+
 #[cfg(any(target_os = "windows", test))]
 mod streaming_resampler;
 
@@ -17,6 +34,22 @@ pub mod linux;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub mod unsupported;
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSourceDevice {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSourceSnapshot {
+    pub devices: Vec<AudioSourceDevice>,
+    pub current_device: Option<String>,
+    pub receiving_sound: bool,
+    pub receiving_audio_data: bool,
+}
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -46,6 +79,9 @@ pub enum SystemAudioCaptureError {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[error("The previous system audio capture is still stopping.")]
     PreviousCaptureStopping,
+    #[cfg(target_os = "windows")]
+    #[error("The selected sound output is unavailable. Stop subtitles and choose another sound source in Settings.")]
+    SelectedPlaybackDeviceUnavailable,
     #[error("System audio capture could not be started.")]
     NativeStartFailed,
     #[cfg(any(target_os = "macos", target_os = "windows", test))]

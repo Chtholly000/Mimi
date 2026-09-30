@@ -148,18 +148,22 @@ impl Audio3ASRServerEventDecoder {
         match event {
             "task-started" => Ok(Audio3ASRServerEvent::TaskStarted),
             "task-finished" => Ok(Audio3ASRServerEvent::TaskFinished),
-            "task-failed" => Ok(Audio3ASRServerEvent::TaskFailed {
-                code: header
-                    .get("error_code")
-                    .and_then(Value::as_str)
-                    .unwrap_or("asr_task_failed")
-                    .to_string(),
-                message: header
-                    .get("error_message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Alibaba Cloud speech recognition failed.")
-                    .to_string(),
-            }),
+            "task-failed" => {
+                let (code, category) = safe_task_failure(
+                    header
+                        .get("error_code")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                    header
+                        .get("error_message")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                );
+                Ok(Audio3ASRServerEvent::TaskFailed {
+                    code: code.into(),
+                    message: category.into(),
+                })
+            }
             "result-generated" => {
                 let sentence = json
                     .pointer("/payload/output/sentence")
@@ -188,6 +192,38 @@ impl Audio3ASRServerEventDecoder {
             }),
         }
     }
+}
+
+/// Exact code allowlist and an anchored timeout grammar. Never preserve free
+/// provider text or arbitrary "sanitized" codes (which can still contain keys).
+fn safe_task_failure(code: &str, message: &str) -> (&'static str, &'static str) {
+    let safe_code = match code {
+        "CLIENT_ERROR" => "CLIENT_ERROR",
+        "SERVER_ERROR" => "SERVER_ERROR",
+        "InvalidApiKey" | "INVALID_API_KEY" | "invalid_api_key" => "INVALID_API_KEY",
+        "Unauthorized" | "UNAUTHORIZED" | "unauthorized" | "authentication_error" => "UNAUTHORIZED",
+        "RequestTimeout" | "REQUEST_TIMEOUT" => "REQUEST_TIMEOUT",
+        "Throttling" | "TOO_MANY_REQUESTS" => "THROTTLED",
+        _ => "OTHER",
+    };
+    let request_timeout = message
+        .strip_prefix("request timeout after ")
+        .and_then(|tail| tail.strip_suffix(" seconds."))
+        .is_some_and(|seconds| {
+            !seconds.is_empty()
+                && seconds.len() <= 6
+                && seconds.bytes().all(|byte| byte.is_ascii_digit())
+        });
+    let category = match safe_code {
+        "INVALID_API_KEY" | "UNAUTHORIZED" => "authentication",
+        "REQUEST_TIMEOUT" => "timeout",
+        "CLIENT_ERROR" if request_timeout => "timeout",
+        "CLIENT_ERROR" => "request",
+        "SERVER_ERROR" => "service",
+        "THROTTLED" => "rate_limit",
+        _ => "task_failed",
+    };
+    (safe_code, category)
 }
 
 /// Provider-facing recognition context hints. These strings are wire assets.
@@ -324,7 +360,42 @@ mod tests {
             failed,
             Audio3ASRServerEvent::TaskFailed {
                 code: "CLIENT_ERROR".into(),
-                message: "Bad request".into()
+                message: "request".into()
+            }
+        );
+    }
+
+    #[test]
+    fn failure_classification_is_exact_and_content_free() {
+        assert_eq!(
+            safe_task_failure("CLIENT_ERROR", "request timeout after 23 seconds."),
+            ("CLIENT_ERROR", "timeout")
+        );
+        assert_eq!(
+            safe_task_failure("CLIENT_ERROR", "request timeout after secret seconds."),
+            ("CLIENT_ERROR", "request")
+        );
+        assert_eq!(
+            safe_task_failure(
+                "CLIENT_ERROR",
+                "request timeout after 23 seconds. private text"
+            ),
+            ("CLIENT_ERROR", "request")
+        );
+        assert_eq!(
+            safe_task_failure("INVALID_API_KEY", "request timeout after 23 seconds."),
+            ("INVALID_API_KEY", "authentication")
+        );
+        assert_eq!(
+            safe_task_failure("synthetic-private-code", "secret"),
+            ("OTHER", "task_failed")
+        );
+        let event = Audio3ASRServerEventDecoder::decode(r#"{"header":{"event":"task-failed","error_code":"synthetic-private-code","error_message":"synthetic-private-text"}}"#).unwrap();
+        assert_eq!(
+            event,
+            Audio3ASRServerEvent::TaskFailed {
+                code: "OTHER".into(),
+                message: "task_failed".into()
             }
         );
     }

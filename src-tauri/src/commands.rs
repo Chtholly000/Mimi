@@ -82,6 +82,7 @@ pub struct SettingsSnapshotPayload {
     pub ui_language: Option<String>,
     pub retain_session_history: bool,
     pub record_session_audio: bool,
+    pub windows_audio_source: String,
 }
 
 #[cfg(test)]
@@ -135,24 +136,45 @@ mod tests {
     }
 
     #[test]
-    fn connection_diagnostic_is_registered_and_allowed_only_in_settings() {
-        let command = "profile_test_connection";
-        assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
+    fn diagnostics_are_registered_and_allowed_only_in_settings() {
+        for command in [
+            "profile_test_connection",
+            "windows_audio_status",
+            "support_diagnostics",
+            "app_open_support_issue",
+        ] {
+            assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
+            let permissions = include_str!("../permissions/app.toml");
+            let permitted: Vec<_> = permissions
+                .split("[[permission]]")
+                .filter(|entry| entry.contains(&format!("\"{command}\"")))
+                .collect();
+            assert_eq!(permitted.len(), 1);
+            assert!(permitted[0].contains("identifier = \"app-settings\""));
+            let capability: serde_json::Value =
+                serde_json::from_str(include_str!("../capabilities/settings.json")).unwrap();
+            assert!(capability["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|permission| permission == "app-settings"));
+            assert_eq!(capability["windows"], serde_json::json!(["settings"]));
+        }
+    }
+
+    #[test]
+    fn capture_status_is_readable_in_settings_and_control_panel_only() {
         let permissions = include_str!("../permissions/app.toml");
         let permitted: Vec<_> = permissions
             .split("[[permission]]")
-            .filter(|entry| entry.contains(&format!("\"{command}\"")))
+            .filter(|entry| entry.contains("\"capture_status\""))
             .collect();
-        assert_eq!(permitted.len(), 1);
-        assert!(permitted[0].contains("identifier = \"app-settings\""));
-        let capability: serde_json::Value =
-            serde_json::from_str(include_str!("../capabilities/settings.json")).unwrap();
-        assert!(capability["permissions"]
-            .as_array()
-            .unwrap()
+        assert_eq!(permitted.len(), 2);
+        assert!(permitted
             .iter()
-            .any(|permission| permission == "app-settings"));
-        assert_eq!(capability["windows"], serde_json::json!(["settings"]));
+            .all(|entry| entry.contains("identifier = \"app-settings\"")
+                || entry.contains("identifier = \"app-overlay-control\"")));
+        assert!(include_str!("lib.rs").contains("commands::capture_status,"));
     }
 
     #[test]
@@ -200,6 +222,7 @@ mod tests {
             ui_language: None,
             retain_session_history: false,
             record_session_audio: false,
+            windows_audio_source: String::new(),
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["activeProfileId"], "alibaba-default");
@@ -236,6 +259,18 @@ mod tests {
                 assert!(ensure_settings_draft_allowed(&draft, true).is_err());
                 assert!(ensure_settings_draft_allowed(&draft, false).is_ok());
             }
+        }
+    }
+
+    #[test]
+    fn audio_source_changes_require_stop_even_when_resetting_to_system() {
+        for source in ["wasapi:headphones", ""] {
+            let draft = SettingsDraft {
+                windows_audio_source: Some(source.into()),
+                ..Default::default()
+            };
+            assert!(ensure_settings_draft_allowed(&draft, true).is_err());
+            assert!(ensure_settings_draft_allowed(&draft, false).is_ok());
         }
     }
 
@@ -326,6 +361,7 @@ impl SettingsSnapshotPayload {
                     ui_language: prefs.ui_language,
                     retain_session_history: prefs.retain_session_history,
                     record_session_audio: prefs.record_session_audio,
+                    windows_audio_source: prefs.windows_audio_source,
                 }
             }
         }
@@ -352,6 +388,7 @@ impl SettingsSnapshotPayload {
             ui_language: prefs.ui_language,
             retain_session_history: prefs.retain_session_history,
             record_session_audio: prefs.record_session_audio,
+            windows_audio_source: prefs.windows_audio_source,
         })
     }
 }
@@ -371,6 +408,7 @@ pub struct SettingsDraft {
     pub ui_language: Option<String>,
     pub retain_session_history: Option<bool>,
     pub record_session_audio: Option<bool>,
+    pub windows_audio_source: Option<String>,
 }
 
 /// Reads public settings and per-profile credential presence. API-key values
@@ -460,10 +498,12 @@ pub async fn settings_save(
     state: State<'_, AppState>,
     draft: SettingsDraft,
 ) -> Result<SettingsSnapshotPayload, String> {
-    if (draft.retain_session_history.is_some() || draft.record_session_audio.is_some())
+    if (draft.retain_session_history.is_some()
+        || draft.record_session_audio.is_some()
+        || draft.windows_audio_source.is_some())
         && window.label() != "settings"
     {
-        return Err("Export preferences can only be changed in settings.".into());
+        return Err("Export and sound-source preferences can only be changed in settings.".into());
     }
     apply_settings_draft(&app, &state, draft).await
 }
@@ -477,7 +517,8 @@ async fn apply_settings_draft(
         || draft.target_language.is_some()
         || draft.translation_mode.is_some()
         || draft.retain_session_history.is_some()
-        || draft.record_session_audio.is_some();
+        || draft.record_session_audio.is_some()
+        || draft.windows_audio_source.is_some();
     let _lifecycle = state
         .session
         .settings_mutation_guard(changes_listening_settings)
@@ -507,7 +548,8 @@ fn apply_settings_draft_guarded(
         || draft.is_overlay_locked.is_some()
         || draft.ui_language.is_some()
         || draft.retain_session_history.is_some()
-        || draft.record_session_audio.is_some();
+        || draft.record_session_audio.is_some()
+        || draft.windows_audio_source.is_some();
     if !needs_save {
         return SettingsSnapshotPayload::try_from_store(&state.settings);
     }
@@ -526,6 +568,9 @@ fn apply_settings_draft_guarded(
             }
             if let Some(enabled) = draft.retain_session_history {
                 prefs.retain_session_history = enabled;
+            }
+            if let Some(source) = draft.windows_audio_source {
+                prefs.windows_audio_source = source;
             }
             if let Some(enabled) = draft.record_session_audio {
                 prefs.record_session_audio = enabled;
@@ -636,7 +681,8 @@ fn ensure_settings_draft_allowed(draft: &SettingsDraft, is_active: bool) -> Resu
             || draft.target_language.is_some()
             || draft.translation_mode.is_some()
             || draft.retain_session_history.is_some()
-            || draft.record_session_audio.is_some())
+            || draft.record_session_audio.is_some()
+            || draft.windows_audio_source.is_some())
     {
         Err(
             "Listening settings cannot be changed through settings while a session is active."
@@ -1049,4 +1095,35 @@ pub async fn profile_test_connection(
         Err(_) => "unreachable",
     };
     Ok(serde_json::json!({"credential": storage, "network": network}))
+}
+
+#[tauri::command]
+pub async fn windows_audio_status(
+    state: State<'_, AppState>,
+) -> Result<Option<crate::audio::AudioSourceSnapshot>, String> {
+    state.session.windows_audio_status()
+}
+
+#[tauri::command]
+pub async fn support_diagnostics(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.session.support_diagnostics())
+}
+
+#[tauri::command]
+pub async fn app_open_support_issue(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::core::support_diagnostics::SupportIssue, String> {
+    let issue = state.session.support_issue();
+    app.opener()
+        .open_url(&issue.url, None::<&str>)
+        .map_err(|_| "support_issue_open_failed".to_string())?;
+    Ok(issue)
+}
+
+#[tauri::command]
+pub async fn capture_status(
+    state: State<'_, AppState>,
+) -> Result<crate::audio::CaptureStatus, String> {
+    Ok(state.session.capture_status())
 }

@@ -39,6 +39,7 @@ const BASE_SETTINGS: SettingsSnapshot = {
   uiLanguage: null,
   retainSessionHistory: false,
   recordSessionAudio: false,
+  windowsAudioSource: "",
 };
 
 describe("provider capabilities", () => {

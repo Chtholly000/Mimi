@@ -33,8 +33,8 @@
   height: 30px;
   min-width: 0;
   align-items: center;
-  gap: 5px;
-  padding: 0 9px 0 7px;
+  gap: 3px;
+  padding: 0 7px;
   overflow: hidden;
   border: 1px solid var(--control-border-strong);
   border-radius: 11px;
@@ -84,17 +84,15 @@
 .overlay-control-island__summary {
   display: flex;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 0 auto;
   align-items: center;
-  gap: 4px;
-  overflow: hidden;
+  gap: 3px;
   color: var(--control-text-muted);
   white-space: nowrap;
 }
 
 .overlay-control-island__summary > * {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
 }
 
 .overlay-control-island__summary > strong {
@@ -110,12 +108,9 @@
 }
 
 .overlay-control-island__mode {
-  max-width: 68px;
-  flex: 0 1 auto;
-  overflow: hidden;
+  flex: 0 0 auto;
   color: var(--control-text-muted);
   font-size: 10.5px;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -140,6 +135,24 @@
   flex-direction: column;
   gap: 7px;
   padding: 7px;
+}
+
+.overlay-control-capture {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  color: var(--control-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.overlay-control-capture strong {
+  color: var(--control-text);
+  font-weight: 600;
 }
 
 .overlay-control-header {
