@@ -1,68 +1,47 @@
-import { memo } from "react";
-import {
-  OVERLAY_ACTIVITY_PHASES,
-  overlayPhaseColor,
-  type OverlayActivityPhaseKind,
-} from "../../lib/types";
+import { memo, useEffect, useState } from "react";
+import { OVERLAY_ACTIVITY_PHASES, overlayPhaseColor, type OverlayActivityPhaseKind } from "../../lib/types";
+import "./PulseRing.css";
 
 interface PulseRingProps {
   phase: OverlayActivityPhaseKind;
-  /** The status-bar variant: the same pulse scaled down. */
   compact?: boolean;
-  /** Resolved motion setting: with it off, this renders a static stack. */
+  /** Already resolved independently from the subtitle-motion preference. */
   motionEnabled: boolean;
 }
 
-/** Decorative session phase indicator, never an audio meter or progress value.
- * Listening rests in a small halo; recognition releases rings; connection and
- * translation use arcs. Transform/opacity motion remains compositor-friendly.
- */
-export const PulseRing = memo(function PulseRing({
-  phase,
-  compact = false,
-  motionEnabled,
-}: PulseRingProps) {
-  const animating =
-    motionEnabled && OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0;
-  const base = compact ? 18 : 40;
-  const color = overlayPhaseColor(phase, 1);
-  const period = phase === "recognizing" ? 2.4 : phase === "translating" ? 4.8 : 6;
+/** Session decoration, not an audio meter. Layers retain their animation
+ * identity across phases; only their visibility and shape crossfade. The
+ * clock pauses after the outer motion has settled and resumes where it left
+ * off. Reduced motion is immediate and never waits for that settling timer. */
+export const PulseRing = memo(function PulseRing({ phase, compact = false, motionEnabled }: PulseRingProps) {
+  const working = OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0;
+  const [clockPaused, setClockPaused] = useState(!motionEnabled || !working);
+  useEffect(() => {
+    if (!motionEnabled || working) {
+      setClockPaused(!motionEnabled);
+      return;
+    }
+    const settle = window.setTimeout(() => setClockPaused(true), 520);
+    return () => window.clearTimeout(settle);
+  }, [motionEnabled, working]);
 
   return (
     <div
-      className={`pulse pulse--${phase}${animating ? " pulse--active" : " pulse--still"}`}
+      className={`phase-light${motionEnabled ? "" : " phase-light--still"}`}
       data-phase={phase}
-      style={{
-        width: base,
-        height: base,
-        ["--phase-period" as string]: `${period}s`,
-      }}
+      data-clock={clockPaused ? "paused" : "running"}
       aria-hidden="true"
+      style={{ width: compact ? 18 : 40, height: compact ? 18 : 40, color: overlayPhaseColor(phase, 1) }}
     >
-      {/* Ripple rings; the rest state is a small stack around the dot. */}
-      {Array.from({ length: 3 }, (_, index) => (
-        <div
-          key={index}
-          className="pulse__ring"
-          style={{
-            border: `${compact ? 0.75 : 1}px solid ${color}`,
-            ["--ring-index" as string]: index,
-            animationDelay: `${(-index * period / 3).toFixed(3)}s`,
-          }}
-        />
-      ))}
-      {/* Center dot */}
-      <div
-        className="pulse__dot"
-        style={{
-          width: compact ? 5 : 10,
-          height: compact ? 5 : 10,
-          marginLeft: compact ? -2.5 : -5,
-          marginTop: compact ? -2.5 : -5,
-          background: color,
-          boxShadow: `0 0 ${compact ? 3 : 6}px ${overlayPhaseColor(phase, 0.25)}`,
-        }}
-      />
+      <div className="phase-light__rest" />
+      <div className="phase-light__halo"><div className="phase-light__halo-ring" /></div>
+      <div className="phase-light__recognition">
+        {[0, 1, 2].map(index => <div key={index} className="phase-light__ripple" style={{ animationDelay: `${-index * 0.9}s` }} />)}
+      </div>
+      <div className="phase-light__arcs"><div className="phase-light__arc phase-light__arc--outer" /><div className="phase-light__arc phase-light__arc--inner" /></div>
+      <div className="phase-light__core"><div className="phase-light__dot" /></div>
+      <div className="phase-light__pause"><i /><i /></div>
+      <div className="phase-light__error" />
     </div>
   );
 });
