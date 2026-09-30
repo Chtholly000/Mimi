@@ -34,6 +34,8 @@ const BASE_SETTINGS: SettingsSnapshot = {
   subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  pulseAnimation: null,
+  subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
   uiLanguage: null,

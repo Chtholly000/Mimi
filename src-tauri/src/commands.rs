@@ -75,6 +75,9 @@ pub struct SettingsSnapshotPayload {
     pub subtitle_color: SubtitleColor,
     pub subtitle_alignment: SubtitleAlignment,
     pub subtitle_display_mode: SubtitleDisplayMode,
+    /// `None` follows the operating system's reduce-motion setting.
+    pub pulse_animation: Option<bool>,
+    pub subtitle_animation: Option<bool>,
     pub subtitle_blends_with_background: bool,
     #[serde(rename = "isOverlayLocked")]
     pub is_overlay_locked: bool,
@@ -217,6 +220,8 @@ mod tests {
             subtitle_color: SubtitleColor::White,
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
+            pulse_animation: None,
+            subtitle_animation: None,
             subtitle_blends_with_background: false,
             is_overlay_locked: false,
             ui_language: None,
@@ -299,6 +304,8 @@ mod tests {
             subtitle_color: Some(SubtitleColor::Custom([0x12, 0x34, 0x56])),
             subtitle_alignment: Some(SubtitleAlignment::Right),
             subtitle_display_mode: Some(SubtitleDisplayMode::Bilingual),
+            pulse_animation: Some(true),
+            subtitle_animation: Some(true),
             subtitle_blends_with_background: Some(true),
             is_overlay_locked: Some(true),
             ui_language: Some("ja".into()),
@@ -356,6 +363,10 @@ impl SettingsSnapshotPayload {
                     subtitle_color: prefs.subtitle_color,
                     subtitle_alignment: prefs.subtitle_alignment,
                     subtitle_display_mode: prefs.subtitle_display_mode,
+
+                    pulse_animation: prefs.pulse_animation,
+
+                    subtitle_animation: prefs.subtitle_animation,
                     subtitle_blends_with_background: prefs.subtitle_blends_with_background,
                     is_overlay_locked: prefs.overlay_locked,
                     ui_language: prefs.ui_language,
@@ -383,6 +394,10 @@ impl SettingsSnapshotPayload {
             subtitle_color: prefs.subtitle_color,
             subtitle_alignment: prefs.subtitle_alignment,
             subtitle_display_mode: prefs.subtitle_display_mode,
+
+            pulse_animation: prefs.pulse_animation,
+
+            subtitle_animation: prefs.subtitle_animation,
             subtitle_blends_with_background: prefs.subtitle_blends_with_background,
             is_overlay_locked: prefs.overlay_locked,
             ui_language: prefs.ui_language,
@@ -403,6 +418,8 @@ pub struct SettingsDraft {
     pub subtitle_color: Option<SubtitleColor>,
     pub subtitle_alignment: Option<SubtitleAlignment>,
     pub subtitle_display_mode: Option<SubtitleDisplayMode>,
+    pub pulse_animation: Option<bool>,
+    pub subtitle_animation: Option<bool>,
     pub subtitle_blends_with_background: Option<bool>,
     pub is_overlay_locked: Option<bool>,
     pub ui_language: Option<String>,
@@ -544,6 +561,8 @@ fn apply_settings_draft_guarded(
         || draft.subtitle_color.is_some()
         || draft.subtitle_alignment.is_some()
         || draft.subtitle_display_mode.is_some()
+        || draft.pulse_animation.is_some()
+        || draft.subtitle_animation.is_some()
         || draft.subtitle_blends_with_background.is_some()
         || draft.is_overlay_locked.is_some()
         || draft.ui_language.is_some()
@@ -580,6 +599,12 @@ fn apply_settings_draft_guarded(
             }
             if let Some(mode) = draft.subtitle_display_mode {
                 prefs.subtitle_display_mode = mode;
+            }
+            if let Some(pulse) = draft.pulse_animation {
+                prefs.pulse_animation = Some(pulse);
+            }
+            if let Some(motion) = draft.subtitle_animation {
+                prefs.subtitle_animation = Some(motion);
             }
             if let Some(color) = draft.subtitle_color {
                 prefs.subtitle_color = color;
@@ -618,7 +643,11 @@ fn apply_settings_draft_guarded(
             preferences.subtitle_blends_with_background,
         );
     }
-    if changes_ui_language || draft.subtitle_display_mode.is_some() {
+    if changes_ui_language
+        || draft.subtitle_display_mode.is_some()
+        || draft.pulse_animation.is_some()
+        || draft.subtitle_animation.is_some()
+    {
         crate::refresh_native_tray_language(app);
     }
 

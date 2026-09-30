@@ -5,8 +5,9 @@ import {
   type SubtitleSnapshot,
 } from "../../lib/types";
 import {
+  buildSubtitleBlocks,
+  subtitleLaneBudget,
   computeActivityPhaseFromSignals,
-  computeVisibleRows,
   sourceLanguageButtonTitle,
   visibleLiveSubtitle,
   visibleLiveSubtitles,
@@ -254,42 +255,77 @@ describe("activity phase signals", () => {
 });
 
 
+describe("compact lane budget", () => {
+  it("follows the display mode and lane role, never the window height", () => {
+    expect(subtitleLaneBudget("bilingual", true)).toEqual({ source: 1, translation: 2 });
+    expect(subtitleLaneBudget("bilingual", false)).toEqual({ source: 2, translation: 0 });
+    expect(subtitleLaneBudget("translation", true)).toEqual({ source: 0, translation: 2 });
+    expect(subtitleLaneBudget("original", false)).toEqual({ source: 2, translation: 0 });
+  });
+});
+
 describe("subtitle display preference", () => {
   const pair = { source: "Hello world", translation: "你好世界", createdAt: 1 };
 
   it("preserves translation-only history and selects original without changing the target", () => {
-    expect(computeVisibleRows([pair], 28).map((row) => row.text)).toEqual(["你好世界"]);
-    expect(computeVisibleRows([pair], 28, "original", 64).map((row) => row.text)).toEqual(["Hello world"]);
+    expect(buildSubtitleBlocks([pair], "translation")).toEqual([
+      { id: "history-1", createdAt: 1, presentation: "latestCommitted", source: null, translation: "你好世界" },
+    ]);
+    expect(buildSubtitleBlocks([pair], "original")[0]).toMatchObject({
+      source: "Hello world",
+      translation: null,
+    });
     expect(visibleLiveSubtitle(
       subtitles({ text: "New source", isFinal: false }, { text: "旧译文", isFinal: false }),
       { ...settings, subtitleDisplayMode: "original" }, "en", true, false,
     )).toEqual({ text: "New source", isFinal: false, kind: "source" });
   });
 
-  it("groups each committed source with its own translation and one timestamp", () => {
-    const rows = computeVisibleRows([pair, { ...pair, source: "Next", translation: "下一句", createdAt: 2 }], 28, "bilingual", 64);
-    expect(rows.map((row) => row.text)).toEqual(["Hello world", "你好世界", "Next", "下一句"]);
-    expect(rows.map((row) => row.createdAt)).toEqual([1, null, 2, null]);
-    expect(rows[0].pairId).toBe(rows[1].pairId);
-    expect(rows[1].pairId).not.toBe(rows[2].pairId);
+  it("groups each committed utterance into one block with a single timestamp", () => {
+    const blocks = buildSubtitleBlocks(
+      [pair, { ...pair, source: "Next", translation: "下一句", createdAt: 2 }],
+      "bilingual",
+    );
+    expect(blocks.map((block) => [block.source, block.translation])).toEqual([
+      ["Hello world", "你好世界"],
+      ["Next", "下一句"],
+    ]);
+    expect(blocks.map((block) => block.createdAt)).toEqual([1, 2]);
+    expect(blocks.map((block) => block.presentation)).toEqual(["history", "latestCommitted"]);
+  });
+
+  it("marks the newest committed block until a live tail replaces the compact slot", () => {
+    const tail = { source: "Streaming", translation: null, isStreaming: true };
+    const blocks = buildSubtitleBlocks([pair], "bilingual", tail);
+    expect(blocks.map((block) => block.presentation)).toEqual(["history", "live"]);
+    expect(blocks[1]).toEqual({
+      id: "live",
+      createdAt: null,
+      presentation: "live",
+      source: "Streaming",
+      translation: null,
+      streaming: true,
+    });
+    // An empty tail is not a block: the newest committed utterance keeps the
+    // compact presentation instead.
+    expect(buildSubtitleBlocks([pair], "bilingual", { source: null, translation: null, isStreaming: false }))
+      .toEqual(buildSubtitleBlocks([pair], "bilingual"));
   });
 
   it("does not duplicate same-language or original-target history", () => {
     const same = { ...pair, translation: pair.source };
-    expect(computeVisibleRows([same], 64, "bilingual", 64).map((row) => row.text)).toEqual([pair.source]);
+    expect(buildSubtitleBlocks([same], "bilingual")[0]).toMatchObject({
+      source: pair.source,
+      translation: null,
+    });
   });
 
   it("keeps sources with empty translations and never substitutes translations for missing originals", () => {
-    expect(computeVisibleRows([{ ...pair, translation: "" }], 28, "bilingual", 64).map((row) => row.text)).toEqual([pair.source]);
-    expect(computeVisibleRows([{ ...pair, source: "" }], 28, "original", 64)).toEqual([]);
-  });
-
-  it("segments both languages independently without losing the pairing", () => {
-    const rows = computeVisibleRows([{ ...pair, source: "a".repeat(130), translation: "你".repeat(60) }], 28, "bilingual", 64);
-    expect(rows.filter((row) => row.kind === "source").map((row) => row.text.length)).toEqual([64, 64, 2]);
-    expect(rows.filter((row) => row.kind === "translation").map((row) => row.text.length)).toEqual([28, 28, 4]);
-    expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
-    expect(rows.filter((row) => row.createdAt !== null)).toHaveLength(1);
+    expect(buildSubtitleBlocks([{ ...pair, translation: "" }], "bilingual")[0]).toMatchObject({
+      source: pair.source,
+      translation: null,
+    });
+    expect(buildSubtitleBlocks([{ ...pair, source: "" }], "original")).toEqual([]);
   });
 
   it.each([

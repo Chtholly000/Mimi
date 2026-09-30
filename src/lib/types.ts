@@ -68,6 +68,9 @@ export interface SettingsSnapshot {
   subtitleColor: SubtitleColor;
   subtitleAlignment: SubtitleAlignment;
   subtitleDisplayMode: SubtitleDisplayMode;
+  /** `null` follows the system reduce-motion setting. */
+  pulseAnimation: boolean | null;
+  subtitleAnimation: boolean | null;
   subtitleBlendsWithBackground: boolean;
   isOverlayLocked: boolean;
   /** UI language override; `null` or `system` follows the system language. */
@@ -91,6 +94,8 @@ export interface SettingsDraft {
   subtitleColor?: SubtitleColor;
   subtitleAlignment?: SubtitleAlignment;
   subtitleDisplayMode?: SubtitleDisplayMode;
+  pulseAnimation?: boolean;
+  subtitleAnimation?: boolean;
   subtitleBlendsWithBackground?: boolean;
   isOverlayLocked?: boolean;
   uiLanguage?: UiLanguage;

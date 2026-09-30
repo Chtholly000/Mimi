@@ -24,6 +24,8 @@ const SETTINGS: SettingsSnapshot = {
   subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  pulseAnimation: null,
+  subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
   uiLanguage: null,
@@ -39,12 +41,16 @@ describe("mergeSettingsSnapshot", () => {
         subtitleColor: "#123456",
         subtitleAlignment: "right",
         subtitleDisplayMode: "bilingual",
+        subtitleAnimation: true,
+        pulseAnimation: false,
         subtitleBlendsWithBackground: true,
       }),
     ).toMatchObject({
       subtitleColor: "#123456",
       subtitleAlignment: "right",
       subtitleDisplayMode: "bilingual",
+      subtitleAnimation: true,
+      pulseAnimation: false,
       subtitleBlendsWithBackground: true,
     });
   });

@@ -8,6 +8,7 @@ import {
   type SettingsSnapshot,
 } from "../../lib/types";
 import { PulseRing } from "../overlay/PulseRing";
+import { useResolvedMotion } from "../overlay/animation";
 import type { LanguageStatus } from "../overlay/overlayModel";
 import { capsuleLabels } from "./capsuleLabels";
 
@@ -34,6 +35,7 @@ export function LanguageStatusCapsule({
   onToggle,
 }: LanguageStatusCapsuleProps) {
   const translatesAudio = targetLanguageTranslatesAudio(settings.targetLanguage);
+  const pulseOn = useResolvedMotion(settings.pulseAnimation);
   const modeLabel = translatesAudio
     ? TRANSLATION_MODE_DISPLAY_NAMES[effectiveMode]
     : I18N.overlay.originalOnly;
@@ -62,7 +64,7 @@ export function LanguageStatusCapsule({
       aria-expanded={expanded ? undefined : false}
       aria-controls={expanded ? undefined : "overlay-control-panel"}
     >
-      <PulseRing phase={phase} compact />
+      <PulseRing phase={phase} compact motionEnabled={pulseOn} />
       {transientLabel && (
         <span className="overlay-control-island__phase">{compact.phase}</span>
       )}
