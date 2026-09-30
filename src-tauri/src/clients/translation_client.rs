@@ -123,6 +123,26 @@ impl TranslationClient {
                 .map(Self::BaiduTranslate)
                 .map_err(TranslationClientError::BaiduTranslate);
             }
+            ProviderKind::DeepLX => {
+                let ProviderCredentials::DeepLX {
+                    asr_api_key,
+                    endpoint,
+                    token,
+                } = &credentials
+                else {
+                    return Err(ProviderCredentialsError::ProviderMismatch.into());
+                };
+                return HighQualityTranslationClient::new_deeplx(
+                    asr_api_key,
+                    endpoint,
+                    token,
+                    configuration.source_language,
+                    configuration.target_language,
+                    events,
+                )
+                .map(Self::HighQuality)
+                .map_err(TranslationClientError::MT);
+            }
             ProviderKind::AlibabaCloud => {}
         }
         // Automatic source recognition omits the transcription language on
@@ -383,6 +403,26 @@ mod tests {
     use super::*;
     use crate::clients::provider_events::provider_event_channel;
     use crate::core::models::{SourceLanguage, TargetLanguage};
+
+    #[test]
+    fn deeplx_factory_reuses_audio3_pipeline_with_separate_credentials() {
+        let configuration = LiveTranslationConfiguration::with_credentials(
+            ProviderKind::DeepLX,
+            ProviderCredentials::DeepLX {
+                asr_api_key: "synthetic-asr".into(),
+                endpoint: "https://example.com/translate".into(),
+                token: "synthetic-token".into(),
+            },
+            SourceLanguage::Automatic,
+            TargetLanguage::English,
+            TranslationMode::Turbo,
+        );
+        let (events, _receiver) = provider_event_channel();
+        assert!(matches!(
+            TranslationClient::new(&configuration, events).unwrap(),
+            TranslationClient::HighQuality(_)
+        ));
+    }
 
     #[test]
     fn provider_factory_selects_openai_realtime() {

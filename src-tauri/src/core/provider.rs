@@ -31,6 +31,8 @@ pub enum ProviderKind {
     BaiduTranslate,
     #[serde(rename = "xAIRealtime")]
     XAIRealtime,
+    #[serde(rename = "deepLX")]
+    DeepLX,
 }
 
 impl ProviderKind {
@@ -44,6 +46,7 @@ impl ProviderKind {
             Self::TencentCloud => "tencentCloud",
             Self::BaiduTranslate => "baiduTranslate",
             Self::XAIRealtime => "xAIRealtime",
+            Self::DeepLX => "deepLX",
         }
     }
 
@@ -57,6 +60,7 @@ impl ProviderKind {
             Self::TencentCloud => "Tencent Cloud",
             Self::BaiduTranslate => "Baidu Translate",
             Self::XAIRealtime => "xAI Grok",
+            Self::DeepLX => "DeepLX (Audio 3.0 ASR)",
         }
     }
 
@@ -86,6 +90,16 @@ impl ProviderKind {
             Self::OpenAIRealtime | Self::AzureOpenAIRealtime | Self::XAIRealtime => {
                 realtime_capabilities(vec![SourceLanguage::Automatic], 24_000)
             }
+            Self::DeepLX => realtime_capabilities(
+                vec![
+                    SourceLanguage::Automatic,
+                    SourceLanguage::Chinese,
+                    SourceLanguage::English,
+                    SourceLanguage::Japanese,
+                    SourceLanguage::Korean,
+                ],
+                16_000,
+            ),
             Self::GoogleGeminiLive => {
                 realtime_capabilities(vec![SourceLanguage::Automatic], 16_000)
             }

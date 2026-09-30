@@ -4,6 +4,8 @@ import type {
 } from "./types";
 
 export type CredentialFieldName =
+  | "asrApiKey"
+  | "token"
   | "apiKey"
   | "endpoint"
   | "deployment"
@@ -22,6 +24,8 @@ interface CredentialEditorLocalState {
 
 export function emptyCredentialDraft(): CredentialDraft {
   return {
+    asrApiKey: "",
+    token: "",
     apiKey: "",
     endpoint: "",
     deployment: "",
@@ -49,6 +53,8 @@ export function credentialFieldsForProvider(
   provider: ServiceProvider,
 ): readonly CredentialFieldName[] {
   switch (provider) {
+    case "deepLX":
+      return ["asrApiKey", "endpoint", "token"];
     case "azureOpenAIRealtime":
       return [
         "endpoint",
@@ -73,12 +79,14 @@ export function buildProviderCredentials(
     Object.entries(draft).map(([key, value]) => [key, value.trim()]),
   ) as CredentialDraft;
   if (
-    credentialFieldsForProvider(provider).some((field) => !values[field])
+    credentialFieldsForProvider(provider).some((field) => field !== "token" && !values[field])
   ) {
     return null;
   }
 
   switch (provider) {
+    case "deepLX":
+      return { kind: "deepLX", asrApiKey: values.asrApiKey, endpoint: values.endpoint, token: values.token };
     case "azureOpenAIRealtime":
       return {
         kind: "azureOpenAI",
@@ -102,5 +110,18 @@ export function buildProviderCredentials(
       };
     default:
       return { kind: "apiKey", apiKey: values.apiKey };
+  }
+}
+
+/** Mirrors native DeepLX endpoint safety checks before any credential I/O. */
+export function deepLXEndpointIsValid(value: string): boolean {
+  if (new TextEncoder().encode(value).length > 2048 || Array.from(value).some((char) => { const code = char.codePointAt(0)!; return code < 32 || (code >= 127 && code <= 159); })) return false;
+  try {
+    const url = new URL(value.trim());
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    return (url.protocol === "https:" || (url.protocol === "http:" && local)) &&
+      !!url.hostname && !url.username && !url.password && !value.includes("?") && !value.includes("#");
+  } catch {
+    return false;
   }
 }

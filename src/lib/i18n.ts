@@ -448,7 +448,7 @@ const SETTINGS_ZH = {
   manageServiceProfiles: "管理服务配置",
   addProfile: "添加配置",
   chooseProvider: "添加翻译服务",
-  chooseProviderDescription: "每家服务都使用官方实时接口与对应凭证。",
+  chooseProviderDescription: "选择服务并配置对应凭据。DeepLX 仅翻译文字，需要单独的语音识别服务。",
   cancel: "取消",
   profileName: "配置名称",
   profileNamePlaceholder: "输入配置名称",
@@ -484,6 +484,12 @@ const SETTINGS_ZH = {
   apiKey: "API Key",
   apiKeyPlaceholder: "输入新的 API Key",
   azureEndpoint: "Azure 资源端点",
+  asrApiKey: "语音识别 Key（阿里云 Audio 3.0）",
+  deepLXEndpointInvalid: "请输入有效 HTTPS 地址，或 localhost 的 HTTP 地址；不要包含用户名、密码、? 查询参数或 # 片段。",
+  deepLXEndpoint: "文字翻译 Endpoint（DeepLX）",
+  deepLXToken: "Bearer token（选填）",
+  providerDeepLXDescription: "Audio 3.0 识别系统音频，DeepLX 翻译文字。不是官方 DeepL API。",
+  deepLXNote: "系统音频发送至阿里云 Audio 3.0；识别文本发送至你填写的 DeepLX 地址。需要单独配置语音识别 Key。只支持 DeepLX /translate JSON 和可选 Bearer token；私服认证请向管理员确认。使用 HTTPS，或本机 HTTP。",
   azureEndpointPlaceholder: "https://资源名.openai.azure.com",
   deploymentName: "翻译部署名称",
   deploymentNamePlaceholder: "输入 gpt-realtime-translate 的部署名称",
@@ -703,7 +709,7 @@ const SETTINGS_EN = {
   manageServiceProfiles: "Manage Configurations",
   addProfile: "Add Configuration",
   chooseProvider: "Add a translation service",
-  chooseProviderDescription: "Each service uses its official realtime API and credential shape.",
+  chooseProviderDescription: "Choose a service and configure its credentials. DeepLX translates text and needs a separate speech recognition service.",
   cancel: "Cancel",
   profileName: "Configuration Name",
   profileNamePlaceholder: "Enter a configuration name",
@@ -739,6 +745,12 @@ const SETTINGS_EN = {
   apiKey: "API Key",
   apiKeyPlaceholder: "Enter a new API Key",
   azureEndpoint: "Azure Resource Endpoint",
+  asrApiKey: "Speech recognition key (Alibaba Audio 3.0)",
+  deepLXEndpointInvalid: "Enter a valid HTTPS URL, or HTTP on localhost. Remove URL username/password, ? query parameters and # fragments.",
+  deepLXEndpoint: "Text translation endpoint (DeepLX)",
+  deepLXToken: "Bearer token (optional)",
+  providerDeepLXDescription: "Audio 3.0 recognizes system audio; DeepLX translates text. Not the official DeepL API.",
+  deepLXNote: "System audio goes to Alibaba Audio 3.0; recognized text goes to your DeepLX endpoint. A separate speech recognition key is required. Supports DeepLX /translate JSON and an optional Bearer token; confirm private server authentication with its administrator. Use HTTPS, or HTTP on localhost.",
   azureEndpointPlaceholder: "https://resource.openai.azure.com",
   deploymentName: "Translation Deployment",
   deploymentNamePlaceholder: "Enter the gpt-realtime-translate deployment name",
@@ -955,7 +967,7 @@ const SETTINGS_JA = {
   manageServiceProfiles: "サービス設定を管理",
   addProfile: "設定を追加",
   chooseProvider: "翻訳サービスを追加",
-  chooseProviderDescription: "各サービスの公式リアルタイム API と認証形式を使用します。",
+  chooseProviderDescription: "サービスを選び、対応する認証情報を設定してください。DeepLX は文字翻訳のみで、別途音声認識サービスが必要です。",
   cancel: "キャンセル",
   profileName: "設定名",
   profileNamePlaceholder: "設定名を入力",
@@ -991,6 +1003,12 @@ const SETTINGS_JA = {
   apiKey: "API Key",
   apiKeyPlaceholder: "新しい API Key を入力",
   azureEndpoint: "Azure リソースエンドポイント",
+  asrApiKey: "音声認識キー（Alibaba Audio 3.0）",
+  deepLXEndpointInvalid: "有効な HTTPS URL または localhost の HTTP URL を入力してください。ユーザー名・パスワード、? クエリ、# フラグメントは使用できません。",
+  deepLXEndpoint: "文字翻訳エンドポイント（DeepLX）",
+  deepLXToken: "Bearer token（任意）",
+  providerDeepLXDescription: "Audio 3.0 がシステム音声を認識し、DeepLX が文字を翻訳します。公式 DeepL API ではありません。",
+  deepLXNote: "システム音声は Alibaba Audio 3.0 に、認識テキストは指定した DeepLX URL に送信します。音声認識キーが別途必要です。DeepLX /translate JSON と任意の Bearer token に対応します。独自サーバーの認証は管理者に確認してください。HTTPS またはローカル HTTP を使用してください。",
   azureEndpointPlaceholder: "https://resource.openai.azure.com",
   deploymentName: "翻訳デプロイ名",
   deploymentNamePlaceholder: "gpt-realtime-translate のデプロイ名を入力",
@@ -1076,6 +1094,8 @@ export function providerDisplayName(provider: ServiceProvider): string {
       return I18N.settings.providerTencentCloud;
     case "baiduTranslate":
       return I18N.settings.providerBaiduTranslate;
+    case "deepLX":
+      return "DeepLX (Audio 3.0 ASR)";
     case "xAIRealtime":
       return I18N.settings.providerXAI;
   }

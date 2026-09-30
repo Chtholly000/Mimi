@@ -107,10 +107,12 @@ export type ServiceProvider =
   | "volcanoEngine"
   | "tencentCloud"
   | "baiduTranslate"
-  | "xAIRealtime";
+  | "xAIRealtime"
+  | "deepLX";
 
 /** Write-only payload sent to the native secure credential store. */
 export type ProviderCredentialsInput =
+  | { kind: "deepLX"; asrApiKey: string; endpoint: string; token: string }
   | { kind: "apiKey"; apiKey: string }
   | {
       kind: "azureOpenAI";
