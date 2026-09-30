@@ -15,3 +15,5 @@ pub mod volcano_engine_client;
 pub mod xai_realtime_client;
 
 pub mod connection_diagnostics;
+
+pub mod deeplx_client;

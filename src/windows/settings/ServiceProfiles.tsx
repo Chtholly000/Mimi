@@ -567,10 +567,11 @@ function CredentialEditor({
         />
       )}
 
+      {profile.provider === "deepLX" && <p className="settings-caption">{I18N.settings.deepLXNote}</p>}
       <form className="credential-form" onSubmit={handleSubmit}>
         <div className="credential-form__fields">
           {credentialFieldsForProvider(profile.provider).map((field) => {
-            const copy = credentialFieldCopy(field);
+            const copy = credentialFieldCopy(field, profile.provider);
             const fieldId = `${inputId}-${field}`;
             return (
               <label className="settings-field" htmlFor={fieldId} key={field}>
@@ -629,12 +630,16 @@ function CredentialEditor({
   );
 }
 
-function credentialFieldCopy(field: CredentialFieldName): {
+function credentialFieldCopy(field: CredentialFieldName, provider: ServiceProvider): {
   label: string;
   placeholder: string;
   secret: boolean;
 } {
   switch (field) {
+    case "asrApiKey":
+      return { label: I18N.settings.asrApiKey, placeholder: I18N.settings.apiKeyPlaceholder, secret: true };
+    case "token":
+      return { label: I18N.settings.deepLXToken, placeholder: "Bearer token", secret: true };
     case "apiKey":
       return {
         label: I18N.settings.apiKey,
@@ -643,8 +648,8 @@ function credentialFieldCopy(field: CredentialFieldName): {
       };
     case "endpoint":
       return {
-        label: I18N.settings.azureEndpoint,
-        placeholder: I18N.settings.azureEndpointPlaceholder,
+        label: provider === "deepLX" ? I18N.settings.deepLXEndpoint : I18N.settings.azureEndpoint,
+        placeholder: provider === "deepLX" ? "https://example.com/translate" : I18N.settings.azureEndpointPlaceholder,
         secret: false,
       };
     case "deployment":
@@ -821,6 +826,8 @@ function providerDescription(provider: ServiceProvider): string {
       return I18N.settings.providerTencentCloudDescription;
     case "baiduTranslate":
       return I18N.settings.providerBaiduTranslateDescription;
+    case "deepLX":
+      return I18N.settings.providerDeepLXDescription;
     case "xAIRealtime":
       return I18N.settings.providerXAIDescription;
   }

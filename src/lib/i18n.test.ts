@@ -41,3 +41,13 @@ describe("in-place language changes", () => {
     unsubscribe();
   });
 });
+
+it("explains the separate DeepLX text destination in all UI languages", () => {
+  for (const language of ["zh", "en", "ja"] as const) {
+    setStoredUiLanguage(language);
+    expect(I18N.settings.deepLXNote).toContain("Audio 3.0");
+    expect(I18N.settings.deepLXNote).toContain("/translate");
+    expect(I18N.settings.deepLXNote).toContain("Bearer token");
+    expect(I18N.settings.asrApiKey).not.toBe(I18N.settings.deepLXEndpoint);
+  }
+});

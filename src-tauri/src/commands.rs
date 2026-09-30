@@ -1036,7 +1036,7 @@ pub async fn profile_test_connection(
         ProviderKind::BaiduTranslate => "https://aip.baidubce.com/",
         ProviderKind::XAIRealtime => "https://api.x.ai/v1/realtime",
         // Azure requires the private resource endpoint; this check never reads it.
-        ProviderKind::AzureOpenAIRealtime => {
+        ProviderKind::AzureOpenAIRealtime | ProviderKind::DeepLX => {
             return Ok(serde_json::json!({
                 "credential": storage, "network": "notTested"
             }))

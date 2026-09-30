@@ -138,10 +138,50 @@ impl Inner {
     }
 }
 
+enum TextTranslationClient {
+    Qwen(QwenMTClient),
+    DeepLX(crate::clients::deeplx_client::DeepLXClient),
+}
+impl TextTranslationClient {
+    async fn translate(
+        &self,
+        text: &str,
+        source: Option<SourceLanguage>,
+        memory: &[QwenMTMemoryPair],
+    ) -> Result<String, QwenMTClientError> {
+        match self {
+            Self::Qwen(client) => client.translate(text, source, memory).await,
+            Self::DeepLX(client) => client
+                .translate(text, source)
+                .await
+                .map_err(QwenMTClientError::DeepLX),
+        }
+    }
+    async fn translate_streaming(
+        &self,
+        text: &str,
+        source: Option<SourceLanguage>,
+        memory: &[QwenMTMemoryPair],
+        on_partial: impl Fn(String) + Send + Sync,
+    ) -> Result<String, QwenMTClientError> {
+        match self {
+            Self::Qwen(client) => {
+                client
+                    .translate_streaming(text, source, memory, on_partial)
+                    .await
+            }
+            Self::DeepLX(client) => client
+                .translate(text, source)
+                .await
+                .map_err(QwenMTClientError::DeepLX),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct HighQualityTranslationClient {
     asr_client: Audio3ASRClient,
-    mt: Arc<QwenMTClient>,
+    mt: Arc<TextTranslationClient>,
     source_language: SourceLanguage,
     translates_audio: bool,
     events: ProviderEventSender,
@@ -189,7 +229,7 @@ impl HighQualityTranslationClient {
         )?;
         Ok(Self {
             asr_client,
-            mt: Arc::new(mt),
+            mt: Arc::new(TextTranslationClient::Qwen(mt)),
             source_language,
             translates_audio: target_language.translates_audio(),
             events,
@@ -217,6 +257,33 @@ impl HighQualityTranslationClient {
             maximum_wait_delay,
             streams_finals,
         })
+    }
+
+    pub fn new_deeplx(
+        asr_key: &str,
+        endpoint: &str,
+        token: &str,
+        source: SourceLanguage,
+        target: TargetLanguage,
+        events: ProviderEventSender,
+    ) -> Result<Self, QwenMTClientError> {
+        // Reuse bounded workers, generation checks, cancellation and final order.
+        let mut pipeline = Self::new(
+            asr_key,
+            source,
+            target,
+            QwenMTModel::Plus,
+            Duration::from_millis(500),
+            Duration::from_millis(2_000),
+            12,
+            events,
+        )?;
+        pipeline.mt = Arc::new(TextTranslationClient::DeepLX(
+            crate::clients::deeplx_client::DeepLXClient::new(endpoint, token, source, target)
+                .map_err(QwenMTClientError::DeepLX)?,
+        ));
+        pipeline.streams_finals = false;
+        Ok(pipeline)
     }
 
     /// Connects the recognizer and resets all draft/final workers.
@@ -881,7 +948,9 @@ impl HighQualityTranslationClient {
     }
 
     fn handle_translation_failure(&self, error: &QwenMTClientError) {
-        let code = if error.is_authentication_failure() {
+        let code = if matches!(error, QwenMTClientError::DeepLX(_)) {
+            "deeplx_translation_failed"
+        } else if error.is_authentication_failure() {
             "translation_authentication_failed"
         } else {
             "translation_failed"
@@ -1137,6 +1206,75 @@ mod tests {
         )
         .unwrap();
         (client, receiver)
+    }
+
+    #[tokio::test]
+    async fn deeplx_finals_preserve_pairs_and_order_through_real_http() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for translation in ["first translated", "second translated"] {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                assert!(socket.read(&mut request).await.unwrap() > 0);
+                tokio::time::sleep(Duration::from_millis(40)).await;
+                let body = serde_json::json!({"code":200,"data":translation}).to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let (sender, mut receiver) = provider_event_channel();
+        let client = HighQualityTranslationClient::new_deeplx(
+            "synthetic-asr",
+            &format!("http://{address}"),
+            "",
+            SourceLanguage::English,
+            TargetLanguage::Japanese,
+            sender,
+        )
+        .unwrap();
+        for text in ["first synthetic sentence.", "second synthetic sentence."] {
+            client
+                .handle_asr_event(LiveTranslateServerEvent::SourceFinal {
+                    text: text.into(),
+                    language: Some("en".into()),
+                })
+                .await;
+        }
+        let mut pairs = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while pairs.len() < 2 {
+                if let Some(LiveTranslateServerEvent::SubtitleFinalPair {
+                    source,
+                    translation,
+                    ..
+                }) = receiver.recv().await
+                {
+                    pairs.push((source, translation));
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                (
+                    "first synthetic sentence.".into(),
+                    "first translated".into()
+                ),
+                (
+                    "second synthetic sentence.".into(),
+                    "second translated".into()
+                )
+            ]
+        );
+        client.disconnect().await;
+        server.await.unwrap();
     }
 
     #[tokio::test]

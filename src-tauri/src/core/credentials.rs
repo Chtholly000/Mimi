@@ -16,6 +16,8 @@ pub enum ProviderCredentialsError {
     ProviderMismatch,
     #[error("The Azure OpenAI endpoint must be an official HTTPS resource endpoint.")]
     InvalidAzureEndpoint,
+    #[error("Use an HTTPS DeepLX endpoint (or HTTP on localhost), without URL credentials, query or fragment.")]
+    InvalidDeepLXEndpoint,
     #[error("The Azure OpenAI deployment name is invalid.")]
     InvalidAzureDeployment,
     #[error("One or more credential fields are invalid.")]
@@ -35,6 +37,11 @@ pub enum ProviderCredentialsError {
     deny_unknown_fields
 )]
 pub enum ProviderCredentials {
+    DeepLX {
+        asr_api_key: String,
+        endpoint: String,
+        token: String,
+    },
     ApiKey {
         api_key: String,
     },
@@ -74,6 +81,7 @@ impl ProviderCredentials {
 
     pub const fn kind_label(&self) -> &'static str {
         match self {
+            Self::DeepLX { .. } => "deeplx",
             Self::ApiKey { .. } => "api_key",
             Self::AzureOpenAI { .. } => "azure_openai",
             Self::TencentCloud { .. } => "tencent_cloud",
@@ -83,6 +91,24 @@ impl ProviderCredentials {
 
     pub fn validated_for(&self, provider: ProviderKind) -> Result<Self, ProviderCredentialsError> {
         match (provider, self) {
+            (
+                ProviderKind::DeepLX,
+                Self::DeepLX {
+                    asr_api_key,
+                    endpoint,
+                    token,
+                },
+            ) => Ok(Self::DeepLX {
+                asr_api_key: required_field(asr_api_key, provider)?,
+                endpoint: crate::core::protocols::deeplx::endpoint(endpoint)
+                    .map_err(|_| ProviderCredentialsError::InvalidDeepLXEndpoint)?
+                    .to_string(),
+                token: if token.trim().is_empty() {
+                    String::new()
+                } else {
+                    required_field(token, provider)?
+                },
+            }),
             (provider, Self::ApiKey { api_key }) if provider.uses_api_key_only() => {
                 Ok(Self::ApiKey {
                     api_key: required_field(api_key, provider)?,
@@ -161,7 +187,7 @@ impl ProviderCredentials {
         match self {
             Self::ApiKey { api_key } => Some(api_key),
             Self::AzureOpenAI { api_key, .. } => Some(api_key),
-            Self::TencentCloud { .. } | Self::BaiduTranslate { .. } => None,
+            Self::DeepLX { .. } | Self::TencentCloud { .. } | Self::BaiduTranslate { .. } => None,
         }
     }
 
@@ -264,6 +290,38 @@ fn validated_azure_endpoint(value: &str) -> Result<String, ProviderCredentialsEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deeplx_credentials_round_trip_securely_and_validate_optional_token() {
+        let value = ProviderCredentials::DeepLX {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "https://example.com/api".into(),
+            token: "".into(),
+        };
+        let ipc: ProviderCredentials = serde_json::from_str(r#"{"kind":"deepLX","asrApiKey":"synthetic-asr","endpoint":"https://example.com/api","token":""}"#).unwrap();
+        assert_eq!(ipc, value);
+        let encoded = value.encode_for_keychain(ProviderKind::DeepLX).unwrap();
+        let decoded =
+            ProviderCredentials::decode_from_keychain(ProviderKind::DeepLX, &encoded).unwrap();
+        assert!(
+            matches!(&decoded, ProviderCredentials::DeepLX { endpoint, token, .. } if endpoint == "https://example.com/api/translate" && token.is_empty())
+        );
+        assert!(!format!("{decoded:?}").contains("synthetic-asr"));
+        assert!(!format!("{decoded:?}").contains("example.com"));
+        assert!(value.validated_for(ProviderKind::AlibabaCloud).is_err());
+        let bad = ProviderCredentials::DeepLX {
+            asr_api_key: "".into(),
+            endpoint: "https://example.com".into(),
+            token: "token".into(),
+        };
+        assert!(bad.validated_for(ProviderKind::DeepLX).is_err());
+        let bad = ProviderCredentials::DeepLX {
+            asr_api_key: "asr".into(),
+            endpoint: "https://example.com".into(),
+            token: "token\nInjected".into(),
+        };
+        assert!(bad.validated_for(ProviderKind::DeepLX).is_err());
+    }
 
     #[test]
     fn historical_single_api_keys_remain_raw_and_readable() {

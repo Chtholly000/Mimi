@@ -1623,6 +1623,32 @@ mod tests {
     }
 
     #[test]
+    fn deeplx_values_use_profile_secure_storage_and_never_snapshot_json() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::DeepLX, "Third-party translation")
+            .unwrap();
+        let credentials = ProviderCredentials::DeepLX {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "https://example.com/translate".into(),
+            token: "synthetic-token".into(),
+        };
+        store.save_credentials(&profile.id, &credentials).unwrap();
+        store.select_profile(&profile.id).unwrap();
+        assert_eq!(store.configuration().unwrap().credentials, credentials);
+        assert_eq!(store.credential_state(&profile), CredentialState::Present);
+        let snapshot =
+            serde_json::to_string(&(store.profile_catalog().unwrap(), store.preferences()))
+                .unwrap();
+        for value in ["synthetic-asr", "synthetic-token", "https://example.com"] {
+            assert!(!snapshot.contains(value));
+        }
+        store.delete_api_key(&profile.id).unwrap();
+        assert_eq!(store.credential_state(&profile), CredentialState::Missing);
+    }
+
+    #[test]
     fn credentials_are_isolated_by_profile_and_provider() {
         let fake = FakeSecretStore::default();
         let store = settings(&fake);

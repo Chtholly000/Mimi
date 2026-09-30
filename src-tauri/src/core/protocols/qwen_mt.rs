@@ -20,6 +20,7 @@ pub enum QwenMTProtocolError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QwenMTClientError {
+    DeepLX(super::deeplx::DeepLXError),
     MissingAPIKey,
     InvalidHTTPResponse,
     ResponseTooLarge,
@@ -30,6 +31,7 @@ pub enum QwenMTClientError {
 impl std::fmt::Display for QwenMTClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::DeepLX(error) => write!(f, "{error}"),
             Self::MissingAPIKey => {
                 write!(f, "Add an Alibaba Cloud Model Studio API key in Settings.")
             }
@@ -55,6 +57,7 @@ impl std::error::Error for QwenMTClientError {}
 impl QwenMTClientError {
     pub fn is_authentication_failure(&self) -> bool {
         match self {
+            Self::DeepLX(error) => error.authentication_failure(),
             Self::RequestFailed { status_code, .. } => *status_code == 401 || *status_code == 403,
             Self::MissingAPIKey => true,
             Self::InvalidHTTPResponse | Self::ResponseTooLarge | Self::RequestTimedOut => false,
@@ -64,6 +67,7 @@ impl QwenMTClientError {
     /// Content-free diagnostic label (never includes the server message).
     pub fn diagnostic_label(&self) -> String {
         match self {
+            Self::DeepLX(error) => error.diagnostic_label(),
             Self::MissingAPIKey => "QwenMTClientError.missingAPIKey".to_string(),
             Self::InvalidHTTPResponse => "QwenMTClientError.invalidHTTPResponse".to_string(),
             Self::ResponseTooLarge => "QwenMTClientError.responseTooLarge".to_string(),
@@ -82,6 +86,7 @@ impl QwenMTRetryPolicy {
     /// retryable. Delay: min(8000, 600 * 2^min(max(attempt-1,0),4)) ms.
     pub fn delay(error: &QwenMTClientError, attempt: usize) -> Option<Duration> {
         let is_transient = match error {
+            QwenMTClientError::DeepLX(error) => error.retryable(),
             QwenMTClientError::RequestTimedOut | QwenMTClientError::InvalidHTTPResponse => true,
             QwenMTClientError::RequestFailed { status_code, .. } => {
                 *status_code == 408 || *status_code == 429 || *status_code >= 500

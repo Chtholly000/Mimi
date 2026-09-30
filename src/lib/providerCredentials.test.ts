@@ -67,3 +67,12 @@ describe("provider credential payloads", () => {
     });
   });
 });
+
+it("keeps DeepLX recognition credentials separate and makes its token optional", () => {
+  const draft = { ...emptyCredentialDraft(), asrApiKey: " synthetic-asr ", endpoint: " https://example.com/translate " };
+  expect(credentialFieldsForProvider("deepLX")).toEqual(["asrApiKey", "endpoint", "token"]);
+  expect(buildProviderCredentials("deepLX", draft)).toEqual({ kind: "deepLX", asrApiKey: "synthetic-asr", endpoint: "https://example.com/translate", token: "" });
+  expect(buildProviderCredentials("deepLX", { ...draft, asrApiKey: "" })).toBeNull();
+  expect(buildProviderCredentials("deepLX", { ...draft, endpoint: "" })).toBeNull();
+  expect(buildProviderCredentials("deepLX", { ...draft, token: " synthetic-token " })?.kind).toBe("deepLX");
+});

@@ -4,6 +4,8 @@ import type {
 } from "./types";
 
 export type CredentialFieldName =
+  | "asrApiKey"
+  | "token"
   | "apiKey"
   | "endpoint"
   | "deployment"
@@ -22,6 +24,8 @@ interface CredentialEditorLocalState {
 
 export function emptyCredentialDraft(): CredentialDraft {
   return {
+    asrApiKey: "",
+    token: "",
     apiKey: "",
     endpoint: "",
     deployment: "",
@@ -49,6 +53,8 @@ export function credentialFieldsForProvider(
   provider: ServiceProvider,
 ): readonly CredentialFieldName[] {
   switch (provider) {
+    case "deepLX":
+      return ["asrApiKey", "endpoint", "token"];
     case "azureOpenAIRealtime":
       return [
         "endpoint",
@@ -73,12 +79,14 @@ export function buildProviderCredentials(
     Object.entries(draft).map(([key, value]) => [key, value.trim()]),
   ) as CredentialDraft;
   if (
-    credentialFieldsForProvider(provider).some((field) => !values[field])
+    credentialFieldsForProvider(provider).some((field) => field !== "token" && !values[field])
   ) {
     return null;
   }
 
   switch (provider) {
+    case "deepLX":
+      return { kind: "deepLX", asrApiKey: values.asrApiKey, endpoint: values.endpoint, token: values.token };
     case "azureOpenAIRealtime":
       return {
         kind: "azureOpenAI",
