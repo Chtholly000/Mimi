@@ -5,6 +5,8 @@ pub mod committer;
 pub mod configuration;
 pub mod credentials;
 pub mod diagnostics;
+#[cfg(any(target_os = "macos", test))]
+pub mod dock_presentation;
 pub mod models;
 pub mod openai_transcript_committer;
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
