@@ -96,3 +96,43 @@ it("shows the same platform-aware storage guidance for other service profiles", 
   expect(host.querySelector('.credential-unavailable[role="status"]')?.textContent).toBe(diagnosticCopy("linux").storage);
   expect(host.textContent).toContain(I18N.settings.credentialUnavailable);
 });
+
+it.each(["alibabaCloud", "openAIRealtime"] as const)("keeps an unsaved %s key visible when a connection check recovers stored credentials", async (provider) => {
+  await render({ ...settings, profiles: [{ ...profile, provider }] });
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  await change('input[type="password"]', "synthetic-unsaved-replacement");
+  expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
+
+  vi.mocked(testProfileConnection).mockResolvedValue({ credential: "present", network: "notTested" });
+  await click(diagnosticCopy("linux").test);
+  // The native connection check also emits this recovered settings snapshot.
+  const recovered = { ...settings, profiles: [{ ...profile, provider, credentialState: "present" as const }] };
+  await render(recovered);
+  expect(host.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe("synthetic-unsaved-replacement");
+  expect(host.querySelector<HTMLButtonElement>('.credential-form button[type="submit"]')!.disabled).toBe(false);
+
+  actions.saveProfileCredentials.mockResolvedValue(recovered);
+  actions.selectProfile.mockResolvedValue(recovered);
+  await submit();
+  expect(actions.saveProfileCredentials).toHaveBeenCalledExactlyOnceWith(profile.id, provider === "alibabaCloud" ? {
+    kind: "alibabaTranslation", apiKey: "synthetic-unsaved-replacement", textTranslation: "followService", endpoint: "", token: "",
+  } : { kind: "apiKey", apiKey: "synthetic-unsaved-replacement" });
+  expect(host.querySelector('input[type="password"]')).toBeNull();
+  await click(I18N.settings.replaceCredentials);
+  expect(host.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe("");
+});
+
+it("clears a generic replacement draft before confirmed credential deletion", async () => {
+  await render({ ...settings, profiles: [{ ...profile, provider: "openAIRealtime", credentialState: "present" }] });
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  await click(I18N.settings.replaceCredentials);
+  await change('input[type="password"]', "synthetic-unsaved-replacement");
+  await click(I18N.settings.deleteCredentials);
+  actions.deleteProfileAPIKey.mockRejectedValue("credential_store_access_denied");
+  await click(I18N.settings.confirmDelete);
+  expect(actions.deleteProfileAPIKey).toHaveBeenCalledExactlyOnceWith(profile.id);
+  expect(host.querySelector('input[type="password"]')).toBeNull();
+  await click(I18N.settings.replaceCredentials);
+  expect(host.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe("");
+  expect(host.querySelector('.settings-feedback[data-tone="error"]')?.textContent).toBe(profileErrorMessage("credential_store_access_denied"));
+});

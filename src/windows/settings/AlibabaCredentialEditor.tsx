@@ -77,7 +77,7 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, feed
         <button type="button" className="settings-link settings-link--danger" disabled={disabled || confirmingDelete} onClick={onRequestDelete}>{I18N.settings.deleteCredentials}</button>
       </span> : <label className="settings-field" htmlFor={`${inputId}-apiKey`}>
         <span>{I18N.settings.apiKey}</span>
-        <input id={`${inputId}-apiKey`} type="password" autoComplete="new-password" spellCheck={false} disabled={disabled} value={draft.apiKey} placeholder={I18N.settings.apiKeyPlaceholder} aria-describedby={noteId} onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))} />
+        <input id={`${inputId}-apiKey`} type="password" autoComplete="new-password" spellCheck={false} disabled={disabled} value={draft.apiKey} placeholder={I18N.settings.apiKeyPlaceholder} aria-describedby={noteId} onChange={(event) => { setEditingKey(true); setDraft((current) => ({ ...current, apiKey: event.target.value })); }} />
       </label>}
       <details className="settings-advanced" open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
         <summary>{I18N.settings.advancedTranslation}</summary>
