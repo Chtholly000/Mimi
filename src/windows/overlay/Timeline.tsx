@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { hexToRgba } from "../../lib/types";
 import { subtitleColorHex } from "../../lib/subtitleColor";
 import type { SettingsSnapshot, SubtitleAlignment, SubtitleColor } from "../../lib/types";
 import { observeTimelineResize } from "./timelineResize";
+import { TimelineScroll } from "./timelineScroll";
 import { unitSpans } from "./animation";
 import { rowHorizontalPadding } from "./alignment";
 import {
@@ -64,31 +65,44 @@ export const Timeline = memo(function Timeline({
     return (last?.source?.length ?? 0) + (last?.translation?.length ?? 0);
   }, [blocks]);
   const prevBlockCountRef = useRef(blocks.length);
+  const previousModeRef = useRef(displayMode);
+  const modeChangedRef = useRef(false);
+  const [scroll] = useState(() => new TimelineScroll());
+
+  useLayoutEffect(() => {
+    if (previousModeRef.current === displayMode) return;
+    previousModeRef.current = displayMode;
+    modeChangedRef.current = true;
+    if (containerRef.current) scroll.displayChanged(containerRef.current);
+  }, [displayMode, scroll]);
 
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return;
-    if (blocks.length !== prevBlockCountRef.current) {
-      // A new block glides to the bottom. Skip live-growth pinning in this
-      // render so the two scroll updates never fight.
-      prevBlockCountRef.current = blocks.length;
-      element.scrollTo({ top: element.scrollHeight, behavior: motionEnabled ? "smooth" : "instant" });
-    } else {
-      // Same block, text grew: pin instantly so per-character streaming
-      // never stutters.
-      element.scrollTop = element.scrollHeight;
-    }
-  }, [blocks.length, lastTextLength, fontSize, alignment, blendsWithBackground, motionEnabled]);
+    const newBlock = blocks.length !== prevBlockCountRef.current;
+    prevBlockCountRef.current = blocks.length;
+    // Do not overwrite the new mode's sentence anchor with a second passive
+    // effect in the same render. Real subsequent text still follows the tail.
+    if (modeChangedRef.current) { modeChangedRef.current = false; return; }
+    scroll.contentChanged(element, newBlock && motionEnabled ? "smooth" : "instant");
+  }, [blocks.length, lastTextLength, fontSize, alignment, blendsWithBackground, motionEnabled, displayMode, scroll]);
 
   useEffect(() => {
     const element = containerRef.current;
     if (!element) return;
-    return observeTimelineResize(element);
-  }, []);
+    return observeTimelineResize(element, () => scroll.reflow(element));
+  }, [scroll]);
 
   return (
     <div
       ref={containerRef}
+      onWheel={(event) => scroll.userIntent(event.currentTarget)}
+      onTouchStart={(event) => scroll.userIntent(event.currentTarget)}
+      onPointerDown={(event) => scroll.userIntent(event.currentTarget)}
+      onKeyDown={(event) => {
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) scroll.userIntent(event.currentTarget);
+      }}
+      onScroll={(event) => scroll.scrolled(event.currentTarget)}
       className={timelineClassName(blendsWithBackground)}
       style={{ overscrollBehavior: "contain" }}
     >
@@ -109,6 +123,7 @@ export const Timeline = memo(function Timeline({
         return (
           <div
             key={block.id}
+            data-utterance-id={block.id}
             className={entering ? "relative subtitle-block" : "relative"}
             style={{
               paddingLeft: rowHorizontalPadding(
