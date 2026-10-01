@@ -732,6 +732,14 @@ fn resolve_capture_source(
     if !source.is_empty() && source != FOLLOW_AUDIBLE {
         return resolve_output(source);
     }
+    smart_default_device(follow)
+}
+
+/// Follow audible role-ranked outputs, falling back through the role chain
+/// while quiet. Census ids must resolve as raw WASAPI ids, not persisted ids.
+fn smart_default_device(
+    follow: &Mutex<FollowAudible>,
+) -> Result<cpal::Device, SystemAudioCaptureError> {
     let roles: Vec<String> = [
         DefaultRole::Communications,
         DefaultRole::Multimedia,

@@ -47,7 +47,8 @@ pub enum FollowDecision {
 ///
 /// Stateful across polls because the decision needs the history: a binding is
 /// kept while it stays above the low watermark unless a higher-priority role
-/// becomes audible. Moves respect the minimum dwell. Pure, so every
+/// becomes audible. Higher roles take over immediately; other moves respect
+/// the minimum dwell. Pure, so every
 /// platform and CI can test the same rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FollowAudible {
@@ -84,7 +85,7 @@ impl FollowAudible {
 
     /// `roles` are backend endpoint ids ordered communications, media, console.
     /// Unknown/non-role outputs remain valid candidates. Higher roles can take
-    /// over background playback after dwell; louder lower roles cannot steal.
+    /// over background playback immediately; louder lower roles cannot steal.
     pub fn decide_with_roles(
         &mut self,
         candidates: &[(String, f32)],
@@ -111,13 +112,23 @@ impl FollowAudible {
                     .cmp(&rank(right_id))
                     .then_with(|| right_level.total_cmp(left_level))
             });
+        // PR89's immediate role promotion bypasses dwell only for a strictly
+        // higher role. Quiet/loudness changes still use the existing hysteresis.
+        let higher_role = preferred.is_some_and(|(id, _)| {
+            self.bound
+                .as_deref()
+                .is_some_and(|bound| rank(id) < rank(bound))
+        });
+        if higher_role {
+            let id = preferred.unwrap().0.clone();
+            self.bound = Some(id.clone());
+            self.ticks_on_bound = 0;
+            return FollowDecision::SwitchTo(id);
+        }
         if let Some(bound) = self.bound.as_deref() {
             if level_of(bound).is_finite() && level_of(bound) >= AUDIBLE_LOW_WATERMARK {
-                let higher_role = preferred.is_some_and(|(id, _)| rank(id) < rank(bound));
-                if !higher_role {
-                    self.ticks_on_bound = self.ticks_on_bound.saturating_add(1);
-                    return FollowDecision::Keep;
-                }
+                self.ticks_on_bound = self.ticks_on_bound.saturating_add(1);
+                return FollowDecision::Keep;
             }
         }
         let Some((id, _)) = preferred else {
@@ -248,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn communication_promotes_over_audible_media_after_dwell_without_loudness_stealing() {
+    fn communication_promotes_immediately_over_media_without_loudness_stealing() {
         let roles = vec!["call".into(), "media".into(), "console".into()];
         let mut follow = FollowAudible::new(2);
         assert_eq!(
@@ -256,14 +267,6 @@ mod tests {
             FollowDecision::SwitchTo("media".into())
         );
         let both = [("media".into(), 0.9), ("call".into(), 0.03)];
-        assert_eq!(
-            follow.decide_with_roles(&both, &roles),
-            FollowDecision::Keep
-        );
-        assert_eq!(
-            follow.decide_with_roles(&both, &roles),
-            FollowDecision::Keep
-        );
         assert_eq!(
             follow.decide_with_roles(&both, &roles),
             FollowDecision::SwitchTo("call".into())
@@ -275,6 +278,44 @@ mod tests {
             );
         }
         assert_eq!(follow.bound(), Some("call"));
+    }
+
+    #[test]
+    fn role_promotion_from_non_role_output_is_immediate_but_demotion_waits() {
+        let roles = vec!["call".into(), "media".into()];
+        let mut follow = FollowAudible::new(2);
+        assert_eq!(
+            follow.decide_with_roles(&[("other".into(), 0.8)], &roles),
+            FollowDecision::SwitchTo("other".into())
+        );
+        assert_eq!(
+            follow.decide_with_roles(&[("other".into(), 0.8), ("media".into(), 0.03)], &roles),
+            FollowDecision::SwitchTo("media".into())
+        );
+        assert_eq!(
+            follow.decide_with_roles(
+                &[("media".into(), 0.03), ("call".into(), f32::INFINITY)],
+                &roles
+            ),
+            FollowDecision::Keep
+        );
+        assert_eq!(
+            follow.decide_with_roles(&[("call".into(), 0.02)], &roles),
+            FollowDecision::SwitchTo("call".into())
+        );
+        let lower = [("media".into(), 0.8)];
+        assert_eq!(
+            follow.decide_with_roles(&lower, &roles),
+            FollowDecision::Keep
+        );
+        assert_eq!(
+            follow.decide_with_roles(&lower, &roles),
+            FollowDecision::Keep
+        );
+        assert_eq!(
+            follow.decide_with_roles(&lower, &roles),
+            FollowDecision::SwitchTo("media".into())
+        );
     }
 
     #[test]
@@ -307,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn silence_releases_and_removed_binding_can_switch_after_dwell() {
+    fn silence_releases_and_higher_role_can_replace_removed_binding_immediately() {
         let roles = vec!["call".into(), "media".into()];
         let mut follow = FollowAudible::new(2);
         assert_eq!(
@@ -322,12 +363,6 @@ mod tests {
             follow.decide_with_roles(&[("media".into(), 0.5)], &roles),
             FollowDecision::SwitchTo("media".into())
         );
-        for _ in 0..2 {
-            assert_eq!(
-                follow.decide_with_roles(&[("call".into(), 0.3)], &roles),
-                FollowDecision::Keep
-            );
-        }
         assert_eq!(
             follow.decide_with_roles(&[("call".into(), 0.3)], &roles),
             FollowDecision::SwitchTo("call".into())
