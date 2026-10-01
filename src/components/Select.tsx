@@ -20,9 +20,18 @@ export function Select({ label, value, options, disabled = false, onChange }: Se
   const menu = useRef<HTMLDivElement>(null);
   const search = useRef({ text: "", at: 0 });
   const [popup, setPopup] = useState<MenuStyle | null>(null);
-  const [active, setActive] = useState(0);
   const selected = options.findIndex((option) => option.value === value);
+  const [cursor, setCursor] = useState({ selection: value, index: 0 });
+  // A shortcut/another window can change the value while the menu is open.
+  const active = cursor.selection === value ? cursor.index : Math.max(0, selected);
   const open = popup !== null && !disabled;
+
+  function setActive(index: number | ((previous: number) => number)) {
+    setCursor(previous => ({
+      selection: value,
+      index: typeof index === "number" ? index : index(previous.selection === value ? previous.index : Math.max(0, selected)),
+    }));
+  }
 
   function show() {
     const button = trigger.current;
@@ -122,7 +131,9 @@ export function Select({ label, value, options, disabled = false, onChange }: Se
         aria-controls={open ? id : undefined} aria-activedescendant={open ? `${id}-${active}` : undefined}
         disabled={disabled || options.length === 0} onKeyDown={onKeyDown}
         onClick={() => open ? setPopup(null) : show()}>
-        <span>{options[selected]?.label ?? value}</span><Icon name="chevron-down" />
+        {/* Replacing the label node also invalidates retained WebKit pixels on
+            external value changes, while the focused trigger remains stable. */}
+        <span key={value}>{options[selected]?.label ?? value}</span><Icon name="chevron-down" />
       </button>
       {open && createPortal(
         <div ref={menu} id={id} className="mimi-select__menu" role="listbox" aria-label={label} style={popup}>
