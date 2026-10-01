@@ -64,7 +64,7 @@ export function LanguageStatusCapsule({
       aria-expanded={expanded ? undefined : false}
       aria-controls={expanded ? undefined : "overlay-control-panel"}
     >
-      <PulseRing phase={phase} compact motionEnabled={pulseOn} />
+      <PulseRing phase={phase} compact motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
       {transientLabel && (
         <span className="overlay-control-island__phase">{compact.phase}</span>
       )}
