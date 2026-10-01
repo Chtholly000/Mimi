@@ -13,7 +13,10 @@ use crate::windows::{
     OverlayControlMode, OverlayControlWindowManager, OverlayWindowManager, TrayPanelManager,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tauri::{AppHandle, Emitter, Listener, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -486,6 +489,48 @@ mod tests {
         assert!(!exited.get());
         assert_eq!(finish_quit(Ok(()), || exited.set(true)), Ok(()));
         assert!(exited.get());
+    }
+
+    #[test]
+    fn simultaneous_quit_requests_share_one_save_and_failed_save_can_retry() {
+        let gate = QuitRequestGate(AtomicBool::new(false));
+        let exited = std::cell::Cell::new(false);
+        let failed = (|| {
+            let request = gate.begin().expect("first request accepted");
+            assert!(gate.begin().is_none());
+            finish_quit(Err(std::io::Error::other("synthetic failure")), || {
+                exited.set(true)
+            })?;
+            request.exit_requested();
+            Ok::<(), String>(())
+        })();
+        assert!(failed.is_err());
+        assert!(!exited.get());
+        let retry = gate.begin().expect("save failure permits a retry");
+        finish_quit(Ok(()), || exited.set(true)).unwrap();
+        retry.exit_requested();
+        assert!(exited.get());
+        assert!(
+            gate.begin().is_none(),
+            "exit already queued; do not save again"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_quit_future_releases_the_request_gate() {
+        let gate = Arc::new(QuitRequestGate(AtomicBool::new(false)));
+        let task_gate = Arc::clone(&gate);
+        let (started, received) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _request = task_gate.begin().unwrap();
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        received.await.unwrap();
+        assert!(gate.begin().is_none());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(gate.begin().is_some());
     }
 }
 
@@ -1356,8 +1401,50 @@ pub async fn app_quit(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
 /// Every normal exit uses the same stop/finalize boundary. A failed save keeps
 /// the pending archive and app alive so the user can retry rather than lose it.
 pub async fn quit_application(app: AppHandle, session: Arc<SessionManager>) -> Result<(), String> {
+    let Some(request) = NORMAL_QUIT_GATE.begin() else {
+        return Ok(());
+    };
     session.stop().await;
-    finish_quit(session.persist_current_history(), || app.exit(0))
+    finish_quit(session.persist_current_history(), || app.exit(0))?;
+    request.exit_requested();
+    Ok(())
+}
+
+static NORMAL_QUIT_GATE: QuitRequestGate = QuitRequestGate(AtomicBool::new(false));
+
+/// Share one stop/save across simultaneous Dock, menu, tray and IPC requests.
+/// Failed or cancelled futures release the gate; successful exit keeps it shut.
+struct QuitRequestGate(AtomicBool);
+
+impl QuitRequestGate {
+    fn begin(&self) -> Option<QuitRequest<'_>> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| QuitRequest {
+                gate: self,
+                exiting: false,
+            })
+    }
+}
+
+struct QuitRequest<'a> {
+    gate: &'a QuitRequestGate,
+    exiting: bool,
+}
+
+impl QuitRequest<'_> {
+    fn exit_requested(mut self) {
+        self.exiting = true;
+    }
+}
+
+impl Drop for QuitRequest<'_> {
+    fn drop(&mut self) {
+        if !self.exiting {
+            self.gate.0.store(false, Ordering::Release);
+        }
+    }
 }
 
 fn finish_quit(finalization: std::io::Result<()>, exit: impl FnOnce()) -> Result<(), String> {

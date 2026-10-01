@@ -125,6 +125,17 @@ confirmation, show pending feedback, guard duplicate requests and allow retry
 after a brief localized failure. Settings receives the existing app_quit grant;
 the subtitle overlay does not gain an exit control.
 
+The native tray menu and macOS application-menu Quit/Cmd+Q use the same
+stop/finalize/exit function. A failed archive finalization keeps the app open and
+opens the existing export page's safe save-error feedback and retry action.
+The macOS application menu replaces only its predefined Quit with a localized
+ordinary menu item; About, Services, Hide and the complete Edit/Window menus
+remain intact. Ordinary Dock Quit is intercepted through the public AppKit
+termination delegate and shares this boundary too; see
+`2026-10-02-native-quit-finalization.md`. `ExitRequested` alone does not cover
+AppKit's direct termination in the locked runtime. OS shutdown and Force Quit
+are not claimed as safe-finalization paths.
+
 Getting started is a persistent, manually opened settings-sidebar entry with
 three steps and service/subtitle navigation. It does not start capture, save
 credentials/preferences or write a completion flag. Redundant sidebar borders
