@@ -8,9 +8,13 @@ pub mod diagnostics;
 #[cfg(any(target_os = "macos", test))]
 pub mod dock_presentation;
 pub mod models;
+pub mod network_proxy;
 pub mod openai_transcript_committer;
+#[cfg(any(target_os = "macos", test))]
+pub mod overlay_pointer;
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub mod pcm16;
+pub mod preview_pacing;
 pub mod protocols;
 pub mod provider;
 pub mod session;

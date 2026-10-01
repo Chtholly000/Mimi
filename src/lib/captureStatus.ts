@@ -4,6 +4,8 @@ export interface CaptureStatus {
   kind: "windows_output" | "macos_system_mix" | "linux_output_monitor" | "unknown";
   strategy: "follow_system" | "manual_output" | "platform_capture";
   actualDeviceName: string | null;
+  /** Default system output, independent of the macOS mixed-audio capture route. */
+  systemOutputDeviceName?: string | null;
   observation: { pcmDataRecent: boolean; soundRecent: boolean } | null;
 }
 

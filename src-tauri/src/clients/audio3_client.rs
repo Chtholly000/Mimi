@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -60,6 +60,7 @@ struct Inner {
 
 #[derive(Clone)]
 pub struct Audio3ASRClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint: Audio3ASREndpoint,
     api_key: String,
@@ -69,6 +70,15 @@ pub struct Audio3ASRClient {
 }
 
 impl Audio3ASRClient {
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         api_key: &str,
         source_language: SourceLanguage,
@@ -78,6 +88,7 @@ impl Audio3ASRClient {
             return Err(Audio3ASRClientError::MissingAPIKey);
         }
         Ok(Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
                 sink: Mutex::new(None),
                 task_started: AtomicBool::new(false),
@@ -103,6 +114,19 @@ impl Audio3ASRClient {
 
     /// Opens the socket, sends `run-task`, and waits for `task-started`.
     pub async fn connect(&self, task_id: &str) -> Result<(), Audio3ASRClientError> {
+        self.connect_with_heartbeat(task_id, true).await
+    }
+
+    /// Authenticated task setup without sending captured or synthetic PCM.
+    pub async fn connect_for_probe(&self, task_id: &str) -> Result<(), Audio3ASRClientError> {
+        self.connect_with_heartbeat(task_id, false).await
+    }
+
+    async fn connect_with_heartbeat(
+        &self,
+        task_id: &str,
+        silence_heartbeat: bool,
+    ) -> Result<(), Audio3ASRClientError> {
         self.disconnect().await;
         let events = self
             .events
@@ -137,19 +161,26 @@ impl Audio3ASRClient {
             .headers_mut()
             .insert("User-Agent", HeaderValue::from_static("mimi-tauri"));
 
-        let (socket, _response) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
-            .await
-            .map_err(|_| Audio3ASRClientError::ConnectionTimedOut)?
-            .map_err(|error| match error {
-                tokio_tungstenite::tungstenite::Error::Http(response)
-                    if matches!(response.status().as_u16(), 401 | 403) =>
-                {
-                    Audio3ASRClientError::Task(
-                        "audio3_error.connection.authentication.HTTP_AUTH".into(),
-                    )
-                }
-                _ => Audio3ASRClientError::TransportFailure,
-            })?;
+        let (socket, _response) = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            super::provider_network::websocket_with_message_limit(
+                request,
+                &self.network,
+                crate::core::protocols::audio3::MAX_AUDIO3_MESSAGE_BYTES,
+            ),
+        )
+        .await
+        .map_err(|_| Audio3ASRClientError::ConnectionTimedOut)?
+        .map_err(|error| match error {
+            tokio_tungstenite::tungstenite::Error::Http(response)
+                if matches!(response.status().as_u16(), 401 | 403) =>
+            {
+                Audio3ASRClientError::Task(
+                    "audio3_error.connection.authentication.HTTP_AUTH".into(),
+                )
+            }
+            _ => Audio3ASRClientError::TransportFailure,
+        })?;
         let (sink, mut stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.task_started.store(false, Ordering::SeqCst);
@@ -166,7 +197,7 @@ impl Audio3ASRClient {
             loop {
                 let message = tokio::select! {
                     message = stream.next() => message,
-                    _ = heartbeat.tick(), if inner.task_started.load(Ordering::SeqCst)
+                    _ = heartbeat.tick(), if silence_heartbeat && inner.task_started.load(Ordering::SeqCst)
                         && !inner.task_finished.load(Ordering::SeqCst)
                         && !inner.finishing.load(Ordering::SeqCst) => {
                         if send_silence_if_idle(&inner).await.is_err() {
@@ -480,6 +511,43 @@ mod streaming_tests {
     use crate::clients::provider_events::provider_event_channel;
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+
+    #[tokio::test]
+    async fn service_probe_waits_for_task_ready_without_sending_silence_pcm() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let run = socket.next().await.unwrap().unwrap();
+            assert!(run.to_text().unwrap().contains("run-task"));
+            socket
+                .send(Message::Text(
+                    r#"{"header":{"event":"task-started"}}"#.into(),
+                ))
+                .await
+                .unwrap();
+            // Several normal heartbeat intervals pass; a probe sends no PCM.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(350), socket.next())
+                    .await
+                    .is_err()
+            );
+            socket.next().await
+        });
+        let mut client = Audio3ASRClient::new("fixture-only", SourceLanguage::English).unwrap();
+        client.endpoint.url = url::Url::parse(&format!("ws://{address}")).unwrap();
+        let (events, _receiver) = provider_event_channel();
+        client.set_event_sender(events).await;
+        client
+            .connect_for_probe("synthetic-probe-task")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        client.disconnect().await;
+        let close = server.await.unwrap();
+        assert!(matches!(close, None | Some(Ok(Message::Close(_)))));
+    }
 
     #[tokio::test]
     async fn idle_audio_sends_silence_and_finish_stops_heartbeat() {

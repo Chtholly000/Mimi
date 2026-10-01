@@ -11,16 +11,31 @@ const copy = {
     missing: "No credentials configured. Save your service settings first.",
     invalid: "Cannot read the saved credentials. Save them again.",
     auth: "The service rejected authentication. Check your key and account access, then update the credentials.",
-    reachable: "Server reachable; service authentication is not verified.",
+    quota: "The service limit was reached. Try again later or check your quota.",
+    translationLimited: "The service is still limiting requests. Try again later.",
+    translationTemporary: "Translation is temporarily unavailable. Reconnect to try again.",
+    translationBacklog: "Translation fell behind. Reconnect to continue.",
+    translationSourceUnsupported: "This translation model does not support the detected language.",
+    subtitleTooLarge: "The service returned too much text. Reconnect to continue.",
     timeout: "Connection timed out. Check your network or proxy, then try again.",
     unreachable: "Secure connection failed. Check your network, proxy and system clock.",
-    notTested: "Connection has not been checked.",
-    present: "Credentials saved.",
-    test: "Check connection", testing: "Checking…", help: "Connection details",
-    details: "This checks reachability, not service access. An HTTP 401/403 response can still mean the server is reachable. Authentication is checked when captions start.",
-    macos: "If credentials cannot be read, handle the macOS Keychain prompt and try again.",
-    windows: "If credentials cannot be read, check Windows Credential Manager and try again.",
-    linux: "Linux needs a Secret Service provider, such as GNOME Keyring, installed and enabled in the current desktop session. Sign out and back in if required by your desktop setup. Unlock the password store or allow the system prompt, then check again.",
+    test: "Check connection", testing: "Checking…",
+    available: "Connection available", unavailable: "Unavailable", notTested: "Not checked",
+    checkFailed: "Check failed. Try again.",
+    macosRecovery: "Unlock Keychain or allow access, then check again.",
+    windowsRecovery: "Check access in Credential Manager, then try again.",
+    linuxRecovery: "Unlock the password store or allow access, then check again.",
+    reasons: {
+      credentialsMissing: "Save your credentials first.",
+      credentialsUnavailable: "Unlock your system credential store.",
+      credentialsServiceUnavailable: "Enable Secret Service (such as GNOME Keyring), then check again.",
+      credentialsAccessDenied: "Unlock the credential store or allow access.",
+      invalidConfiguration: "Check the service settings.",
+      authenticationRejected: "Check your credentials and account access.",
+      serviceRejected: "The service rejected the request.",
+      timeout: "Connection timed out.",
+      unreachable: "Could not connect to the service.",
+    },
   },
   zh: {
     storage: "无法读取服务凭据。先处理系统解锁提示，再重新检查。",
@@ -30,16 +45,31 @@ const copy = {
     missing: "尚未配置凭据。请先保存服务配置。",
     invalid: "无法读取已保存的凭据，请重新保存。",
     auth: "服务拒绝了认证。请检查密钥和账号权限，再更新凭据。",
-    reachable: "服务器可连接，服务授权尚未验证。",
+    quota: "服务限额已触发，请稍后重试或检查额度。",
+    translationLimited: "服务仍在限流，请稍后重试。",
+    translationTemporary: "翻译暂时不可用，请重新连接。",
+    translationBacklog: "翻译未能跟上，请重新连接。",
+    translationSourceUnsupported: "当前翻译模型不支持检测到的语言。",
+    subtitleTooLarge: "服务返回的字幕过长，请重新连接。",
     timeout: "连接超时。检查网络或代理后重试。",
     unreachable: "安全连接失败。请检查网络、代理和系统时间。",
-    notTested: "尚未检查连接。",
-    present: "凭据已保存。",
-    test: "检查连接", testing: "正在检查…", help: "连接详情",
-    details: "这里只检查能否连接服务器。HTTP 401/403 也可能表示可连接，不代表认证成功；服务授权会在启动字幕时验证。",
-    macos: "若无法读取凭据，请先处理 macOS 钥匙串提示，再重新检查。",
-    windows: "若无法读取凭据，请检查 Windows 凭据管理器，再重新检查。",
-    linux: "Linux 需要在当前桌面会话安装并启用 Secret Service 服务，例如 GNOME Keyring。若桌面配置要求，请注销并重新登录。解锁密码存储或允许系统授权提示后，重新检查。",
+    test: "检查连接", testing: "正在检查…",
+    available: "连接可用", unavailable: "不可用", notTested: "尚未检查",
+    checkFailed: "检查失败，请重试。",
+    macosRecovery: "解锁钥匙串或允许访问后重试。",
+    windowsRecovery: "检查凭据管理器的访问权限后重试。",
+    linuxRecovery: "解锁密码存储或允许访问后重试。",
+    reasons: {
+      credentialsMissing: "请先保存凭据。",
+      credentialsUnavailable: "请先解锁系统凭据存储。",
+      credentialsServiceUnavailable: "启用 Secret Service（如 GNOME Keyring）后重试。",
+      credentialsAccessDenied: "解锁凭据存储或允许访问。",
+      invalidConfiguration: "请检查服务配置。",
+      authenticationRejected: "请检查凭据和账号权限。",
+      serviceRejected: "服务拒绝了请求。",
+      timeout: "连接超时。",
+      unreachable: "无法连接服务。",
+    },
   },
   ja: {
     storage: "サービスの認証情報を読めません。システムの解除案内を確認し、もう一度お試しください。",
@@ -49,16 +79,31 @@ const copy = {
     missing: "認証情報が未設定です。まずサービス設定を保存してください。",
     invalid: "保存された認証情報を読めません。もう一度保存してください。",
     auth: "認証が拒否されました。キーとアカウントの権限を確認し、認証情報を更新してください。",
-    reachable: "サーバーに接続できます。サービスの認証は未確認です。",
+    quota: "サービスの上限に達しました。しばらくして再試行するか、利用枠を確認してください。",
+    translationLimited: "サービスの制限が続いています。しばらくして再試行してください。",
+    translationTemporary: "翻訳を一時的に利用できません。再接続してください。",
+    translationBacklog: "翻訳が遅れています。再接続してください。",
+    translationSourceUnsupported: "現在の翻訳モデルは検出された言語に対応していません。",
+    subtitleTooLarge: "サービスの字幕が長すぎます。再接続してください。",
     timeout: "接続がタイムアウトしました。ネットワークやプロキシを確認してください。",
     unreachable: "安全な接続に失敗しました。ネットワーク、プロキシ、システム時刻を確認してください。",
-    notTested: "接続は未確認です。",
-    present: "認証情報を保存済みです。",
-    test: "接続を確認", testing: "確認中…", help: "接続の詳細",
-    details: "サーバーへの到達性だけを確認します。HTTP 401/403 も到達性を示す場合があり、認証成功ではありません。サービスの認証は字幕開始時に確認します。",
-    macos: "認証情報を読めない場合は macOS のキーチェーンの案内を確認し、もう一度お試しください。",
-    windows: "認証情報を読めない場合は Windows 資格情報マネージャーを確認してください。",
-    linux: "Linux では現在のデスクトップセッションで GNOME Keyring などの Secret Service をインストールし、有効にする必要があります。デスクトップの設定に応じてログアウトして再ログインしてください。ストアのロックを解除するかシステムのアクセス許可を承認して、再確認してください。",
+    test: "接続を確認", testing: "確認中…",
+    available: "接続可能", unavailable: "利用不可", notTested: "未確認",
+    checkFailed: "確認に失敗しました。もう一度お試しください。",
+    macosRecovery: "キーチェーンのロック解除かアクセス許可後、再確認してください。",
+    windowsRecovery: "資格情報マネージャーのアクセスを確認し、再試行してください。",
+    linuxRecovery: "パスワードストアのロック解除かアクセス許可後、再確認してください。",
+    reasons: {
+      credentialsMissing: "認証情報を保存してください。",
+      credentialsUnavailable: "認証情報の保存先を解除してください。",
+      credentialsServiceUnavailable: "GNOME Keyring などの Secret Service を有効にし、再確認してください。",
+      credentialsAccessDenied: "認証情報ストアのロックを解除するかアクセスを許可してください。",
+      invalidConfiguration: "サービス設定を確認してください。",
+      authenticationRejected: "認証情報とアカウントの権限を確認してください。",
+      serviceRejected: "サービスがリクエストを拒否しました。",
+      timeout: "接続がタイムアウトしました。",
+      unreachable: "サービスに接続できません。",
+    },
   },
 };
 export function diagnosticPlatform(userAgent = typeof navigator === "undefined" ? "" : navigator.userAgent): DiagnosticPlatform {
@@ -66,16 +111,22 @@ export function diagnosticPlatform(userAgent = typeof navigator === "undefined" 
 }
 export function diagnosticCopy(platform: DiagnosticPlatform = diagnosticPlatform()) {
   const labels = copy[effectiveUiLanguage()];
-  return { ...labels, storage: platform === "linux" ? labels.linuxStorage : labels.storage, details: `${labels[platform]} ${labels.details}` };
+  const recovery = labels[`${platform}Recovery`];
+  return {
+    ...labels,
+    storage: platform === "linux" ? labels.linuxStorage : labels.storage,
+    reasons: { ...labels.reasons, credentialsUnavailable: recovery, credentialsAccessDenied: recovery },
+  };
 }
 export function credentialUnavailableHelp(platform: DiagnosticPlatform = diagnosticPlatform()): string {
   return platform === "linux" ? diagnosticCopy(platform).storage : I18N.settings.credentialUnavailableHelp;
 }
 export function connectionDiagnosticMessage(result: ConnectionDiagnostic, platform?: DiagnosticPlatform): string {
   const labels = diagnosticCopy(platform);
-  // Keep independent failures visible without repeating authentication disclaimers.
-  const credential = result.credential === "unavailable" ? labels.storage : result.credential === "present" && result.network === "reachable" ? "" : labels[result.credential];
-  return [credential, labels[result.network]].filter(Boolean).join(" ");
+  if (result.service === "available") return labels.available;
+  if (result.service !== "unavailable") return labels.notTested;
+  const reason = result.reason === null ? null : labels.reasons[result.reason];
+  return reason ? `${labels.unavailable}: ${reason}` : labels.unavailable;
 }
 const deepLXErrors = {
   zh: {
@@ -103,6 +154,12 @@ const deepLXErrors = {
 /** Match only sanitized backend labels; never interpolate arbitrary native errors. */
 export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlatform): string | null {
   if (typeof error !== "string") return null;
+  if (error === "translation_rate_limited") return diagnosticCopy().translationLimited;
+  if (error === "translation_temporarily_unavailable") return diagnosticCopy().translationTemporary;
+  if (error === "translation_source_unsupported") return diagnosticCopy().translationSourceUnsupported;
+  if (error === "subtitle_text_too_large" || error === "The subtitle service returned too much text.") return diagnosticCopy().subtitleTooLarge;
+  if (error === "Translation fell behind live audio. mimi is reconnecting.") return diagnosticCopy().translationBacklog;
+  if (error.startsWith("You exceeded your current quota, please check your plan and billing details.")) return diagnosticCopy().quota;
   const dlx = deepLXErrors[effectiveUiLanguage()];
   if (error.startsWith("DeepLX timed out.")) return dlx.timeout;
   if (error.startsWith("Could not connect to DeepLX.")) return dlx.connection;

@@ -34,12 +34,25 @@ interface SubtitleHistoryItem {
 }
 
 export interface SubtitleSnapshot {
+  /** One replaceable completed preview; never confirmed history. */
+  previewPair?: { source: string; translation: string } | null;
   source: SubtitleLineSnapshot;
   translation: SubtitleLineSnapshot;
   history: SubtitleHistoryItem[];
 }
 
 export interface SessionStateEvent {
+  /** Latest content-free timing samples. Absent values are not measurements. */
+  apiLatencyMs?: number | null;
+  translationLatencyMs?: number | null;
+  translationLatencyKind?: "request" | "follow" | null;
+  /** MT backoff leaves system audio and recognition running. */
+  translationRecovery?: {
+    reason: "rateLimited" | "temporarilyUnavailable";
+    retryAfterMs: number;
+    /** Legacy snapshots imply true; false means no preview retry is queued. */
+    retryScheduled?: boolean;
+  } | null;
   status: SessionStatus;
   isActive: boolean;
   isPaused: boolean;
@@ -48,6 +61,8 @@ export interface SessionStateEvent {
   /** "zh" | "ja" | "en" | "ko" | ... (normalized language code). */
   detectedLanguage: string | null;
   isTranslationPending: boolean;
+  /** Actual replaceable-preview HTTP work, independent of final-pair waiting. */
+  isTranslationPreviewPending?: boolean;
   /** The latest source final outlived its translation deadline. */
   isTranslationTimedOut: boolean;
 }
@@ -68,6 +83,7 @@ export interface SettingsSnapshot {
   subtitleColor: SubtitleColor;
   subtitleAlignment: SubtitleAlignment;
   subtitleDisplayMode: SubtitleDisplayMode;
+  showSubtitleDividers: boolean;
   /** `null` follows the system reduce-motion setting. */
   pulseAnimation: boolean | null;
   pulseStyle: PulseStyle;
@@ -81,10 +97,18 @@ export interface SettingsSnapshot {
   windowsAudioSource: string;
   /** macOS only; false retains menu-bar utility behavior. */
   showInDock: boolean;
+  networkProxy: NetworkProxyConfig;
+}
+
+export type NetworkProxyMode = "system" | "direct" | "custom";
+/** Global credential-free route for provider HTTP and WebSocket connections. */
+export interface NetworkProxyConfig {
+  mode: NetworkProxyMode;
+  url: string | null;
 }
 
 export type UiLanguage = "system" | "zh" | "en" | "ja";
-export type PulseStyle = "classic" | "syllable" | "ribbon";
+export type PulseStyle = "syllable" | "ribbon";
 export type SubtitleDisplayMode = "translation" | "bilingual" | "original";
 export type SubtitlePresetColor = "white" | "teal" | "yellow" | "green" | "pink";
 export type SubtitleColor = SubtitlePresetColor | `#${string}`;
@@ -98,6 +122,7 @@ export interface SettingsDraft {
   subtitleColor?: SubtitleColor;
   subtitleAlignment?: SubtitleAlignment;
   subtitleDisplayMode?: SubtitleDisplayMode;
+  showSubtitleDividers?: boolean;
   pulseAnimation?: boolean;
   pulseStyle?: PulseStyle;
   subtitleAnimation?: boolean;
@@ -108,6 +133,7 @@ export interface SettingsDraft {
   recordSessionAudio?: boolean;
   windowsAudioSource?: string;
   showInDock?: boolean;
+  networkProxy?: NetworkProxyConfig;
 }
 
 export type ServiceProvider =
@@ -121,7 +147,7 @@ export type ServiceProvider =
   | "xAIRealtime"
   | "deepLX";
 
-export type TextTranslation = "followService" | "deepLX";
+export type TextTranslation = "followService" | "deepL" | "deepLX";
 
 /** Write-only payload sent to the native secure credential store. */
 export type ProviderCredentialsInput =
@@ -183,8 +209,6 @@ export const SOURCE_LANGUAGE_QUICK_CASES: readonly SourceLanguage[] = [
 ];
 
 export const TRANSLATION_MODE_CASES: readonly TranslationMode[] = [
-  "lowLatency",
-  "highQuality",
   "turbo",
 ];
 

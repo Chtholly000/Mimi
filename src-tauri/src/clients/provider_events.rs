@@ -42,6 +42,8 @@ pub enum ProviderEventSendError {
     Closed,
     #[error("The reliable session event queue is full.")]
     Backpressure,
+    #[error("The subtitle service returned too much text.")]
+    TextTooLarge,
 }
 
 pub struct ProviderEventReceiver {
@@ -128,6 +130,14 @@ impl ProviderEventSender {
         if matches!(event, LiveTranslateServerEvent::Ignored { .. }) {
             return Ok(());
         }
+        // Reject before retaining a draft/queued caption. The fixed error uses
+        // the reliable lane so clients that stop on send failure remain visible.
+        let rejected_text = !event.text_within_limit();
+        let event = if rejected_text {
+            LiveTranslateServerEvent::text_limit_error()
+        } else {
+            event
+        };
         let event = SequencedEvent {
             sequence: self
                 .inner
@@ -136,7 +146,7 @@ impl ProviderEventSender {
                 .wrapping_add(1),
             event,
         };
-        match &event.event {
+        let result = match &event.event {
             LiveTranslateServerEvent::SourceDraft { .. } => {
                 if self.inner.source_draft.receiver_count() == 0 {
                     return Err(ProviderEventSendError::Closed);
@@ -181,6 +191,11 @@ impl ProviderEventSender {
                     Err(ProviderEventSendError::Backpressure)
                 }
             },
+        };
+        if rejected_text && result.is_ok() {
+            Err(ProviderEventSendError::TextTooLarge)
+        } else {
+            result
         }
     }
 }
@@ -195,8 +210,7 @@ impl ProviderEventReceiver {
         if self.reliable_open {
             match self.reliable.try_recv() {
                 Ok(event) => {
-                    self.last_delivered_sequence = self.last_delivered_sequence.max(event.sequence);
-                    return Ok(event.event);
+                    return Ok(self.take_reliable_event(event));
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     self.reliable_open = false;
@@ -228,9 +242,7 @@ impl ProviderEventReceiver {
             if self.reliable_open {
                 match self.reliable.try_recv() {
                     Ok(event) => {
-                        self.last_delivered_sequence =
-                            self.last_delivered_sequence.max(event.sequence);
-                        return Some(event.event);
+                        return Some(self.take_reliable_event(event));
                     }
                     Err(mpsc::error::TryRecvError::Disconnected) => {
                         self.reliable_open = false;
@@ -266,9 +278,7 @@ impl ProviderEventReceiver {
                 event = self.reliable.recv(), if self.reliable_open => {
                     match event {
                         Some(event) => {
-                            self.last_delivered_sequence =
-                                self.last_delivered_sequence.max(event.sequence);
-                            return Some(event.event);
+                            return Some(self.take_reliable_event(event));
                         }
                         None => self.reliable_open = false,
                     }
@@ -304,6 +314,22 @@ impl ProviderEventReceiver {
             &mut self.translation_open,
             &mut self.translation_pending,
         );
+    }
+
+    fn take_reliable_event(&mut self, event: SequencedEvent) -> LiveTranslateServerEvent {
+        // Preview activity and completed pairs are FIFO reliable signals,
+        // but do not supersede the independently latest ASR/draft lanes.
+        // In particular, a Finished immediately after a TranslationDraft
+        // must not make that successful draft obsolete before it is read.
+        if !matches!(
+            event.event,
+            LiveTranslateServerEvent::PreviewTranslationStarted { .. }
+                | LiveTranslateServerEvent::PreviewTranslationFinished { .. }
+                | LiveTranslateServerEvent::SubtitlePreviewPair { .. }
+        ) {
+            self.last_delivered_sequence = self.last_delivered_sequence.max(event.sequence);
+        }
+        event.event
     }
 
     fn take_next_draft(&mut self) -> Option<LiveTranslateServerEvent> {
@@ -355,6 +381,37 @@ fn overflow_event() -> LiveTranslateServerEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_caption_is_not_retained_and_only_a_fixed_error_reaches_the_receiver() {
+        let (sender, mut receiver) = provider_event_channel();
+        let oversized = "x".repeat(crate::core::models::MAX_SUBTITLE_TEXT_BYTES + 1);
+        for event in [
+            LiveTranslateServerEvent::SourceDraft {
+                text: oversized.clone(),
+                language: None,
+            },
+            LiveTranslateServerEvent::TranslationDraft(oversized.clone()),
+            LiveTranslateServerEvent::SubtitleConfirmedPair {
+                utterance_id: 1,
+                source: oversized,
+                language: None,
+                translation: "valid".into(),
+            },
+        ] {
+            assert_eq!(
+                sender.send(event),
+                Err(ProviderEventSendError::TextTooLarge)
+            );
+            assert_eq!(
+                receiver.try_recv(),
+                Ok(LiveTranslateServerEvent::text_limit_error())
+            );
+        }
+        assert!(sender.inner.source_draft.borrow().is_none());
+        assert!(sender.inner.translation_draft.borrow().is_none());
+        assert!(receiver.try_recv().is_err());
+    }
 
     #[test]
     fn invalidated_draft_cannot_overtake_a_final_during_publication() {
@@ -501,6 +558,72 @@ mod tests {
         let no_stale =
             tokio::time::timeout(std::time::Duration::from_millis(20), receiver.recv()).await;
         assert!(no_stale.is_err());
+    }
+
+    #[tokio::test]
+    async fn preview_lifecycle_and_pair_preserve_independent_latest_drafts() {
+        for use_async_receive in [false, true] {
+            let (sender, mut receiver) = provider_event_channel();
+            let started = LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 1 };
+            let translation =
+                LiveTranslateServerEvent::TranslationDraft("synthetic translation".into());
+            let pair = LiveTranslateServerEvent::SubtitlePreviewPair {
+                source: "synthetic source".into(),
+                language: Some("en".into()),
+                translation: "synthetic translation".into(),
+            };
+            let finished = LiveTranslateServerEvent::PreviewTranslationFinished { request_id: 1 };
+            let latest_source = LiveTranslateServerEvent::SourceDraft {
+                text: "newer synthetic source".into(),
+                language: Some("en".into()),
+            };
+            sender.send(started.clone()).unwrap();
+            sender.send(translation.clone()).unwrap();
+            sender.send(pair.clone()).unwrap();
+            sender.send(finished.clone()).unwrap();
+            sender.send(latest_source.clone()).unwrap();
+
+            // Reliable activity must be observable without swallowing raw
+            // recognition or the successful latest-value translation lane.
+            for expected in [started, pair, finished, translation, latest_source] {
+                let actual = if use_async_receive {
+                    receiver.recv().await.unwrap()
+                } else {
+                    receiver.try_recv().unwrap()
+                };
+                assert_eq!(actual, expected);
+            }
+            assert_eq!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        }
+    }
+
+    #[test]
+    fn final_barrier_remains_ordered_after_preview_signals_and_discards_older_drafts() {
+        let (sender, mut receiver) = provider_event_channel();
+        let pair = LiveTranslateServerEvent::SubtitlePreviewPair {
+            source: "synthetic source".into(),
+            language: Some("en".into()),
+            translation: "synthetic preview".into(),
+        };
+        let finished = LiveTranslateServerEvent::PreviewTranslationFinished { request_id: 1 };
+        let final_pair = LiveTranslateServerEvent::SubtitleFinalPair {
+            source: "corrected synthetic final".into(),
+            language: Some("en".into()),
+            translation: "synthetic final".into(),
+        };
+        sender.send(pair.clone()).unwrap();
+        sender
+            .send(LiveTranslateServerEvent::TranslationDraft(
+                "obsolete draft".into(),
+            ))
+            .unwrap();
+        sender.send(finished.clone()).unwrap();
+        sender.send(final_pair.clone()).unwrap();
+
+        assert_eq!(receiver.try_recv(), Ok(pair));
+        assert_eq!(receiver.try_recv(), Ok(finished));
+        assert_eq!(receiver.try_recv(), Ok(final_pair));
+        assert_eq!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty));
     }
 
     #[tokio::test]

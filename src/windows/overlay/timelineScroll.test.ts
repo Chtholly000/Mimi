@@ -36,6 +36,17 @@ it("does not stop following merely because someone clicks or selects text withou
   expect(scrollTo).toHaveBeenLastCalledWith({ top: 200, behavior: "smooth" });
 });
 
+it("can start reading before compact content overflows and explicitly return to the tail", () => {
+  const { element, scroll, scrollTo } = fixture();
+  scroll.beginReading(element);
+  expect(scroll.isFollowing()).toBe(false);
+  scroll.contentChanged(element, "smooth");
+  expect(element.scrollTop).toBe(200);
+  scroll.followTail(element);
+  expect(scroll.isFollowing()).toBe(true);
+  expect(scrollTo).toHaveBeenLastCalledWith({ top: 200, behavior: "instant" });
+});
+
 it("reveals the same read sentence when removing a lane makes its previous offset exceed the new height", () => {
   const { element, scroll } = fixture();
   scroll.userIntent(element); element.scrollTop = 30; scroll.scrolled(element);

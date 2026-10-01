@@ -1,10 +1,11 @@
 //! Tauri command handlers exposed to the frontend. The IPC contract is
 //! documented in docs/plans/2026-08-22-multi-provider-professional-settings-design.md.
 
-use crate::core::credentials::ProviderCredentials;
+use crate::core::credentials::{CredentialRevealField, ProviderCredentials};
 use crate::core::models::{
     SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
 };
+use crate::core::network_proxy::ProxyConfig;
 use crate::core::provider::{ProviderKind, ServiceProfile};
 use crate::session_manager::{SessionManager, SessionStateEvent};
 use crate::settings_store::{CredentialState, PulseStyle, SettingsStore, SubtitleAlignment};
@@ -12,7 +13,10 @@ use crate::windows::{
     OverlayControlMode, OverlayControlWindowManager, OverlayWindowManager, TrayPanelManager,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tauri::{AppHandle, Emitter, Listener, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
@@ -24,6 +28,7 @@ const RELEASES_LATEST_URL: &str = "https://github.com/yuxino/mimi/releases/lates
 #[serde(rename_all = "camelCase")]
 pub enum SettingsNavigationTarget {
     Service,
+    Export,
 }
 
 pub struct AppState {
@@ -80,6 +85,7 @@ pub struct SettingsSnapshotPayload {
     pub subtitle_color: SubtitleColor,
     pub subtitle_alignment: SubtitleAlignment,
     pub subtitle_display_mode: SubtitleDisplayMode,
+    pub show_subtitle_dividers: bool,
     /// `None` follows the operating system's reduce-motion setting.
     pub pulse_animation: Option<bool>,
     pub pulse_style: PulseStyle,
@@ -93,6 +99,7 @@ pub struct SettingsSnapshotPayload {
     pub record_session_audio: bool,
     pub windows_audio_source: String,
     pub show_in_dock: bool,
+    pub network_proxy: ProxyConfig,
 }
 
 #[cfg(test)]
@@ -153,6 +160,7 @@ mod tests {
             "audio_census",
             "support_diagnostics",
             "app_open_support_issue",
+            "profile_reveal_credential",
         ] {
             assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
             let permissions = include_str!("../permissions/app.toml");
@@ -174,6 +182,70 @@ mod tests {
     }
 
     #[test]
+    fn credential_reveal_rejects_every_other_window_before_store_access() {
+        assert_eq!(ensure_credential_reveal_window("settings"), Ok(()));
+        for label in [
+            "overlay",
+            "overlay-control",
+            "tray-panel",
+            "main",
+            "settings-copy",
+            "",
+        ] {
+            assert_eq!(
+                ensure_credential_reveal_window(label),
+                Err("credential_reveal_not_allowed".into())
+            );
+        }
+    }
+
+    #[test]
+    fn overlay_can_restart_an_errored_session() {
+        let permissions = include_str!("../permissions/app.toml");
+        let overlay_permission = permissions
+            .split("[[permission]]")
+            .find(|entry| entry.contains("identifier = \"app-overlay\""))
+            .unwrap();
+        assert!(overlay_permission.contains("\"session_start\""));
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/overlay.json")).unwrap();
+        assert_eq!(capability["windows"], serde_json::json!(["overlay"]));
+        assert!(capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|permission| permission == "app-overlay"));
+        assert!(include_str!("lib.rs").contains("commands::session_start,"));
+    }
+
+    #[test]
+    fn native_pointer_cursor_intents_are_registered_and_overlay_scoped() {
+        let permissions = include_str!("../permissions/app.toml");
+        let permitted: Vec<_> = permissions
+            .split("[[permission]]")
+            .filter(|entry| entry.contains("\"overlay_set_pointer_cursor\""))
+            .collect();
+        assert_eq!(permitted.len(), 1);
+        assert!(permitted[0].contains("identifier = \"app-overlay\""));
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/overlay.json")).unwrap();
+        assert_eq!(capability["windows"], serde_json::json!(["overlay"]));
+        assert!(capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|permission| permission == "app-overlay"));
+        assert!(include_str!("lib.rs").contains("commands::overlay_set_pointer_cursor,"));
+        assert_eq!(ensure_overlay_pointer_cursor_window("overlay"), Ok(()));
+        for label in ["settings", "overlay-control", "tray-panel", "main", ""] {
+            assert_eq!(
+                ensure_overlay_pointer_cursor_window(label),
+                Err("overlay_pointer_cursor_not_allowed".into())
+            );
+        }
+    }
+
+    #[test]
     fn capture_status_is_readable_in_settings_and_control_panel_only() {
         let permissions = include_str!("../permissions/app.toml");
         let permitted: Vec<_> = permissions
@@ -186,6 +258,24 @@ mod tests {
             .all(|entry| entry.contains("identifier = \"app-settings\"")
                 || entry.contains("identifier = \"app-overlay-control\"")));
         assert!(include_str!("lib.rs").contains("commands::capture_status,"));
+    }
+
+    #[test]
+    fn island_width_measurement_is_control_window_scoped() {
+        let permissions = include_str!("../permissions/app.toml");
+        let permitted: Vec<_> = permissions
+            .split("[[permission]]")
+            .filter(|entry| entry.contains("\"overlay_control_set_island_width\""))
+            .collect();
+        assert_eq!(permitted.len(), 1);
+        assert!(permitted[0].contains("identifier = \"app-overlay-control\""));
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/overlay-control.json")).unwrap();
+        assert_eq!(
+            capability["windows"],
+            serde_json::json!(["overlay-control"])
+        );
+        assert!(include_str!("lib.rs").contains("commands::overlay_control_set_island_width,"));
     }
 
     #[test]
@@ -229,6 +319,7 @@ mod tests {
             subtitle_color: SubtitleColor::White,
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
+            show_subtitle_dividers: false,
             pulse_animation: None,
             pulse_style: PulseStyle::Ribbon,
             subtitle_animation: None,
@@ -239,11 +330,13 @@ mod tests {
             record_session_audio: false,
             windows_audio_source: String::new(),
             show_in_dock: false,
+            network_proxy: ProxyConfig::default(),
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["activeProfileId"], "alibaba-default");
         assert_eq!(json["pulseStyle"], "ribbon");
         assert_eq!(json["showInDock"], false);
+        assert_eq!(json["networkProxy"]["mode"], "system");
         assert_eq!(json["profiles"][0]["provider"], "alibabaCloud");
         assert_eq!(json["profiles"][0]["credentialState"], "present");
         assert_eq!(json["profiles"][0]["textTranslation"], "followService");
@@ -253,6 +346,7 @@ mod tests {
         assert_eq!(json["subtitleAlignment"], "center");
         assert_eq!(json["subtitleColor"], "white");
         assert_eq!(json["subtitleDisplayMode"], "translation");
+        assert_eq!(json["showSubtitleDividers"], false);
         assert_eq!(json["subtitleBlendsWithBackground"], false);
         assert!(json.get("apiKey").is_none());
         assert!(json.get("hasAPIKey").is_none());
@@ -297,6 +391,25 @@ mod tests {
     }
 
     #[test]
+    fn every_proxy_mode_is_camel_case_and_requires_a_stopped_session() {
+        for value in [
+            serde_json::json!({"mode":"system"}),
+            serde_json::json!({"mode":"direct"}),
+            serde_json::json!({"mode":"custom","url":"http://127.0.0.1:8888"}),
+        ] {
+            let draft: SettingsDraft =
+                serde_json::from_value(serde_json::json!({"networkProxy":value})).unwrap();
+            assert!(draft.network_proxy.is_some());
+            assert_eq!(
+                ensure_settings_draft_allowed(&draft, true),
+                Err("network_proxy_change_requires_stop".into())
+            );
+            assert!(ensure_settings_draft_allowed(&draft, false).is_ok());
+        }
+        assert!(SettingsDraft::default().network_proxy.is_none());
+    }
+
+    #[test]
     fn custom_color_draft_accepts_rgb_and_rejects_invalid_values() {
         let draft: SettingsDraft =
             serde_json::from_str(r##"{"subtitleColor":"#a1b2c3"}"##).unwrap();
@@ -321,6 +434,7 @@ mod tests {
             subtitle_color: Some(SubtitleColor::Custom([0x12, 0x34, 0x56])),
             subtitle_alignment: Some(SubtitleAlignment::Right),
             subtitle_display_mode: Some(SubtitleDisplayMode::Bilingual),
+            show_subtitle_dividers: Some(true),
             pulse_animation: Some(true),
             pulse_style: Some(PulseStyle::Syllable),
             subtitle_animation: Some(true),
@@ -357,7 +471,66 @@ mod tests {
             serde_json::from_str::<SettingsNavigationTarget>(r#""service""#).unwrap(),
             SettingsNavigationTarget::Service
         );
+        assert_eq!(
+            serde_json::from_str::<SettingsNavigationTarget>(r#""export""#).unwrap(),
+            SettingsNavigationTarget::Export
+        );
         assert!(serde_json::from_str::<SettingsNavigationTarget>(r#""general""#).is_err());
+    }
+
+    #[test]
+    fn normal_quit_exits_only_after_successful_finalization_and_sanitizes_failures() {
+        let exited = std::cell::Cell::new(false);
+        let failure = std::io::Error::other("synthetic private failure detail");
+        assert_eq!(
+            finish_quit(Err(failure), || exited.set(true)),
+            Err("Could not save session history before quitting.".to_string())
+        );
+        assert!(!exited.get());
+        assert_eq!(finish_quit(Ok(()), || exited.set(true)), Ok(()));
+        assert!(exited.get());
+    }
+
+    #[test]
+    fn simultaneous_quit_requests_share_one_save_and_failed_save_can_retry() {
+        let gate = QuitRequestGate(AtomicBool::new(false));
+        let exited = std::cell::Cell::new(false);
+        let failed = (|| {
+            let request = gate.begin().expect("first request accepted");
+            assert!(gate.begin().is_none());
+            finish_quit(Err(std::io::Error::other("synthetic failure")), || {
+                exited.set(true)
+            })?;
+            request.exit_requested();
+            Ok::<(), String>(())
+        })();
+        assert!(failed.is_err());
+        assert!(!exited.get());
+        let retry = gate.begin().expect("save failure permits a retry");
+        finish_quit(Ok(()), || exited.set(true)).unwrap();
+        retry.exit_requested();
+        assert!(exited.get());
+        assert!(
+            gate.begin().is_none(),
+            "exit already queued; do not save again"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_quit_future_releases_the_request_gate() {
+        let gate = Arc::new(QuitRequestGate(AtomicBool::new(false)));
+        let task_gate = Arc::clone(&gate);
+        let (started, received) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _request = task_gate.begin().unwrap();
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        });
+        received.await.unwrap();
+        assert!(gate.begin().is_none());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(gate.begin().is_some());
     }
 }
 
@@ -381,6 +554,7 @@ impl SettingsSnapshotPayload {
                     subtitle_color: prefs.subtitle_color,
                     subtitle_alignment: prefs.subtitle_alignment,
                     subtitle_display_mode: prefs.subtitle_display_mode,
+                    show_subtitle_dividers: prefs.show_subtitle_dividers,
 
                     pulse_animation: prefs.pulse_animation,
                     pulse_style: prefs.pulse_style,
@@ -393,6 +567,7 @@ impl SettingsSnapshotPayload {
                     record_session_audio: prefs.record_session_audio,
                     windows_audio_source: prefs.windows_audio_source,
                     show_in_dock: prefs.show_in_dock,
+                    network_proxy: prefs.network_proxy,
                 }
             }
         }
@@ -414,6 +589,7 @@ impl SettingsSnapshotPayload {
             subtitle_color: prefs.subtitle_color,
             subtitle_alignment: prefs.subtitle_alignment,
             subtitle_display_mode: prefs.subtitle_display_mode,
+            show_subtitle_dividers: prefs.show_subtitle_dividers,
 
             pulse_animation: prefs.pulse_animation,
             pulse_style: prefs.pulse_style,
@@ -426,6 +602,7 @@ impl SettingsSnapshotPayload {
             record_session_audio: prefs.record_session_audio,
             windows_audio_source: prefs.windows_audio_source,
             show_in_dock: prefs.show_in_dock,
+            network_proxy: prefs.network_proxy,
         })
     }
 }
@@ -440,6 +617,7 @@ pub struct SettingsDraft {
     pub subtitle_color: Option<SubtitleColor>,
     pub subtitle_alignment: Option<SubtitleAlignment>,
     pub subtitle_display_mode: Option<SubtitleDisplayMode>,
+    pub show_subtitle_dividers: Option<bool>,
     pub pulse_animation: Option<bool>,
     pub pulse_style: Option<PulseStyle>,
     pub subtitle_animation: Option<bool>,
@@ -450,6 +628,7 @@ pub struct SettingsDraft {
     pub record_session_audio: Option<bool>,
     pub windows_audio_source: Option<String>,
     pub show_in_dock: Option<bool>,
+    pub network_proxy: Option<ProxyConfig>,
 }
 
 /// Reads public settings and per-profile credential presence. API-key values
@@ -542,7 +721,8 @@ pub async fn settings_save(
     if (draft.retain_session_history.is_some()
         || draft.record_session_audio.is_some()
         || draft.windows_audio_source.is_some()
-        || draft.show_in_dock.is_some())
+        || draft.show_in_dock.is_some()
+        || draft.network_proxy.is_some())
         && window.label() != "settings"
     {
         return Err("These preferences can only be changed in settings.".into());
@@ -560,11 +740,19 @@ async fn apply_settings_draft(
         || draft.translation_mode.is_some()
         || draft.retain_session_history.is_some()
         || draft.record_session_audio.is_some()
-        || draft.windows_audio_source.is_some();
+        || draft.windows_audio_source.is_some()
+        || draft.network_proxy.is_some();
     let _lifecycle = state
         .session
         .settings_mutation_guard(changes_listening_settings)
-        .await?;
+        .await
+        .map_err(|error| {
+            if draft.network_proxy.is_some() {
+                "network_proxy_change_requires_stop".to_string()
+            } else {
+                error
+            }
+        })?;
     apply_settings_draft_guarded(app, state, draft)
 }
 
@@ -583,6 +771,12 @@ fn apply_settings_draft_guarded(
     let changes_ui_language = draft.ui_language.is_some();
     let enables_background_blend = draft.subtitle_blends_with_background == Some(true);
     ensure_settings_draft_allowed(&draft, state.session.has_active_session())?;
+    let network_proxy = draft
+        .network_proxy
+        .as_ref()
+        .map(ProxyConfig::validate)
+        .transpose()
+        .map_err(|error| error.to_string())?;
     let needs_save = draft.source_language.is_some()
         || draft.target_language.is_some()
         || draft.translation_mode.is_some()
@@ -590,6 +784,7 @@ fn apply_settings_draft_guarded(
         || draft.subtitle_color.is_some()
         || draft.subtitle_alignment.is_some()
         || draft.subtitle_display_mode.is_some()
+        || draft.show_subtitle_dividers.is_some()
         || draft.pulse_animation.is_some()
         || draft.pulse_style.is_some()
         || draft.subtitle_animation.is_some()
@@ -599,13 +794,17 @@ fn apply_settings_draft_guarded(
         || draft.retain_session_history.is_some()
         || draft.record_session_audio.is_some()
         || draft.windows_audio_source.is_some()
-        || draft.show_in_dock.is_some();
+        || draft.show_in_dock.is_some()
+        || draft.network_proxy.is_some();
     if !needs_save {
         return SettingsSnapshotPayload::try_from_store(&state.settings);
     }
 
     let save_preferences = || {
         state.settings.save_preferences_for_active_profile(|prefs| {
+            if let Some(proxy) = &network_proxy {
+                prefs.network_proxy = proxy.clone();
+            }
             if let Some(source_language) = draft.source_language {
                 prefs.source_language = source_language;
             }
@@ -629,6 +828,9 @@ fn apply_settings_draft_guarded(
             }
             if let Some(mode) = draft.subtitle_display_mode {
                 prefs.subtitle_display_mode = mode;
+            }
+            if let Some(enabled) = draft.show_subtitle_dividers {
+                prefs.show_subtitle_dividers = enabled;
             }
             if let Some(style) = draft.pulse_style {
                 prefs.pulse_style = style;
@@ -751,6 +953,9 @@ fn toggled_immersive_mode(current: bool) -> bool {
 }
 
 fn ensure_settings_draft_allowed(draft: &SettingsDraft, is_active: bool) -> Result<(), String> {
+    if is_active && draft.network_proxy.is_some() {
+        return Err("network_proxy_change_requires_stop".into());
+    }
     if is_active
         && (draft.source_language.is_some()
             || draft.target_language.is_some()
@@ -860,6 +1065,33 @@ pub async fn profile_delete_api_key(
     emit_settings_snapshot(&app, &state.settings)
 }
 
+fn ensure_credential_reveal_window(label: &str) -> Result<(), String> {
+    if label == "settings" {
+        Ok(())
+    } else {
+        Err("credential_reveal_not_allowed".into())
+    }
+}
+
+/// Returns one explicitly requested secret only to this invoke's requester.
+/// OS credential access runs off the IPC/main thread; no event is emitted.
+#[tauri::command]
+pub async fn profile_reveal_credential(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    profile_id: String,
+    field: CredentialRevealField,
+    text_translation: Option<crate::core::provider::TextTranslation>,
+) -> Result<Option<String>, String> {
+    ensure_credential_reveal_window(window.label())?;
+    let settings = Arc::clone(&state.settings);
+    tauri::async_runtime::spawn_blocking(move || {
+        settings.reveal_credential(&profile_id, field, text_translation)
+    })
+    .await
+    .map_err(|_| "credential_store_unavailable".to_string())?
+}
+
 #[tauri::command]
 pub async fn session_start(state: State<'_, AppState>) -> Result<(), String> {
     state.session.start(true).await
@@ -963,6 +1195,43 @@ pub fn overlay_set_locked(
     Ok(())
 }
 
+fn ensure_overlay_pointer_cursor_window(label: &str) -> Result<(), String> {
+    if label == "overlay" {
+        Ok(())
+    } else {
+        Err("overlay_pointer_cursor_not_allowed".into())
+    }
+}
+
+/// Applies a renderer hit-test result for the last native hover sample only.
+/// The inactive macOS WebView cannot rely on normal cursor-update tracking.
+#[tauri::command]
+pub async fn overlay_set_pointer_cursor(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    x: f64,
+    y: f64,
+    pointing: bool,
+) -> Result<bool, String> {
+    ensure_overlay_pointer_cursor_window(window.label())?;
+    #[cfg(target_os = "macos")]
+    {
+        crate::windows::set_overlay_pointer_cursor(
+            &app,
+            crate::core::overlay_pointer::OverlayPointerPosition { x, y },
+            pointing,
+        )
+        .await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Other platforms use their native WebView cursor handling and do
+        // not install the inactive-panel pointer relay.
+        let _ = (app, x, y, pointing);
+        Ok(false)
+    }
+}
+
 #[tauri::command]
 pub fn overlay_show(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     if state.session.should_show_overlay() {
@@ -1024,6 +1293,13 @@ pub fn overlay_control_state(app: AppHandle) -> Result<OverlayControlMode, Strin
 #[tauri::command]
 pub fn overlay_control_set_panel_height(app: AppHandle, height: f64) -> Result<(), String> {
     OverlayControlWindowManager::set_panel_height(&app, height);
+    Ok(())
+}
+
+/// Applies the collapsed capsule's content width independently of its panel.
+#[tauri::command]
+pub fn overlay_control_set_island_width(app: AppHandle, width: f64) -> Result<(), String> {
+    OverlayControlWindowManager::set_island_width(&app, width);
     Ok(())
 }
 
@@ -1119,22 +1395,71 @@ pub fn app_show_settings(
 
 #[tauri::command]
 pub async fn app_quit(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    state.session.stop().await;
-    state
-        .session
-        .persist_current_history()
-        .map_err(|_| "Could not save session history before quitting.")?;
-    app.exit(0);
+    quit_application(app, Arc::clone(&state.session)).await
+}
+
+/// Every normal exit uses the same stop/finalize boundary. A failed save keeps
+/// the pending archive and app alive so the user can retry rather than lose it.
+pub async fn quit_application(app: AppHandle, session: Arc<SessionManager>) -> Result<(), String> {
+    let Some(request) = NORMAL_QUIT_GATE.begin() else {
+        return Ok(());
+    };
+    session.stop().await;
+    finish_quit(session.persist_current_history(), || app.exit(0))?;
+    request.exit_requested();
     Ok(())
 }
 
-/// Explicit, credential-free reachability check. No session, audio, or auth request.
+static NORMAL_QUIT_GATE: QuitRequestGate = QuitRequestGate(AtomicBool::new(false));
+
+/// Share one stop/save across simultaneous Dock, menu, tray and IPC requests.
+/// Failed or cancelled futures release the gate; successful exit keeps it shut.
+struct QuitRequestGate(AtomicBool);
+
+impl QuitRequestGate {
+    fn begin(&self) -> Option<QuitRequest<'_>> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| QuitRequest {
+                gate: self,
+                exiting: false,
+            })
+    }
+}
+
+struct QuitRequest<'a> {
+    gate: &'a QuitRequestGate,
+    exiting: bool,
+}
+
+impl QuitRequest<'_> {
+    fn exit_requested(mut self) {
+        self.exiting = true;
+    }
+}
+
+impl Drop for QuitRequest<'_> {
+    fn drop(&mut self) {
+        if !self.exiting {
+            self.gate.0.store(false, Ordering::Release);
+        }
+    }
+}
+
+fn finish_quit(finalization: std::io::Result<()>, exit: impl FnOnce()) -> Result<(), String> {
+    finalization.map_err(|_| "Could not save session history before quitting.".to_string())?;
+    exit();
+    Ok(())
+}
+
+/// Explicit authorization/readiness check. No capture or current-session changes.
 #[tauri::command]
 pub async fn profile_test_connection(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     profile_id: String,
-) -> Result<serde_json::Value, String> {
+) -> Result<crate::clients::connection_diagnostics::ConnectionDiagnostic, String> {
     let (_, profiles) = state.settings.profile_catalog()?;
     let profile = profiles
         .iter()
@@ -1142,34 +1467,25 @@ pub async fn profile_test_connection(
         .ok_or("profile_not_found")?;
     let storage = state.settings.credential_diagnostic(profile);
     emit_settings_snapshot(&app, &state.settings)?;
-    let client = crate::clients::connection_diagnostics::reachability_client()
-        .map_err(|_| "connection_check_failed")?;
+    use crate::clients::connection_diagnostics::{
+        check_service, ConnectionCheckReason, ConnectionDiagnostic,
+    };
     if app_is_ui_test() {
-        return Ok(serde_json::json!({"credential": storage, "network": "notTested"}));
+        return Ok(ConnectionDiagnostic::not_tested(storage));
     }
-    use crate::core::provider::ProviderKind;
-    let endpoint = match profile.effective_provider() {
-        ProviderKind::AlibabaCloud => "https://dashscope.aliyuncs.com/api-ws/v1/realtime",
-        ProviderKind::OpenAIRealtime => "https://api.openai.com/v1/realtime/translations",
-        ProviderKind::GoogleGeminiLive => "https://generativelanguage.googleapis.com/",
-        ProviderKind::VolcanoEngine => "https://openspeech.bytedance.com/",
-        ProviderKind::TencentCloud => "https://asr.cloud.tencent.com/",
-        ProviderKind::BaiduTranslate => "https://aip.baidubce.com/",
-        ProviderKind::XAIRealtime => "https://api.x.ai/v1/realtime",
-        // Azure requires the private resource endpoint; this check never reads it.
-        ProviderKind::AzureOpenAIRealtime | ProviderKind::DeepLX => {
-            return Ok(serde_json::json!({
-                "credential": storage, "network": "notTested"
-            }))
+    if let Some(failure) = ConnectionDiagnostic::credential_failure(storage) {
+        return Ok(failure);
+    }
+    let configuration = match state.settings.configuration_for_profile_probe(profile) {
+        Ok(configuration) => configuration,
+        Err(_) => {
+            return Ok(ConnectionDiagnostic::unavailable(
+                storage,
+                ConnectionCheckReason::InvalidConfiguration,
+            ));
         }
     };
-    let network = match client.head(endpoint).send().await {
-        // Every HTTP response, including 401/403/405, proves TLS + server reachability.
-        Ok(_) => "reachable",
-        Err(error) if error.is_timeout() => "timeout",
-        Err(_) => "unreachable",
-    };
-    Ok(serde_json::json!({"credential": storage, "network": network}))
+    Ok(check_service(&configuration).await)
 }
 
 #[tauri::command]

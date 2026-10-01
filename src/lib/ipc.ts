@@ -18,6 +18,7 @@ import type {
   SettingsDraft,
   SettingsSnapshot,
   SourceLanguage,
+  TextTranslation,
   TranslationMode,
 } from "./types";
 
@@ -128,6 +129,17 @@ export function profileDeleteAPIKey(
   return invoke<SettingsSnapshot>("profile_delete_api_key", { profileId });
 }
 
+export type StoredCredentialField = "apiKey" | "asrApiKey" | "token" | "secretId" | "secretKey" | "appKey";
+
+/** Settings-only, explicit user reveal. Never includes secrets in a snapshot. */
+export function profileRevealCredential(request: {
+  profileId: string;
+  field: StoredCredentialField;
+  textTranslation?: Extract<TextTranslation, "deepL" | "deepLX">;
+}): Promise<string | null> {
+  return invoke<string | null>("profile_reveal_credential", request);
+}
+
 export function overlaySetCollapsed(collapsed: boolean): Promise<void> {
   return invoke("overlay_set_collapsed", { collapsed });
 }
@@ -165,6 +177,10 @@ export function overlayControlSetPanelHeight(height: number): Promise<void> {
   return invoke("overlay_control_set_panel_height", { height });
 }
 
+export function overlayControlSetIslandWidth(width: number): Promise<void> {
+  return invoke("overlay_control_set_island_width", { width });
+}
+
 /** Fetches the current session state snapshot (for windows that boot after
  * the last session-state broadcast). */
 export function sessionGetState(): Promise<SessionStateEvent> {
@@ -179,7 +195,7 @@ export function appQuit(): Promise<void> {
   return invoke("app_quit");
 }
 
-export type SettingsNavigationTarget = "service";
+export type SettingsNavigationTarget = "service" | "export";
 
 export function appShowSettings(
   target?: SettingsNavigationTarget,
@@ -211,6 +227,21 @@ export function listenOverlayControlMode(
   handler: (mode: OverlayControlMode) => void,
 ): Promise<UnlistenFn> {
   return listen<OverlayControlMode>("overlay-control-mode", (event) =>
+    handler(event.payload),
+  );
+}
+
+/** View-local logical coordinates for a nonactivating macOS overlay. */
+export type OverlayPointerMotion = { x: number; y: number } | null;
+
+export function setOverlayPointerCursor(point: NonNullable<OverlayPointerMotion>, pointing: boolean): Promise<boolean> {
+  return invoke<boolean>("overlay_set_pointer_cursor", { ...point, pointing });
+}
+
+export function listenOverlayPointerMotion(
+  handler: (point: OverlayPointerMotion) => void,
+): Promise<UnlistenFn> {
+  return listen<OverlayPointerMotion>("overlay-pointer-motion", (event) =>
     handler(event.payload),
   );
 }
@@ -275,7 +306,8 @@ export function appDesktopShortcutCommands(): Promise<DesktopShortcutCommands | 
 
 export interface ConnectionDiagnostic {
   credential: "present" | "missing" | "unavailable" | "serviceUnavailable" | "accessDenied" | "invalid";
-  network: "reachable" | "timeout" | "unreachable" | "notTested";
+  service: "available" | "unavailable" | "notTested";
+  reason: null | "credentialsMissing" | "credentialsUnavailable" | "credentialsServiceUnavailable" | "credentialsAccessDenied" | "invalidConfiguration" | "authenticationRejected" | "serviceRejected" | "timeout" | "unreachable";
 }
 export function testProfileConnection(profileId: string): Promise<ConnectionDiagnostic> {
   return invoke("profile_test_connection", { profileId });

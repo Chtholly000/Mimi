@@ -1,13 +1,15 @@
 import { memo, useEffect, useState } from "react";
-import { OVERLAY_ACTIVITY_PHASES, overlayPhaseColor, type OverlayActivityPhaseKind, type PulseStyle } from "../../lib/types";
+import { OVERLAY_ACTIVITY_PHASES, type OverlayActivityPhaseKind, type PulseStyle } from "../../lib/types";
 import "./PulseRing.css";
 
 interface PulseRingProps {
   phase: OverlayActivityPhaseKind;
   compact?: boolean;
+  /** A clear focal point while the subtitle overlay is empty. */
+  prominent?: boolean;
   /** Already resolved independently from the subtitle-motion preference. */
   motionEnabled: boolean;
-  /** Missing preferences preserve the existing indicator. */
+  /** Missing preferences use the ribbon (B) indicator. */
   pulseStyle?: PulseStyle;
 }
 
@@ -21,8 +23,8 @@ const wave = "M-40 20 Q-35 20 -30 12 T-20 20 T-10 28 T0 20 T10 12 T20 20 T30 28 
  * Tracks stay mounted. Phase changes reshape their enclosing layers;
  * pause settles for 520ms, then freezes clocks; resume continues those clocks.
  */
-export const PulseRing = memo(function PulseRing({ phase, compact = false, motionEnabled, pulseStyle = "classic" }: PulseRingProps) {
-  const lightClass = pulseStyle === "classic" ? "phase-light" : "sound-light";
+export const PulseRing = memo(function PulseRing({ phase, compact = false, prominent = false, motionEnabled, pulseStyle = "ribbon" }: PulseRingProps) {
+  const size = prominent ? (compact ? 48 : 80) : compact ? 24 : 40;
   const working = OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0;
   const [clockPaused, setClockPaused] = useState(!motionEnabled || !working);
   useEffect(() => {
@@ -36,50 +38,41 @@ export const PulseRing = memo(function PulseRing({ phase, compact = false, motio
 
   return (
     <div
-      className={`${lightClass}${motionEnabled ? "" : ` ${lightClass}--still`}`}
+      className={`sound-light${motionEnabled ? "" : " sound-light--still"}`}
       data-phase={phase}
       data-clock={clockPaused ? "paused" : "running"}
       data-sound-style={pulseStyle}
       data-pulse-style={pulseStyle}
+      data-size={prominent ? (compact ? "prominent-compact" : "prominent") : compact ? "compact" : "normal"}
       aria-hidden="true"
-      style={{ width: compact ? 18 : 40, height: compact ? 18 : 40, color: overlayPhaseColor(phase, 1) }}
+      style={{ width: size, height: size, color: OVERLAY_ACTIVITY_PHASES[phase].color }}
     >
-      {pulseStyle === "classic" ? <>
-      <div className="phase-light__rest" />
-      <div className="phase-light__halo"><div className="phase-light__halo-ring" /></div>
-      <div className="phase-light__recognition">
-        {[0, 1, 2].map(index => <div key={index} className="phase-light__ripple" style={{ animationDelay: `${-index * 0.9}s` }} />)}
-      </div>
-      <div className="phase-light__arcs"><div className="phase-light__arc phase-light__arc--outer" /><div className="phase-light__arc phase-light__arc--inner" /></div>
-      <div className="phase-light__core"><div className="phase-light__dot" /></div>
-      <div className="phase-light__pause"><i /><i /></div>
-      <div className="phase-light__error" />
-      </> : <svg className="sound-light__drawing" viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeLinecap="round">
+      <svg className="sound-light__drawing" viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeLinecap="round">
         <g className="sound-light__syllables">
           {syllables.map((x, index) => (
             <g className="sound-light__envelope" key={x}>
               <g className="sound-light__beat" style={{ animationDelay: `${-index * 0.19}s` }}>
-                <path strokeWidth="2.25" d={`M${x} ${20 - heights[index] / 2}V${20 + heights[index] / 2}`} />
+                <path strokeWidth="2.75" d={`M${x} ${20 - heights[index] / 2}V${20 + heights[index] / 2}`} />
               </g>
             </g>
           ))}
         </g>
         <g className="sound-light__ribbons">
           <g className="sound-light__ribbon-envelope">
-            <path className="sound-light__wave sound-light__wave--back" strokeWidth="1.25" d={wave} />
-            <path className="sound-light__wave sound-light__wave--front" strokeWidth="1.7" d={wave} />
+            <path className="sound-light__wave sound-light__wave--back" strokeWidth="1.5" d={wave} />
+            <path className="sound-light__wave sound-light__wave--front" strokeWidth="2.2" d={wave} />
           </g>
         </g>
         <g className="sound-light__translation">
           <g className="sound-light__current-envelope">
-            <path className="sound-light__current sound-light__current--back" strokeWidth="1.25" d={wave} />
-            <path className="sound-light__current sound-light__current--front" strokeWidth="1.7" d={wave} />
+            <path className="sound-light__current sound-light__current--back" strokeWidth="1.5" d={wave} />
+            <path className="sound-light__current sound-light__current--front" strokeWidth="2.2" d={wave} />
           </g>
         </g>
-        <path className="sound-light__flat" strokeWidth="1.7" d="M9 20H17M23 20H31" />
-        <g className="sound-light__idle" fill="currentColor" stroke="none"><circle cx="16" cy="20" r="1" /><circle cx="20" cy="20" r="1" /><circle cx="24" cy="20" r="1" /></g>
-        <path className="sound-light__error" strokeWidth="1.7" d="M16 16L24 24M24 16L16 24" />
-      </svg>}
+        <path className="sound-light__flat" strokeWidth="2.2" d="M9 20H17M23 20H31" />
+        <g className="sound-light__idle" fill="currentColor" stroke="none"><circle cx="16" cy="20" r="1.3" /><circle cx="20" cy="20" r="1.3" /><circle cx="24" cy="20" r="1.3" /></g>
+        <path className="sound-light__error" strokeWidth="2.2" d="M16 16L24 24M24 16L16 24" />
+      </svg>
     </div>
   );
 });

@@ -2,6 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Bound complete subtitle fields without truncating words or UTF-8 characters.
+pub const MAX_SUBTITLE_TEXT_BYTES: usize = 64 * 1024;
+
+pub fn subtitle_text_within_limit(text: &str) -> bool {
+    text.len() <= MAX_SUBTITLE_TEXT_BYTES
+}
+
 /// Named presets or an opaque custom RGB color. Presentation only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -290,6 +297,21 @@ impl TargetLanguage {
     pub fn translates_audio(self) -> bool {
         self != TargetLanguage::Original
     }
+
+    /// Only explicit ASR reports can skip text translation. In particular,
+    /// traditional Chinese still needs conversion to the simplified target.
+    pub fn matches_reported_asr(self, reported: Option<&str>) -> bool {
+        let Some(reported) = reported else {
+            return false;
+        };
+        let reported = reported.trim().to_ascii_lowercase();
+        match self {
+            Self::Original => false,
+            Self::SimplifiedChinese => matches!(reported.as_str(), "zh" | "zh-cn" | "zh-hans"),
+            Self::English => reported == "en",
+            Self::Japanese => reported == "ja",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -401,10 +423,18 @@ impl PartialEq for SubtitlePair {
 impl Eq for SubtitlePair {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewSubtitlePair {
+    pub source: String,
+    pub translation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubtitleSnapshot {
     pub source: SubtitleLine,
     pub translation: SubtitleLine,
     pub history: Vec<SubtitlePair>,
+    #[serde(default, rename = "previewPair")]
+    pub preview_pair: Option<PreviewSubtitlePair>,
 }
 
 impl SubtitleSnapshot {
@@ -413,6 +443,7 @@ impl SubtitleSnapshot {
             source: SubtitleLine::new("", false),
             translation: SubtitleLine::new("", false),
             history: Vec::new(),
+            preview_pair: None,
         }
     }
 }
@@ -429,6 +460,11 @@ pub enum SubtitleEvent {
     SourceFinal(String),
     TranslationDraft(String),
     TranslationFinal(String),
+    /// Atomically replaces a completed preview without confirming history.
+    PreviewPair {
+        source: String,
+        translation: String,
+    },
     /// Text from a provider that identifies its utterances. `role` selects the
     /// preview line and `utterance_id` is always the *source* utterance id, so
     /// both lines of one utterance carry the same identity.
@@ -445,7 +481,39 @@ pub enum SubtitleEvent {
         source: String,
         translation: String,
     },
+    /// A reliable final boundary identified within the current generation.
+    ConfirmedPair {
+        utterance_id: u64,
+        source: String,
+        translation: String,
+    },
     Clear,
+}
+
+impl SubtitleEvent {
+    pub fn text_within_limit(&self) -> bool {
+        match self {
+            Self::SourceDraft(text)
+            | Self::SourceFinal(text)
+            | Self::TranslationDraft(text)
+            | Self::TranslationFinal(text)
+            | Self::UtteranceText { text, .. } => subtitle_text_within_limit(text),
+            Self::PreviewPair {
+                source,
+                translation,
+            }
+            | Self::FinalPair {
+                source,
+                translation,
+            }
+            | Self::ConfirmedPair {
+                source,
+                translation,
+                ..
+            } => subtitle_text_within_limit(source) && subtitle_text_within_limit(translation),
+            Self::Clear => true,
+        }
+    }
 }
 
 /// Which preview line a stamped provider text belongs to.
@@ -497,6 +565,35 @@ mod tests {
         assert!(!TargetLanguage::Original.translates_audio());
         assert_eq!(TargetLanguage::SimplifiedChinese.raw_value(), "zh");
         assert_eq!(TargetLanguage::English.qwen_mt_name(), "English");
+    }
+
+    #[test]
+    fn same_language_passthrough_requires_an_explicit_compatible_asr_report() {
+        for (target, reported) in [
+            (TargetLanguage::English, "en"),
+            (TargetLanguage::Japanese, "JA"),
+            (TargetLanguage::SimplifiedChinese, "zh"),
+            (TargetLanguage::SimplifiedChinese, " zh-CN "),
+            (TargetLanguage::SimplifiedChinese, "zh-Hans"),
+        ] {
+            assert!(target.matches_reported_asr(Some(reported)));
+        }
+        for target in [
+            TargetLanguage::Original,
+            TargetLanguage::English,
+            TargetLanguage::Japanese,
+            TargetLanguage::SimplifiedChinese,
+        ] {
+            for reported in [None, Some(""), Some("unknown"), Some("yue")] {
+                assert!(!target.matches_reported_asr(reported));
+            }
+        }
+        for reported in ["zh-TW", "zh-HK", "zh-Hant", "ja", "en", "Chinese"] {
+            assert!(!TargetLanguage::SimplifiedChinese.matches_reported_asr(Some(reported)));
+        }
+        assert!(!TargetLanguage::English.matches_reported_asr(Some("ja")));
+        assert!(!TargetLanguage::Japanese.matches_reported_asr(Some("en")));
+        assert!(!TargetLanguage::Original.matches_reported_asr(Some("zh")));
     }
 
     #[test]

@@ -2568,6 +2568,7 @@ dependencies = [
  "dispatch2",
  "futures-util",
  "gtk",
+ "hyper-util",
  "keyring",
  "keyring-core",
  "libpulse-binding",

@@ -16,7 +16,7 @@ use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 const GENERIC_PROVIDER_ERROR: &str = "Gemini Live Translation rejected the session.";
 const GENERIC_PROTOCOL_ERROR: &str = "Gemini Live Translation returned an invalid response.";
@@ -162,6 +162,7 @@ struct Inner {
 /// content-free error before leaving this client.
 #[derive(Clone)]
 pub struct GeminiLiveClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint: url::Url,
     authenticate_with_query: bool,
@@ -171,6 +172,15 @@ pub struct GeminiLiveClient {
 }
 
 impl GeminiLiveClient {
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         api_key: &str,
         target_language: TargetLanguage,
@@ -196,6 +206,7 @@ impl GeminiLiveClient {
             return Err(GeminiLiveClientError::InvalidTargetLanguage);
         }
         Ok(Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
@@ -235,10 +246,13 @@ impl GeminiLiveClient {
             .authenticated_endpoint()
             .into_client_request()
             .map_err(|_| GeminiLiveClientError::TransportFailure)?;
-        let (socket, _) = tokio::time::timeout(Duration::from_secs(15), connect_async(request))
-            .await
-            .map_err(|_| GeminiLiveClientError::TransportFailure)?
-            .map_err(|_| GeminiLiveClientError::TransportFailure)?;
+        let (socket, _) = tokio::time::timeout(
+            Duration::from_secs(15),
+            super::provider_network::websocket(request, &self.network),
+        )
+        .await
+        .map_err(|_| GeminiLiveClientError::TransportFailure)?
+        .map_err(|_| GeminiLiveClientError::TransportFailure)?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);

@@ -2,6 +2,7 @@
 
 use crate::core::credentials::{ProviderCredentials, ProviderCredentialsError};
 use crate::core::models::{SourceLanguage, TargetLanguage, TranslationMode};
+use crate::core::network_proxy::{ProxyConfig, ProxyConfigError};
 use crate::core::provider::ProviderKind;
 use std::fmt;
 use thiserror::Error;
@@ -16,6 +17,8 @@ pub enum LiveTranslationConfigurationError {
     UnsupportedTargetLanguage,
     #[error("The selected service does not support this translation mode.")]
     UnsupportedTranslationMode,
+    #[error("{0}")]
+    NetworkProxy(#[from] ProxyConfigError),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -25,6 +28,7 @@ pub struct LiveTranslationConfiguration {
     pub source_language: SourceLanguage,
     pub target_language: TargetLanguage,
     pub translation_mode: TranslationMode,
+    pub network_proxy: ProxyConfig,
 }
 
 impl fmt::Debug for LiveTranslationConfiguration {
@@ -36,6 +40,7 @@ impl fmt::Debug for LiveTranslationConfiguration {
             .field("source_language", &self.source_language)
             .field("target_language", &self.target_language)
             .field("translation_mode", &self.translation_mode)
+            .field("network_proxy", &self.network_proxy)
             .finish()
     }
 }
@@ -55,6 +60,7 @@ impl LiveTranslationConfiguration {
             source_language,
             target_language,
             translation_mode,
+            network_proxy: ProxyConfig::default(),
         }
     }
 
@@ -71,27 +77,25 @@ impl LiveTranslationConfiguration {
             source_language,
             target_language,
             translation_mode,
+            network_proxy: ProxyConfig::default(),
         }
     }
 
-    /// The mode actually used for a session: every non-Alibaba realtime
-    /// adapter uses its one supported turbo path. Alibaba preserves turbo and
-    /// otherwise routes automatic recognition to its low-latency pipeline.
+    pub fn with_network_proxy(mut self, network_proxy: ProxyConfig) -> Self {
+        self.network_proxy = network_proxy;
+        self
+    }
+
+    /// Legacy mode values remain readable, but every new session uses Turbo.
+    /// Provider-specific transports and independent text destinations remain
+    /// resolved by the provider facade.
     pub fn effective_translation_mode(&self) -> TranslationMode {
-        if self.provider != ProviderKind::AlibabaCloud {
-            return TranslationMode::Turbo;
-        }
-        if self.translation_mode == TranslationMode::Turbo {
-            return TranslationMode::Turbo;
-        }
-        if self.source_language == SourceLanguage::Automatic {
-            return TranslationMode::LowLatency;
-        }
-        self.translation_mode
+        TranslationMode::Turbo
     }
 
     /// Returns a trimmed, validated copy of the configuration.
     pub fn validated(&self) -> Result<Self, LiveTranslationConfigurationError> {
+        let network_proxy = self.network_proxy.validate()?;
         let credentials = self.credentials.validated_for(self.provider)?;
 
         let capabilities = self.provider.capabilities();
@@ -107,10 +111,8 @@ impl LiveTranslationConfiguration {
         {
             return Err(LiveTranslationConfigurationError::UnsupportedTargetLanguage);
         }
-        if !capabilities
-            .translation_modes
-            .contains(&self.translation_mode)
-        {
+        let translation_mode = self.effective_translation_mode();
+        if !capabilities.translation_modes.contains(&translation_mode) {
             return Err(LiveTranslationConfigurationError::UnsupportedTranslationMode);
         }
 
@@ -119,7 +121,8 @@ impl LiveTranslationConfiguration {
             credentials,
             source_language: self.source_language,
             target_language: self.target_language,
-            translation_mode: self.translation_mode,
+            translation_mode,
+            network_proxy,
         })
     }
 }
@@ -139,11 +142,11 @@ mod tests {
     }
 
     #[test]
-    fn automatic_language_resolves_high_quality_to_low_latency() {
+    fn automatic_language_upgrades_legacy_high_quality_to_turbo() {
         let configuration = config("sk-test", SourceLanguage::Automatic);
         assert_eq!(
             configuration.effective_translation_mode(),
-            TranslationMode::LowLatency
+            TranslationMode::Turbo
         );
     }
 
@@ -173,22 +176,29 @@ mod tests {
         );
         assert_eq!(
             configuration.effective_translation_mode(),
-            TranslationMode::HighQuality
+            TranslationMode::Turbo
         );
     }
 
     #[test]
-    fn configuration_preserves_an_explicit_translation_mode() {
-        let configuration = LiveTranslationConfiguration::for_provider(
-            ProviderKind::AlibabaCloud,
-            "sk-test",
-            SourceLanguage::Japanese,
-            TargetLanguage::English,
+    fn configuration_normalizes_legacy_modes_without_changing_languages() {
+        for mode in [
+            TranslationMode::LowLatency,
             TranslationMode::HighQuality,
-        );
-        let validated = configuration.validated().unwrap();
-        assert_eq!(validated.translation_mode, TranslationMode::HighQuality);
-        assert_eq!(validated.target_language, TargetLanguage::English);
+            TranslationMode::Turbo,
+        ] {
+            let configuration = LiveTranslationConfiguration::for_provider(
+                ProviderKind::AlibabaCloud,
+                "sk-test",
+                SourceLanguage::Japanese,
+                TargetLanguage::English,
+                mode,
+            );
+            let validated = configuration.validated().unwrap();
+            assert_eq!(validated.translation_mode, TranslationMode::Turbo);
+            assert_eq!(validated.target_language, TargetLanguage::English);
+            assert_eq!(validated.source_language, SourceLanguage::Japanese);
+        }
     }
 
     #[test]
@@ -298,5 +308,23 @@ mod tests {
         let description = format!("{configuration:?}");
         assert!(!description.contains(secret));
         assert!(description.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn validated_proxy_is_an_immutable_copy_and_debug_does_not_disclose_its_address() {
+        use crate::core::network_proxy::ProxyMode;
+        let mut original =
+            config("synthetic-key", SourceLanguage::English).with_network_proxy(ProxyConfig {
+                mode: ProxyMode::Custom,
+                url: Some("http://private-proxy.example:8888".into()),
+            });
+        let validated = original.validated().unwrap();
+        original.network_proxy = ProxyConfig {
+            mode: ProxyMode::Direct,
+            url: None,
+        };
+        assert_eq!(validated.network_proxy.mode, ProxyMode::Custom);
+        assert_eq!(original.network_proxy.mode, ProxyMode::Direct);
+        assert!(!format!("{validated:?}").contains("private-proxy.example"));
     }
 }

@@ -91,11 +91,20 @@ impl Audio3ASRRequestEncoder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Audio3ASRServerEvent {
     TaskStarted,
-    Transcription { text: String, is_final: bool },
+    Transcription {
+        text: String,
+        is_final: bool,
+        sentence_id: Option<u64>,
+    },
     Heartbeat,
     TaskFinished,
-    TaskFailed { code: String, message: String },
-    Ignored { kind: String },
+    TaskFailed {
+        code: String,
+        message: String,
+    },
+    Ignored {
+        kind: String,
+    },
 }
 
 impl Audio3ASRServerEvent {
@@ -105,11 +114,23 @@ impl Audio3ASRServerEvent {
             .then(|| source_language.raw_value().to_string());
         match self {
             Self::TaskStarted => LiveTranslateServerEvent::SessionCreated,
-            Self::Transcription { text, is_final } => {
+            Self::Transcription {
+                text,
+                is_final,
+                sentence_id,
+            } => {
                 if *is_final {
-                    LiveTranslateServerEvent::SourceFinal {
-                        text: text.clone(),
-                        language: reported_language,
+                    if let Some(utterance_id) = sentence_id.filter(|id| *id > 0) {
+                        LiveTranslateServerEvent::SourceUtteranceFinal {
+                            utterance_id,
+                            text: text.clone(),
+                            language: reported_language,
+                        }
+                    } else {
+                        LiveTranslateServerEvent::SourceFinal {
+                            text: text.clone(),
+                            language: reported_language,
+                        }
                     }
                 } else {
                     LiveTranslateServerEvent::SourceDraft {
@@ -133,8 +154,14 @@ impl Audio3ASRServerEvent {
 
 pub enum Audio3ASRServerEventDecoder {}
 
+/// Audio3 returns recognition JSON only, never an output audio stream.
+pub const MAX_AUDIO3_MESSAGE_BYTES: usize = 1024 * 1024;
+
 impl Audio3ASRServerEventDecoder {
     pub fn decode(text: &str) -> Result<Audio3ASRServerEvent, LiveTranslateProtocolError> {
+        if text.len() > MAX_AUDIO3_MESSAGE_BYTES {
+            return Err(LiveTranslateProtocolError::InvalidJSON);
+        }
         let json: Value =
             serde_json::from_str(text).map_err(|_| LiveTranslateProtocolError::InvalidJSON)?;
         let header = json
@@ -171,12 +198,11 @@ impl Audio3ASRServerEventDecoder {
                 if sentence.get("heartbeat").and_then(Value::as_bool) == Some(true) {
                     return Ok(Audio3ASRServerEvent::Heartbeat);
                 }
-                let text = sentence
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
+                let text = sentence.get("text").and_then(Value::as_str).unwrap_or("");
+                if !crate::core::models::subtitle_text_within_limit(text) {
+                    return Err(LiveTranslateProtocolError::InvalidJSON);
+                }
+                let text = text.trim().to_string();
                 if text.is_empty() {
                     return Ok(Audio3ASRServerEvent::Ignored {
                         kind: "empty-result".into(),
@@ -185,6 +211,10 @@ impl Audio3ASRServerEventDecoder {
                 Ok(Audio3ASRServerEvent::Transcription {
                     text,
                     is_final: sentence.get("sentence_end").and_then(Value::as_bool) == Some(true),
+                    sentence_id: sentence
+                        .get("sentence_id")
+                        .and_then(Value::as_u64)
+                        .filter(|id| *id > 0),
                 })
             }
             other => Ok(Audio3ASRServerEvent::Ignored {
@@ -341,6 +371,71 @@ mod tests {
                 text: "今日は晴れです。".into(),
                 language: Some("ja".into())
             }
+        );
+    }
+
+    #[test]
+    fn positive_sentence_identity_is_preserved_without_inventing_missing_ids() {
+        for id in [1, 2, u64::MAX] {
+            let message = json!({
+                "header": {"event": "result-generated"},
+                "payload": {"output": {"sentence": {
+                    "text": "Synthetic repeated lyric", "sentence_end": true,
+                    "sentence_id": id
+                }}}
+            });
+            let event = Audio3ASRServerEventDecoder::decode(&message.to_string()).unwrap();
+            assert_eq!(
+                event.subtitle_event(SourceLanguage::Japanese),
+                LiveTranslateServerEvent::SourceUtteranceFinal {
+                    utterance_id: id,
+                    text: "Synthetic repeated lyric".into(),
+                    language: Some("ja".into()),
+                }
+            );
+        }
+        for id in [json!(null), json!(0), json!(-1), json!(1.0), json!("1")] {
+            let message = json!({
+                "header": {"event": "result-generated"},
+                "payload": {"output": {"sentence": {
+                    "text": "Synthetic final", "sentence_end": true,
+                    "sentence_id": id
+                }}}
+            });
+            let event = Audio3ASRServerEventDecoder::decode(&message.to_string()).unwrap();
+            assert!(matches!(
+                event.subtitle_event(SourceLanguage::Automatic),
+                LiveTranslateServerEvent::SourceFinal { language: None, .. }
+            ));
+        }
+        let heartbeat = Audio3ASRServerEventDecoder::decode(
+            r#"{"header":{"event":"result-generated"},"payload":{"output":{"sentence":{"text":"Synthetic ignored text","heartbeat":true,"sentence_end":true,"sentence_id":0}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(heartbeat, Audio3ASRServerEvent::Heartbeat);
+    }
+
+    #[test]
+    fn recognition_rejects_oversized_fields_and_json_without_truncating_utf8() {
+        let exact = "🙂".repeat(crate::core::models::MAX_SUBTITLE_TEXT_BYTES / 4);
+        for is_final in [false, true] {
+            let frame = |text: &str| {
+                json!({
+                    "header": {"event": "result-generated"},
+                    "payload": {"output": {"sentence": {
+                        "text": text, "sentence_end": is_final, "sentence_id": 1
+                    }}}
+                })
+                .to_string()
+            };
+            let event = Audio3ASRServerEventDecoder::decode(&frame(&exact)).unwrap();
+            assert!(
+                matches!(event, Audio3ASRServerEvent::Transcription { text, .. } if text == exact)
+            );
+            assert!(Audio3ASRServerEventDecoder::decode(&frame(&format!("{exact}a"))).is_err());
+        }
+        assert!(
+            Audio3ASRServerEventDecoder::decode(&" ".repeat(MAX_AUDIO3_MESSAGE_BYTES + 1)).is_err()
         );
     }
 

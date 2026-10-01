@@ -25,8 +25,9 @@ const BASE_SETTINGS: SettingsSnapshot = {
   subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  showSubtitleDividers: false,
   pulseAnimation: null,
-  pulseStyle: "classic",
+  pulseStyle: "ribbon",
   subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
@@ -35,26 +36,23 @@ const BASE_SETTINGS: SettingsSnapshot = {
   recordSessionAudio: false,
   windowsAudioSource: "",
   showInDock: false,
+  networkProxy: { mode: "system", url: null },
 };
 
 describe("overlay control panel model", () => {
-  it("shows Alibaba automatic recognition choices and supported modes", () => {
+  it("shows Alibaba recognition choices without a redundant mode picker", () => {
     const model = overlayControlPanelModel(BASE_SETTINGS);
     expect(model.sourceOptions).toHaveLength(5);
-    expect(model.translationModeOptions).toEqual(["lowLatency", "turbo"]);
-    expect(model.effectiveTranslationMode).toBe("lowLatency");
+    expect(model.translationModeOptions).toEqual([]);
+    expect(model.effectiveTranslationMode).toBe("turbo");
   });
 
-  it("shows all Alibaba modes for a manually selected source", () => {
+  it("keeps Turbo for a manually selected source without a mode picker", () => {
     const model = overlayControlPanelModel({
       ...BASE_SETTINGS,
       sourceLanguage: "ja",
     });
-    expect(model.translationModeOptions).toEqual([
-      "lowLatency",
-      "highQuality",
-      "turbo",
-    ]);
+    expect(model.translationModeOptions).toEqual([]);
   });
 
   it("omits translation modes when only original subtitles are requested", () => {

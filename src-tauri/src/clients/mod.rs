@@ -8,6 +8,7 @@ pub mod high_quality_client;
 pub mod live_translate_client;
 pub mod openai_realtime_client;
 pub mod provider_events;
+pub mod provider_network;
 pub mod qwen_mt_client;
 pub mod tencent_cloud_client;
 pub mod translation_client;
@@ -16,4 +17,5 @@ pub mod xai_realtime_client;
 
 pub mod connection_diagnostics;
 
+pub mod deepl_client;
 pub mod deeplx_client;

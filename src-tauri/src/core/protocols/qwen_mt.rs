@@ -8,6 +8,75 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use thiserror::Error;
 
+/// Content-free classification of explicitly documented upstream error codes.
+/// Never infer billing or rate-limit types from free-form server messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QwenMTRejectionCategory {
+    RequestRate,
+    BurstRate,
+    TokenRate,
+    Concurrency,
+    Capacity,
+    Billing,
+    Unknown,
+}
+
+impl QwenMTRejectionCategory {
+    pub fn from_response(data: &[u8]) -> Self {
+        // Match the HTTP reader's existing bound, also protecting standalone
+        // callers. Borrow only code strings; ignore messages/content entirely.
+        if data.len() > 1024 * 1024 {
+            return Self::Unknown;
+        }
+        #[derive(Deserialize)]
+        struct ErrorCodes<'a> {
+            #[serde(borrow)]
+            error: Option<ErrorCode<'a>>,
+            code: Option<&'a str>,
+        }
+        #[derive(Deserialize)]
+        struct ErrorCode<'a> {
+            code: Option<&'a str>,
+        }
+        let Ok(body) = serde_json::from_slice::<ErrorCodes<'_>>(data) else {
+            return Self::Unknown;
+        };
+        match body.error.and_then(|error| error.code).or(body.code) {
+            Some(
+                "Throttling.RateQuota" | "LimitRequests" | "limit_requests" | "ResourceExhausted",
+            ) => Self::RequestRate,
+            Some("Throttling.BurstRate" | "limit_burst_rate") => Self::BurstRate,
+            Some("Throttling.AllocationQuota" | "insufficient_quota") => Self::TokenRate,
+            Some("Throttling.Concurrency") => Self::Concurrency,
+            Some(
+                "Throttling.ServiceOverloaded"
+                | "ServiceOverloaded"
+                | "Throttling.ResourceExhausted",
+            ) => Self::Capacity,
+            Some(
+                "CommodityNotPurchased"
+                | "PrepaidBillOverdue"
+                | "PostpaidBillOverdue"
+                | "BudgetLimitExceeded",
+            ) => Self::Billing,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Fixed allowlist output suitable for diagnostics; no upstream strings.
+    pub fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::RequestRate => "request_rate",
+            Self::BurstRate => "burst_rate",
+            Self::TokenRate => "token_rate",
+            Self::Concurrency => "concurrency",
+            Self::Capacity => "capacity",
+            Self::Billing => "billing",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum QwenMTProtocolError {
     #[error("The Qwen-MT endpoint could not be created.")]
@@ -16,12 +85,16 @@ pub enum QwenMTProtocolError {
     InvalidJSON,
     #[error("Qwen-MT returned no translated text.")]
     MissingTranslation,
+    #[error("The selected language is not supported by the Qwen-MT model.")]
+    UnsupportedLanguage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QwenMTClientError {
     DeepLX(super::deeplx::DeepLXError),
+    DeepL(super::deepl::DeepLError),
     MissingAPIKey,
+    UnsupportedSource,
     InvalidHTTPResponse,
     ResponseTooLarge,
     RequestTimedOut,
@@ -32,9 +105,11 @@ impl std::fmt::Display for QwenMTClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DeepLX(error) => write!(f, "{error}"),
+            Self::DeepL(error) => write!(f, "{error}"),
             Self::MissingAPIKey => {
                 write!(f, "Add an Alibaba Cloud Model Studio API key in Settings.")
             }
+            Self::UnsupportedSource => write!(f, "translation_source_unsupported"),
             Self::InvalidHTTPResponse => write!(f, "Qwen-MT returned an invalid HTTP response."),
             Self::ResponseTooLarge => write!(f, "Qwen-MT returned a response that is too large."),
             Self::RequestTimedOut => write!(f, "Qwen-MT took too long to respond."),
@@ -55,12 +130,35 @@ impl std::fmt::Display for QwenMTClientError {
 impl std::error::Error for QwenMTClientError {}
 
 impl QwenMTClientError {
+    pub fn recovery_reason(&self) -> Option<crate::core::diagnostics::TranslationRecoveryReason> {
+        use crate::core::diagnostics::TranslationRecoveryReason;
+        let rate_limited = matches!(
+            self,
+            Self::RequestFailed {
+                status_code: 429,
+                ..
+            } | Self::DeepL(super::deepl::DeepLError::Rejected(429))
+                | Self::DeepLX(super::deeplx::DeepLXError::Rejected(429))
+        );
+        if rate_limited {
+            Some(TranslationRecoveryReason::RateLimited)
+        } else if QwenMTRetryPolicy::delay(self, 1).is_some() {
+            Some(TranslationRecoveryReason::TemporarilyUnavailable)
+        } else {
+            None
+        }
+    }
+
     pub fn is_authentication_failure(&self) -> bool {
         match self {
             Self::DeepLX(error) => error.authentication_failure(),
+            Self::DeepL(error) => error.authentication_failure(),
             Self::RequestFailed { status_code, .. } => *status_code == 401 || *status_code == 403,
             Self::MissingAPIKey => true,
-            Self::InvalidHTTPResponse | Self::ResponseTooLarge | Self::RequestTimedOut => false,
+            Self::UnsupportedSource
+            | Self::InvalidHTTPResponse
+            | Self::ResponseTooLarge
+            | Self::RequestTimedOut => false,
         }
     }
 
@@ -68,7 +166,9 @@ impl QwenMTClientError {
     pub fn diagnostic_label(&self) -> String {
         match self {
             Self::DeepLX(error) => error.diagnostic_label(),
+            Self::DeepL(error) => error.diagnostic_label(),
             Self::MissingAPIKey => "QwenMTClientError.missingAPIKey".to_string(),
+            Self::UnsupportedSource => "QwenMTClientError.unsupportedSource".to_string(),
             Self::InvalidHTTPResponse => "QwenMTClientError.invalidHTTPResponse".to_string(),
             Self::ResponseTooLarge => "QwenMTClientError.responseTooLarge".to_string(),
             Self::RequestTimedOut => "QwenMTClientError.requestTimedOut".to_string(),
@@ -82,19 +182,35 @@ impl QwenMTClientError {
 pub enum QwenMTRetryPolicy {}
 
 impl QwenMTRetryPolicy {
-    /// Backoff delay for transient failures, or `None` when the failure is not
-    /// retryable. Delay: min(8000, 600 * 2^min(max(attempt-1,0),4)) ms.
+    /// Bounded backoff for transient failures. HTTP 429 waits 4 then 8 seconds;
+    /// other retryable failures use 600 ms exponential backoff capped at 8 s.
     pub fn delay(error: &QwenMTClientError, attempt: usize) -> Option<Duration> {
         let is_transient = match error {
             QwenMTClientError::DeepLX(error) => error.retryable(),
+            QwenMTClientError::DeepL(error) => error.retryable(),
             QwenMTClientError::RequestTimedOut | QwenMTClientError::InvalidHTTPResponse => true,
             QwenMTClientError::RequestFailed { status_code, .. } => {
                 *status_code == 408 || *status_code == 429 || *status_code >= 500
             }
-            QwenMTClientError::MissingAPIKey | QwenMTClientError::ResponseTooLarge => false,
+            QwenMTClientError::UnsupportedSource
+            | QwenMTClientError::MissingAPIKey
+            | QwenMTClientError::ResponseTooLarge => false,
         };
         if !is_transient {
             return None;
+        }
+        let rate_limited = matches!(
+            error,
+            QwenMTClientError::RequestFailed {
+                status_code: 429,
+                ..
+            } | QwenMTClientError::DeepL(super::deepl::DeepLError::Rejected(429))
+                | QwenMTClientError::DeepLX(super::deeplx::DeepLXError::Rejected(429))
+        );
+        if rate_limited {
+            return Some(Duration::from_millis(
+                8_000u64.min(4_000u64 << attempt.saturating_sub(1).min(1)),
+            ));
         }
         let exponent = attempt.saturating_sub(1).min(4);
         let milliseconds = 8_000u64.min(600u64 << exponent);
@@ -102,6 +218,7 @@ impl QwenMTRetryPolicy {
     }
 }
 
+#[derive(Clone)]
 pub struct QwenMTEndpoint {
     pub url: url::Url,
 }
@@ -122,16 +239,75 @@ impl QwenMTEndpoint {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QwenMTModel {
+    Lite,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Retained for upstream capability comparisons and Flash wire-compatibility fixtures."
+        )
+    )]
     Flash,
     Plus,
 }
 
+/// Shared default for live subtitles and the selected-profile ready probe.
+pub const REALTIME_MT_MODEL: QwenMTModel = QwenMTModel::Lite;
+
+/// Exact upstream tables; Audio 3.0's 30 inputs are not the Lite MT table.
+/// https://help.aliyun.com/en/model-studio/machine-translation#supported-languages
+pub const QWEN_MT_LITE_LANGUAGE_CODES: &[&str] = &[
+    "en", "zh", "zh_tw", "ru", "ja", "ko", "es", "fr", "pt", "de", "it", "th", "vi", "id", "ms",
+    "ar", "hi", "he", "ur", "bn", "pl", "nl", "tr", "km", "cs", "sv", "hu", "da", "fi", "tl", "fa",
+];
+
+pub const QWEN_MT_FLASH_LANGUAGE_CODES: &[&str] = &[
+    "en", "zh", "zh_tw", "ru", "ja", "ko", "es", "fr", "pt", "de", "it", "th", "vi", "id", "ms",
+    "ar", "hi", "he", "my", "ta", "ur", "bn", "pl", "nl", "ro", "tr", "km", "lo", "yue", "cs",
+    "el", "sv", "hu", "da", "fi", "uk", "bg", "sr", "te", "af", "hy", "as", "ast", "eu", "be",
+    "bs", "ca", "ceb", "hr", "arz", "et", "gl", "ka", "gu", "is", "jv", "kn", "kk", "lv", "lt",
+    "lb", "mk", "mai", "mt", "mr", "acm", "ary", "ars", "ne", "az", "apc", "uz", "nb", "nn", "oc",
+    "or", "pag", "scn", "sd", "si", "sk", "sl", "ajp", "sw", "tl", "acq", "sq", "aeb", "vec",
+    "war", "cy", "fa",
+];
+
 impl QwenMTModel {
     pub fn raw_name(self) -> &'static str {
         match self {
+            Self::Lite => "qwen-mt-lite",
             Self::Flash => "qwen-mt-flash",
             Self::Plus => "qwen-mt-plus",
         }
+    }
+
+    pub fn supported_language_codes(self) -> &'static [&'static str] {
+        match self {
+            Self::Lite => QWEN_MT_LITE_LANGUAGE_CODES,
+            Self::Flash | Self::Plus => QWEN_MT_FLASH_LANGUAGE_CODES,
+        }
+    }
+
+    /// Source auto is a request mode, not a guarantee that every ASR language
+    /// is translatable. A concrete report must fit the selected MT model.
+    pub fn supports_reported_source(self, reported: Option<&str>) -> bool {
+        let Some(reported) = reported else {
+            return true;
+        };
+        let normalized = reported.trim().to_ascii_lowercase();
+        let code = match normalized.as_str() {
+            "zh-cn" | "zh-hans" | "chinese" | "mandarin" => "zh",
+            "zh-tw" | "zh-hant" | "traditional chinese" => "zh_tw",
+            "english" => "en",
+            "japanese" => "ja",
+            "korean" => "ko",
+            "fil" | "filipino" => "tl",
+            "no" => "nb",
+            _ => normalized.split('-').next().unwrap_or(&normalized),
+        };
+        self.supported_language_codes().contains(&code)
+            // An absent/unrecognized report retains the existing auto path;
+            // only a known service code can establish an unsupported source.
+            || !QWEN_MT_FLASH_LANGUAGE_CODES.contains(&code)
     }
 }
 
@@ -180,11 +356,19 @@ impl QwenMTRequestEncoder {
         terms: &[QwenMTTerm],
         translation_memory: &[QwenMTMemoryPair],
     ) -> Result<Value, QwenMTProtocolError> {
+        if !model
+            .supported_language_codes()
+            .contains(&target_language.raw_value())
+            || (source_language != SourceLanguage::Automatic
+                && !model.supports_reported_source(Some(source_language.raw_value())))
+        {
+            return Err(QwenMTProtocolError::UnsupportedLanguage);
+        }
         let mut options = json!({
             "source_lang": source_lang_name(source_language),
             "target_lang": target_language.qwen_mt_name(),
         });
-        if let Some(domain_hint) = domain_hint {
+        if let Some(domain_hint) = domain_hint.filter(|_| model != QwenMTModel::Lite) {
             options["domains"] = json!(domain_hint);
         }
         if !terms.is_empty() {
@@ -463,6 +647,148 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejection_codes_classify_documented_aliases_in_both_response_shapes() {
+        let cases = [
+            (
+                "Throttling.RateQuota",
+                QwenMTRejectionCategory::RequestRate,
+                "request_rate",
+            ),
+            (
+                "LimitRequests",
+                QwenMTRejectionCategory::RequestRate,
+                "request_rate",
+            ),
+            (
+                "limit_requests",
+                QwenMTRejectionCategory::RequestRate,
+                "request_rate",
+            ),
+            (
+                "ResourceExhausted",
+                QwenMTRejectionCategory::RequestRate,
+                "request_rate",
+            ),
+            (
+                "Throttling.BurstRate",
+                QwenMTRejectionCategory::BurstRate,
+                "burst_rate",
+            ),
+            (
+                "limit_burst_rate",
+                QwenMTRejectionCategory::BurstRate,
+                "burst_rate",
+            ),
+            (
+                "Throttling.AllocationQuota",
+                QwenMTRejectionCategory::TokenRate,
+                "token_rate",
+            ),
+            (
+                "insufficient_quota",
+                QwenMTRejectionCategory::TokenRate,
+                "token_rate",
+            ),
+            (
+                "Throttling.Concurrency",
+                QwenMTRejectionCategory::Concurrency,
+                "concurrency",
+            ),
+            (
+                "Throttling.ServiceOverloaded",
+                QwenMTRejectionCategory::Capacity,
+                "capacity",
+            ),
+            (
+                "ServiceOverloaded",
+                QwenMTRejectionCategory::Capacity,
+                "capacity",
+            ),
+            (
+                "Throttling.ResourceExhausted",
+                QwenMTRejectionCategory::Capacity,
+                "capacity",
+            ),
+            (
+                "CommodityNotPurchased",
+                QwenMTRejectionCategory::Billing,
+                "billing",
+            ),
+            (
+                "PrepaidBillOverdue",
+                QwenMTRejectionCategory::Billing,
+                "billing",
+            ),
+            (
+                "PostpaidBillOverdue",
+                QwenMTRejectionCategory::Billing,
+                "billing",
+            ),
+            (
+                "BudgetLimitExceeded",
+                QwenMTRejectionCategory::Billing,
+                "billing",
+            ),
+        ];
+        for (code, category, label) in cases {
+            for response in [json!({"code": code}), json!({"error": {"code": code}})] {
+                let decoded =
+                    QwenMTRejectionCategory::from_response(response.to_string().as_bytes());
+                assert_eq!(decoded, category);
+                assert_eq!(decoded.diagnostic_label(), label);
+            }
+        }
+    }
+
+    #[test]
+    fn rejection_category_never_interprets_messages_or_returns_untrusted_codes() {
+        const PRIVATE: &str = "private-subtitle-and-key-sentinel";
+        let responses = [
+            json!({"error": {"message": "insufficient_quota", "content": PRIVATE}}),
+            json!({"error": {"code": PRIVATE, "message": "Throttling.RateQuota"}}),
+            json!({"error": {"code": "Throttling.RateQuota\nprivate-subtitle-and-key-sentinel"}}),
+            json!({"error": {"code": "throttling.ratequota"}}),
+            json!({"error": {"code": 429}}),
+            json!({"error": {"code": ["insufficient_quota", PRIVATE]}}),
+            json!({"error": {"code": {"secret": PRIVATE}}}),
+            json!({"error": {"code": PRIVATE}, "code": "insufficient_quota"}),
+            json!({"message": PRIVATE, "choices": [{"content": PRIVATE}]}),
+        ];
+        for response in responses {
+            let category = QwenMTRejectionCategory::from_response(response.to_string().as_bytes());
+            assert_eq!(category, QwenMTRejectionCategory::Unknown);
+            assert_eq!(category.diagnostic_label(), "unknown");
+            assert!(!format!("{category:?}:{}", category.diagnostic_label()).contains(PRIVATE));
+        }
+        let category = QwenMTRejectionCategory::from_response(
+            json!({"error": {"code": "insufficient_quota", "message": PRIVATE}, "prompt": PRIVATE})
+                .to_string()
+                .as_bytes(),
+        );
+        assert_eq!(category.diagnostic_label(), "token_rate");
+    }
+
+    #[test]
+    fn rejection_category_is_bounded_and_invalid_json_remains_unknown() {
+        for response in [b"".as_slice(), b"not JSON", b"{", b"[]", b"null"] {
+            assert_eq!(
+                QwenMTRejectionCategory::from_response(response),
+                QwenMTRejectionCategory::Unknown
+            );
+        }
+        assert_eq!(
+            QwenMTRejectionCategory::from_response(&vec![b' '; 1024 * 1024 + 1]),
+            QwenMTRejectionCategory::Unknown,
+        );
+        assert_eq!(
+            QwenMTRejectionCategory::from_response(
+                br#"{"error":{"message":"ignored"},"code":"Throttling.Concurrency"}"#
+            ),
+            QwenMTRejectionCategory::Concurrency,
+        );
+    }
+
+    #[test]
     fn oversized_responses_are_content_free_and_not_retried() {
         let error = QwenMTClientError::ResponseTooLarge;
         assert!(!error.is_authentication_failure());
@@ -524,6 +850,90 @@ mod tests {
         )
         .unwrap();
         assert_eq!(json["stream"], true);
+    }
+
+    #[test]
+    fn lite_default_streams_and_omits_only_unsupported_domain_prompt() {
+        assert_eq!(REALTIME_MT_MODEL, QwenMTModel::Lite);
+        let terms = [QwenMTTerm::new("synthetic", "fixture")];
+        let memory = [QwenMTMemoryPair {
+            source: "previous".into(),
+            target: "confirmed".into(),
+        }];
+        for model in [QwenMTModel::Lite, QwenMTModel::Flash, QwenMTModel::Plus] {
+            let body = QwenMTRequestEncoder::request(
+                "synthetic",
+                SourceLanguage::English,
+                TargetLanguage::Japanese,
+                model,
+                true,
+                Some("unchanged domain fixture"),
+                &terms,
+                &memory,
+            )
+            .unwrap();
+            assert_eq!(body["model"], model.raw_name());
+            assert_eq!(body["stream"], true);
+            assert_eq!(
+                body["translation_options"].get("domains").is_some(),
+                model != QwenMTModel::Lite
+            );
+            assert_eq!(body["translation_options"]["terms"], json!(terms));
+            assert_eq!(body["translation_options"]["tm_list"], json!(memory));
+        }
+        assert_eq!(
+            QwenMTRequestEncoder::request(
+                "synthetic",
+                SourceLanguage::English,
+                TargetLanguage::Original,
+                QwenMTModel::Lite,
+                true,
+                None,
+                &[],
+                &[]
+            ),
+            Err(QwenMTProtocolError::UnsupportedLanguage)
+        );
+    }
+
+    #[test]
+    fn model_language_registries_are_exact_unique_and_preserve_auto_boundary() {
+        use std::collections::HashSet;
+        assert_eq!(QWEN_MT_LITE_LANGUAGE_CODES.len(), 31);
+        assert_eq!(QWEN_MT_FLASH_LANGUAGE_CODES.len(), 92);
+        for model in [QwenMTModel::Lite, QwenMTModel::Flash, QwenMTModel::Plus] {
+            let codes = model.supported_language_codes();
+            assert_eq!(codes.iter().collect::<HashSet<_>>().len(), codes.len());
+            assert!(!codes.contains(&"auto"));
+            assert!(model.supports_reported_source(None));
+            for code in codes {
+                assert!(model.supports_reported_source(Some(code)));
+            }
+            for reported in ["en-US", "zh-CN", "zh-Hant", "ja-JP", "fil"] {
+                assert!(model.supports_reported_source(Some(reported)));
+            }
+            assert!(model.supports_reported_source(Some("unknown-private-value")));
+        }
+        assert!(QWEN_MT_LITE_LANGUAGE_CODES
+            .iter()
+            .all(|code| QWEN_MT_FLASH_LANGUAGE_CODES.contains(code)));
+        for audio3_only in ["no", "ro", "el", "bg", "hr", "sk"] {
+            assert!(!QwenMTModel::Lite.supports_reported_source(Some(audio3_only)));
+            assert!(QwenMTModel::Flash.supports_reported_source(Some(audio3_only)));
+        }
+    }
+
+    #[test]
+    fn unsupported_source_is_explicit_content_free_and_not_retried() {
+        let error = QwenMTClientError::UnsupportedSource;
+        assert_eq!(error.to_string(), "translation_source_unsupported");
+        assert_eq!(
+            error.diagnostic_label(),
+            "QwenMTClientError.unsupportedSource"
+        );
+        assert!(!error.is_authentication_failure());
+        assert_eq!(error.recovery_reason(), None);
+        assert_eq!(QwenMTRetryPolicy::delay(&error, 1), None);
     }
 
     #[test]
@@ -739,7 +1149,7 @@ mod tests {
                 },
                 3
             ),
-            Some(Duration::from_millis(2_400))
+            Some(Duration::from_secs(8))
         );
         assert_eq!(
             QwenMTRetryPolicy::delay(
@@ -771,5 +1181,56 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn recovery_classification_preserves_authentication_and_bounded_rate_limit_backoff() {
+        use crate::core::diagnostics::TranslationRecoveryReason;
+        for error in [
+            QwenMTClientError::RequestFailed {
+                status_code: 429,
+                message: "synthetic provider detail".into(),
+            },
+            QwenMTClientError::DeepL(super::super::deepl::DeepLError::Rejected(429)),
+            QwenMTClientError::DeepLX(super::super::deeplx::DeepLXError::Rejected(429)),
+        ] {
+            assert_eq!(
+                error.recovery_reason(),
+                Some(TranslationRecoveryReason::RateLimited)
+            );
+            assert!(!error.is_authentication_failure());
+            assert_eq!(
+                QwenMTRetryPolicy::delay(&error, 1),
+                Some(Duration::from_secs(4))
+            );
+            assert_eq!(
+                QwenMTRetryPolicy::delay(&error, 2),
+                Some(Duration::from_secs(8))
+            );
+            assert_eq!(
+                QwenMTRetryPolicy::delay(&error, usize::MAX),
+                Some(Duration::from_secs(8))
+            );
+        }
+        for status_code in [401, 403] {
+            let error = QwenMTClientError::RequestFailed {
+                status_code,
+                message: "synthetic auth rejection".into(),
+            };
+            assert!(error.is_authentication_failure());
+            assert_eq!(error.recovery_reason(), None);
+        }
+        for error in [
+            QwenMTClientError::RequestTimedOut,
+            QwenMTClientError::RequestFailed {
+                status_code: 503,
+                message: String::new(),
+            },
+        ] {
+            assert_eq!(
+                error.recovery_reason(),
+                Some(TranslationRecoveryReason::TemporarilyUnavailable)
+            );
+        }
     }
 }

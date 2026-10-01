@@ -80,11 +80,7 @@ impl ProviderKind {
                     TargetLanguage::English,
                     TargetLanguage::Japanese,
                 ],
-                translation_modes: vec![
-                    TranslationMode::LowLatency,
-                    TranslationMode::HighQuality,
-                    TranslationMode::Turbo,
-                ],
+                translation_modes: vec![TranslationMode::Turbo],
                 input_sample_rate_hz: 16_000,
             },
             Self::OpenAIRealtime | Self::AzureOpenAIRealtime | Self::XAIRealtime => {
@@ -274,6 +270,8 @@ pub enum ServiceProfileError {
 pub enum TextTranslation {
     #[serde(rename = "followService")]
     FollowService,
+    #[serde(rename = "deepL")]
+    DeepL,
     #[serde(rename = "deepLX")]
     DeepLX,
 }
@@ -334,12 +332,13 @@ impl ServiceProfile {
 
     pub fn validated(&self) -> Result<Self, ServiceProfileError> {
         let mut profile = Self::new(self.id.clone(), self.name.clone(), self.provider)?;
-        if self.text_translation == Some(TextTranslation::DeepLX)
-            && !matches!(
-                self.provider,
-                ProviderKind::AlibabaCloud | ProviderKind::DeepLX
-            )
-        {
+        if matches!(
+            self.text_translation,
+            Some(TextTranslation::DeepLX | TextTranslation::DeepL)
+        ) && !matches!(
+            self.provider,
+            ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+        ) {
             return Err(ServiceProfileError::UnsupportedTextTranslation);
         }
         profile.text_translation = self.text_translation;
@@ -360,7 +359,9 @@ impl ServiceProfile {
             (ProviderKind::AlibabaCloud | ProviderKind::DeepLX, TextTranslation::DeepLX) => {
                 ProviderKind::DeepLX
             }
-            (ProviderKind::DeepLX, TextTranslation::FollowService) => ProviderKind::AlibabaCloud,
+            (ProviderKind::DeepLX, TextTranslation::FollowService | TextTranslation::DeepL) => {
+                ProviderKind::AlibabaCloud
+            }
             _ => self.provider,
         }
     }
@@ -432,7 +433,7 @@ mod tests {
         let alibaba = ProviderKind::AlibabaCloud.capabilities();
         assert_eq!(alibaba.source_languages.len(), 5);
         assert_eq!(alibaba.target_languages.len(), 4);
-        assert_eq!(alibaba.translation_modes.len(), 3);
+        assert_eq!(alibaba.translation_modes, vec![TranslationMode::Turbo]);
         assert_eq!(alibaba.input_sample_rate_hz, 16_000);
 
         let openai = ProviderKind::OpenAIRealtime.capabilities();

@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsSnapshot } from "./types";
 import {
   initializeSnapshotStreams,
   mergeSettingsSnapshot,
   SettingsSaveCoordinator,
   SnapshotResponseGate,
+  SNAPSHOT_STEP_TIMEOUT_MS,
 } from "./settingsState";
+
+afterEach(() => vi.useRealTimers());
 
 const SETTINGS: SettingsSnapshot = {
   profiles: [
@@ -24,8 +27,9 @@ const SETTINGS: SettingsSnapshot = {
   subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  showSubtitleDividers: false,
   pulseAnimation: null,
-  pulseStyle: "classic",
+  pulseStyle: "ribbon",
   subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
@@ -34,9 +38,24 @@ const SETTINGS: SettingsSnapshot = {
   recordSessionAudio: false,
   windowsAudioSource: "",
   showInDock: false,
+  networkProxy: { mode: "system", url: null },
 };
 
 describe("mergeSettingsSnapshot", () => {
+  it("normalizes the proxy route while preserving it across unrelated saves", () => {
+    const custom = mergeSettingsSnapshot(SETTINGS, { networkProxy: { mode: "custom", url: "socks5h://127.0.0.1" } });
+    expect(custom.networkProxy).toEqual({ mode: "custom", url: "socks5h://127.0.0.1:1080" });
+    expect(mergeSettingsSnapshot(custom, { fontSize: 20 }).networkProxy).toEqual(custom.networkProxy);
+    expect(mergeSettingsSnapshot(custom, { networkProxy: { mode: "direct", url: "discarded" } }).networkProxy).toEqual({ mode: "direct", url: null });
+    expect(mergeSettingsSnapshot(custom, { networkProxy: { mode: "custom", url: "http://user:synthetic-secret@127.0.0.1" } }).networkProxy).toEqual(custom.networkProxy);
+  });
+  it("keeps a divider choice through unrelated saves and permits disabling it", () => {
+    const enabled = mergeSettingsSnapshot(SETTINGS, { showSubtitleDividers: true });
+    expect(mergeSettingsSnapshot(enabled, { fontSize: 20 }).showSubtitleDividers).toBe(true);
+    expect(mergeSettingsSnapshot(enabled, { showSubtitleDividers: false }).showSubtitleDividers).toBe(false);
+    expect(enabled.sourceLanguage).toBe(SETTINGS.sourceLanguage);
+    expect(enabled.translationMode).toBe(SETTINGS.translationMode);
+  });
   it("keeps a Dock choice through unrelated settings and allows explicitly hiding again", () => {
     const enabled = mergeSettingsSnapshot(SETTINGS, { showInDock: true });
     expect(mergeSettingsSnapshot(enabled, { uiLanguage: "ja" }).showInDock).toBe(true);
@@ -60,6 +79,7 @@ describe("mergeSettingsSnapshot", () => {
         subtitleColor: "#123456",
         subtitleAlignment: "right",
         subtitleDisplayMode: "bilingual",
+        showSubtitleDividers: true,
         subtitleAnimation: true,
         pulseAnimation: false,
         subtitleBlendsWithBackground: true,
@@ -68,6 +88,7 @@ describe("mergeSettingsSnapshot", () => {
       subtitleColor: "#123456",
       subtitleAlignment: "right",
       subtitleDisplayMode: "bilingual",
+      showSubtitleDividers: true,
       subtitleAnimation: true,
       pulseAnimation: false,
       subtitleBlendsWithBackground: true,
@@ -236,6 +257,85 @@ describe("SettingsSaveCoordinator", () => {
 });
 
 describe("initializeSnapshotStreams", () => {
+  it("publishes session independently while settings is pending, then expires a hung settings snapshot", async () => {
+    vi.useFakeTimers();
+    const applySettings = vi.fn();
+    const applySession = vi.fn();
+    const unlistenSettings = vi.fn();
+    const unlistenSession = vi.fn();
+    let lateSettings!: (settings: string) => void;
+    let settingsHandler!: (settings: string) => void;
+    const initialization = initializeSnapshotStreams({
+      listenSettings: async (handler) => { settingsHandler = handler; return unlistenSettings; },
+      listenSession: async () => unlistenSession,
+      getSettings: () => new Promise<string>((resolve) => { lateSettings = resolve; }),
+      getSession: async () => "current-session",
+    }, { applySettings, applySession });
+    const rejected = expect(initialization).rejects.toThrow("snapshot-step-timeout");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applySession).toHaveBeenCalledExactlyOnceWith("current-session");
+    expect(applySettings).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS);
+    await rejected;
+    expect(unlistenSettings).toHaveBeenCalledOnce();
+    expect(unlistenSession).toHaveBeenCalledOnce();
+    settingsHandler("late-event"); lateSettings("late-snapshot");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applySettings).not.toHaveBeenCalled();
+  });
+
+  it("expires a hung listener, cleans it when it arrives, and keeps a retry generation independent", async () => {
+    vi.useFakeTimers();
+    let oldHandler!: (settings: string) => void;
+    let completeListener!: (unlisten: () => void) => void;
+    const lateUnlisten = vi.fn();
+    const partialUnlisten = vi.fn();
+    const applySettings = vi.fn();
+    const applySession = vi.fn();
+    const getSettings = vi.fn(async () => "unused-old-settings");
+    const initialization = initializeSnapshotStreams({
+      listenSettings: (handler) => { oldHandler = handler; return new Promise((resolve) => { completeListener = resolve; }); },
+      listenSession: async () => partialUnlisten,
+      getSettings,
+      getSession: async () => "first-session",
+    }, { applySettings, applySession });
+    const rejected = expect(initialization).rejects.toThrow("snapshot-step-timeout");
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS);
+    await rejected;
+    const retryCleanups = await initializeSnapshotStreams({
+      listenSettings: async () => () => {}, listenSession: async () => () => {},
+      getSettings: async () => "retry-settings", getSession: async () => "retry-session",
+    }, { applySettings, applySession });
+    oldHandler("expired-event"); completeListener(lateUnlisten);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lateUnlisten).toHaveBeenCalledOnce();
+    expect(partialUnlisten).toHaveBeenCalledOnce();
+    expect(getSettings).not.toHaveBeenCalled();
+    expect(applySettings).toHaveBeenCalledExactlyOnceWith("retry-settings");
+    expect(applySession.mock.calls.map(([session]) => session)).toEqual(["first-session", "retry-session"]);
+    retryCleanups.forEach((unlisten) => unlisten());
+  });
+
+  it("keeps a session event received before its snapshot when the settings listener remains pending", async () => {
+    vi.useFakeTimers();
+    let sessionHandler!: (session: string) => void;
+    let completeSession!: (session: string) => void;
+    const applySession = vi.fn();
+    const initialization = initializeSnapshotStreams({
+      listenSettings: () => new Promise<() => void>(() => {}),
+      listenSession: async (handler) => { sessionHandler = handler; return () => {}; },
+      getSettings: async () => "unused-settings",
+      getSession: () => new Promise<string>((resolve) => { completeSession = resolve; }),
+    }, { applySettings: vi.fn(), applySession });
+    const rejected = expect(initialization).rejects.toThrow("snapshot-step-timeout");
+    await vi.advanceTimersByTimeAsync(0);
+    sessionHandler("new-event"); completeSession("older-snapshot");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(applySession).toHaveBeenCalledExactlyOnceWith("new-event");
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS);
+    await rejected;
+  });
+
   it("cleans a partial failure so initialization can be retried", async () => {
     let cleanupCount = 0;
     const appliedSettings: string[] = [];

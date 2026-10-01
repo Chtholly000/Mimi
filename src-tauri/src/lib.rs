@@ -10,6 +10,8 @@ mod desktop_shortcuts;
 mod linux_startup;
 #[cfg(any(target_os = "macos", test))]
 mod mac_dock;
+#[cfg(target_os = "macos")]
+mod mac_native_quit;
 mod session_export;
 mod session_history;
 mod session_manager;
@@ -159,6 +161,10 @@ pub fn run() {
             app.manage(windows::install_windows_workspace_follower(&app_handle));
 
             setup_tray(&app_handle)?;
+            #[cfg(target_os = "macos")]
+            setup_application_quit_menu(&app_handle)?;
+            #[cfg(target_os = "macos")]
+            mac_native_quit::install(&app_handle)?;
             setup_global_shortcuts(&app_handle, Arc::clone(&session))?;
             #[cfg(target_os = "linux")]
             {
@@ -205,6 +211,10 @@ pub fn run() {
         .on_window_event(|window, event| {
             let app = window.app_handle();
             match event {
+                #[cfg(target_os = "macos")]
+                WindowEvent::Destroyed if window.label() == "overlay" => {
+                    windows::remove_overlay_pointer_tracking(app);
+                }
                 // The overlay geometry manager folds the final frame in after
                 // a debounce; transient states (control panel, collapse
                 // animation steps) are never persisted.
@@ -302,6 +312,10 @@ pub fn run() {
                         || window.label() == "tray-panel" =>
                 {
                     api.prevent_close();
+                    #[cfg(target_os = "macos")]
+                    if window.label() == "overlay" {
+                        windows::clear_overlay_pointer_hover(app);
+                    }
                     if let Err(error) = window.hide() {
                         tracing::warn!(
                             window_label = window.label(),
@@ -334,6 +348,7 @@ pub fn run() {
             commands::profile_save_credentials,
             commands::profile_test_connection,
             commands::profile_delete_api_key,
+            commands::profile_reveal_credential,
             crate::session_export::session_archive_state,
             crate::session_export::session_transcript_page,
             crate::session_export::session_history_list,
@@ -350,12 +365,14 @@ pub fn run() {
             commands::session_switch_translation_mode,
             commands::overlay_set_collapsed,
             commands::overlay_set_locked,
+            commands::overlay_set_pointer_cursor,
             commands::overlay_show,
             commands::overlay_move_start,
             commands::overlay_popover_toggle,
             commands::overlay_popover_hide,
             commands::overlay_control_state,
             commands::overlay_control_set_panel_height,
+            commands::overlay_control_set_island_width,
             commands::session_get_state,
             commands::resize_start,
             commands::resize_move,
@@ -367,6 +384,11 @@ pub fn run() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::RunEvent::Exit) {
+                mac_native_quit::remove();
+                windows::remove_overlay_pointer_tracking(app);
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 if app.state::<AppState>().settings.preferences().show_in_dock {
@@ -416,6 +438,73 @@ struct NativeTrayMenuItems {
     quit: MenuItem<tauri::Wry>,
     subtitle_display: Submenu<tauri::Wry>,
     display_modes: [CheckMenuItem<tauri::Wry>; 3],
+}
+
+const APPLICATION_QUIT_MENU_ID: &str = "mimi-app-quit";
+#[cfg(any(target_os = "macos", test))]
+const APPLICATION_QUIT_ACCELERATOR: &str = "CmdOrCtrl+Q";
+
+#[cfg(target_os = "macos")]
+struct NativeApplicationQuitMenuItem(MenuItem<tauri::Wry>);
+
+fn is_normal_quit_menu_event(id: &str) -> bool {
+    matches!(id, "quit" | APPLICATION_QUIT_MENU_ID)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn default_application_quit_position(
+    item_count: usize,
+    last_predefined_text: Option<&str>,
+) -> Option<usize> {
+    // Tauri's default app submenu ends with muda's English predefined Quit.
+    // Validate that item before removing it, rather than replacing a Services,
+    // Hide, or application-defined entry after an upstream menu change.
+    let text = last_predefined_text?;
+    if text != "Quit" && !text.starts_with("Quit ") {
+        return None;
+    }
+    item_count.checked_sub(1)
+}
+
+#[cfg(target_os = "macos")]
+fn setup_application_quit_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
+    fn unexpected_default_menu() -> tauri::Error {
+        std::io::Error::other("The default application quit menu could not be installed.").into()
+    }
+
+    // Keep Tauri's complete default menu, including native Services and the
+    // Edit menu's standard copy/paste responders. Only predefined Quit uses
+    // NSApplication::terminate directly and bypasses our async finalization.
+    let menu = app.menu().ok_or_else(unexpected_default_menu)?;
+    let root_items = menu.items()?;
+    let application_menu = root_items
+        .first()
+        .and_then(|item| item.as_submenu())
+        .ok_or_else(unexpected_default_menu)?;
+    let items = application_menu.items()?;
+    let last_predefined_text = items
+        .last()
+        .and_then(|item| item.as_predefined_menuitem())
+        .map(|item| item.text())
+        .transpose()?;
+    let position = default_application_quit_position(items.len(), last_predefined_text.as_deref())
+        .ok_or_else(unexpected_default_menu)?;
+
+    let override_language = app
+        .try_state::<AppState>()
+        .and_then(|state| state.settings.preferences().ui_language);
+    let system_language = system_language_code();
+    let labels = native_menu_labels(effective_native_menu_language(
+        override_language.as_deref(),
+        system_language.as_deref(),
+    ));
+    let quit_item = MenuItemBuilder::with_id(APPLICATION_QUIT_MENU_ID, labels.quit)
+        .accelerator(APPLICATION_QUIT_ACCELERATOR)
+        .build(app)?;
+    application_menu.remove_at(position)?;
+    application_menu.insert(&quit_item, position)?;
+    app.manage(NativeApplicationQuitMenuItem(quit_item));
+    Ok(())
 }
 
 fn effective_native_menu_language(
@@ -678,13 +767,21 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     windows::TrayPanelManager::hide(app);
                     windows::ensure_settings_window(app);
                 }
-                "quit" => {
+                id if is_normal_quit_menu_event(id) => {
                     let session = Arc::clone(&state.session);
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        session.stop().await;
-                        if session.persist_current_history().is_ok() {
-                            app.exit(0);
+                        if commands::quit_application(app.clone(), session)
+                            .await
+                            .is_err()
+                        {
+                            // archive_state exposes the existing, content-free
+                            // historySaveError; the export page explains why
+                            // quitting failed and keeps its retry reachable.
+                            let _ = commands::app_show_settings(
+                                app,
+                                Some(commands::SettingsNavigationTarget::Export),
+                            );
                         }
                     });
                 }
@@ -757,6 +854,10 @@ pub(crate) fn refresh_native_tray_language(app: &tauri::AppHandle) {
         override_language.as_deref(),
         system_language.as_deref(),
     ));
+    #[cfg(target_os = "macos")]
+    if let Some(item) = app.try_state::<NativeApplicationQuitMenuItem>() {
+        let _ = item.0.set_text(labels.quit);
+    }
     let Some(items) = app.try_state::<NativeTrayMenuItems>() else {
         return;
     };
@@ -940,6 +1041,37 @@ fn setup_global_shortcuts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_and_tray_quit_share_the_normal_finalization_route() {
+        assert!(is_normal_quit_menu_event("quit"));
+        assert!(is_normal_quit_menu_event(APPLICATION_QUIT_MENU_ID));
+        for id in ["settings", "live-subtitles", "close", "mimi-app-quit-extra"] {
+            assert!(!is_normal_quit_menu_event(id));
+        }
+        assert_eq!(APPLICATION_QUIT_ACCELERATOR, "CmdOrCtrl+Q");
+        for (language, label) in [
+            (NativeMenuLanguage::Chinese, "退出 mimi"),
+            (NativeMenuLanguage::English, "Quit mimi"),
+            (NativeMenuLanguage::Japanese, "mimiを終了"),
+        ] {
+            assert_eq!(native_menu_labels(language).quit, label);
+        }
+    }
+
+    #[test]
+    fn application_quit_replacement_accepts_only_the_last_default_predefined_quit() {
+        assert_eq!(
+            default_application_quit_position(8, Some("Quit mimi")),
+            Some(7)
+        );
+        assert_eq!(default_application_quit_position(1, Some("Quit")), Some(0));
+        assert_eq!(default_application_quit_position(0, Some("Quit")), None);
+        assert_eq!(default_application_quit_position(8, None), None);
+        for text in ["Services", "Hide mimi", "Copy", "Quitter", "退出 mimi"] {
+            assert_eq!(default_application_quit_position(8, Some(text)), None);
+        }
+    }
 
     #[test]
     fn native_tray_session_action_follows_status_in_all_three_languages() {

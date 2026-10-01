@@ -42,12 +42,13 @@ describe("in-place language changes", () => {
   });
 });
 
-it("explains the separate DeepLX text destination in all UI languages", () => {
+it("keeps the text destination labels short in all UI languages", () => {
   for (const language of ["zh", "en", "ja"] as const) {
     setStoredUiLanguage(language);
-    expect(I18N.settings.deepLXNote).toContain("Audio 3.0");
-    expect(I18N.settings.deepLXNote).toContain("/translate");
-    expect(I18N.settings.deepLXNote).toContain("Bearer token");
+    expect(I18N.settings.deepLXChain).toContain("DeepLX");
+    expect(I18N.settings.deepLXChain.length).toBeLessThan(55);
+    expect(I18N.settings.deepLXToken).not.toContain("Bearer");
+    expect(I18N.settings.savedServiceAddressPlaceholder).not.toBe("");
     expect(I18N.settings.asrApiKey).not.toBe(I18N.settings.deepLXEndpoint);
   }
 });

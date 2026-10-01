@@ -15,7 +15,12 @@ interface SettingsSessionControlsProps {
   actionFailed: boolean;
   nativeShortcuts: boolean;
   desktopShortcuts: DesktopShortcutCommands | null | undefined;
+  compact?: boolean;
+  retrying?: boolean;
+  resuming?: boolean;
+  resumeFailed?: boolean;
   onSessionChange: (enabled: boolean) => void;
+  onResume: () => void;
   onImmersiveChange: (enabled: boolean) => void;
   onConfigure: () => void;
 }
@@ -25,7 +30,7 @@ export function SettingsSessionControls(props: SettingsSessionControlsProps) {
   // An existing immersive preference must always be reversible, even after
   // stopping or losing credentials. Enabling it never starts a session.
   const immersiveDisabled = !props.immersive && (!props.isActive || props.isChanging);
-  return <section className="settings-session-card" aria-labelledby="settings-session-title">
+  return <section className={`settings-session-card${props.compact ? " settings-session-card--compact" : ""}`} aria-labelledby="settings-session-title">
     <div className="settings-session-control">
       <div className="settings-session-control__copy">
         <div className="settings-session-control__heading">
@@ -37,9 +42,16 @@ export function SettingsSessionControls(props: SettingsSessionControlsProps) {
         </span>
         {props.canConfigure && <button type="button" className="settings-button settings-button--quiet settings-button--compact" onClick={props.onConfigure}>{I18N.settings.configureService}</button>}
       </div>
-      <Switch checked={props.checked} disabled={props.disabled} aria-label={I18N.settings.liveSubtitles} aria-describedby="settings-session-status" onChange={props.onSessionChange} />
+      <div className="settings-session-control__actions">
+        {(props.status === "error" || props.retrying) && <button type="button" className="settings-button settings-button--quiet settings-button--compact" disabled={props.disabled} onClick={() => props.onSessionChange(true)}>{props.retrying ? I18N.settings.sessionConnecting : I18N.settings.sessionRetry}</button>}
+        {(props.status === "paused" || props.resuming) && <button type="button" className="settings-button settings-button--compact settings-session-resume" disabled={props.disabled || props.resuming || props.isChanging} aria-busy={props.resuming || undefined} aria-describedby="settings-session-status" onClick={props.onResume}>
+          {props.resuming && <span className="settings-session-resume__busy" aria-hidden="true" />}
+          {props.resuming ? I18N.settings.sessionResuming : I18N.settings.sessionResume}
+        </button>}
+        <Switch checked={props.checked} disabled={props.disabled} aria-label={I18N.settings.liveSubtitles} aria-describedby="settings-session-status" onChange={props.onSessionChange} />
+      </div>
     </div>
-    <div className="settings-session-control">
+    {!props.compact && <div className="settings-session-control">
       <div className="settings-session-control__copy">
         <div className="settings-session-control__heading">
           <h3>{I18N.settings.blendBackground}</h3>
@@ -48,7 +60,7 @@ export function SettingsSessionControls(props: SettingsSessionControlsProps) {
         <p id="settings-immersive-help">{immersiveDisabled && !props.isActive ? I18N.settings.immersiveStartFirst : I18N.settings.blendBackgroundHelp}</p>
       </div>
       <Switch checked={props.immersive} disabled={immersiveDisabled} aria-label={I18N.settings.blendBackground} aria-describedby="settings-immersive-help" onChange={props.onImmersiveChange} />
-    </div>
+    </div>}
     {props.desktopShortcuts && <details className="settings-session-help settings-desktop-shortcuts">
       <summary>{I18N.settings.systemShortcutSetup}</summary>
       <p>{I18N.settings.systemShortcutInstructions}</p>
@@ -58,6 +70,6 @@ export function SettingsSessionControls(props: SettingsSessionControlsProps) {
         <dt>{I18N.settings.subtitleDisplay}</dt><dd><code>{props.desktopShortcuts.cycleSubtitleDisplay}</code></dd>
       </dl>
     </details>}
-    {props.actionFailed && <p className="settings-feedback" data-tone="error" role="alert">{I18N.settings.sessionActionFailed}</p>}
+    {(props.actionFailed || props.resumeFailed) && <p className="settings-feedback" data-tone="error" role="alert">{props.resumeFailed ? I18N.settings.sessionResumeFailed : I18N.settings.sessionActionFailed}</p>}
   </section>;
 }

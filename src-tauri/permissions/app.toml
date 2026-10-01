@@ -13,6 +13,7 @@ identifier = "app-settings"
 description = "Allows the settings window to manage the live-subtitle session, preferences, profiles, updater fixture mode, and fixed release recovery source."
 commands.allow = [
   "settings_save",
+  "app_quit",
   "windows_audio_status",
   "audio_census",
   "support_diagnostics",
@@ -37,8 +38,10 @@ commands.allow = [
   "profile_save_credentials",
   "profile_test_connection",
   "profile_delete_api_key",
+  "profile_reveal_credential",
   "session_start",
   "session_stop",
+  "session_toggle_paused",
   "session_switch_source_language",
   "overlay_set_locked",
 ]
@@ -47,11 +50,13 @@ commands.allow = [
 identifier = "app-overlay"
 description = "Allows the subtitle overlay to control its own presentation and active session."
 commands.allow = [
+  "session_start",
   "session_toggle_paused",
   "session_clear_subtitles",
   "settings_save",
   "overlay_set_collapsed",
   "overlay_set_locked",
+  "overlay_set_pointer_cursor",
   "overlay_move_start",
   "app_show_settings",
   "resize_start",
@@ -73,6 +78,7 @@ commands.allow = [
   "overlay_popover_hide",
   "overlay_control_state",
   "overlay_control_set_panel_height",
+  "overlay_control_set_island_width",
 ]
 
 [[permission]]

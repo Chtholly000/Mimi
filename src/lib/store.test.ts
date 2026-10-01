@@ -8,11 +8,40 @@ import {
 } from "./store";
 
 describe("local preview store", () => {
+  it("defaults proxies to system, rejects authenticated routes and blocks changes while paused", async () => {
+    const original = useStore.getState();
+    expect(original.settings.networkProxy).toEqual({ mode: "system", url: null });
+    try {
+      await expect(useStore.getState().saveSettings({ networkProxy: { mode: "custom", url: "http://user:synthetic-secret@127.0.0.1" } })).rejects.toThrow("network_proxy_authentication_unsupported");
+      expect(useStore.getState().settings).toBe(original.settings);
+      await useStore.getState().saveSettings({ networkProxy: { mode: "custom", url: "socks5h://127.0.0.1" } });
+      expect(useStore.getState().settings.networkProxy).toEqual({ mode: "custom", url: "socks5h://127.0.0.1:1080" });
+      useStore.setState({ session: { ...original.session, status: { kind: "listening" }, isPaused: true, isActive: false } });
+      await expect(useStore.getState().saveSettings({ networkProxy: { mode: "direct", url: null } })).rejects.toThrow("network_proxy_change_requires_stop");
+      expect(useStore.getState().settings.networkProxy.mode).toBe("custom");
+    } finally { useStore.setState({ settings: original.settings, session: original.session }); }
+  });
   it("keeps the synthetic provider ready outside Tauri", () => {
     expect(isTauri).toBe(false);
     expect(
       useStore.getState().settings.profiles[0]?.credentialState,
     ).toBe("present");
+  });
+
+  it("defaults sentence dividers off and saves the preview choice without changing the pipeline", async () => {
+    const original = useStore.getState().settings;
+    expect(original.showSubtitleDividers).toBe(false);
+    try {
+      await useStore.getState().saveSettings({ showSubtitleDividers: true });
+      expect(useStore.getState().settings.showSubtitleDividers).toBe(true);
+      expect(useStore.getState().settings.translationMode).toBe(original.translationMode);
+      await useStore.getState().saveSettings({ fontSize: 19 });
+      expect(useStore.getState().settings.showSubtitleDividers).toBe(true);
+      await useStore.getState().saveSettings({ showSubtitleDividers: false });
+      expect(useStore.getState().settings.showSubtitleDividers).toBe(false);
+    } finally {
+      useStore.setState({ settings: original });
+    }
   });
 
   it("keeps subtitle churn out of native-window session selectors", () => {
@@ -80,5 +109,24 @@ describe("local preview store", () => {
     expect(selectSessionErrorMessage(first)).not.toBe(
       selectSessionErrorMessage(replacement),
     );
+  });
+
+  it("requires a new DeepL key in preview mode and never retains it in settings", async () => {
+    const original = useStore.getState();
+    const profile = { ...original.settings.profiles[0], provider: "alibabaCloud" as const, credentialState: "present" as const, textTranslation: "followService" as const };
+    useStore.setState({
+      settings: { ...original.settings, profiles: [profile], activeProfileId: profile.id },
+      session: { ...original.session, isActive: false, status: { kind: "idle" } },
+    });
+    try {
+      const credentials = { kind: "alibabaTranslation" as const, apiKey: "", textTranslation: "deepL" as const, endpoint: "", token: "" };
+      await expect(useStore.getState().saveProfileCredentials(profile.id, credentials)).rejects.toThrow("credential-empty");
+      const saved = await useStore.getState().saveProfileCredentials(profile.id, { ...credentials, token: "synthetic-deepl-key" });
+      expect(saved.profiles[0].textTranslation).toBe("deepL");
+      expect(JSON.stringify(saved)).not.toContain("synthetic-deepl-key");
+      await expect(useStore.getState().saveProfileCredentials(profile.id, credentials)).resolves.toMatchObject({ profiles: [{ textTranslation: "deepL" }] });
+    } finally {
+      useStore.setState({ settings: original.settings, session: original.session });
+    }
   });
 });

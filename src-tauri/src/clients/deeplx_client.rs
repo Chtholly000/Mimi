@@ -6,6 +6,7 @@ use crate::core::{
 use futures_util::StreamExt;
 use std::time::Duration;
 
+#[derive(Clone)]
 pub struct DeepLXClient {
     endpoint: url::Url,
     token: String,
@@ -15,6 +16,18 @@ pub struct DeepLXClient {
     timeout: Duration,
 }
 impl DeepLXClient {
+    /// Rebuild only this fixed endpoint's connection pool before requests start.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.client = network
+            .http_client_builder(&self.endpoint)?
+            .build()
+            .map_err(|_| crate::core::network_proxy::ProxyConfigError::BuilderFailed)?;
+        Ok(())
+    }
+
     pub fn new(
         endpoint: &str,
         token: &str,

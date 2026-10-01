@@ -6,8 +6,8 @@ export function rowHorizontalPadding(
   side: "left" | "right",
   blendsWithBackground: boolean,
 ): number {
-  if (blendsWithBackground) return 18;
+  if (blendsWithBackground) return 10;
   if (alignment === "center") return 57;
   if (side === "left") return 57;
-  return 18;
+  return 10;
 }

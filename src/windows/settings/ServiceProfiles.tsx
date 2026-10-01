@@ -1,9 +1,12 @@
-import { testProfileConnection, type ConnectionDiagnostic } from "../../lib/ipc";
+import { testProfileConnection, type ConnectionDiagnostic, type StoredCredentialField } from "../../lib/ipc";
 import { profileErrorMessage, diagnosticCopy } from "../../lib/connectionDiagnostics";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Icon } from "../../components/Icon";
-import { I18N, providerDisplayName } from "../../lib/i18n";
+import { ProviderIcon } from "../../components/ProviderIcon";
+import { effectiveUiLanguage, I18N, providerDisplayName } from "../../lib/i18n";
 import { SERVICE_PROVIDERS, subtitlePreferencesChanged, textTranslationForProfile } from "../../lib/providerCapabilities";
+import { languageMetadataForProfile, providerLanguageDisplayCode } from "../../lib/providerLanguageMetadata";
+import { DEFAULT_NETWORK_PROXY, networkProxyConfigKey } from "../../lib/networkProxy";
 import {
   buildProviderCredentials,
   deepLXEndpointIsValid,
@@ -19,8 +22,10 @@ import type {
   ProviderCredentialsInput,
   ServiceProfile,
   ServiceProvider,
+  SessionStateEvent,
   SettingsSnapshot,
 } from "../../lib/types";
+import { SOURCE_LANGUAGE_DISPLAY_NAMES, TARGET_LANGUAGE_DISPLAY_NAMES } from "../../lib/types";
 import { InlineFeedback, SettingsSection } from "./SettingsPrimitives";
 
 import { DestructiveConfirmation } from "./DestructiveConfirmation";
@@ -28,6 +33,10 @@ import { AlibabaCredentialEditor } from "./AlibabaCredentialEditor";
 
 import { ConnectionCheck } from "./ConnectionCheck";
 import { saveAndSelectProfile } from "./saveAndSelectProfile";
+import { StoredCredentialReveal } from "./StoredCredentialReveal";
+import { SettingsInitializationStatus } from "./SettingsInitializationStatus";
+
+const CONNECTION_CHECK_TIMEOUT_MS = 30_000;
 
 type Feedback = { tone: "success" | "error" | "info"; message: string };
 type PendingAction = "create" | "rename" | "select" | "delete" | "save-key" | "delete-key" | "test-connection" | null;
@@ -39,9 +48,13 @@ type PendingConfirmation =
 export function ServiceProfiles({
   settings,
   sessionIsActive,
+  sessionStatusKind = "idle",
+  visible = true,
 }: {
   settings: SettingsSnapshot;
   sessionIsActive: boolean;
+  sessionStatusKind?: SessionStateEvent["status"]["kind"];
+  visible?: boolean;
 }) {
   const createProfile = useStore((state) => state.createProfile);
   const updateProfile = useStore((state) => state.updateProfile);
@@ -49,6 +62,9 @@ export function ServiceProfiles({
   const deleteProfile = useStore((state) => state.deleteProfile);
   const saveProfileCredentials = useStore((state) => state.saveProfileCredentials);
   const deleteProfileAPIKey = useStore((state) => state.deleteProfileAPIKey);
+  const initializationStatus = useStore((state) => state.initializationStatus) ?? "ready";
+  const initializationError = useStore((state) => state.initializationError) ?? null;
+  const initialize = useStore((state) => state.init);
 
   const activeProfile =
     settings.profiles.find((profile) => profile.id === settings.activeProfileId) ??
@@ -62,7 +78,19 @@ export function ServiceProfiles({
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [diagnostic, setDiagnostic] = useState<{ profileId: string; result: ConnectionDiagnostic | null; error: string | null } | null>(null);
+  const proxyKey = networkProxyConfigKey(settings.networkProxy ?? DEFAULT_NETWORK_PROXY);
+  const [renderedProxyKey, setRenderedProxyKey] = useState(proxyKey);
+  const latestProxyKey = useRef(proxyKey);
+  const [renderedSession, setRenderedSession] = useState({
+    kind: sessionStatusKind,
+    profileId: settings.activeProfileId,
+  });
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation>(null);
+  const mounted = useRef(false);
+  const checkRequest = useRef(0);
+  const checkInFlight = useRef(false);
+  const checkTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const profileCheckEpochs = useRef(new Map<string, number>());
   const [renderedProfile, setRenderedProfile] = useState({
     id: activeProfile?.id,
     name: activeProfile?.name,
@@ -72,6 +100,42 @@ export function ServiceProfiles({
     () => settings.profiles.find((profile) => profile.id === selectedProfileId) ?? activeProfile,
     [activeProfile, selectedProfileId, settings.profiles],
   );
+
+  const invalidateProfileCheck = useCallback((profileId: string) => {
+    const epochs = profileCheckEpochs.current;
+    epochs.set(profileId, (epochs.get(profileId) ?? 0) + 1);
+    setDiagnostic((current) => current?.profileId === profileId ? null : current);
+  }, []);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      checkRequest.current += 1;
+      checkInFlight.current = false;
+      if (checkTimer.current !== null) clearTimeout(checkTimer.current);
+    };
+  }, []);
+
+  useEffect(() => { latestProxyKey.current = proxyKey; }, [proxyKey]);
+
+  if (renderedProxyKey !== proxyKey) {
+    setRenderedProxyKey(proxyKey);
+    setDiagnostic(null);
+  }
+
+  useEffect(() => {
+    if (sessionStatusKind !== "error") return;
+    const epochs = profileCheckEpochs.current;
+    epochs.set(settings.activeProfileId, (epochs.get(settings.activeProfileId) ?? 0) + 1);
+  }, [sessionStatusKind, settings.activeProfileId]);
+
+  if (renderedSession.kind !== sessionStatusKind || renderedSession.profileId !== settings.activeProfileId) {
+    setRenderedSession({ kind: sessionStatusKind, profileId: settings.activeProfileId });
+    if (sessionStatusKind === "error") {
+      setDiagnostic((current) => current?.profileId === settings.activeProfileId ? null : current);
+    }
+  }
 
   if (
     selectedProfile &&
@@ -96,6 +160,7 @@ export function ServiceProfiles({
     operation: () => Promise<SettingsSnapshot>,
     successFeedback: string | ((snapshot: SettingsSnapshot) => Feedback),
   ): Promise<SettingsSnapshot | null> => {
+    if (action === "save-key" || action === "delete-key") invalidateProfileCheck(selectedProfileId);
     setPendingAction(action);
     setFeedback(null);
     try {
@@ -230,6 +295,49 @@ export function ServiceProfiles({
     setShowsEditor(true);
   };
 
+  const handleConnectionCheck = () => {
+    if (!selectedProfile || pendingAction !== null || checkInFlight.current) return;
+    checkInFlight.current = true;
+    const profileId = selectedProfile.id;
+    const request = ++checkRequest.current;
+    const epoch = profileCheckEpochs.current.get(profileId) ?? 0;
+    const checkedProxyKey = proxyKey;
+    const canPublish = () => mounted.current &&
+      request === checkRequest.current &&
+      checkedProxyKey === latestProxyKey.current &&
+      epoch === (profileCheckEpochs.current.get(profileId) ?? 0);
+    setPendingAction("test-connection");
+    setDiagnostic(null);
+    checkTimer.current = setTimeout(() => {
+      if (!mounted.current || request !== checkRequest.current) return;
+      const publishTimeout = canPublish();
+      checkRequest.current += 1;
+      checkInFlight.current = false;
+      checkTimer.current = null;
+      if (publishTimeout) setDiagnostic({ profileId, result: null, error: I18N.settings.profileCheckTimedOut });
+      setPendingAction(null);
+    }, CONNECTION_CHECK_TIMEOUT_MS);
+    void testProfileConnection(profileId)
+      .then((result) => {
+        if (canPublish()) setDiagnostic({ profileId, result, error: null });
+      })
+      .catch(() => {
+        if (canPublish()) setDiagnostic({ profileId, result: null, error: `${diagnosticCopy().unavailable}: ${diagnosticCopy().checkFailed}` });
+      })
+      .finally(() => {
+        if (mounted.current && request === checkRequest.current) {
+          if (checkTimer.current !== null) clearTimeout(checkTimer.current);
+          checkTimer.current = null;
+          checkInFlight.current = false;
+          setPendingAction(null);
+        }
+      });
+  };
+
+  if (initializationStatus !== "ready") {
+    return <SettingsInitializationStatus status={initializationStatus} error={initializationError} onRetry={() => { void initialize(); }} />;
+  }
+
   return (
     <SettingsSection id="service-profiles" title={I18N.settings.serviceProfilesTitle} hideHeading>
       {sessionIsActive && (
@@ -258,100 +366,73 @@ export function ServiceProfiles({
             <Icon name="chevron-left" />
             {I18N.settings.backToServices}
           </button>
-          <div className="service-detail__identity">
-            <ProviderMark provider={selectedProfile.provider} />
-            <span>
-              <h2>{selectedProfile.provider === "deepLX" && selectedProfile.name === "DeepLX (Audio 3.0 ASR)" ? providerDisplayName("alibabaCloud") : selectedProfile.name}</h2>
-              <small>{providerDescription(selectedProfile.provider === "deepLX" ? "alibabaCloud" : selectedProfile.provider)}</small>
-            </span>
-          </div>
-          <div className="service-detail__status">
-            <CredentialBadge state={selectedProfile.credentialState} />
-            {selectedProfile.id === settings.activeProfileId && (
-              <span className="profile-active-badge">
-                <Icon name="checkmark" />
-                {I18N.settings.activeProfile}
-              </span>
-            )}
-          </div>
-          <ConnectionCheck result={diagnostic?.profileId === selectedProfile.id ? diagnostic.result : null} error={diagnostic?.profileId === selectedProfile.id ? diagnostic.error : null} pending={pendingAction === "test-connection"} disabled={mutationsDisabled} onCheck={() => {
-            const profileId = selectedProfile.id;
-            setPendingAction("test-connection"); setDiagnostic(null);
-            void testProfileConnection(profileId)
-              .then(result => setDiagnostic({ profileId, result, error: null }))
-              .catch((error: unknown) => setDiagnostic({ profileId, result: null, error: profileErrorMessage(error) }))
-              .finally(() => setPendingAction(null));
-          }} />
-          <SelectedCredentialEditor
-            key={selectedProfile.id}
-            profile={selectedProfile}
-            inputId={`profile-api-key-${selectedProfile.id}`}
-            disabled={mutationsDisabled}
-            busy={pendingAction === "save-key" || pendingAction === "delete-key"}
-            feedback={feedback}
-            onSave={(replacement) => handleSaveCredential(selectedProfile.id, replacement)}
-            onRequestDelete={() => requestCredentialDelete(selectedProfile.id)}
-            onConfirmDelete={() => confirmCredentialDelete(selectedProfile.id)}
-            confirmingDelete={
-              pendingConfirmation?.kind === "credential" &&
-              pendingConfirmation.profileId === selectedProfile.id
-            }
-            onCancelDelete={() => setPendingConfirmation(null)}
-          />
-          {selectedProfile.credentialState === "present" &&
-            selectedProfile.id !== settings.activeProfileId && (
-              <button
-                type="button"
-                className="settings-button settings-button--primary"
-                disabled={mutationsDisabled}
-                onClick={() => void handleSelect(selectedProfile.id)}
-              >
-                <Icon name="checkmark" />
-                {I18N.settings.useProfile}
-              </button>
-            )}
-          <details className="service-options">
-            <summary>
-              {I18N.settings.profileOptions}
-              <Icon name="chevron-down" />
-            </summary>
-            <form
-              className="profile-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                void handleRename();
-              }}
-            >
-              <div className="settings-field">
-                <label htmlFor={`profile-name-${selectedProfile.id}`}>{I18N.settings.profileName}</label>
-                <span className="settings-field__inline">
-                  <input
-                    id={`profile-name-${selectedProfile.id}`}
-                    value={nameDraft}
-                    maxLength={64}
-                    disabled={mutationsDisabled}
-                    placeholder={I18N.settings.profileNamePlaceholder}
-                    onChange={(event) => {
-                      setNameDraft(event.target.value);
-                      setFeedback(null);
-                    }}
-                  />
-                  <button
-                    type="submit"
-                    className="settings-button settings-button--quiet"
-                    disabled={
-                      mutationsDisabled ||
-                      !nameDraft.trim() ||
-                      nameDraft.trim() === selectedProfile.name
-                    }
-                  >
-                    {I18N.settings.saveName}
-                  </button>
-                </span>
+          <div className="service-detail__header">
+            <div className="service-detail__identity">
+              <ProviderIcon provider={selectedProfile.provider} />
+              <div className="service-detail__copy">
+                <div className="service-detail__title">
+                  <h2>{profileTitle(selectedProfile)}</h2>
+                  <div className="service-detail__status">
+                    <CredentialBadge state={selectedProfile.credentialState} />
+                    {selectedProfile.id === settings.activeProfileId && (
+                      <span className="profile-active-badge">
+                        <Icon name="checkmark" />
+                        {I18N.settings.activeProfile}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <p>{profileTitle(selectedProfile) !== profileProviderName(selectedProfile) && <>{profileProviderName(selectedProfile)} · </>}{profileDescription(selectedProfile)}</p>
+                <SupportedProfileLanguages key={selectedProfile.id} profile={selectedProfile} />
               </div>
-            </form>
-          </details>
-          <div className="service-danger-zone">
+            </div>
+          </div>
+          <div className="service-detail__configuration">
+          <form
+            className="profile-form service-detail__name"
+            onSubmit={(event) => { event.preventDefault(); void handleRename(); }}
+          >
+            <div className="settings-field">
+              <label htmlFor={`profile-name-${selectedProfile.id}`}>{I18N.settings.profileName}</label>
+              <span className="settings-field__inline">
+                <input id={`profile-name-${selectedProfile.id}`} value={nameDraft} maxLength={64} disabled={mutationsDisabled} placeholder={I18N.settings.profileNamePlaceholder} onChange={(event) => { setNameDraft(event.target.value); setFeedback(null); }} />
+                {nameDraft.trim() !== selectedProfile.name && <button type="submit" className="settings-link service-detail__save-name" disabled={mutationsDisabled || !nameDraft.trim()}>{I18N.settings.saveName}</button>}
+              </span>
+            </div>
+          </form>
+          <div className="service-detail__connection">
+            <ConnectionCheck result={diagnostic?.profileId === selectedProfile.id ? diagnostic.result : null} error={diagnostic?.profileId === selectedProfile.id ? diagnostic.error : null} pending={pendingAction === "test-connection"} disabled={mutationsDisabled} onCheck={handleConnectionCheck} />
+            <SelectedCredentialEditor
+              key={selectedProfile.id}
+              profile={selectedProfile}
+              inputId={`profile-api-key-${selectedProfile.id}`}
+              disabled={mutationsDisabled}
+              busy={pendingAction === "save-key" || pendingAction === "delete-key"}
+              visible={visible && pendingConfirmation === null}
+              feedback={feedback}
+              onSave={(replacement) => handleSaveCredential(selectedProfile.id, replacement)}
+              onRequestDelete={() => requestCredentialDelete(selectedProfile.id)}
+              onConfirmDelete={() => confirmCredentialDelete(selectedProfile.id)}
+              confirmingDelete={
+                pendingConfirmation?.kind === "credential" &&
+                pendingConfirmation.profileId === selectedProfile.id
+              }
+              onCancelDelete={() => setPendingConfirmation(null)}
+            />
+          </div>
+          <div className="service-detail__actions">
+            {selectedProfile.credentialState === "present" &&
+              selectedProfile.id !== settings.activeProfileId && (
+                <button
+                  type="button"
+                  className="settings-button settings-button--quiet settings-button--compact"
+                  disabled={mutationsDisabled}
+                  onClick={() => void handleSelect(selectedProfile.id)}
+                >
+                  <Icon name="checkmark" />
+                  {I18N.settings.useProfile}
+                </button>
+              )}
             <button
               type="button"
               className="settings-link settings-link--danger"
@@ -361,15 +442,16 @@ export function ServiceProfiles({
               <Icon name="trash" />
               {I18N.settings.deleteProfile}
             </button>
-            {pendingConfirmation?.kind === "profile" &&
-              pendingConfirmation.profileId === selectedProfile.id && (
-                <DestructiveConfirmation
-                  message={I18N.settings.deleteProfileConfirm(pendingConfirmation.name)}
-                  disabled={mutationsDisabled}
-                  onCancel={() => setPendingConfirmation(null)}
-                  onConfirm={() => void confirmProfileDelete()}
-                />
-              )}
+          </div>
+          {pendingConfirmation?.kind === "profile" &&
+            pendingConfirmation.profileId === selectedProfile.id && (
+              <DestructiveConfirmation
+                message={I18N.settings.deleteProfileConfirm(pendingConfirmation.name)}
+                disabled={mutationsDisabled}
+                onCancel={() => setPendingConfirmation(null)}
+                onConfirm={() => void confirmProfileDelete()}
+              />
+            )}
           </div>
         </div>
       ) : (
@@ -407,10 +489,10 @@ export function ServiceProfiles({
                   }}
                   aria-label={`${profile.name}: ${profile.credentialState === "present" && profile.id !== settings.activeProfileId ? I18N.settings.useProfile : I18N.settings.editProfile}`}
                 >
-                  <ProviderMark provider={profile.provider} />
+                  <ProviderIcon provider={profile.provider} />
                   <span className="service-row__copy">
-                    <strong>{profile.provider === "deepLX" && profile.name === "DeepLX (Audio 3.0 ASR)" ? providerDisplayName("alibabaCloud") : profile.name}</strong>
-                    <small>{textTranslationForProfile(profile) === "deepLX" ? I18N.settings.deepLXChain : providerDisplayName(profile.provider)}</small>
+                    <strong>{profileTitle(profile)}</strong>
+                    {profileSecondaryLabel(profile) && <small>{profileSecondaryLabel(profile)}</small>}
                   </span>
                   <span className="service-row__state">
                     <CredentialBadge state={profile.credentialState} />
@@ -453,6 +535,7 @@ function CredentialEditor({
   inputId,
   disabled,
   busy,
+  visible,
   feedback,
   onSave,
   onRequestDelete,
@@ -464,6 +547,7 @@ function CredentialEditor({
   inputId: string;
   disabled: boolean;
   busy: boolean;
+  visible: boolean;
   feedback: Feedback | null;
   onSave: (credentials: ProviderCredentialsInput) => Promise<unknown>;
   onRequestDelete: () => void;
@@ -502,8 +586,8 @@ function CredentialEditor({
     }
     setEndpointInvalid(false);
     setEditingSavedCredential(true);
-    // Keep only the user's current unsaved draft on failure. Never read back
-    // stored credentials; discard this draft after a successful save/use.
+    // Saved-value previews are independent of this replacement draft. Keep
+    // only the user's edits on failure; discard after a successful save/use.
     void onSave(credentials).then((saved) => {
       if (saved) {
         setDraft(emptyCredentialDraft());
@@ -593,19 +677,14 @@ function CredentialEditor({
         />
       )}
 
-      <details className="settings-advanced">
-        <summary>{I18N.settings.advancedTranslation}</summary>
-        <p>{I18N.settings.textTranslationLabel}: {I18N.settings.textTranslationFollow}</p>
-        <p className="settings-caption">{I18N.settings.textTranslationUnsupported}</p>
-      </details>
       <form className="credential-form" onSubmit={handleSubmit}>
         <div className="credential-form__fields">
           {credentialFieldsForProvider(profile.provider).map((field) => {
             const copy = credentialFieldCopy(field, profile.provider);
             const fieldId = `${inputId}-${field}`;
             return (
-              <label className="settings-field" htmlFor={fieldId} key={field}>
-                <span>{copy.label}</span>
+              <div className="settings-field" key={field}>
+                <label htmlFor={fieldId}>{copy.label}</label>
                 <input
                   id={fieldId}
                   ref={profile.provider === "deepLX" && field === "endpoint" ? endpointRef : undefined}
@@ -625,8 +704,9 @@ function CredentialEditor({
                     if (field === "endpoint" && endpointInvalid) setEndpointInvalid(!deepLXEndpointIsValid(value));
                   }}
                 />
+                {copy.secret && profile.credentialState === "present" && visible && !busy && !confirmingDelete && <StoredCredentialReveal key={`${profile.id}:${field}`} profileId={profile.id} field={field as StoredCredentialField} label={copy.label} disabled={disabled} />}
                 {field === "endpoint" && endpointInvalid && <span id={`${fieldId}-error`} role="alert" className="credential-unavailable">{I18N.settings.deepLXEndpointInvalid}</span>}
-              </label>
+              </div>
             );
           })}
         </div>
@@ -660,8 +740,67 @@ function CredentialEditor({
           </button>
         </span>
       </form>
+      <details className="settings-advanced">
+        <summary>{I18N.settings.advancedTranslation}</summary>
+        <p>{I18N.settings.textTranslationLabel}: {I18N.settings.textTranslationFollow}</p>
+        <p className="settings-caption">{I18N.settings.textTranslationUnsupported}</p>
+      </details>
     </div>
   );
+}
+
+function SupportedProfileLanguages({ profile }: { profile: ServiceProfile }) {
+  const [expanded, setExpanded] = useState(false);
+  const { appSelectable, providerAvailable } = languageMetadataForProfile(profile);
+  const { recognition, translation } = providerAvailable;
+  const hasProviderLanguages = recognition.languageCodes !== null || translation.languageCodes !== null;
+  return <div className="service-language-support">
+    <span className="service-language-support__label">{I18N.settings.selectableLanguages}</span>
+    <dl className="service-language-selectable">
+      <div><dt>{I18N.settings.sourceLanguage}</dt><dd>{appSelectable.sourceCodes.map((language) => SOURCE_LANGUAGE_DISPLAY_NAMES[language]).join(" · ")}</dd></div>
+      <div><dt>{I18N.settings.translateTo}</dt><dd>{appSelectable.targetCodes.map((language) => TARGET_LANGUAGE_DISPLAY_NAMES[language]).join(" · ")}</dd></div>
+    </dl>
+    {hasProviderLanguages && <details className="service-language-more" onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary>{I18N.settings.moreSupportedLanguages}</summary>
+      {expanded && <>
+        <p className="settings-caption">{I18N.settings.languagesNotIntegrated}</p>
+        <dl className="service-language-provider">
+          {recognition.languageCodes !== null && <div><dt>{I18N.settings.sourceLanguage}</dt><dd data-stage="recognition">{[
+            ...(recognition.automaticDetection === "supported" ? [SOURCE_LANGUAGE_DISPLAY_NAMES.auto] : []),
+            ...providerLanguageNames(recognition.languageCodes, "recognition"),
+          ].join(" · ")}</dd></div>}
+          {translation.languageCodes !== null && <div><dt>{I18N.settings.translateTo}</dt><dd data-stage="translation">{providerLanguageNames(translation.languageCodes, "translation").join(" · ")}</dd></div>}
+        </dl>
+      </>}
+    </details>}
+  </div>;
+}
+
+function providerLanguageNames(codes: readonly string[], stage: "recognition" | "translation"): string[] {
+  const names = new Intl.DisplayNames([effectiveUiLanguage()], { type: "language" });
+  return codes.map((code) => {
+    try { return names.of(providerLanguageDisplayCode(code, stage)) ?? code; }
+    catch { return code; }
+  });
+}
+
+function profileProviderName(profile: ServiceProfile): string {
+  return providerDisplayName(profile.provider === "deepLX" ? "alibabaCloud" : profile.provider);
+}
+
+function profileTitle(profile: ServiceProfile): string {
+  return profile.provider === "deepLX" && profile.name === "DeepLX (Audio 3.0 ASR)" ? profileProviderName(profile) : profile.name;
+}
+
+function profileDescription(profile: ServiceProfile): string {
+  const translation = textTranslationForProfile(profile);
+  return translation === "deepL" ? I18N.settings.deepLChain : translation === "deepLX" ? I18N.settings.deepLXChain : providerDescription(profile.provider);
+}
+
+function profileSecondaryLabel(profile: ServiceProfile): string | null {
+  if (textTranslationForProfile(profile) !== "followService") return profileDescription(profile);
+  const provider = profileProviderName(profile);
+  return profileTitle(profile).trim().toLowerCase() === provider.toLowerCase() ? null : provider;
 }
 
 function credentialFieldCopy(field: CredentialFieldName, provider: ServiceProvider): {
@@ -754,7 +893,7 @@ function ProviderPicker({
             disabled={disabled}
             onClick={() => onChoose(provider)}
           >
-            <ProviderMark provider={provider} />
+            <ProviderIcon provider={provider} />
             <span>
               <strong>{providerDisplayName(provider)}</strong>
               <small>{providerDescription(provider)}</small>
@@ -764,33 +903,6 @@ function ProviderPicker({
         ))}
       </div>
     </div>
-  );
-}
-
-function ProviderMark({
-  provider,
-  compact = false,
-}: {
-  provider: ServiceProvider;
-  compact?: boolean;
-}) {
-  return (
-    <span
-      className="provider-mark"
-      data-provider={provider}
-      data-compact={compact}
-      aria-hidden="true"
-    >
-      <Icon
-        name={
-          provider === "alibabaCloud" || provider === "deepLX" || provider === "azureOpenAIRealtime"
-            ? "cloud"
-            : provider === "xAIRealtime"
-              ? "waves"
-              : "languages"
-        }
-      />
-    </span>
   );
 }
 

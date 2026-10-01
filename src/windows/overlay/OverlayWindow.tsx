@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { I18N } from "../../lib/i18n";
-import { isTauri } from "../../lib/ipc";
+import { isTauri, listenOverlayPointerMotion } from "../../lib/ipc";
 import { useStore } from "../../lib/store";
 import { OVERLAY_ACTIVITY_PHASES, hexToRgba } from "../../lib/types";
 import { ControlButton } from "./ControlButton";
 import { DragHandle } from "./DragHandle";
 import { PulseRing } from "./PulseRing";
+import { OverlayLatency } from "./OverlayLatency";
 import { ResizeHandles } from "./ResizeHandles";
 import { Timeline } from "./Timeline";
-import { useResolvedMotion, useStableText } from "./animation";
-import { overlayTopChromeLayout } from "./overlayChromeLayout";
+import { subtitleStreamKey, useResolvedMotion, useStableText } from "./animation";
+import { overlaySessionChromeLayout } from "./overlayChromeLayout";
+import { useSessionAction } from "./useSessionAction";
+import { publishOverlayPointerMotion } from "../../lib/overlayPointer";
 import {
   buildSubtitleBlocks,
   computeActivityPhase,
@@ -28,22 +31,59 @@ export function OverlayWindow() {
   const session = useStore((state) => state.session);
   const settings = useStore((state) => state.settings);
   const togglePaused = useStore((state) => state.togglePaused);
+  const start = useStore((state) => state.start);
   const clearSubtitles = useStore((state) => state.clearSubtitles);
   const setOverlayCollapsed = useStore((state) => state.setOverlayCollapsed);
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
   const saveSettings = useStore((state) => state.saveSettings);
   const showSettings = useStore((state) => state.showSettings);
+  const sessionAction = useSessionAction();
+  const { clearFailure } = sessionAction;
+  useEffect(() => {
+    clearFailure();
+  }, [session.status.kind, session.isActive, session.isPaused, clearFailure]);
 
   const [isHovering, setIsHovering] = useState(false);
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    let pointerInside = false;
+    let removeListener: (() => void) | undefined;
+    const blurWindow = () => {
+      pointerInside = false;
+      publishOverlayPointerMotion(null);
+      setIsHovering(false);
+    };
+    window.addEventListener("blur", blurWindow);
+    void listenOverlayPointerMotion((point) => {
+      if (disposed) return;
+      publishOverlayPointerMotion(point);
+      const nextInside = point !== null;
+      if (pointerInside !== nextInside) {
+        pointerInside = nextInside;
+        setIsHovering(nextInside);
+      }
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else removeListener = unlisten;
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      window.removeEventListener("blur", blurWindow);
+      removeListener?.();
+      publishOverlayPointerMotion(null);
+    };
+  }, []);
   const [overlaySize, setOverlaySize] = useState(() => ({
     width: typeof window === "undefined" || !isTauri ? 640 : window.innerWidth,
     height:
       typeof window === "undefined" || !isTauri ? 136 : window.innerHeight,
   }));
-  const topChromeLayout = overlayTopChromeLayout(
+  const topChromeLayout = overlaySessionChromeLayout(
     Math.max(0, overlaySize.width - OVERLAY_INSET * 2),
-    session.isActive,
+    session,
   );
+  const showSessionControls = topChromeLayout.showControls;
 
   const collapsed = session.isOverlayCollapsed;
   const blendsWithBackground = settings.subtitleBlendsWithBackground;
@@ -58,6 +98,9 @@ export function OverlayWindow() {
   const presentationCollapsed = collapsed && !blendsWithBackground;
   const phase = computeActivityPhase(session, settings);
   const detectedLanguage = session.detectedLanguage;
+  const activeProvider = settings.profiles.find(profile => profile.id === settings.activeProfileId)?.provider;
+  const preferAtomicPreview = session.subtitles.previewPair !== undefined &&
+    (activeProvider === "alibabaCloud" || activeProvider === "deepLX");
   // The live tail is stabilized before it becomes the newest sentence block:
   // original-mode text settles quickly, translated text stays calmer, and
   // confirmed/removed tails update immediately. Source and translation
@@ -71,6 +114,7 @@ export function OverlayWindow() {
         detectedLanguage,
         session.isTranslationPending,
         session.isTranslationTimedOut,
+        preferAtomicPreview,
       ),
     [
       session.subtitles,
@@ -78,28 +122,33 @@ export function OverlayWindow() {
       session.isTranslationTimedOut,
       settings,
       detectedLanguage,
+      preferAtomicPreview,
     ],
   );
   const sourcePreview = livePreviews.find((preview) => preview.kind === "source");
   const translationPreview = livePreviews.find(
     (preview) => preview.kind === "translation",
   );
+  const latestCommittedAt = session.subtitles.history.at(-1)?.createdAt ?? null;
   const sourceDraftText = useStableText(
     sourcePreview?.text ?? "",
-    sourcePreview === undefined || sourcePreview.isFinal ? 0 : 180,
+    sourcePreview === undefined || sourcePreview.isFinal || sourcePreview.isStable ? 0 : 180,
     750,
-    `${settings.subtitleDisplayMode}-source`,
+    subtitleStreamKey(settings.subtitleDisplayMode, "source", session.subtitles.source.utteranceId, latestCommittedAt),
   );
   const translationDraftText = useStableText(
     translationPreview?.text ?? "",
-    translationPreview === undefined || translationPreview.isFinal ? 0 : 400,
+    translationPreview === undefined || translationPreview.isFinal || translationPreview.isStable ? 0 : 400,
     1_500,
-    `${settings.subtitleDisplayMode}-translation`,
+    subtitleStreamKey(settings.subtitleDisplayMode, "translation", session.subtitles.translation.utteranceId, latestCommittedAt),
   );
   // Sentence blocks: committed utterances plus the live tail, original above
   // translation. The block carries the timestamp, the age fade and the live
   // line budget, so a long sentence that wraps over several lines stays one
   // visual unit. Rebuilt from committed history and the (settled) live text.
+  const liveIsStreaming = OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0 &&
+    ((sourcePreview !== undefined && !sourcePreview.isFinal && !sourcePreview.isStable) ||
+      (translationPreview !== undefined && !translationPreview.isFinal && !translationPreview.isStable));
   const blocks = useMemo(
     () =>
       buildSubtitleBlocks(session.subtitles.history, settings.subtitleDisplayMode, {
@@ -108,19 +157,14 @@ export function OverlayWindow() {
         // Text only counts as still arriving while the session is actually
         // working: a paused session keeps its frozen draft, but nothing is
         // coming, so the typing wave must stop with it.
-        isStreaming:
-          OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0 &&
-          ((sourcePreview !== undefined && !sourcePreview.isFinal) ||
-            (translationPreview !== undefined && !translationPreview.isFinal)),
+        isStreaming: liveIsStreaming,
       }),
     [
       session.subtitles.history,
       settings.subtitleDisplayMode,
-      phase,
+      liveIsStreaming,
       sourceDraftText,
       translationDraftText,
-      sourcePreview,
-      translationPreview,
     ],
   );
   const hasContent = hasSubtitleContent(session.subtitles);
@@ -129,6 +173,13 @@ export function OverlayWindow() {
   const pauseLabel = session.isPaused
     ? I18N.overlay.resume
     : I18N.overlay.pause;
+  const sessionActionBusy = sessionAction.pending || session.status.kind === "connecting" || session.status.kind === "stopping";
+  const sessionActionLabel = sessionActionBusy
+    ? session.status.kind === "stopping" ? I18N.overlay.stopping : I18N.overlay.connecting
+    : session.status.kind === "error" ? I18N.overlay.retry : pauseLabel;
+  const runSessionAction = () => {
+    void sessionAction.run(session.status.kind === "error" ? start : togglePaused);
+  };
 
   const toggleCollapsed = () => {
     void setOverlayCollapsed(!collapsed);
@@ -191,11 +242,29 @@ export function OverlayWindow() {
     </div>
   );
 
+  function renderStatusLine() {
+    if (sessionAction.pending || sessionAction.failed) {
+      return <div role={sessionAction.failed ? "alert" : "status"} className="overlay-action-feedback">
+        {sessionAction.pending ? I18N.overlay.connecting : I18N.overlay.controlActionFailed}
+      </div>;
+    }
+    return <OverlayLatency session={session} translationRequired={settings.targetLanguage !== "original"} />;
+  }
+
   function renderExpanded() {
-    const topBandHeight = (session.isActive ? 38 : 24) + 13;
+    const topBandHeight = topChromeLayout.topBandHeight;
     const emptyDensity = emptyStateDensity(overlaySize.height);
-    const showEmptyPulse = session.isActive && emptyDensity !== "minimal";
     const compactEmptyPulse = emptyDensity === "compact";
+    const pulseBaseSize = compactEmptyPulse ? 48 : 80;
+    const emptyFontSize = emptyDensity === "minimal" ? 12 : Math.max(12, settings.fontSize * 0.68);
+    const emptyGap = emptyDensity === "comfortable" ? 4 : 2;
+    const statusLines = overlaySize.width < 480 ? 2 : 1;
+    // Subtract the canvas inset, border, padding and the actual status-line
+    // budget so the prominent light also fits short native windows.
+    const emptyPulseSize = Math.min(pulseBaseSize, Math.max(0,
+      overlaySize.height - 24 - topBandHeight - emptyFontSize * 1.25 * statusLines - emptyGap,
+    ));
+    const showEmptyPulse = session.isActive && emptyDensity !== "minimal" && emptyPulseSize >= 24;
 
     if (blendsWithBackground) {
       return (
@@ -203,6 +272,7 @@ export function OverlayWindow() {
           className="relative flex h-full w-full overflow-hidden"
           data-presentation="background-blend"
         >
+          {renderStatusLine()}
           <div
             className="flex min-h-0 w-full flex-col"
             style={{
@@ -220,6 +290,7 @@ export function OverlayWindow() {
                 color={settings.subtitleColor}
                 alignment={settings.subtitleAlignment}
                 displayMode={settings.subtitleDisplayMode}
+                showSubtitleDividers={settings.showSubtitleDividers}
                 motionEnabled={motionOn}
                 blendsWithBackground
               />
@@ -257,6 +328,7 @@ export function OverlayWindow() {
         />
 
         <div className="relative flex h-full flex-col" style={{ padding: 5 }}>
+          {renderStatusLine()}
           {/* Top band: the drag handle is absolutely positioned — centered
               horizontally on the window (left 50% + translateX) and pinned
               to the band's bottom — so no flex layout or the capsule/button
@@ -290,25 +362,28 @@ export function OverlayWindow() {
             </div>
           </div>
 
-          {session.isActive &&
+          {showSessionControls &&
             !settings.isOverlayLocked &&
-            topChromeLayout.showActions && (
+            topChromeLayout.showPrimaryAction && (
             <div
               className="absolute flex"
               style={{
                 top: 10,
                 right: 10,
                 gap: 4,
-                opacity: isHovering || session.isPaused ? 1 : 0.54,
+                opacity: isHovering || session.isPaused || session.status.kind === "error" ? 1 : 0.75,
                 pointerEvents: "auto",
                 transition: "opacity 120ms ease",
               }}
             >
               <ControlButton
-                icon={session.isPaused ? "play" : "pause"}
-                label={pauseLabel}
-                onClick={() => void togglePaused()}
+                icon={session.status.kind === "error" || session.isPaused ? "play" : "pause"}
+                label={sessionActionLabel}
+                onClick={runSessionAction}
+                busy={sessionActionBusy}
+                disabled={sessionActionBusy}
               />
+              {topChromeLayout.showActions && <>
               <ControlButton
                 icon="chevron-up"
                 label={I18N.overlay.collapseSubtitle}
@@ -341,6 +416,7 @@ export function OverlayWindow() {
                 label={I18N.overlay.openSettings}
                 onClick={() => void showSettings()}
               />
+              </>}
             </div>
           )}
 
@@ -349,7 +425,7 @@ export function OverlayWindow() {
             style={{
               // The top band floats over the canvas, so reserve its exact
               // height or subtitle rows will slide underneath the controls.
-              // The extra 13px follows the lowered handle position.
+              // The band includes space below the native control capsule.
               paddingTop: topBandHeight,
               height: "100%",
             }}
@@ -357,24 +433,24 @@ export function OverlayWindow() {
           {blocks.length === 0 ? (
             <div
               className="flex flex-1 flex-col items-center justify-center"
-              style={{ gap: emptyDensity === "comfortable" ? 12 : 4 }}
+              style={{ gap: emptyGap }}
             >
               {showEmptyPulse && (
                 <div
-                  className="flex items-center"
-                  style={{ height: compactEmptyPulse ? 24 : 56 }}
+                  className="flex shrink-0 items-center justify-center"
+                  style={{ height: emptyPulseSize, width: emptyPulseSize }}
                 >
-                  <PulseRing phase={phase} compact={compactEmptyPulse} motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
+                  <div style={{ transform: `scale(${emptyPulseSize / pulseBaseSize})` }}>
+                    <PulseRing phase={phase} prominent compact={compactEmptyPulse} motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
+                  </div>
                 </div>
               )}
               <div
                 style={{
                   width: "100%",
                   minWidth: 0,
-                  fontSize:
-                    emptyDensity === "minimal"
-                      ? 12
-                      : Math.max(12, settings.fontSize * 0.68),
+                  fontSize: emptyFontSize,
+                  lineHeight: 1.25,
                   fontWeight: 500,
                   color: emptyStateIsError(session)
                     ? "rgba(255,69,58,0.9)"
@@ -397,6 +473,7 @@ export function OverlayWindow() {
               color={settings.subtitleColor}
               alignment={settings.subtitleAlignment}
               displayMode={settings.subtitleDisplayMode}
+              showSubtitleDividers={settings.showSubtitleDividers}
               motionEnabled={motionOn}
             />
           )}
@@ -450,9 +527,11 @@ export function OverlayWindow() {
           </span>
           <span className="flex-1" style={{ minWidth: 4 }} />
           <ControlButton
-            icon={session.isPaused ? "play" : "pause"}
-            label={pauseLabel}
-            onClick={() => void togglePaused()}
+            icon={session.status.kind === "error" || session.isPaused ? "play" : "pause"}
+            label={sessionActionLabel}
+            onClick={runSessionAction}
+            busy={sessionActionBusy}
+            disabled={sessionActionBusy}
           />
           <ControlButton
             icon="chevron-down"

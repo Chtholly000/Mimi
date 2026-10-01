@@ -7,11 +7,10 @@ export function ConnectionCheck({ result, error, pending, disabled, onCheck, pla
   pending: boolean; disabled: boolean; onCheck: () => void; platform?: DiagnosticPlatform;
 }) {
   const labels = diagnosticCopy(platform);
-  const failed = result && (result.credential !== "present" || ["timeout", "unreachable"].includes(result.network));
+  const tone = result?.service === "available" ? "success" : result?.service === "unavailable" ? "error" : "info";
   return <div className="connection-check">
-    <button type="button" className="settings-button settings-button--quiet" disabled={disabled} onClick={onCheck}>{pending ? labels.testing : labels.test}</button>
-    {result && <InlineFeedback tone={failed ? "error" : "info"}>{connectionDiagnosticMessage(result, platform)}</InlineFeedback>}
+    <button type="button" className="settings-button settings-button--quiet" disabled={disabled || pending} onClick={onCheck}>{pending ? labels.testing : labels.test}</button>
+    {result && <InlineFeedback tone={tone}>{connectionDiagnosticMessage(result, platform)}</InlineFeedback>}
     {error && <InlineFeedback tone="error">{error}</InlineFeedback>}
-    {(result || error) && <details><summary>{labels.help}</summary><p>{labels.details}</p></details>}
   </div>;
 }

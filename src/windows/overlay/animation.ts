@@ -1,4 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import type { SettingsSnapshot } from "../../lib/types";
+
+/** Keep the stabilizer's cached text inside its own utterance. Providers
+ * without stamps still get a new preview identity after a confirmed pair. */
+export function subtitleStreamKey(
+  displayMode: SettingsSnapshot["subtitleDisplayMode"],
+  lane: "source" | "translation",
+  utteranceId: string | null | undefined,
+  latestCommittedAt: number | null,
+): string {
+  return JSON.stringify([displayMode, lane, utteranceId == null
+    ? ["history", latestCommittedAt]
+    : ["utterance", utteranceId]]);
+}
 
 /** Tracks the user's reduced-motion preference reactively. */
 export function useReducedMotion(): boolean {
@@ -82,7 +96,15 @@ export function useStableText(
 ): string {
   const [stable, setStable] = useState({ text, streamKey });
   const latestRef = useRef({ text, streamKey });
-  const maxTimerRef = useRef<number | null>(null);
+  const maxTimerRef = useRef<{ id: number; streamKey: string } | null>(null);
+
+  // Seed an identity once, rather than returning every raw draft until its
+  // first timer settles. Immediate removals/finals also replace the cache:
+  // the next draft must not resurrect the text from before that boundary.
+  const immediate = text === "" || settleMs === 0;
+  if (streamKey !== stable.streamKey || (immediate && text !== stable.text)) {
+    setStable({ text, streamKey });
+  }
 
   // Keep the latest text available to the (non-resetting) force-sync timer.
   useEffect(() => {
@@ -93,17 +115,23 @@ export function useStableText(
     if (text === stable.text && streamKey === stable.streamKey) {
       // Already in sync: cancel any pending force-sync timer.
       if (maxTimerRef.current !== null) {
-        window.clearTimeout(maxTimerRef.current);
+        window.clearTimeout(maxTimerRef.current.id);
         maxTimerRef.current = null;
       }
       return;
     }
 
+    if (maxTimerRef.current !== null && maxTimerRef.current.streamKey !== streamKey) {
+      window.clearTimeout(maxTimerRef.current.id);
+      maxTimerRef.current = null;
+    }
+
     // Settle timer: restarts on every change, so the value only advances
     // after a pause.
     const settleTimer = window.setTimeout(() => {
+      if (latestRef.current.streamKey !== streamKey) return;
       if (maxTimerRef.current !== null) {
-        window.clearTimeout(maxTimerRef.current);
+        window.clearTimeout(maxTimerRef.current.id);
         maxTimerRef.current = null;
       }
       setStable(latestRef.current);
@@ -113,10 +141,13 @@ export function useStableText(
     // never reset by subsequent changes, so a continuous stream still
     // advances the preview at least every `maxWaitMs`.
     if (maxTimerRef.current === null) {
-      maxTimerRef.current = window.setTimeout(() => {
+      const timer = { id: 0, streamKey };
+      timer.id = window.setTimeout(() => {
+        if (maxTimerRef.current !== timer) return;
         maxTimerRef.current = null;
-        setStable(latestRef.current);
+        if (latestRef.current.streamKey === streamKey) setStable(latestRef.current);
       }, maxWaitMs);
+      maxTimerRef.current = timer;
     }
 
     return () => window.clearTimeout(settleTimer);
@@ -126,7 +157,7 @@ export function useStableText(
   useEffect(
     () => () => {
       if (maxTimerRef.current !== null) {
-        window.clearTimeout(maxTimerRef.current);
+        window.clearTimeout(maxTimerRef.current.id);
       }
     },
     [],
@@ -135,7 +166,7 @@ export function useStableText(
   // Removal, confirmation, and display-mode changes take effect during the
   // render itself. A previous source preview must not survive in the timer's
   // cached value when the next preview is a translation.
-  return text === "" || settleMs === 0 || streamKey !== stable.streamKey
+  return immediate || streamKey !== stable.streamKey
     ? text
     : stable.text;
 }

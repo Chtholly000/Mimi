@@ -93,7 +93,7 @@ function FrontendReadySignal({ label }: { label: WindowLabel }) {
           ? appIsUiTest().then(async (enabled) => {
               if (!enabled) return;
               const result = await testProfileConnection(useStore.getState().settings.activeProfileId);
-              if (result.credential !== "present" || result.network !== "notTested") {
+              if (result.credential !== "present" || result.service !== "notTested" || result.reason !== null) {
                 throw new Error("connection_diagnostic_smoke_failed");
               }
             })
