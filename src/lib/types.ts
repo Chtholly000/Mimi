@@ -68,6 +68,10 @@ export interface SettingsSnapshot {
   subtitleColor: SubtitleColor;
   subtitleAlignment: SubtitleAlignment;
   subtitleDisplayMode: SubtitleDisplayMode;
+  /** `null` follows the system reduce-motion setting. */
+  pulseAnimation: boolean | null;
+  pulseStyle: PulseStyle;
+  subtitleAnimation: boolean | null;
   subtitleBlendsWithBackground: boolean;
   isOverlayLocked: boolean;
   /** UI language override; `null` or `system` follows the system language. */
@@ -75,9 +79,12 @@ export interface SettingsSnapshot {
   retainSessionHistory: boolean;
   recordSessionAudio: boolean;
   windowsAudioSource: string;
+  /** macOS only; false retains menu-bar utility behavior. */
+  showInDock: boolean;
 }
 
 export type UiLanguage = "system" | "zh" | "en" | "ja";
+export type PulseStyle = "classic" | "syllable" | "ribbon";
 export type SubtitleDisplayMode = "translation" | "bilingual" | "original";
 export type SubtitlePresetColor = "white" | "teal" | "yellow" | "green" | "pink";
 export type SubtitleColor = SubtitlePresetColor | `#${string}`;
@@ -91,12 +98,16 @@ export interface SettingsDraft {
   subtitleColor?: SubtitleColor;
   subtitleAlignment?: SubtitleAlignment;
   subtitleDisplayMode?: SubtitleDisplayMode;
+  pulseAnimation?: boolean;
+  pulseStyle?: PulseStyle;
+  subtitleAnimation?: boolean;
   subtitleBlendsWithBackground?: boolean;
   isOverlayLocked?: boolean;
   uiLanguage?: UiLanguage;
   retainSessionHistory?: boolean;
   recordSessionAudio?: boolean;
   windowsAudioSource?: string;
+  showInDock?: boolean;
 }
 
 export type ServiceProvider =
@@ -110,8 +121,11 @@ export type ServiceProvider =
   | "xAIRealtime"
   | "deepLX";
 
+export type TextTranslation = "followService" | "deepLX";
+
 /** Write-only payload sent to the native secure credential store. */
 export type ProviderCredentialsInput =
+  | { kind: "alibabaTranslation"; apiKey: string; textTranslation: TextTranslation; endpoint: string; token: string }
   | { kind: "deepLX"; asrApiKey: string; endpoint: string; token: string }
   | { kind: "apiKey"; apiKey: string }
   | {
@@ -141,6 +155,8 @@ export interface ServiceProfile {
   name: string;
   provider: ServiceProvider;
   credentialState: CredentialState;
+  /** Optional for historical/native fixture snapshots; inferred from provider when absent. */
+  textTranslation?: TextTranslation;
 }
 
 export interface ProviderCapabilities {

@@ -40,6 +40,8 @@ import {
 import { setStoredUiLanguage } from "./i18n";
 import {
   capabilitiesForProvider,
+  effectiveProviderForProfile,
+  textTranslationForProfile,
   sourceLanguagesForSettings,
   targetLanguageAfterSourceSwitch,
   translationModesForSettings,
@@ -95,12 +97,16 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  pulseAnimation: null,
+  pulseStyle: "classic",
+  subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
   uiLanguage: null,
   retainSessionHistory: false,
   recordSessionAudio: false,
   windowsAudioSource: "",
+  showInDock: false,
 };
 
 interface StoreState {
@@ -413,7 +419,7 @@ export const useStore = create<StoreState>()((set, get) => ({
     const current = get().settings;
     const selected = current.profiles.find((profile) => profile.id === profileId);
     if (!selected) throw new Error("profile-not-found");
-    const snapshot = settingsAfterMockProfileSelection(current, selected.provider);
+    const snapshot = settingsAfterMockProfileSelection(current, effectiveProviderForProfile(selected));
     snapshot.activeProfileId = profileId;
     set({ settings: snapshot });
     return snapshot;
@@ -455,19 +461,20 @@ export const useStore = create<StoreState>()((set, get) => ({
       }
       return get().settings;
     }
-    if (
-      Object.entries(credentials).some(
-        ([field, value]) => field !== "kind" && !value.trim(),
-      )
-    ) {
+    const current = get().settings;
+    if (credentials.kind === "alibabaTranslation") {
+      const profile = current.profiles.find((profile) => profile.id === profileId);
+      if (!profile || !["alibabaCloud", "deepLX"].includes(profile.provider)) throw new Error("provider-mismatch");
+      if (!credentials.apiKey.trim() && profile.credentialState !== "present") throw new Error("credential-empty");
+      if (credentials.textTranslation === "deepLX" && !credentials.endpoint.trim() && textTranslationForProfile(profile) !== "deepLX") throw new Error("credential-empty");
+    } else if (Object.entries(credentials).some(([field, value]) => field !== "kind" && field !== "token" && !value.trim())) {
       throw new Error("credential-empty");
     }
-    const current = get().settings;
     const snapshot: SettingsSnapshot = {
       ...current,
       profiles: current.profiles.map((profile) =>
         profile.id === profileId
-          ? { ...profile, credentialState: "present" }
+          ? { ...profile, credentialState: "present", ...(credentials.kind === "alibabaTranslation" ? { textTranslation: credentials.textTranslation } : {}) }
           : profile,
       ),
     };

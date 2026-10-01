@@ -14,6 +14,7 @@ description = "Allows the settings window to manage the live-subtitle session, p
 commands.allow = [
   "settings_save",
   "windows_audio_status",
+  "audio_census",
   "support_diagnostics",
   "app_open_support_issue",
   "capture_status",

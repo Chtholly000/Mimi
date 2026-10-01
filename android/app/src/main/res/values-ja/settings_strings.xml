@@ -1,0 +1,32 @@
+<resources>
+    <string name="settings_heading">設定</string>
+    <string name="settings_back">戻る</string>
+    <string name="settings_tab_service">翻訳サービス</string>
+    <string name="settings_tab_appearance">字幕の外観</string>
+    <string name="settings_advanced">詳細設定</string>
+    <string name="settings_font">字幕の大きさ</string>
+    <string name="settings_color">字幕の色</string>
+    <string name="settings_opacity">字幕の不透明度</string>
+    <string name="settings_background">背景の不透明度</string>
+    <string name="settings_immersive">没入字幕</string>
+    <string name="settings_immersive_help">文字だけを表示し、動画の操作を妨げません。変更はすぐに反映され、右側の退出で戻れます。</string>
+    <string name="settings_history">字幕の履歴を保持</string>
+    <string name="settings_history_help">初期状態ではオフです。履歴は今回のセッションだけで保持し、オフまたは停止で消去されます。</string>
+    <string name="settings_reset">字幕の位置をリセット</string>
+    <string name="settings_reset_done">下中央に戻しました</string>
+    <string name="settings_save">サービス設定を保存</string>
+    <string name="settings_saved">保存しました</string>
+    <string name="settings_font_value">%1$d sp</string>
+    <string name="settings_percent_value">%1$d%%</string>
+    <string name="settings_history_off">オフ</string>
+    <string name="settings_history_value">%1$d 行</string>
+    <string name="settings_color_white">白（初期値）</string>
+    <string name="settings_color_teal">青緑</string>
+    <string name="settings_color_yellow">黄</string>
+    <string name="settings_color_green">緑</string>
+    <string name="settings_color_pink">ピンク</string>
+    <string name="settings_advanced_collapse">詳細設定を閉じる</string>
+    <string name="settings_more">その他の設定</string>
+    <string name="settings_more_collapse">その他の設定を閉じる</string>
+    <string name="settings_autosave">自動保存 · 次のセッションから適用</string>
+</resources>

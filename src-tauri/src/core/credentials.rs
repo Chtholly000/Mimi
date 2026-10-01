@@ -1,6 +1,6 @@
 //! Provider-specific credentials kept exclusively in the OS keychain.
 
-use crate::core::provider::ProviderKind;
+use crate::core::provider::{ProviderKind, ServiceProfile, TextTranslation};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
@@ -37,6 +37,14 @@ pub enum ProviderCredentialsError {
     deny_unknown_fields
 )]
 pub enum ProviderCredentials {
+    /// Write-only request. Empty api_key reuses the profile's existing key
+    /// natively; this request variant is never stored or returned over IPC.
+    AlibabaTranslation {
+        api_key: String,
+        text_translation: TextTranslation,
+        endpoint: String,
+        token: String,
+    },
     DeepLX {
         asr_api_key: String,
         endpoint: String,
@@ -81,6 +89,7 @@ impl ProviderCredentials {
 
     pub const fn kind_label(&self) -> &'static str {
         match self {
+            Self::AlibabaTranslation { .. } => "alibaba_translation_update",
             Self::DeepLX { .. } => "deeplx",
             Self::ApiKey { .. } => "api_key",
             Self::AzureOpenAI { .. } => "azure_openai",
@@ -183,11 +192,47 @@ impl ProviderCredentials {
             .validated_for(provider)
     }
 
+    /// Recognizes only the two historical Alibaba credential representations.
+    /// The profile account/provider never changes when its text route changes.
+    pub fn decode_for_profile(
+        profile: &ServiceProfile,
+        value: &str,
+    ) -> Result<Self, ProviderCredentialsError> {
+        if !matches!(
+            profile.provider,
+            ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+        ) {
+            return Self::decode_from_keychain(profile.provider, value);
+        }
+        if profile.provider == ProviderKind::AlibabaCloud {
+            return Self::decode_from_keychain(ProviderKind::AlibabaCloud, value);
+        }
+        let credentials = if profile.text_translation() == TextTranslation::FollowService
+            && !value.trim_start().starts_with('{')
+        {
+            Self::api_key(value).validated_for(ProviderKind::AlibabaCloud)?
+        } else {
+            Self::decode_from_keychain(ProviderKind::DeepLX, value)?
+        };
+        Ok(credentials)
+    }
+
+    pub fn alibaba_key(&self) -> Option<&str> {
+        match self {
+            Self::ApiKey { api_key } => Some(api_key),
+            Self::DeepLX { asr_api_key, .. } => Some(asr_api_key),
+            _ => None,
+        }
+    }
+
     pub fn direct_api_key(&self) -> Option<&str> {
         match self {
             Self::ApiKey { api_key } => Some(api_key),
             Self::AzureOpenAI { api_key, .. } => Some(api_key),
-            Self::DeepLX { .. } | Self::TencentCloud { .. } | Self::BaiduTranslate { .. } => None,
+            Self::AlibabaTranslation { .. }
+            | Self::DeepLX { .. }
+            | Self::TencentCloud { .. }
+            | Self::BaiduTranslate { .. } => None,
         }
     }
 
@@ -290,6 +335,26 @@ fn validated_azure_endpoint(value: &str) -> Result<String, ProviderCredentialsEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alibaba_translation_request_is_write_only_and_debug_redacted() {
+        let request: ProviderCredentials = serde_json::from_str(r#"{"kind":"alibabaTranslation","apiKey":"","textTranslation":"deepLX","endpoint":"https://example.com","token":"synthetic-token"}"#).unwrap();
+        assert!(
+            matches!(&request, ProviderCredentials::AlibabaTranslation { api_key, text_translation: TextTranslation::DeepLX, .. } if api_key.is_empty())
+        );
+        assert!(request
+            .encode_for_keychain(ProviderKind::AlibabaCloud)
+            .is_err());
+        assert!(request.encode_for_keychain(ProviderKind::DeepLX).is_err());
+        for value in ["example.com", "synthetic-token"] {
+            assert!(!format!("{request:?}").contains(value));
+        }
+        let mut legacy = ServiceProfile::new("existing", "Existing", ProviderKind::DeepLX).unwrap();
+        legacy.text_translation = Some(TextTranslation::FollowService);
+        assert!(
+            matches!(ProviderCredentials::decode_for_profile(&legacy, "synthetic-asr").unwrap(), ProviderCredentials::ApiKey { api_key } if api_key == "synthetic-asr")
+        );
+    }
 
     #[test]
     fn deeplx_credentials_round_trip_securely_and_validate_optional_token() {

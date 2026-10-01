@@ -259,12 +259,23 @@ pub struct ProviderPreferences {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ServiceProfileError {
+    #[error("DeepLX text translation requires Alibaba speech recognition.")]
+    UnsupportedTextTranslation,
     #[error("The service profile ID is invalid.")]
     InvalidID,
     #[error("The service profile name is required.")]
     EmptyName,
     #[error("The service profile name is too long.")]
     NameTooLong,
+}
+
+/// Text translation override, supported only by the Alibaba Audio 3.0 chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TextTranslation {
+    #[serde(rename = "followService")]
+    FollowService,
+    #[serde(rename = "deepLX")]
+    DeepLX,
 }
 
 /// Non-secret metadata for one named provider configuration.
@@ -274,6 +285,9 @@ pub struct ServiceProfile {
     pub id: String,
     pub name: String,
     pub provider: ProviderKind,
+    /// None preserves historical behavior, including legacy DeepLX profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_translation: Option<TextTranslation>,
 }
 
 impl ServiceProfile {
@@ -301,7 +315,12 @@ impl ServiceProfile {
         if name.chars().count() > Self::MAXIMUM_NAME_LENGTH {
             return Err(ServiceProfileError::NameTooLong);
         }
-        Ok(Self { id, name, provider })
+        Ok(Self {
+            id,
+            name,
+            provider,
+            text_translation: None,
+        })
     }
 
     pub fn alibaba_default() -> Self {
@@ -309,11 +328,41 @@ impl ServiceProfile {
             id: DEFAULT_ALIBABA_PROFILE_ID.to_string(),
             name: ProviderKind::AlibabaCloud.display_name().to_string(),
             provider: ProviderKind::AlibabaCloud,
+            text_translation: None,
         }
     }
 
     pub fn validated(&self) -> Result<Self, ServiceProfileError> {
-        Self::new(self.id.clone(), self.name.clone(), self.provider)
+        let mut profile = Self::new(self.id.clone(), self.name.clone(), self.provider)?;
+        if self.text_translation == Some(TextTranslation::DeepLX)
+            && !matches!(
+                self.provider,
+                ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+            )
+        {
+            return Err(ServiceProfileError::UnsupportedTextTranslation);
+        }
+        profile.text_translation = self.text_translation;
+        Ok(profile)
+    }
+
+    pub fn text_translation(&self) -> TextTranslation {
+        self.text_translation
+            .unwrap_or(if self.provider == ProviderKind::DeepLX {
+                TextTranslation::DeepLX
+            } else {
+                TextTranslation::FollowService
+            })
+    }
+
+    pub fn effective_provider(&self) -> ProviderKind {
+        match (self.provider, self.text_translation()) {
+            (ProviderKind::AlibabaCloud | ProviderKind::DeepLX, TextTranslation::DeepLX) => {
+                ProviderKind::DeepLX
+            }
+            (ProviderKind::DeepLX, TextTranslation::FollowService) => ProviderKind::AlibabaCloud,
+            _ => self.provider,
+        }
     }
 }
 
@@ -327,6 +376,34 @@ impl Default for ServiceProfile {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn historical_profiles_and_supported_text_routes_round_trip() {
+        let legacy: ServiceProfile =
+            serde_json::from_str(r#"{"id":"old","name":"Custom","provider":"deepLX"}"#).unwrap();
+        assert_eq!(legacy.effective_provider(), ProviderKind::DeepLX);
+        assert_eq!(legacy.validated().unwrap(), legacy);
+        let mut ordinary = ServiceProfile::alibaba_default();
+        assert_eq!(ordinary.text_translation(), TextTranslation::FollowService);
+        ordinary.text_translation = Some(TextTranslation::DeepLX);
+        let json = serde_json::to_string(&ordinary).unwrap();
+        assert!(json.contains(r#""textTranslation":"deepLX""#));
+        assert_eq!(
+            serde_json::from_str::<ServiceProfile>(&json)
+                .unwrap()
+                .validated()
+                .unwrap()
+                .effective_provider(),
+            ProviderKind::DeepLX
+        );
+        let mut unsupported =
+            ServiceProfile::new("other", "Other", ProviderKind::OpenAIRealtime).unwrap();
+        unsupported.text_translation = Some(TextTranslation::DeepLX);
+        assert_eq!(
+            unsupported.validated().unwrap_err(),
+            ServiceProfileError::UnsupportedTextTranslation
+        );
+    }
 
     #[test]
     fn provider_wire_values_are_stable() {

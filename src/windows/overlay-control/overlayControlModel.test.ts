@@ -25,12 +25,16 @@ const BASE_SETTINGS: SettingsSnapshot = {
   subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  pulseAnimation: null,
+  pulseStyle: "classic",
+  subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
   uiLanguage: null,
   retainSessionHistory: false,
   recordSessionAudio: false,
   windowsAudioSource: "",
+  showInDock: false,
 };
 
 describe("overlay control panel model", () => {

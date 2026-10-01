@@ -1,9 +1,9 @@
-import { testProfileConnection } from "../../lib/ipc";
-import { diagnosticCopy, connectionDiagnosticMessage, profileErrorMessage } from "../../lib/connectionDiagnostics";
+import { testProfileConnection, type ConnectionDiagnostic } from "../../lib/ipc";
+import { profileErrorMessage, diagnosticCopy } from "../../lib/connectionDiagnostics";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
-import { SERVICE_PROVIDERS, subtitlePreferencesChanged } from "../../lib/providerCapabilities";
+import { SERVICE_PROVIDERS, subtitlePreferencesChanged, textTranslationForProfile } from "../../lib/providerCapabilities";
 import {
   buildProviderCredentials,
   deepLXEndpointIsValid,
@@ -23,6 +23,10 @@ import type {
 } from "../../lib/types";
 import { InlineFeedback, SettingsSection } from "./SettingsPrimitives";
 
+import { DestructiveConfirmation } from "./DestructiveConfirmation";
+import { AlibabaCredentialEditor } from "./AlibabaCredentialEditor";
+
+import { ConnectionCheck } from "./ConnectionCheck";
 import { saveAndSelectProfile } from "./saveAndSelectProfile";
 
 type Feedback = { tone: "success" | "error" | "info"; message: string };
@@ -57,6 +61,7 @@ export function ServiceProfiles({
   const [nameDraft, setNameDraft] = useState(activeProfile?.name ?? "");
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [diagnostic, setDiagnostic] = useState<{ profileId: string; result: ConnectionDiagnostic | null; error: string | null } | null>(null);
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation>(null);
   const [renderedProfile, setRenderedProfile] = useState({
     id: activeProfile?.id,
@@ -80,6 +85,8 @@ export function ServiceProfiles({
     setFeedback(null);
     setPendingConfirmation(null);
   }
+
+  const SelectedCredentialEditor = selectedProfile && ["alibabaCloud", "deepLX"].includes(selectedProfile.provider) ? AlibabaCredentialEditor : CredentialEditor;
 
   const mutationsDisabled = sessionIsActive || pendingAction !== null;
   const atProfileLimit = settings.profiles.length >= 20;
@@ -254,8 +261,8 @@ export function ServiceProfiles({
           <div className="service-detail__identity">
             <ProviderMark provider={selectedProfile.provider} />
             <span>
-              <h2>{selectedProfile.name}</h2>
-              <small>{providerDescription(selectedProfile.provider)}</small>
+              <h2>{selectedProfile.provider === "deepLX" && selectedProfile.name === "DeepLX (Audio 3.0 ASR)" ? providerDisplayName("alibabaCloud") : selectedProfile.name}</h2>
+              <small>{providerDescription(selectedProfile.provider === "deepLX" ? "alibabaCloud" : selectedProfile.provider)}</small>
             </span>
           </div>
           <div className="service-detail__status">
@@ -267,33 +274,15 @@ export function ServiceProfiles({
               </span>
             )}
           </div>
-          <div className="credential-panel">
-            <button
-              type="button"
-              className="settings-button settings-button--quiet"
-              disabled={mutationsDisabled}
-              onClick={() => {
-                setPendingAction("test-connection");
-                setFeedback(null);
-                void testProfileConnection(selectedProfile.id)
-                  .then((result) => {
-                    setFeedback({ tone: "info", message: connectionDiagnosticMessage(result) });
-                  })
-                  .catch((error: unknown) => {
-                    setFeedback({ tone: "error", message: profileErrorMessage(error) });
-                  })
-                  .finally(() => setPendingAction(null));
-              }}
-            >
-              {pendingAction === "test-connection" ? diagnosticCopy().testing : diagnosticCopy().test}
-            </button>
-            <small>{diagnosticCopy().note}</small>
-            <details>
-              <summary>{diagnosticCopy().help}</summary>
-              <p>{diagnosticCopy().details}</p>
-            </details>
-          </div>
-          <CredentialEditor
+          <ConnectionCheck result={diagnostic?.profileId === selectedProfile.id ? diagnostic.result : null} error={diagnostic?.profileId === selectedProfile.id ? diagnostic.error : null} pending={pendingAction === "test-connection"} disabled={mutationsDisabled} onCheck={() => {
+            const profileId = selectedProfile.id;
+            setPendingAction("test-connection"); setDiagnostic(null);
+            void testProfileConnection(profileId)
+              .then(result => setDiagnostic({ profileId, result, error: null }))
+              .catch((error: unknown) => setDiagnostic({ profileId, result: null, error: profileErrorMessage(error) }))
+              .finally(() => setPendingAction(null));
+          }} />
+          <SelectedCredentialEditor
             key={selectedProfile.id}
             profile={selectedProfile}
             inputId={`profile-api-key-${selectedProfile.id}`}
@@ -334,10 +323,10 @@ export function ServiceProfiles({
               }}
             >
               <div className="settings-field">
-                <label htmlFor="profile-name">{I18N.settings.profileName}</label>
+                <label htmlFor={`profile-name-${selectedProfile.id}`}>{I18N.settings.profileName}</label>
                 <span className="settings-field__inline">
                   <input
-                    id="profile-name"
+                    id={`profile-name-${selectedProfile.id}`}
                     value={nameDraft}
                     maxLength={64}
                     disabled={mutationsDisabled}
@@ -361,6 +350,8 @@ export function ServiceProfiles({
                 </span>
               </div>
             </form>
+          </details>
+          <div className="service-danger-zone">
             <button
               type="button"
               className="settings-link settings-link--danger"
@@ -379,7 +370,7 @@ export function ServiceProfiles({
                   onConfirm={() => void confirmProfileDelete()}
                 />
               )}
-          </details>
+          </div>
         </div>
       ) : (
         <div className="services-home">
@@ -418,8 +409,8 @@ export function ServiceProfiles({
                 >
                   <ProviderMark provider={profile.provider} />
                   <span className="service-row__copy">
-                    <strong>{profile.name}</strong>
-                    <small>{providerDisplayName(profile.provider)}</small>
+                    <strong>{profile.provider === "deepLX" && profile.name === "DeepLX (Audio 3.0 ASR)" ? providerDisplayName("alibabaCloud") : profile.name}</strong>
+                    <small>{textTranslationForProfile(profile) === "deepLX" ? I18N.settings.deepLXChain : providerDisplayName(profile.provider)}</small>
                   </span>
                   <span className="service-row__state">
                     <CredentialBadge state={profile.credentialState} />
@@ -551,6 +542,11 @@ function CredentialEditor({
             {I18N.settings.deleteCredentials}
           </button>
         </span>
+        <details className="settings-advanced">
+          <summary>{I18N.settings.advancedTranslation}</summary>
+          <p>{I18N.settings.textTranslationLabel}: {I18N.settings.textTranslationFollow}</p>
+          <p className="settings-caption">{I18N.settings.textTranslationUnsupported}</p>
+        </details>
         {saveFeedback}
         {confirmingDelete && (
           <DestructiveConfirmation
@@ -597,7 +593,11 @@ function CredentialEditor({
         />
       )}
 
-      {profile.provider === "deepLX" && <p className="settings-caption">{I18N.settings.deepLXNote}</p>}
+      <details className="settings-advanced">
+        <summary>{I18N.settings.advancedTranslation}</summary>
+        <p>{I18N.settings.textTranslationLabel}: {I18N.settings.textTranslationFollow}</p>
+        <p className="settings-caption">{I18N.settings.textTranslationUnsupported}</p>
+      </details>
       <form className="credential-form" onSubmit={handleSubmit}>
         <div className="credential-form__fields">
           {credentialFieldsForProvider(profile.provider).map((field) => {
@@ -724,47 +724,6 @@ function credentialFieldCopy(field: CredentialFieldName, provider: ServiceProvid
   }
 }
 
-function DestructiveConfirmation({
-  message,
-  disabled,
-  onCancel,
-  onConfirm,
-}: {
-  message: string;
-  disabled: boolean;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const confirmationRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const confirmation = confirmationRef.current;
-    if (!confirmation) return;
-    confirmation.focus({ preventScroll: true });
-    confirmation.scrollIntoView({ block: "nearest" });
-  }, []);
-
-  return (
-    <div ref={confirmationRef} className="destructive-confirmation" role="alert" tabIndex={-1}>
-      <small>{message}</small>
-      <span className="destructive-confirmation__actions">
-        <button type="button" className="settings-link" disabled={disabled} onClick={onCancel}>
-          {I18N.settings.cancel}
-        </button>
-        <button
-          type="button"
-          className="settings-button settings-button--danger settings-button--compact"
-          disabled={disabled}
-          onClick={onConfirm}
-        >
-          <Icon name="trash" />
-          {I18N.settings.confirmDelete}
-        </button>
-      </span>
-    </div>
-  );
-}
-
 function ProviderPicker({
   disabled,
   onChoose,
@@ -823,7 +782,7 @@ function ProviderMark({
     >
       <Icon
         name={
-          provider === "alibabaCloud" || provider === "azureOpenAIRealtime"
+          provider === "alibabaCloud" || provider === "deepLX" || provider === "azureOpenAIRealtime"
             ? "cloud"
             : provider === "xAIRealtime"
               ? "waves"

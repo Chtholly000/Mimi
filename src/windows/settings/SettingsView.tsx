@@ -31,7 +31,11 @@ import { WindowsAudioSource } from "./WindowsAudioSource";
 import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
 import { useSettingsTheme } from "./useSettingsTheme";
+import { DockPreference } from "./DockPreference";
 import { AppearancePicker } from "./AppearancePicker";
+import { PulseRing } from "../overlay/PulseRing";
+import type { PulseStyle } from "../../lib/types";
+import { useResolvedMotion } from "../overlay/animation";
 import {
   SettingsSessionActionCoordinator,
   settingsSessionControlState,
@@ -39,6 +43,7 @@ import {
   type SettingsSessionVisibleStatus,
 } from "./settingsSessionControlModel";
 import { SettingsRow, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
+import { SettingsSessionControls } from "./SettingsSessionControls";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import "./settings.css";
 
@@ -62,6 +67,10 @@ export function SettingsView() {
   const sessionIsActive = useStore((state) => state.session.isActive);
   const sessionIsPaused = useStore((state) => state.session.isPaused);
   const settings = useStore((state) => state.settings);
+  // A switch shows what the overlay actually does: an untouched switch follows
+  // the system's reduce-motion preference.
+  const pulseOn = useResolvedMotion(settings.pulseAnimation);
+  const motionOn = useResolvedMotion(settings.subtitleAnimation);
   const start = useStore((state) => state.start);
   const stop = useStore((state) => state.stop);
   const switchSourceLanguage = useStore((state) => state.switchSourceLanguage);
@@ -246,64 +255,9 @@ export function SettingsView() {
             );
           })}
         </nav>
-        <section className="settings-session-card" aria-labelledby="settings-session-title">
-          <div className="settings-session-card__main">
-            <h2 id="settings-session-title">{I18N.settings.liveSubtitles}</h2>
-            <Switch
-              checked={sessionControl.checked}
-              disabled={sessionControl.disabled}
-              aria-label={I18N.settings.liveSubtitles}
-              aria-describedby="settings-session-status settings-session-shortcut"
-              onChange={changeSession}
-            />
-          </div>
-          <span
-            id="settings-session-status"
-            className="settings-session-status"
-            data-status={sessionControl.visibleStatus}
-            aria-live="polite"
-          >
-            <span aria-hidden="true" />
-            {settingsSessionStatusText(sessionControl.visibleStatus, sessionErrorMessage)}
-          </span>
-          <p
-            id="settings-session-shortcut"
-            className="settings-session-shortcut"
-            aria-label={I18N.settings.startStopShortcut}
-          >
-            {nativeShortcuts && <kbd>{startStopShortcut()}</kbd>}
-            {desktopShortcuts && I18N.settings.systemShortcutRequired}
-          </p>
-          {desktopShortcuts && (
-            <details className="settings-session-help settings-desktop-shortcuts">
-              <summary>{I18N.settings.systemShortcutSetup}</summary>
-              <p>{I18N.settings.systemShortcutInstructions}</p>
-              <dl>
-                <dt>{I18N.settings.startStopShortcut}</dt>
-                <dd><code>{desktopShortcuts.toggleSession}</code></dd>
-                <dt>{I18N.tray.blendBackground}</dt>
-                <dd><code>{desktopShortcuts.toggleImmersive}</code></dd>
-                <dt>{I18N.settings.subtitleDisplay}</dt>
-                <dd><code>{desktopShortcuts.cycleSubtitleDisplay}</code></dd>
-              </dl>
-            </details>
-          )}
-          {sessionControl.canConfigure && (
-            <button
-              type="button"
-              className="settings-button settings-button--quiet settings-button--compact"
-              onClick={() => selectCategory("service")}
-            >
-              {I18N.settings.configureService}
-            </button>
-          )}
-          {sessionActionError && (
-            <p className="settings-feedback" data-tone="error" role="alert">
-              {I18N.settings.sessionActionFailed}
-            </p>
-          )}
+        <div className="settings-sidebar-support">
           <SupportDiagnostics key={activeCategory} />
-        </section>
+        </div>
       </aside>
       <div className="settings-console__scroll" ref={contentScrollRef}>
         <div className="settings-console__frame">
@@ -311,6 +265,22 @@ export function SettingsView() {
             <h1>{categories.find((category) => category.id === activeCategory)?.label}</h1>
             <p>{pageDescriptions[activeCategory]}</p>
           </header>
+          <SettingsSessionControls
+            checked={sessionControl.checked}
+            disabled={sessionControl.disabled}
+            status={sessionControl.visibleStatus}
+            statusText={settingsSessionStatusText(sessionControl.visibleStatus, sessionErrorMessage)}
+            isActive={sessionIsActive}
+            isChanging={isChangingSession || sessionPendingAction !== null}
+            immersive={settings.subtitleBlendsWithBackground}
+            canConfigure={sessionControl.canConfigure}
+            actionFailed={sessionActionError}
+            nativeShortcuts={nativeShortcuts}
+            desktopShortcuts={desktopShortcuts}
+            onSessionChange={changeSession}
+            onImmersiveChange={(subtitleBlendsWithBackground) => void saveSettings({ subtitleBlendsWithBackground })}
+            onConfigure={() => selectCategory("service")}
+          />
           <div className="settings-layout">
             {activeCategory === "subtitles" && (
               <div id="subtitle-settings-panel" className="settings-category-panel">
@@ -332,6 +302,9 @@ export function SettingsView() {
                       className="subtitle-preview__stage"
                       style={{ textAlign: settings.subtitleAlignment }}
                     >
+                      <div className="subtitle-preview__pulse">
+                        <PulseRing phase="listening" pulseStyle={settings.pulseStyle} motionEnabled={pulseOn} />
+                      </div>
                       <div
                         className="subtitle-preview__text"
                         style={{ fontSize: settings.fontSize, color: subtitleColorHex(settings.subtitleColor) }}
@@ -351,6 +324,44 @@ export function SettingsView() {
                           value={settings.subtitleDisplayMode}
                           options={SUBTITLE_DISPLAY_OPTIONS}
                           onChange={(value) => void saveSettings({ subtitleDisplayMode: value as SubtitleDisplayMode })}
+                        />
+                      </SettingsRow>
+                      <SettingsRow label={I18N.settings.pulseStyle}>
+                        <SettingsSelect
+                          label={I18N.settings.pulseStyle}
+                          value={settings.pulseStyle}
+                          options={[
+                            { value: "classic", label: I18N.settings.pulseStyleClassic },
+                            { value: "syllable", label: I18N.settings.pulseStyleSyllable },
+                            { value: "ribbon", label: I18N.settings.pulseStyleRibbon },
+                          ]}
+                          onChange={(value) => void saveSettings({ pulseStyle: value as PulseStyle })}
+                        />
+                      </SettingsRow>
+                      <SettingsRow
+                        label={I18N.settings.pulseAnimation}
+                        description={I18N.settings.pulseAnimationHelp}
+                        align="start"
+                      >
+                        <Switch
+                          checked={pulseOn}
+                          aria-label={I18N.settings.pulseAnimation}
+                          onChange={(pulseAnimation) =>
+                            void saveSettings({ pulseAnimation })
+                          }
+                        />
+                      </SettingsRow>
+                      <SettingsRow
+                        label={I18N.settings.textAnimation}
+                        description={I18N.settings.textAnimationHelp}
+                        align="start"
+                      >
+                        <Switch
+                          checked={motionOn}
+                          aria-label={I18N.settings.textAnimation}
+                          onChange={(subtitleAnimation) =>
+                            void saveSettings({ subtitleAnimation })
+                          }
                         />
                       </SettingsRow>
                       <SettingsRow label={I18N.settings.subtitleColor}>
@@ -462,22 +473,6 @@ export function SettingsView() {
 
                   <div className="settings-divider" />
 
-                  <SettingsRow
-                    label={I18N.settings.blendBackground}
-                    description={I18N.settings.blendBackgroundHelp}
-                    align="start"
-                  >
-                    <Switch
-                      checked={settings.subtitleBlendsWithBackground}
-                      aria-label={I18N.settings.blendBackground}
-                      onChange={(subtitleBlendsWithBackground) =>
-                        void saveSettings({ subtitleBlendsWithBackground })
-                      }
-                    />
-                  </SettingsRow>
-
-                  <div className="settings-divider" />
-
                   <details className="subtitle-placement">
                     <summary>
                       {I18N.settings.lockPosition}
@@ -545,6 +540,8 @@ export function SettingsView() {
 
                 <div className="settings-divider" />
 
+                <DockPreference />
+
                 <SoftwareUpdate />
               </SettingsSection>
             </div>
@@ -559,12 +556,6 @@ export function SettingsView() {
       </div>
     </main>
   );
-}
-
-function startStopShortcut(): string {
-  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
-    ? "⌘⇧Space"
-    : "Ctrl+Shift+Space";
 }
 
 function settingsSessionStatusText(

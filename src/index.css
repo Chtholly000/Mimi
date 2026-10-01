@@ -54,16 +54,216 @@ body.settings-body {
 /* New subtitle rows rise in from below and fade — a brief settle that makes
    the timeline feel alive without distracting from the text (runs once per
    row on mount; streaming text updates keep the stable row id). */
-@keyframes subtitle-row-enter {
+@keyframes subtitle-block-enter {
   from {
-    opacity: 0.45;
-    transform: translateY(3px);
+    opacity: 0.6;
+    transform: translateY(2px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
   }
 }
+
+/* A lane fades in the first time its text exists, so a sentence never pops. */
+@keyframes lane-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* New sentences settle in and lanes fade in; both are skipped, not replaced,
+   when motion is off. */
+.subtitle-block {
+  animation: subtitle-block-enter 180ms ease-out;
+}
+
+.subtitle-lane {
+  animation: lane-enter 180ms ease-out;
+}
+
+/* Motion is resolved in JavaScript: the system's reduce-motion preference
+   unless the user picked an explicit value. Off means the surfaces keep every
+   state change but drop all decoration, so the overlay stays readable. */
+.motion-reduced .subtitle-block,
+.motion-reduced .subtitle-lane,
+.motion-reduced .subtitle-timestamp,
+.motion-reduced .stream-dots > span,
+.motion-reduced .overlay-swap-collapsed,
+.motion-reduced .overlay-swap-expanded {
+  animation: none !important;
+}
+
+.motion-reduced .subtitle-block {
+  transition: none;
+}
+
+/* Aging is a state change, not a decoration: glide between steps instead of
+   stepping in one frame, unless motion is off. */
+.subtitle-block {
+  transition: opacity 260ms ease;
+}
+
+/* A committed sentence replaces the live row it was already visible as; the
+   timestamp is the only new thing in that frame, so it fades in quietly. */
+.subtitle-timestamp {
+  animation: lane-enter 200ms ease-out;
+}
+
+/* The units that just arrived fade in, staggered by a few milliseconds per
+   unit: a streamed sentence reads as writing rather than as popping. Settled
+   rows render plain text, so the wrappers cost nothing after the stream. */
+.stream-chunk {
+  animation: stream-chunk-in 250ms ease-out both;
+}
+
+.motion-reduced .stream-chunk {
+  animation: none;
+}
+
+@keyframes stream-chunk-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The streaming marker: a three-dot typing wave riding the end of the text
+   that is still arriving (the staggered-dot loader pattern from the MIT
+   three-dots / SpinKit families, written here for inline caption text). It
+   breathes while the status light is on and holds a faint static row when the
+   switch is off, so the state stays readable without motion. */
+.stream-dots {
+  display: inline-block;
+  margin-left: 0.34em;
+  white-space: nowrap;
+  vertical-align: 0.04em;
+}
+
+.stream-dots > span {
+  display: inline-block;
+  width: 0.24em;
+  height: 0.24em;
+  margin-right: 0.18em;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.32;
+  transform-origin: center bottom;
+  animation: stream-dot-wave 1100ms cubic-bezier(0.34, 1.4, 0.64, 1) infinite;
+}
+
+.stream-dots > span:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.stream-dots > span:nth-child(3) {
+  animation-delay: 280ms;
+}
+
+.pulse-off .stream-dots > span {
+  animation: none;
+  opacity: 0.45;
+}
+
+@keyframes stream-dot-wave {
+  0%,
+  55%,
+  100% {
+    opacity: 0.28;
+    transform: translateY(0) scale(1);
+  }
+  25% {
+    opacity: 1;
+    transform: translateY(-0.16em) scale(1.25);
+  }
+}
+
+/* Settings chrome belongs to no caption surface: it always yields to the
+   system preference. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-panel {
+    animation: none;
+  }
+}
+
+/* Sentence boundaries use one physical-looking hairline. The gentle edge
+   falloff is static, never a moving progress track. */
+.subtitle-separator {
+  background: linear-gradient(to right, transparent, rgba(255,255,255,0.18) 12%, rgba(255,255,255,0.18) 88%, transparent);
+  transform: scaleY(0.65);
+  transform-origin: center;
+}
+
+.pulse { position: relative; }
+.pulse__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  transform-origin: center;
+  transform: scale(calc(0.36 + var(--ring-index) * 0.16));
+  opacity: calc(0.24 - var(--ring-index) * 0.065);
+  transition: border-color 300ms ease;
+}
+.pulse__dot {
+  position: absolute;
+  left: 50%; top: 50%;
+  border-radius: 50%;
+  opacity: 0.8;
+  transition: background-color 300ms ease, box-shadow 300ms ease;
+}
+@keyframes phase-halo {
+  0%, 100% { transform: scale(0.56); opacity: 0.16; }
+  50% { transform: scale(0.65); opacity: 0.3; }
+}
+@keyframes phase-release {
+  0% { transform: scale(0.32); opacity: 0.32; }
+  70% { opacity: 0.08; }
+  100% { transform: scale(1); opacity: 0; }
+}
+@keyframes phase-orbit {
+  from { transform: scale(0.68) rotate(0deg); }
+  to { transform: scale(0.68) rotate(360deg); }
+}
+@keyframes phase-dot {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 0.9; }
+}
+.pulse--listening .pulse__ring:not(:first-child),
+.pulse--connecting .pulse__ring:not(:first-child),
+.pulse--translating .pulse__ring:nth-child(3) { visibility: hidden; }
+.pulse--listening.pulse--active .pulse__ring:first-child {
+  animation: phase-halo var(--phase-period) ease-in-out infinite;
+}
+.pulse--recognizing.pulse--active .pulse__ring {
+  animation: phase-release var(--phase-period) cubic-bezier(0.2, 0.4, 0.5, 1) infinite;
+}
+.pulse--connecting .pulse__ring:first-child,
+.pulse--translating .pulse__ring {
+  border-right-color: transparent !important;
+  border-bottom-color: transparent !important;
+  opacity: 0.38;
+}
+.pulse--connecting.pulse--active .pulse__ring:first-child,
+.pulse--translating.pulse--active .pulse__ring:nth-child(-n+2) {
+  animation: phase-orbit var(--phase-period) linear infinite;
+}
+.pulse--translating .pulse__ring:nth-child(2) { rotate: 180deg; }
+.pulse--translating.pulse--active .pulse__dot {
+  animation: phase-dot var(--phase-period) ease-in-out infinite;
+}
+.pulse--idle .pulse__ring:not(:first-child),
+.pulse--paused .pulse__ring:not(:first-child),
+.pulse--error .pulse__ring:not(:first-child) { visibility: hidden; }
+.pulse--idle .pulse__dot { opacity: 0.5; }
+.pulse--paused .pulse__dot { border-radius: 2px; }
+.pulse--error .pulse__dot { border-radius: 2px; transform: rotate(45deg) scale(0.75); }
+.pulse--still .pulse__ring, .pulse--still .pulse__dot,
+.pulse-off .pulse__ring, .pulse-off .pulse__dot { animation: none !important; transition: none; }
 
 /* Thin, unobtrusive scrollbars for the overlay timeline. */
 *::-webkit-scrollbar {

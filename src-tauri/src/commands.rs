@@ -7,7 +7,7 @@ use crate::core::models::{
 };
 use crate::core::provider::{ProviderKind, ServiceProfile};
 use crate::session_manager::{SessionManager, SessionStateEvent};
-use crate::settings_store::{CredentialState, SettingsStore, SubtitleAlignment};
+use crate::settings_store::{CredentialState, PulseStyle, SettingsStore, SubtitleAlignment};
 use crate::windows::{
     OverlayControlMode, OverlayControlWindowManager, OverlayWindowManager, TrayPanelManager,
 };
@@ -40,25 +40,30 @@ pub struct ServiceProfilePayload {
     pub name: String,
     pub provider: ProviderKind,
     pub credential_state: CredentialState,
+    pub text_translation: crate::core::provider::TextTranslation,
 }
 
 impl ServiceProfilePayload {
     fn from_profile(store: &SettingsStore, profile: ServiceProfile) -> Self {
         let credential_state = store.credential_state(&profile);
+        let text_translation = profile.text_translation();
         Self {
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
             credential_state,
+            text_translation,
         }
     }
 
     fn unavailable(profile: ServiceProfile) -> Self {
+        let text_translation = profile.text_translation();
         Self {
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
             credential_state: CredentialState::Unavailable,
+            text_translation,
         }
     }
 }
@@ -75,6 +80,10 @@ pub struct SettingsSnapshotPayload {
     pub subtitle_color: SubtitleColor,
     pub subtitle_alignment: SubtitleAlignment,
     pub subtitle_display_mode: SubtitleDisplayMode,
+    /// `None` follows the operating system's reduce-motion setting.
+    pub pulse_animation: Option<bool>,
+    pub pulse_style: PulseStyle,
+    pub subtitle_animation: Option<bool>,
     pub subtitle_blends_with_background: bool,
     #[serde(rename = "isOverlayLocked")]
     pub is_overlay_locked: bool,
@@ -83,6 +92,7 @@ pub struct SettingsSnapshotPayload {
     pub retain_session_history: bool,
     pub record_session_audio: bool,
     pub windows_audio_source: String,
+    pub show_in_dock: bool,
 }
 
 #[cfg(test)]
@@ -140,6 +150,7 @@ mod tests {
         for command in [
             "profile_test_connection",
             "windows_audio_status",
+            "audio_census",
             "support_diagnostics",
             "app_open_support_issue",
         ] {
@@ -208,6 +219,7 @@ mod tests {
                 name: "Alibaba Cloud".into(),
                 provider: ProviderKind::AlibabaCloud,
                 credential_state: CredentialState::Present,
+                text_translation: crate::core::provider::TextTranslation::FollowService,
             }],
             active_profile_id: "alibaba-default".into(),
             source_language: SourceLanguage::Japanese,
@@ -217,17 +229,27 @@ mod tests {
             subtitle_color: SubtitleColor::White,
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
+            pulse_animation: None,
+            pulse_style: PulseStyle::Ribbon,
+            subtitle_animation: None,
             subtitle_blends_with_background: false,
             is_overlay_locked: false,
             ui_language: None,
             retain_session_history: false,
             record_session_audio: false,
             windows_audio_source: String::new(),
+            show_in_dock: false,
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["activeProfileId"], "alibaba-default");
+        assert_eq!(json["pulseStyle"], "ribbon");
+        assert_eq!(json["showInDock"], false);
         assert_eq!(json["profiles"][0]["provider"], "alibabaCloud");
         assert_eq!(json["profiles"][0]["credentialState"], "present");
+        assert_eq!(json["profiles"][0]["textTranslation"], "followService");
+        for secret_field in ["apiKey", "asrApiKey", "endpoint", "token"] {
+            assert!(json["profiles"][0].get(secret_field).is_none());
+        }
         assert_eq!(json["subtitleAlignment"], "center");
         assert_eq!(json["subtitleColor"], "white");
         assert_eq!(json["subtitleDisplayMode"], "translation");
@@ -299,6 +321,9 @@ mod tests {
             subtitle_color: Some(SubtitleColor::Custom([0x12, 0x34, 0x56])),
             subtitle_alignment: Some(SubtitleAlignment::Right),
             subtitle_display_mode: Some(SubtitleDisplayMode::Bilingual),
+            pulse_animation: Some(true),
+            pulse_style: Some(PulseStyle::Syllable),
+            subtitle_animation: Some(true),
             subtitle_blends_with_background: Some(true),
             is_overlay_locked: Some(true),
             ui_language: Some("ja".into()),
@@ -356,12 +381,18 @@ impl SettingsSnapshotPayload {
                     subtitle_color: prefs.subtitle_color,
                     subtitle_alignment: prefs.subtitle_alignment,
                     subtitle_display_mode: prefs.subtitle_display_mode,
+
+                    pulse_animation: prefs.pulse_animation,
+                    pulse_style: prefs.pulse_style,
+
+                    subtitle_animation: prefs.subtitle_animation,
                     subtitle_blends_with_background: prefs.subtitle_blends_with_background,
                     is_overlay_locked: prefs.overlay_locked,
                     ui_language: prefs.ui_language,
                     retain_session_history: prefs.retain_session_history,
                     record_session_audio: prefs.record_session_audio,
                     windows_audio_source: prefs.windows_audio_source,
+                    show_in_dock: prefs.show_in_dock,
                 }
             }
         }
@@ -383,12 +414,18 @@ impl SettingsSnapshotPayload {
             subtitle_color: prefs.subtitle_color,
             subtitle_alignment: prefs.subtitle_alignment,
             subtitle_display_mode: prefs.subtitle_display_mode,
+
+            pulse_animation: prefs.pulse_animation,
+            pulse_style: prefs.pulse_style,
+
+            subtitle_animation: prefs.subtitle_animation,
             subtitle_blends_with_background: prefs.subtitle_blends_with_background,
             is_overlay_locked: prefs.overlay_locked,
             ui_language: prefs.ui_language,
             retain_session_history: prefs.retain_session_history,
             record_session_audio: prefs.record_session_audio,
             windows_audio_source: prefs.windows_audio_source,
+            show_in_dock: prefs.show_in_dock,
         })
     }
 }
@@ -403,12 +440,16 @@ pub struct SettingsDraft {
     pub subtitle_color: Option<SubtitleColor>,
     pub subtitle_alignment: Option<SubtitleAlignment>,
     pub subtitle_display_mode: Option<SubtitleDisplayMode>,
+    pub pulse_animation: Option<bool>,
+    pub pulse_style: Option<PulseStyle>,
+    pub subtitle_animation: Option<bool>,
     pub subtitle_blends_with_background: Option<bool>,
     pub is_overlay_locked: Option<bool>,
     pub ui_language: Option<String>,
     pub retain_session_history: Option<bool>,
     pub record_session_audio: Option<bool>,
     pub windows_audio_source: Option<String>,
+    pub show_in_dock: Option<bool>,
 }
 
 /// Reads public settings and per-profile credential presence. API-key values
@@ -500,10 +541,11 @@ pub async fn settings_save(
 ) -> Result<SettingsSnapshotPayload, String> {
     if (draft.retain_session_history.is_some()
         || draft.record_session_audio.is_some()
-        || draft.windows_audio_source.is_some())
+        || draft.windows_audio_source.is_some()
+        || draft.show_in_dock.is_some())
         && window.label() != "settings"
     {
-        return Err("Export and sound-source preferences can only be changed in settings.".into());
+        return Err("These preferences can only be changed in settings.".into());
     }
     apply_settings_draft(&app, &state, draft).await
 }
@@ -534,6 +576,10 @@ fn apply_settings_draft_guarded(
     state: &AppState,
     draft: SettingsDraft,
 ) -> Result<SettingsSnapshotPayload, String> {
+    #[cfg(not(target_os = "macos"))]
+    if draft.show_in_dock.is_some() {
+        return Err("dock-preference-unsupported".into());
+    }
     let changes_ui_language = draft.ui_language.is_some();
     let enables_background_blend = draft.subtitle_blends_with_background == Some(true);
     ensure_settings_draft_allowed(&draft, state.session.has_active_session())?;
@@ -544,19 +590,22 @@ fn apply_settings_draft_guarded(
         || draft.subtitle_color.is_some()
         || draft.subtitle_alignment.is_some()
         || draft.subtitle_display_mode.is_some()
+        || draft.pulse_animation.is_some()
+        || draft.pulse_style.is_some()
+        || draft.subtitle_animation.is_some()
         || draft.subtitle_blends_with_background.is_some()
         || draft.is_overlay_locked.is_some()
         || draft.ui_language.is_some()
         || draft.retain_session_history.is_some()
         || draft.record_session_audio.is_some()
-        || draft.windows_audio_source.is_some();
+        || draft.windows_audio_source.is_some()
+        || draft.show_in_dock.is_some();
     if !needs_save {
         return SettingsSnapshotPayload::try_from_store(&state.settings);
     }
 
-    state
-        .settings
-        .save_preferences_for_active_profile(|prefs| {
+    let save_preferences = || {
+        state.settings.save_preferences_for_active_profile(|prefs| {
             if let Some(source_language) = draft.source_language {
                 prefs.source_language = source_language;
             }
@@ -581,6 +630,15 @@ fn apply_settings_draft_guarded(
             if let Some(mode) = draft.subtitle_display_mode {
                 prefs.subtitle_display_mode = mode;
             }
+            if let Some(style) = draft.pulse_style {
+                prefs.pulse_style = style;
+            }
+            if let Some(pulse) = draft.pulse_animation {
+                prefs.pulse_animation = Some(pulse);
+            }
+            if let Some(motion) = draft.subtitle_animation {
+                prefs.subtitle_animation = Some(motion);
+            }
             if let Some(color) = draft.subtitle_color {
                 prefs.subtitle_color = color;
             }
@@ -593,10 +651,23 @@ fn apply_settings_draft_guarded(
             if let Some(locked) = draft.is_overlay_locked {
                 prefs.overlay_locked = locked;
             }
+            if let Some(show) = draft.show_in_dock {
+                prefs.show_in_dock = show;
+            }
             if let Some(language) = &draft.ui_language {
                 prefs.ui_language = Some(language.clone());
             }
-        })?;
+        })
+    };
+    #[cfg(target_os = "macos")]
+    crate::mac_dock::save_with_policy(
+        state.settings.preferences().show_in_dock,
+        draft.show_in_dock,
+        |show| crate::mac_dock::apply(app, show),
+        save_preferences,
+    )?;
+    #[cfg(not(target_os = "macos"))]
+    save_preferences()?;
     state
         .session
         .apply_archive_opt_out(draft.retain_session_history, draft.record_session_audio);
@@ -618,7 +689,11 @@ fn apply_settings_draft_guarded(
             preferences.subtitle_blends_with_background,
         );
     }
-    if changes_ui_language || draft.subtitle_display_mode.is_some() {
+    if changes_ui_language
+        || draft.subtitle_display_mode.is_some()
+        || draft.pulse_animation.is_some()
+        || draft.subtitle_animation.is_some()
+    {
         crate::refresh_native_tray_language(app);
     }
 
@@ -1073,7 +1148,7 @@ pub async fn profile_test_connection(
         return Ok(serde_json::json!({"credential": storage, "network": "notTested"}));
     }
     use crate::core::provider::ProviderKind;
-    let endpoint = match profile.provider {
+    let endpoint = match profile.effective_provider() {
         ProviderKind::AlibabaCloud => "https://dashscope.aliyuncs.com/api-ws/v1/realtime",
         ProviderKind::OpenAIRealtime => "https://api.openai.com/v1/realtime/translations",
         ProviderKind::GoogleGeminiLive => "https://generativelanguage.googleapis.com/",
@@ -1102,6 +1177,16 @@ pub async fn windows_audio_status(
     state: State<'_, AppState>,
 ) -> Result<Option<crate::audio::AudioSourceSnapshot>, String> {
     state.session.windows_audio_status()
+}
+
+/// Read-only audio census: render endpoints with levels, plus the application
+/// sessions currently attached to them. Never cached; callers poll.
+#[tauri::command]
+pub async fn audio_census() -> crate::audio::census::AudioCensus {
+    if app_is_ui_test() {
+        return crate::audio::census::AudioCensus::default();
+    }
+    crate::audio::census::census()
 }
 
 #[tauri::command]

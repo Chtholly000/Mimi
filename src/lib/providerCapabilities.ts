@@ -20,7 +20,6 @@ export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
   "tencentCloud",
   "baiduTranslate",
   "xAIRealtime",
-  "deepLX",
 ];
 
 const PROVIDER_CAPABILITIES: Readonly<
@@ -83,10 +82,20 @@ export function activeServiceProfile(
   );
 }
 
+export function textTranslationForProfile(profile: ServiceProfile): "followService" | "deepLX" {
+  return profile.textTranslation ?? (profile.provider === "deepLX" ? "deepLX" : "followService");
+}
+
+export function effectiveProviderForProfile(profile: ServiceProfile): ServiceProvider {
+  if (profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") return profile.provider;
+  return textTranslationForProfile(profile) === "deepLX" ? "deepLX" : "alibabaCloud";
+}
+
 function capabilitiesForSettings(
   settings: Pick<SettingsSnapshot, "profiles" | "activeProfileId">,
 ): ProviderCapabilities {
-  const provider = activeServiceProfile(settings)?.provider ?? "alibabaCloud";
+  const profile = activeServiceProfile(settings);
+  const provider = profile ? effectiveProviderForProfile(profile) : "alibabaCloud";
   return capabilitiesForProvider(provider);
 }
 
@@ -164,7 +173,8 @@ export function translationModesForSettings(
     "profiles" | "activeProfileId" | "sourceLanguage"
   >,
 ): readonly TranslationMode[] {
-  const provider = activeServiceProfile(settings)?.provider ?? "alibabaCloud";
+  const profile = activeServiceProfile(settings);
+  const provider = profile ? effectiveProviderForProfile(profile) : "alibabaCloud";
   if (provider === "alibabaCloud" && settings.sourceLanguage === "auto") {
     return ["lowLatency", "turbo"];
   }
@@ -185,7 +195,8 @@ export function effectiveTranslationModeForSettings(
     | "translationMode"
   >,
 ): TranslationMode {
-  const provider = activeServiceProfile(settings)?.provider ?? "alibabaCloud";
+  const profile = activeServiceProfile(settings);
+  const provider = profile ? effectiveProviderForProfile(profile) : "alibabaCloud";
   const supportedModes = translationModesForSettings(settings);
 
   if (provider !== "alibabaCloud") return "turbo";

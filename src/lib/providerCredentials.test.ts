@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildProviderCredentials,
+  buildAlibabaTranslationCredentials,
   deepLXEndpointIsValid,
   credentialEditorStateAfterDeleteRequest,
   credentialFieldsForProvider,
@@ -85,4 +86,16 @@ it("keeps DeepLX recognition credentials separate and makes its token optional",
   for (const endpoint of ["https://example.com", "https://example.com/api/translate", " http://localhost:1188/translate ", "http://127.0.0.1:1188", "http://[::1]:1188"]) {
     expect(deepLXEndpointIsValid(endpoint), endpoint).toBe(true);
   }
+});
+
+
+it("reuses a saved Alibaba key without sending a replacement over IPC", () => {
+  const profile = { id: "ali", name: "Ali", provider: "alibabaCloud", credentialState: "present" } as const;
+  const draft = { ...emptyCredentialDraft(), endpoint: " https://example.com " };
+  expect(buildAlibabaTranslationCredentials(profile, draft, "deepLX")).toEqual({ kind: "alibabaTranslation", apiKey: "", textTranslation: "deepLX", endpoint: "https://example.com", token: "" });
+  expect(buildAlibabaTranslationCredentials({ ...profile, credentialState: "missing" }, draft, "deepLX")).toBeNull();
+  expect(buildAlibabaTranslationCredentials({ ...profile, provider: "openAIRealtime" }, draft, "deepLX")).toBeNull();
+  expect(buildAlibabaTranslationCredentials(profile, emptyCredentialDraft(), "deepLX")).toBeNull();
+  expect(buildAlibabaTranslationCredentials(profile, emptyCredentialDraft(), "followService")?.kind).toBe("alibabaTranslation");
+  expect(buildAlibabaTranslationCredentials({ ...profile, textTranslation: "deepLX" }, emptyCredentialDraft(), "deepLX")?.kind).toBe("alibabaTranslation");
 });

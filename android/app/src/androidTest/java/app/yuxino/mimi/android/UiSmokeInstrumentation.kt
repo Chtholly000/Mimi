@@ -30,6 +30,9 @@ import java.io.File
 class UiSmokeInstrumentation : Instrumentation() {
     private var theme = "light"
     private var demo = false
+    private var guideCopy = false
+    private var firstRun = false
+    private var guideLocale = "en"
     private var overlayPreview = false
     private var expectLandscape = false
     private var screenshots = 0
@@ -43,6 +46,9 @@ class UiSmokeInstrumentation : Instrumentation() {
         super.onCreate(arguments)
         theme = arguments?.getString("theme") ?: "light"
         demo = arguments?.getString("demo") == "true"
+        guideCopy = arguments?.getString("guide_copy") == "true"
+        firstRun = arguments?.getString("first_run") == "true"
+        guideLocale = arguments?.getString("locale") ?: "en"
         overlayPreview = arguments?.getString("overlay_preview") == "true"
         expectLandscape = arguments?.getString("expect_landscape") == "true"
         restoreTarget = arguments?.getString("restore_target")?.takeIf { it in listOf("zh", "en", "ja") }
@@ -61,10 +67,17 @@ class UiSmokeInstrumentation : Instrumentation() {
         try {
             check(!MimiService.isRunning) { "Stop the active session before running UI checks." }
             onUi {
+                if (firstRun || guideCopy) {
+                    if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        targetContext.getSystemService(android.app.LocaleManager::class.java).applicationLocales = android.os.LocaleList.forLanguageTags(guideLocale)
+                    } else AppCompatDelegate.setApplicationLocales(androidx.core.os.LocaleListCompat.forLanguageTags(guideLocale))
+                }
                 AppCompatDelegate.setDefaultNightMode(if (theme == "dark")
                     AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO)
             }
             when {
+                guideCopy -> guideCopyScreens()
+                firstRun -> firstRunGuide()
                 overlayPreview -> previewOverlay()
                 demo -> demonstrate()
                 else -> smoke()
@@ -79,14 +92,181 @@ class UiSmokeInstrumentation : Instrumentation() {
             check(SettingsStore.flushPendingWritesForTests(targetContext)) { "Preference restore did not reach disk" }
         }
         finish(if (failure == null) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
-            putString("stream", if (failure == null)
+            putString("stream", if (failure == null && guideCopy)
+                "Guide copy UI passed ($guideLocale): $screenshots real emulator screenshots; synthetic stopped-sharing state, no credentials, permissions or provider session requested.\n"
+            else if (failure == null && firstRun)
+                "First-run UI passed ($theme): $screenshots real emulator screenshots; synthetic credential fixture only, no provider or capture session started. Clear the dedicated emulator app data after review.\n"
+            else if (failure == null)
                 "UI ${if (overlayPreview) "overlay preview" else if (demo) "demo" else "smoke"} passed ($theme): $screenshots screenshots; non-secret preferences restored; no credentials saved or provider session started.\n"
             else "UI check failed: ${failure.javaClass.simpleName}: ${failure.message}\n")
         })
     }
 
+    /** Narrow copy regression on a dedicated blank emulator, without system permission requests. */
+    private fun guideCopyScreens() {
+        check(!SettingsStore.isConfigured(targetContext)) { "Use a blank emulator for guide copy checks" }
+        targetContext.getSharedPreferences("first_run", 0).edit().putBoolean("seen", true).commit()
+        val home = launchHome()
+        var requests = 0
+        lateinit var guide: FirstRunGuide
+        val previousError = MimiService.lastCaptureError
+        try {
+            onUi { guide = FirstRunGuide(home) { requests++ }; guide.open(2) }
+            capture("guide-access-$guideLocale-$theme")
+            onUi { guide.open(4) }
+            capture("guide-waiting-$guideLocale-$theme")
+            onUi {
+                val views = WindowInspector.getGlobalWindowViews()
+                check(views.any { root -> containsText(root, home.getString(R.string.guide_wait_caption_title)) })
+                setCaptureErrorFixture("capture.projection_stopped")
+                check(MimiService.lastCaptureError == "capture.projection_stopped") { "Fixture error was not retained" }
+                check(projectionSharingEnded(MimiService.isRunning, MimiService.lastCaptureError)) { "Sharing-ended predicate mismatch" }
+                guide.refresh()
+            }
+            capture("guide-sharing-ended-$guideLocale-$theme")
+            onUi {
+                val control = WindowInspector.getGlobalWindowViews().firstNotNullOfOrNull {
+                    it.findViewWithTag<View>("guide-finish")
+                } as? TextView ?: error("Reopen sharing button missing")
+                check(control.text.toString() == home.getString(R.string.guide_reopen_sharing)) { "Expected reopen-sharing control, got: ${control.text}" }
+                check(control.performClick())
+                check(requests == 1)
+                check(!MimiService.isRunning)
+            }
+        } finally {
+            onUi { guide.dismiss(); setCaptureErrorFixture(previousError); home.finish() }
+        }
+    }
+
+    // Instrumentation-only injection; keep the production setter private.
+    private fun setCaptureErrorFixture(value: String?) {
+        check(!MimiService.isRunning)
+        MimiService::class.java.getDeclaredField("lastCaptureError").apply {
+            isAccessible = true
+            set(null, value)
+        }
+    }
+
+    private fun containsText(view: View, text: String): Boolean =
+        (view is TextView && view.text.toString() == text) ||
+        (view is android.view.ViewGroup && (0 until view.childCount).any { containsText(view.getChildAt(it), text) })
+
+    /** Dedicated blank emulator only; fixture is synthetic and never opens a provider session. */
+    private fun firstRunGuide() {
+        check(!SettingsStore.isConfigured(targetContext)) { "Use a blank emulator for first-run fixtures" }
+        val guidePrefs = targetContext.getSharedPreferences("first_run", 0)
+        guidePrefs.edit().clear().putBoolean("seen", false).commit()
+        val home = launchHome()
+        fun guideClick(tag: String) {
+            onUi {
+                val control = WindowInspector.getGlobalWindowViews().firstNotNullOfOrNull { it.findViewWithTag<View>(tag) }
+                    ?: error("Guide control missing: $tag")
+                check(control.performClick())
+            }
+            waitForIdleSync()
+        }
+        capture("guide-first-$theme")
+        sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_TAB)
+        onUi { check(WindowInspector.getGlobalWindowViews().any { it.findFocus()?.isEnabled == true }) }
+        capture("guide-keyboard-focus-$theme")
+        guideClick("guide-skip")
+        check(!guidePrefs.getBoolean("completed", false))
+        click(home, R.id.first_run_guide)
+        guideClick("guide-next")
+        capture("guide-credentials-missing-$theme")
+        guideClick("guide-skip")
+        onUi {
+            check(SettingsStore.saveConfiguration(targetContext,
+                app.yuxino.mimi.android.provider.ServiceConfiguration(ServiceProvider.DASHSCOPE,
+                    mapOf("apiKey" to "synthetic-ui-fixture-never-sent"))))
+            check(SettingsStore.activateProvider(targetContext, ServiceProvider.DASHSCOPE))
+        }
+        click(home, R.id.first_run_guide)
+        guideClick("guide-next")
+        capture("guide-credentials-saved-$theme")
+        guideClick("guide-next")
+        capture("guide-permissions-unknown-$theme")
+        guideClick("guide-skip")
+        click(home, R.id.first_run_guide); guideClick("guide-next"); guideClick("guide-next")
+        guideClick("guide-permissions")
+        Thread.sleep(900)
+        capture("guide-system-overlay-request-$theme")
+        sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        Thread.sleep(900)
+        capture("guide-permissions-denied-$theme")
+        check(guidePrefs.getBoolean("overlay-denied", false))
+        fun shell(command: String) {
+            uiAutomation.executeShellCommand(command).use { descriptor ->
+                android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use { it.readBytes() }
+            }
+        }
+        shell("appops set ${targetContext.packageName} SYSTEM_ALERT_WINDOW allow")
+        guideClick("guide-permissions")
+        Thread.sleep(900)
+        capture("guide-system-audio-request-$theme")
+        sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        Thread.sleep(900)
+        check(guidePrefs.getBoolean("audio-denied", false))
+        check(!MimiService.isRunning)
+        capture("guide-audio-permission-denied-$theme")
+        shell("pm grant ${targetContext.packageName} android.permission.RECORD_AUDIO")
+        guideClick("guide-skip")
+        click(home, R.id.first_run_guide); guideClick("guide-next"); guideClick("guide-next")
+        capture("guide-permissions-granted-$theme")
+        check(Settings.canDrawOverlays(targetContext))
+        guideClick("guide-next")
+        guideClick("guide-test")
+        Thread.sleep(900)
+        capture("guide-system-projection-request-$theme")
+        sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        Thread.sleep(900)
+        check(!MimiService.isRunning)
+        check(guidePrefs.getBoolean("projection-denied", false))
+        guideClick("guide-back")
+        capture("guide-projection-cancelled-$theme")
+        shell("appops set ${targetContext.packageName} SYSTEM_ALERT_WINDOW deny")
+        guideClick("guide-skip")
+        click(home, R.id.first_run_guide); guideClick("guide-next"); guideClick("guide-next")
+        capture("guide-overlay-revoked-$theme")
+        check(!Settings.canDrawOverlays(targetContext))
+        guideClick("guide-skip")
+        val guide = FirstRunGuide(home) { error("Fixture must not request a real capture") }
+        onUi { guide.open(3) }; capture("guide-audio-not-started-$theme")
+        onUi { guide.dismiss(); guide.open(4) }; capture("guide-caption-not-complete-$theme")
+        // UI-only recovery fixture: no MediaProjection or provider is started.
+        val previousCaptureError = MimiService.lastCaptureError
+        try {
+            onUi {
+                setCaptureErrorFixture("capture.projection_stopped")
+                guide.refresh()
+            }
+            capture("guide-sharing-ended-$theme")
+            onUi {
+                val action = WindowInspector.getGlobalWindowViews().firstNotNullOfOrNull {
+                    it.findViewWithTag<TextView>("guide-finish")
+                }
+                check(action?.text == targetContext.getString(R.string.guide_reopen_sharing))
+            }
+        } finally {
+            onUi { setCaptureErrorFixture(previousCaptureError); guide.refresh() }
+        }
+        onUi { guide.dismiss() }
+        check(!MimiService.isRunning && !MimiService.firstRunEvidence.complete)
+        check(!guidePrefs.getBoolean("completed", false))
+        onUi { home.finish() }
+        waitForIdleSync()
+        guidePrefs.edit().remove("seen").commit()
+        val upgraded = launchHome()
+        Thread.sleep(300)
+        check(guidePrefs.getBoolean("seen", false))
+        onUi { check(WindowInspector.getGlobalWindowViews().none { it.findViewWithTag<View>("guide-character-0")?.isShown == true }) }
+        capture("guide-existing-install-no-forced-guide-$theme")
+        onUi { upgraded.finish() }
+    }
+
     private fun smoke() {
         val home = launchHome()
+        onUi { WindowInspector.getGlobalWindowViews().firstNotNullOfOrNull { it.findViewWithTag<View>("guide-skip") }?.performClick() }
         click(home, R.id.copy_capture_diagnostics)
         onUi {
             val clipboard = targetContext.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
@@ -456,7 +636,7 @@ class UiSmokeInstrumentation : Instrumentation() {
 
     private fun capture(name: String) {
         waitForIdleSync()
-        Thread.sleep(400)
+        Thread.sleep(if (firstRun) 1200 else 400)
         val bitmap = checkNotNull(uiAutomation.takeScreenshot()) { "Screenshot unavailable" }
         val dir = checkNotNull(targetContext.getExternalFilesDir("ui-preview"))
         File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }

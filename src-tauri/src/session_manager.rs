@@ -32,6 +32,20 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{Mutex as TokioMutex, Notify, OwnedMutexGuard};
 use tokio::task::JoinHandle;
 
+/// UI-only buffers contain synthetic fixtures. An explicit export fixture keeps
+/// them in memory after stop so QA can reach the real picker and write path.
+/// This helper is never used by production history finalization.
+fn finish_ui_test_archive(
+    controller: &mut TranslationSessionController,
+    recording: &mut crate::core::session_archive::AudioRecording,
+    retain_for_export: bool,
+) {
+    if !retain_for_export {
+        controller.archive_mut().clear();
+        recording.clear();
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum StatusPayload {
@@ -703,7 +717,7 @@ impl SessionManager {
             .settings
             .active_profile()
             .ok()
-            .map(|profile| profile.provider);
+            .map(|profile| profile.effective_provider());
         let (provider, mode) = self
             .active_settings
             .lock()
@@ -1385,7 +1399,7 @@ impl SessionManager {
         let provider = self
             .settings
             .active_profile()
-            .map(|profile| profile.provider)
+            .map(|profile| profile.effective_provider())
             .unwrap_or(ProviderKind::AlibabaCloud);
         if !provider.capabilities().source_languages.contains(&language) {
             return;
@@ -1476,7 +1490,7 @@ impl SessionManager {
         let provider = self
             .settings
             .active_profile()
-            .map(|profile| profile.provider)
+            .map(|profile| profile.effective_provider())
             .unwrap_or(ProviderKind::AlibabaCloud);
         if !provider.capabilities().translation_modes.contains(&mode) {
             return;
@@ -1673,8 +1687,14 @@ impl SessionManager {
             return Ok(());
         };
         if self.is_ui_test() {
-            self.controller.lock().unwrap().archive_mut().clear();
-            self.recording.lock().unwrap().clear();
+            // Opt-in only within UI-test mode: no history writes, credentials,
+            // provider connections or captured audio. New start/clear/opt-out
+            // still reset these bounded, synthetic buffers normally.
+            finish_ui_test_archive(
+                &mut self.controller.lock().unwrap(),
+                &mut self.recording.lock().unwrap(),
+                std::env::var("MIMI_UI_TEST_EXPORT").as_deref() == Ok("1"),
+            );
             *pending = None;
             self.history_pending_text.store(false, Ordering::SeqCst);
             self.history_pending_audio.store(false, Ordering::SeqCst);
@@ -2778,6 +2798,54 @@ impl SessionManager {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[test]
+    fn ui_export_fixture_survives_stop_and_repeated_finalization_but_resets_on_new_start() {
+        let mut controller = TranslationSessionController::default();
+        controller.archive_mut().begin(true, 1);
+        controller.did_connect();
+        controller.handle(LiveTranslateServerEvent::SubtitleFinalPair {
+            source: "Synthetic export fixture".into(),
+            language: Some("en".into()),
+            translation: "合成导出示例".into(),
+        });
+        let mut recording = crate::core::session_archive::AudioRecording::default();
+        recording.begin(true);
+        recording.append(16_000, &[0, 0, 1, 0]);
+        controller.did_stop();
+        let transcript = controller.archive().export().unwrap();
+        let audio = recording.export().unwrap();
+        for _ in 0..2 {
+            finish_ui_test_archive(&mut controller, &mut recording, true);
+            assert_eq!(controller.state.status, SessionStatus::Idle);
+            assert_eq!(controller.archive().page("Synthetic", 0).total, 1);
+            assert_eq!(controller.archive().export().unwrap(), transcript);
+            assert_eq!(recording.export().unwrap(), audio);
+        }
+        // The next session begins fresh; opting out must not retain a fixture.
+        controller.archive_mut().begin(false, 2);
+        recording.begin(false);
+        assert!(controller.archive().export().is_none());
+        assert!(recording.export().is_none());
+    }
+
+    #[test]
+    fn ordinary_ui_test_finalization_still_clears_synthetic_buffers() {
+        let mut controller = TranslationSessionController::default();
+        controller.archive_mut().begin(true, 1);
+        controller.handle(LiveTranslateServerEvent::SubtitleFinalPair {
+            source: "Synthetic export fixture".into(),
+            language: Some("en".into()),
+            translation: "合成导出示例".into(),
+        });
+        let mut recording = crate::core::session_archive::AudioRecording::default();
+        recording.begin(true);
+        recording.append(16_000, &[0, 0]);
+        finish_ui_test_archive(&mut controller, &mut recording, false);
+        assert_eq!(controller.archive().page("", 0).total, 0);
+        assert!(controller.archive().export().is_none());
+        assert!(recording.export().is_none());
+    }
 
     #[test]
     fn terminal_error_remains_visible_but_is_not_an_active_session() {

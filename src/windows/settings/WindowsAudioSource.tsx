@@ -1,6 +1,14 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { audioSourceCopy, type AudioSourceSnapshot } from "../../lib/windowsAudioSource";
+import {
+  FOLLOW_AUDIBLE,
+  FOLLOW_SYSTEM,
+  ROLE_COMMUNICATIONS,
+  ROLE_MULTIMEDIA,
+  audioSourceCopy,
+  isDeviceSource,
+  type AudioSourceSnapshot,
+} from "../../lib/windowsAudioSource";
 import { isTauri } from "../../lib/ipc";
 import { useStore } from "../../lib/store";
 import { SettingsRow, SettingsSelect } from "./SettingsPrimitives";
@@ -39,7 +47,7 @@ export function WindowsAudioSource() {
     return () => { disposed = true; clearTimeout(timer); };
   }, []);
   if (!snapshot) return null;
-  const missing = selected !== "" && !snapshot.devices.some((device) => device.id === selected);
+  const missing = isDeviceSource(selected) && !snapshot.devices.some((device) => device.id === selected);
   const current = snapshot.devices.find((device) => device.id === snapshot.currentDevice)?.name;
   const status = failed ? text.failed : missing || snapshot.devices.length === 0 ? text.missing
     : active && !paused ? snapshot.receivingSound ? text.receiving : snapshot.receivingAudioData ? text.silent : text.noData : text.idle;
@@ -48,8 +56,15 @@ export function WindowsAudioSource() {
       <span>
         <SettingsSelect label={text.title} value={selected} disabled={active || failed}
           onChange={(value) => void save({ windowsAudioSource: value })}
-          options={[{ value: "", label: text.system }, ...snapshot.devices.map((device) => ({ value: device.id, label: device.name })),
-            ...(missing ? [{ value: selected, label: text.unavailable }] : [])]} />
+          options={[
+            { value: FOLLOW_SYSTEM, label: text.system },
+            ...(selected === ROLE_COMMUNICATIONS ? [{ value: selected, label: text.communications }] : []),
+            ...(selected === ROLE_MULTIMEDIA ? [{ value: selected, label: text.multimedia }] : []),
+            ...(selected === FOLLOW_AUDIBLE ? [{ value: selected, label: text.audible }] : []),
+            ...(selected === "role:console" ? [{ value: selected, label: text.system }] : []),
+            ...snapshot.devices.map((device) => ({ value: device.id, label: device.name })),
+            ...(missing ? [{ value: selected, label: text.unavailable }] : []),
+          ]} />
         <span className="settings-row__description" role="status">{current && active ? `${current} · ` : ""}{status}</span>
       </span>
     </SettingsRow>

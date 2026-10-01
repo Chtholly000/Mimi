@@ -90,9 +90,22 @@ Windows 安装完成后会重新打开 Mimi；macOS 和 Linux AppImage 可点击
 macOS 使用 **⌘⇧B**，Windows/Linux X11 使用 **Ctrl+Shift+B** 快速切换，不会中断翻译。Wayland 请在系统设置中为 `mimi --cycle-subtitle-display` 绑定快捷键。
 双语模式成对显示已确认的原文与译文，等待翻译时先预览识别到的原文。
 
-## 特别感谢
+## 贡献者
+
+感谢每一位参与 Mimi 的朋友。想一起改进？欢迎阅读 [贡献指南](CONTRIBUTING.md)。
 
 特别感谢 [@yebuwudong](https://github.com/yebuwudong) 在 [PR #37](https://github.com/yuxino/mimi/pull/37) 中贡献原生 Android 版本。[下载 Android](https://github.com/yuxino/mimi/releases/latest)，配置方式和已验证范围见 [Android 说明](android/README.md)。
+
+<p>
+  <a href="https://github.com/yuxino"><img src="docs/assets/contributors/yuxino.svg" width="64" height="64" alt="@yuxino"></a>
+  <a href="https://github.com/inhome"><img src="docs/assets/contributors/inhome.svg" width="64" height="64" alt="@inhome"></a>
+  <a href="https://github.com/LLLin000"><img src="docs/assets/contributors/LLLin000.svg" width="64" height="64" alt="@LLLin000"></a>
+  <a href="https://github.com/yebuwudong"><img src="docs/assets/contributors/yebuwudong.svg" width="64" height="64" alt="@yebuwudong"></a>
+</p>
+
+[查看 GitHub 贡献记录](https://github.com/yuxino/mimi/graphs/contributors)。头像墙按默认分支的公开贡献归属核对，尚未合入的工作另列。
+
+正在审阅：[@LLLin000 的字幕动效 #67](https://github.com/yuxino/mimi/pull/67) 与 [Windows 音源改进 #89](https://github.com/yuxino/mimi/pull/89)，已纳入 [集成验收 #88](https://github.com/yuxino/mimi/pull/88)。
 
 ## 社区友链
 

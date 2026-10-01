@@ -51,12 +51,18 @@ export function SessionExport({ visible }: { visible: boolean }) {
   const transcriptRequest = useRef(0);
   const historyRequest = useRef(0);
   const audioRequest = useRef(0);
+  const interaction = useRef(0);
+  const visibility = useRef(0);
 
   const selected = history.find((item) => item.id === selectedId);
   const availableCount = selectedId ? (selected?.count ?? 0) : (archive?.transcriptCount ?? 0);
   const displayedTranscript = availableCount ? transcript : undefined;
 
   function selectHistory(id: string | null) {
+    if (id === selectedId) return;
+    interaction.current += 1;
+    setFeedback(null);
+    setHistoryError(false);
     audioRequest.current += 1;
     setAudioUrl(null);
     setAudioError(false);
@@ -101,6 +107,11 @@ export function SessionExport({ visible }: { visible: boolean }) {
       monitor.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    interaction.current += 1;
+    visibility.current += 1;
+  }, [visible]);
 
   useEffect(() => {
     monitor.current?.refresh();
@@ -153,22 +164,44 @@ export function SessionExport({ visible }: { visible: boolean }) {
     if (!isTauri || operation.current || useStore.getState().session.isActive)
       return;
     const currentLifetime = lifetime.current;
+    const currentInteraction = interaction.current;
     operation.current = true;
-    transcriptRequest.current += 1;
-    setTranscript(undefined);
     setBusy(true);
     setFeedback(null);
     try {
       const result = await action();
-      if (lifetime.current === currentLifetime) setFeedback(result);
+      if (lifetime.current === currentLifetime && interaction.current === currentInteraction) setFeedback(result);
     } catch {
-      if (lifetime.current === currentLifetime) setFeedback("error");
+      if (lifetime.current === currentLifetime && interaction.current === currentInteraction) setFeedback("error");
     } finally {
       operation.current = false;
       if (lifetime.current === currentLifetime) {
         setBusy(false);
         monitor.current?.refresh();
       }
+    }
+  }
+
+  async function deleteHistory(id: string) {
+    if (!isTauri || operation.current) return;
+    const currentLifetime = lifetime.current;
+    const currentInteraction = interaction.current;
+    const currentVisibility = visibility.current;
+    operation.current = true;
+    setBusy(true);
+    setHistoryError(false);
+    try {
+      await sessionHistoryDelete(id);
+      if (lifetime.current !== currentLifetime || visibility.current !== currentVisibility) return;
+      setHistory((items) => items.filter((item) => item.id !== id));
+      if (interaction.current === currentInteraction) selectHistory(null);
+    } catch {
+      if (lifetime.current === currentLifetime && interaction.current === currentInteraction) {
+        setHistoryError(true);
+      }
+    } finally {
+      operation.current = false;
+      if (lifetime.current === currentLifetime) setBusy(false);
     }
   }
 
@@ -279,7 +312,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
           </div>
           {selected && <div className="session-history__actions">
             {selected.hasAudio && (audioUrl ? <audio controls src={audioUrl} aria-label={I18N.settings.historyAudio} /> : <button type="button" className="settings-button settings-button--quiet" onClick={() => loadAudio(selected.id)}>{I18N.settings.historyPlayAudio}</button>)}
-            {!confirmDelete ? <button type="button" className="settings-button settings-button--text" disabled={busy} onClick={() => setConfirmDelete(true)}>{I18N.settings.historyDelete}</button> : <span className="session-history__confirm"><span>{I18N.settings.historyDeleteConfirm}</span><button type="button" onClick={() => setConfirmDelete(false)}>{I18N.settings.historyCancel}</button><button type="button" disabled={busy} onClick={() => { void sessionHistoryDelete(selected.id).then(() => { setHistory((items) => items.filter((item) => item.id !== selected.id)); selectHistory(null); }, () => setHistoryError(true)); }}>{I18N.settings.historyDelete}</button></span>}
+            {!confirmDelete ? <button type="button" className="settings-button settings-button--text" disabled={busy} onClick={() => setConfirmDelete(true)}>{I18N.settings.historyDelete}</button> : <span className="session-history__confirm" aria-busy={busy}><span>{I18N.settings.historyDeleteConfirm}</span><button type="button" disabled={busy} onClick={() => setConfirmDelete(false)}>{I18N.settings.historyCancel}</button><button type="button" disabled={busy} onClick={() => { void deleteHistory(selected.id); }}>{I18N.settings.historyDelete}</button></span>}
           </div>}
           {audioError && <InlineFeedback tone="error">{I18N.settings.historyAudioFailed}</InlineFeedback>}
           {availableCount > 0 && <div className="session-transcript__toolbar">

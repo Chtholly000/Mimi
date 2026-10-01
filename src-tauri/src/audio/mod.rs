@@ -23,6 +23,8 @@ pub struct CaptureSignal {
 #[cfg(any(target_os = "windows", test))]
 mod streaming_resampler;
 
+pub mod census;
+
 #[cfg(target_os = "macos")]
 pub mod macos;
 

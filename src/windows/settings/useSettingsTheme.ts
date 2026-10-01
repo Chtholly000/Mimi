@@ -30,7 +30,7 @@ export function useSettingsTheme() {
     theme === "system" ? (systemDark ? "dark" : "light") : theme;
   useEffect(() => {
     document.body.style.backgroundColor =
-      resolvedTheme === "light" ? "#fafafa" : "#0b0b0b";
+      resolvedTheme === "light" ? "#ffffff" : "#0b0b0b";
     return () => {
       document.body.style.backgroundColor = "";
     };

@@ -24,27 +24,52 @@ const SETTINGS: SettingsSnapshot = {
   subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  pulseAnimation: null,
+  pulseStyle: "classic",
+  subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
   uiLanguage: null,
   retainSessionHistory: false,
   recordSessionAudio: false,
   windowsAudioSource: "",
+  showInDock: false,
 };
 
 describe("mergeSettingsSnapshot", () => {
+  it("keeps a Dock choice through unrelated settings and allows explicitly hiding again", () => {
+    const enabled = mergeSettingsSnapshot(SETTINGS, { showInDock: true });
+    expect(mergeSettingsSnapshot(enabled, { uiLanguage: "ja" }).showInDock).toBe(true);
+    expect(mergeSettingsSnapshot(enabled, { showInDock: false }).showInDock).toBe(false);
+  });
+
+  it("changes pulse style without changing explicit motion or unrelated choices", () => {
+    const previous = { ...SETTINGS, pulseAnimation: false, subtitleAnimation: true, fontSize: 19 };
+    const changed = mergeSettingsSnapshot(previous, { pulseStyle: "ribbon" });
+    expect(changed).toMatchObject({ pulseStyle: "ribbon", pulseAnimation: false, subtitleAnimation: true, fontSize: 19 });
+    expect(mergeSettingsSnapshot(changed, { fontSize: 20 }).pulseStyle).toBe("ribbon");
+  });
+  it("keeps an optimistic Windows source choice without changing pulse preferences", () => {
+    const changed = mergeSettingsSnapshot({ ...SETTINGS, pulseStyle: "ribbon", pulseAnimation: false }, { windowsAudioSource: "synthetic-render-endpoint" });
+    expect(changed).toMatchObject({ windowsAudioSource: "synthetic-render-endpoint", pulseStyle: "ribbon", pulseAnimation: false });
+    expect(mergeSettingsSnapshot(changed, { fontSize: 20 }).windowsAudioSource).toBe("synthetic-render-endpoint");
+  });
   it("merges runtime-safe subtitle presentation preferences", () => {
     expect(
       mergeSettingsSnapshot(SETTINGS, {
         subtitleColor: "#123456",
         subtitleAlignment: "right",
         subtitleDisplayMode: "bilingual",
+        subtitleAnimation: true,
+        pulseAnimation: false,
         subtitleBlendsWithBackground: true,
       }),
     ).toMatchObject({
       subtitleColor: "#123456",
       subtitleAlignment: "right",
       subtitleDisplayMode: "bilingual",
+      subtitleAnimation: true,
+      pulseAnimation: false,
       subtitleBlendsWithBackground: true,
     });
   });

@@ -68,6 +68,14 @@ class SettingsActivity : AppCompatActivity() {
         val immersiveSwitch = findViewById<MaterialSwitch>(R.id.immersive_subtitles)
         immersiveSwitch.isChecked = SettingsStore.immersiveSubtitles(this)
         immersiveSwitch.setOnCheckedChangeListener { _, enabled ->
+            if (enabled && !getSharedPreferences("first_run", 0).getBoolean("immersive_seen", false)) {
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(this)
+                    .setTitle(getString(R.string.guide_immersive))
+                    .setMessage(getString(R.string.guide_immersive_hint))
+                    .setPositiveButton(getString(R.string.guide_understood)) { _, _ ->
+                        getSharedPreferences("first_run", 0).edit().putBoolean("immersive_seen", true).apply()
+                    }.show()
+            }
             SettingsStore.setImmersiveSubtitles(this, enabled)
             if (MimiService.isRunning) {
                 startService(Intent(this, MimiService::class.java)

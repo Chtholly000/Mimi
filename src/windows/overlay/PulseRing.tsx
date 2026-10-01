@@ -1,135 +1,85 @@
-import { memo, useEffect, useRef } from "react";
-import {
-  OVERLAY_ACTIVITY_PHASES,
-  overlayPhaseColor,
-  type OverlayActivityPhaseKind,
-} from "../../lib/types";
-import { useReducedMotion } from "./animation";
+import { memo, useEffect, useState } from "react";
+import { OVERLAY_ACTIVITY_PHASES, overlayPhaseColor, type OverlayActivityPhaseKind, type PulseStyle } from "../../lib/types";
+import "./PulseRing.css";
 
 interface PulseRingProps {
   phase: OverlayActivityPhaseKind;
-  /** The status-bar variant: the same pulse scaled down. */
   compact?: boolean;
+  /** Already resolved independently from the subtitle-motion preference. */
+  motionEnabled: boolean;
+  /** Missing preferences preserve the existing indicator. */
+  pulseStyle?: PulseStyle;
 }
 
-// Three rings spread across the pulse cycle (0°, 120°, 240°), so the wave
-// always has a ring mid-expansion. All active phases share one cadence; the
-// phase only changes the color, keeping every state's motion identical.
-const RING_COUNT = 3;
-const PULSE_PERIOD_MS = 1400;
+const syllables = [8, 12, 16, 20, 24, 28, 32];
+const heights = [6, 12, 23, 29, 22, 13, 6];
+// One repeat occupies 40 viewBox units: translating the persistent track
+// by 40 units loops without replacing its animation instance.
+const wave = "M-40 20 Q-35 20 -30 12 T-20 20 T-10 28 T0 20 T10 12 T20 20 T30 28 T40 20 T50 12 T60 20 T70 28 T80 20";
 
-/**
- * The recognition activity indicator: a glowing center dot with rings that
- * ripple outward and fade. The rings expand via `transform: scale()` written
- * directly to the DOM from an rAF loop — no React state per frame, no layout
- * work — so it stays smooth inside the transparent always-on-top overlay.
- * Compact is the identical animation scaled down.
+/** Decorative sound language from session phases, never measured audio.
+ * Tracks stay mounted. Phase changes reshape their enclosing layers;
+ * pause settles for 520ms, then freezes clocks; resume continues those clocks.
  */
-export const PulseRing = memo(function PulseRing({
-  phase,
-  compact = false,
-}: PulseRingProps) {
-  const reduceMotion = useReducedMotion();
-  const active = !reduceMotion && OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0;
-
-  const dotRef = useRef<HTMLDivElement | null>(null);
-  const ringRefs = useRef<Array<HTMLDivElement | null>>([]);
-  const phaseRef = useRef(phase);
-
+export const PulseRing = memo(function PulseRing({ phase, compact = false, motionEnabled, pulseStyle = "classic" }: PulseRingProps) {
+  const lightClass = pulseStyle === "classic" ? "phase-light" : "sound-light";
+  const working = OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0;
+  const [clockPaused, setClockPaused] = useState(!motionEnabled || !working);
   useEffect(() => {
-    phaseRef.current = phase;
-  }, [phase]);
-
-  useEffect(() => {
-    const rings = ringRefs.current;
-    const dot = dotRef.current;
-
-    if (!active) {
-      // Static pulse: one mid-size ring at rest.
-      rings.forEach((ring, index) => {
-        if (ring) {
-          const t = index / RING_COUNT;
-          ring.style.transform = `scale(${0.35 + t * 0.25})`;
-          ring.style.opacity = String(0.3 - t * 0.08);
-        }
-      });
-      if (dot) {
-        dot.style.opacity = "0.9";
-      }
+    if (!motionEnabled || working) {
+      setClockPaused(!motionEnabled);
       return;
     }
-
-    let raf = 0;
-    let lastNow = 0;
-    const loop = (now: number) => {
-      if (lastNow !== 0) {
-        // The dot keeps a gentle breathing pulse; the rings ripple on their
-        // own cadence independent of the phase table.
-        const progress = (now % PULSE_PERIOD_MS) / PULSE_PERIOD_MS;
-        if (dot) {
-          const breathe = 0.75 + 0.25 * Math.sin((now / 700) * Math.PI * 2);
-          dot.style.opacity = String(breathe);
-        }
-        rings.forEach((ring, index) => {
-          if (!ring) return;
-          const offset = index / RING_COUNT;
-          const t = (progress + offset) % 1;
-          // Expand from center and fade out as it travels.
-          ring.style.transform = `scale(${0.2 + t * 1.1})`;
-          ring.style.opacity = String(0.55 * (1 - t));
-        });
-      }
-      lastNow = now;
-      raf = requestAnimationFrame(loop);
-    };
-    raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
-  }, [active]);
-
-  const base = compact ? 18 : 40;
-  const color = overlayPhaseColor(phase, 1);
+    const settle = window.setTimeout(() => setClockPaused(true), 520);
+    return () => window.clearTimeout(settle);
+  }, [motionEnabled, working]);
 
   return (
     <div
-      className="relative"
-      style={{ width: base, height: base }}
+      className={`${lightClass}${motionEnabled ? "" : ` ${lightClass}--still`}`}
+      data-phase={phase}
+      data-clock={clockPaused ? "paused" : "running"}
+      data-sound-style={pulseStyle}
+      data-pulse-style={pulseStyle}
       aria-hidden="true"
+      style={{ width: compact ? 18 : 40, height: compact ? 18 : 40, color: overlayPhaseColor(phase, 1) }}
     >
-      {/* Ripple rings */}
-      {Array.from({ length: RING_COUNT }, (_, index) => (
-        <div
-          key={index}
-          ref={(element) => {
-            ringRefs.current[index] = element;
-          }}
-          style={{
-            position: "absolute",
-            inset: 0,
-            borderRadius: "50%",
-            border: `${compact ? 1 : 1.5}px solid ${color}`,
-            transformOrigin: "center",
-            // Rings are drawn centered; the base box is the dot, rings grow
-            // beyond it via scale.
-          }}
-        />
-      ))}
-      {/* Center dot */}
-      <div
-        ref={dotRef}
-        style={{
-          position: "absolute",
-          left: "50%",
-          top: "50%",
-          width: compact ? 7 : 14,
-          height: compact ? 7 : 14,
-          marginLeft: compact ? -3.5 : -7,
-          marginTop: compact ? -3.5 : -7,
-          borderRadius: "50%",
-          background: color,
-          boxShadow: `0 0 ${compact ? 6 : 12}px ${overlayPhaseColor(phase, 0.6)}`,
-          opacity: 0.9,
-        }}
-      />
+      {pulseStyle === "classic" ? <>
+      <div className="phase-light__rest" />
+      <div className="phase-light__halo"><div className="phase-light__halo-ring" /></div>
+      <div className="phase-light__recognition">
+        {[0, 1, 2].map(index => <div key={index} className="phase-light__ripple" style={{ animationDelay: `${-index * 0.9}s` }} />)}
+      </div>
+      <div className="phase-light__arcs"><div className="phase-light__arc phase-light__arc--outer" /><div className="phase-light__arc phase-light__arc--inner" /></div>
+      <div className="phase-light__core"><div className="phase-light__dot" /></div>
+      <div className="phase-light__pause"><i /><i /></div>
+      <div className="phase-light__error" />
+      </> : <svg className="sound-light__drawing" viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeLinecap="round">
+        <g className="sound-light__syllables">
+          {syllables.map((x, index) => (
+            <g className="sound-light__envelope" key={x}>
+              <g className="sound-light__beat" style={{ animationDelay: `${-index * 0.19}s` }}>
+                <path strokeWidth="2.25" d={`M${x} ${20 - heights[index] / 2}V${20 + heights[index] / 2}`} />
+              </g>
+            </g>
+          ))}
+        </g>
+        <g className="sound-light__ribbons">
+          <g className="sound-light__ribbon-envelope">
+            <path className="sound-light__wave sound-light__wave--back" strokeWidth="1.25" d={wave} />
+            <path className="sound-light__wave sound-light__wave--front" strokeWidth="1.7" d={wave} />
+          </g>
+        </g>
+        <g className="sound-light__translation">
+          <g className="sound-light__current-envelope">
+            <path className="sound-light__current sound-light__current--back" strokeWidth="1.25" d={wave} />
+            <path className="sound-light__current sound-light__current--front" strokeWidth="1.7" d={wave} />
+          </g>
+        </g>
+        <path className="sound-light__flat" strokeWidth="1.7" d="M9 20H17M23 20H31" />
+        <g className="sound-light__idle" fill="currentColor" stroke="none"><circle cx="16" cy="20" r="1" /><circle cx="20" cy="20" r="1" /><circle cx="24" cy="20" r="1" /></g>
+        <path className="sound-light__error" strokeWidth="1.7" d="M16 16L24 24M24 16L16 24" />
+      </svg>}
     </div>
   );
 });

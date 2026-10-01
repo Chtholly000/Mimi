@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { SettingsSnapshot } from "./types";
 import {
   SERVICE_PROVIDERS,
+  effectiveProviderForProfile,
+  textTranslationForProfile,
   activeServiceProfile,
   effectiveTranslationModeForSettings,
   sourceLanguagesForSettings,
@@ -34,12 +36,16 @@ const BASE_SETTINGS: SettingsSnapshot = {
   subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  pulseAnimation: null,
+  pulseStyle: "classic",
+  subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
   uiLanguage: null,
   retainSessionHistory: false,
   recordSessionAudio: false,
   windowsAudioSource: "",
+  showInDock: false,
 };
 
 describe("provider capabilities", () => {
@@ -146,7 +152,7 @@ describe("provider capabilities", () => {
   });
 
   it("registers every built-in provider exactly once", () => {
-    expect(new Set(SERVICE_PROVIDERS).size).toBe(9);
+    expect(new Set(SERVICE_PROVIDERS).size).toBe(8);
     expect(SERVICE_PROVIDERS).toEqual([
       "alibabaCloud",
       "openAIRealtime",
@@ -156,7 +162,6 @@ describe("provider capabilities", () => {
       "tencentCloud",
       "baiduTranslate",
       "xAIRealtime",
-      "deepLX",
     ]);
   });
 
@@ -241,4 +246,21 @@ describe("provider capabilities", () => {
       false,
     );
   });
+});
+
+
+it("keeps DeepLX out of speech-service choices while preserving legacy configurations", () => {
+  expect(SERVICE_PROVIDERS).not.toContain("deepLX");
+  const legacy = { id: "old", name: "Existing", provider: "deepLX", credentialState: "present" } as const;
+  expect(textTranslationForProfile(legacy)).toBe("deepLX");
+  expect(effectiveProviderForProfile(legacy)).toBe("deepLX");
+  expect(effectiveProviderForProfile({ ...legacy, textTranslation: "followService" })).toBe("alibabaCloud");
+});
+
+it("applies actual Audio3+DeepLX capabilities only when selected", () => {
+  const settings: SettingsSnapshot = { ...BASE_SETTINGS, profiles: [{ ...BASE_SETTINGS.profiles[0], textTranslation: "deepLX" }] };
+  expect(targetLanguagesForSettings(settings)).toEqual(["zh", "en", "ja"]);
+  expect(translationModesForSettings(settings)).toEqual(["turbo"]);
+  expect(effectiveTranslationModeForSettings(settings)).toBe("turbo");
+  expect(effectiveProviderForProfile({ ...BASE_SETTINGS.profiles[1], textTranslation: "deepLX" })).toBe("openAIRealtime");
 });
