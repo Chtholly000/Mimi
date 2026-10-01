@@ -2106,3 +2106,11 @@
   color: var(--settings-text);
   background: var(--settings-control);
 }
+
+.connection-check{display:grid;justify-items:start;gap:10px;margin:16px 0}
+.connection-check>.settings-button{width:auto;min-width:120px}
+.connection-check .settings-feedback{margin:0;max-width:100%}
+.connection-check details{font-size:12px;color:var(--settings-text-muted)}
+.connection-check summary{cursor:pointer}
+.connection-check details p{margin:8px 0;line-height:1.65;max-width:55ch}
+.service-danger-zone{margin-top:24px;padding-top:16px;border-top:1px solid var(--settings-border)}
