@@ -151,6 +151,28 @@ translated output. Record only timing/counts/status, never speech or subtitles.
   provider. UI-only mode must never read Keychain items, open provider sockets,
   or start system-audio capture.
 
+## Native exit and acceptance evidence
+
+- macOS's predefined Quit invokes AppKit termination directly; in the locked
+  Tao runtime it can bypass `ExitRequested`. Keep application-menu/Cmd-Q and
+  ordinary Dock Quit on the shared stop/finalize path, not an asynchronous
+  cleanup task launched after `RunEvent::Exit`.
+- The public termination delegate wrapper retains and forwards to Tao's
+  original receiver. Keep Dock visibility on Mimi's direct AppKit activation
+  policy; Tao's runtime `set_dock_visibility` reads a private ivar from the
+  current delegate and is incompatible with the wrapper. See
+  [the termination design](../plans/2026-10-02-native-quit-finalization.md).
+- The dev bundle is named `mimi-dev.app`, while its executable may be named
+  `mimi`. Read `codesign -d -r-` and match the actual bundle executable path
+  when verifying processes; a `mimi-dev` binary-name filter can falsely report
+  that no instance exists.
+- A queued UI-state broadcast can be lost when normal exit completes before
+  its 60ms coalescing delay. Verify stop completion through content-free
+  lifecycle evidence and process exit, not an old UI-test state marker alone.
+- A frontend settings deadline cannot cancel a native Keychain authorization
+  wait. Keep real-provider acceptance pending until OS authorization finishes;
+  never use credential-free UI fixtures as proof that provider audio works.
+
 ## Before handing off
 
 Run `./scripts/check.sh`. For signing changes, additionally build with
