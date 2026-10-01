@@ -22,8 +22,8 @@
 }
 
 .settings-console--light {
-  --settings-canvas: #fdfdfc;
-  --settings-panel: #f4f4f3;
+  --settings-canvas: #ffffff;
+  --settings-panel: #f4f4f4;
   --settings-panel-raised: #f5f5f5;
   --settings-control: #eeeeee;
   --settings-border: rgba(0, 0, 0, 0.1);
