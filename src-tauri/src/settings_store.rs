@@ -178,7 +178,9 @@ fn secret_service_operation_error(error: keyring_core::Error) -> SecretStoreErro
 
 fn keyring_operation_error(error: keyring_core::Error) -> SecretStoreError {
     #[cfg(target_os = "linux")]
-    return secret_service_operation_error(error);
+    {
+        secret_service_operation_error(error)
+    }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = error;
