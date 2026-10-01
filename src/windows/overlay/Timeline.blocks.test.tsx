@@ -40,14 +40,14 @@ function render(
 const SOURCE_FONT_PX = Math.max(12, 18 * 0.82);
 /** Mirrors the lane viewport height: whole lines are reserved, then rounded. */
 const laneHeight = (lines: number, fontPx: number) =>
-  Math.round(lines * fontPx * 1.45);
+  Math.round(lines * fontPx * 1.32);
 
 describe("sentence block presentation", () => {
-  it("renders committed history without a clipping viewport", () => {
+  it("keeps long confirmed history compact while following, retaining its full text", () => {
     const html = render([HISTORY]);
     expect(html).toContain("Helloworld");
-    expect(html).not.toContain("overflow:hidden");
-    expect(html).not.toContain("aria-label");
+    expect(html).toContain("overflow:hidden");
+    expect(html).toContain('aria-label="Helloworld"');
   });
 
   it("clips the live tail to its line budget and keeps the full text accessible", () => {

@@ -21,6 +21,7 @@ pub enum QwenMTProtocolError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QwenMTClientError {
     DeepLX(super::deeplx::DeepLXError),
+    DeepL(super::deepl::DeepLError),
     MissingAPIKey,
     InvalidHTTPResponse,
     ResponseTooLarge,
@@ -32,6 +33,7 @@ impl std::fmt::Display for QwenMTClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::DeepLX(error) => write!(f, "{error}"),
+            Self::DeepL(error) => write!(f, "{error}"),
             Self::MissingAPIKey => {
                 write!(f, "Add an Alibaba Cloud Model Studio API key in Settings.")
             }
@@ -58,6 +60,7 @@ impl QwenMTClientError {
     pub fn is_authentication_failure(&self) -> bool {
         match self {
             Self::DeepLX(error) => error.authentication_failure(),
+            Self::DeepL(error) => error.authentication_failure(),
             Self::RequestFailed { status_code, .. } => *status_code == 401 || *status_code == 403,
             Self::MissingAPIKey => true,
             Self::InvalidHTTPResponse | Self::ResponseTooLarge | Self::RequestTimedOut => false,
@@ -68,6 +71,7 @@ impl QwenMTClientError {
     pub fn diagnostic_label(&self) -> String {
         match self {
             Self::DeepLX(error) => error.diagnostic_label(),
+            Self::DeepL(error) => error.diagnostic_label(),
             Self::MissingAPIKey => "QwenMTClientError.missingAPIKey".to_string(),
             Self::InvalidHTTPResponse => "QwenMTClientError.invalidHTTPResponse".to_string(),
             Self::ResponseTooLarge => "QwenMTClientError.responseTooLarge".to_string(),
@@ -87,6 +91,7 @@ impl QwenMTRetryPolicy {
     pub fn delay(error: &QwenMTClientError, attempt: usize) -> Option<Duration> {
         let is_transient = match error {
             QwenMTClientError::DeepLX(error) => error.retryable(),
+            QwenMTClientError::DeepL(error) => error.retryable(),
             QwenMTClientError::RequestTimedOut | QwenMTClientError::InvalidHTTPResponse => true,
             QwenMTClientError::RequestFailed { status_code, .. } => {
                 *status_code == 408 || *status_code == 429 || *status_code >= 500

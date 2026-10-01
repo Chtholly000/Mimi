@@ -1,3 +1,5 @@
+import type { SessionStateEvent } from "../../lib/types";
+
 interface OverlayTopChromeLayout {
   dragHandleCenterX: number;
   dragHandleWidth: number;
@@ -12,6 +14,19 @@ const ACTION_BUTTON_WIDTH = 24;
 const ACTION_BUTTON_GAP = 4;
 const MAXIMUM_ACTION_COUNT = 6;
 const CHROME_GAP = 6;
+
+/** Error states retain their native language capsule and recovery actions. */
+export function overlaySessionChromeLayout(
+  width: number,
+  session: Pick<SessionStateEvent, "isActive" | "status">,
+) {
+  const showControls = session.isActive || session.status.kind === "error";
+  return {
+    ...overlayTopChromeLayout(width, showControls),
+    showControls,
+    topBandHeight: showControls ? 61 : 37,
+  };
+}
 
 const MAXIMUM_ACTION_ROW_WIDTH =
   MAXIMUM_ACTION_COUNT * ACTION_BUTTON_WIDTH +

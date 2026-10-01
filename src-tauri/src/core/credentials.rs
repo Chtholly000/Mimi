@@ -50,6 +50,10 @@ pub enum ProviderCredentials {
         endpoint: String,
         token: String,
     },
+    DeepL {
+        asr_api_key: String,
+        api_key: String,
+    },
     ApiKey {
         api_key: String,
     },
@@ -91,6 +95,7 @@ impl ProviderCredentials {
         match self {
             Self::AlibabaTranslation { .. } => "alibaba_translation_update",
             Self::DeepLX { .. } => "deeplx",
+            Self::DeepL { .. } => "deepl",
             Self::ApiKey { .. } => "api_key",
             Self::AzureOpenAI { .. } => "azure_openai",
             Self::TencentCloud { .. } => "tencent_cloud",
@@ -100,6 +105,16 @@ impl ProviderCredentials {
 
     pub fn validated_for(&self, provider: ProviderKind) -> Result<Self, ProviderCredentialsError> {
         match (provider, self) {
+            (
+                ProviderKind::AlibabaCloud,
+                Self::DeepL {
+                    asr_api_key,
+                    api_key,
+                },
+            ) => Ok(Self::DeepL {
+                asr_api_key: required_field(asr_api_key, provider)?,
+                api_key: required_field(api_key, provider)?,
+            }),
             (
                 ProviderKind::DeepLX,
                 Self::DeepLX {
@@ -207,12 +222,16 @@ impl ProviderCredentials {
         if profile.provider == ProviderKind::AlibabaCloud {
             return Self::decode_from_keychain(ProviderKind::AlibabaCloud, value);
         }
-        let credentials = if profile.text_translation() == TextTranslation::FollowService
-            && !value.trim_start().starts_with('{')
-        {
+        let credentials = if !value.trim_start().starts_with('{') {
             Self::api_key(value).validated_for(ProviderKind::AlibabaCloud)?
         } else {
-            Self::decode_from_keychain(ProviderKind::DeepLX, value)?
+            let stored = serde_json::from_str::<Self>(value)
+                .map_err(|_| ProviderCredentialsError::InvalidStoredValue)?;
+            stored.validated_for(if matches!(stored, Self::DeepL { .. }) {
+                ProviderKind::AlibabaCloud
+            } else {
+                ProviderKind::DeepLX
+            })?
         };
         Ok(credentials)
     }
@@ -220,7 +239,7 @@ impl ProviderCredentials {
     pub fn alibaba_key(&self) -> Option<&str> {
         match self {
             Self::ApiKey { api_key } => Some(api_key),
-            Self::DeepLX { asr_api_key, .. } => Some(asr_api_key),
+            Self::DeepLX { asr_api_key, .. } | Self::DeepL { asr_api_key, .. } => Some(asr_api_key),
             _ => None,
         }
     }
@@ -231,6 +250,7 @@ impl ProviderCredentials {
             Self::AzureOpenAI { api_key, .. } => Some(api_key),
             Self::AlibabaTranslation { .. }
             | Self::DeepLX { .. }
+            | Self::DeepL { .. }
             | Self::TencentCloud { .. }
             | Self::BaiduTranslate { .. } => None,
         }

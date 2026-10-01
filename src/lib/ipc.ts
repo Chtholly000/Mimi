@@ -275,7 +275,8 @@ export function appDesktopShortcutCommands(): Promise<DesktopShortcutCommands | 
 
 export interface ConnectionDiagnostic {
   credential: "present" | "missing" | "unavailable" | "invalid";
-  network: "reachable" | "timeout" | "unreachable" | "notTested";
+  service: "available" | "unavailable" | "notTested";
+  reason: null | "credentialsMissing" | "credentialsUnavailable" | "invalidConfiguration" | "authenticationRejected" | "serviceRejected" | "timeout" | "unreachable";
 }
 export function testProfileConnection(profileId: string): Promise<ConnectionDiagnostic> {
   return invoke("profile_test_connection", { profileId });

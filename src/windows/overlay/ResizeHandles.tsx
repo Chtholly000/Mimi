@@ -18,7 +18,7 @@ type Region =
 
 const OVERLAY_MIN_WIDTH = 360;
 const OVERLAY_MAX_WIDTH = 1200;
-const OVERLAY_MIN_HEIGHT = 100;
+const OVERLAY_MIN_HEIGHT = 136;
 const OVERLAY_MAX_HEIGHT = 600;
 
 const CURSORS: Record<Region, string> = {

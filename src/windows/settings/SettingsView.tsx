@@ -5,20 +5,16 @@ import { I18N, setStoredUiLanguage, type UiLanguage } from "../../lib/i18n";
 import { announceSettingsNavigationReady, isTauri, listenSettingsNavigation } from "../../lib/ipc";
 import { selectSessionErrorMessage, selectSessionStatusKind, useStore } from "../../lib/store";
 import {
-  effectiveTranslationModeForSettings,
   sourceLanguagesForSettings,
   targetLanguagesForSettings,
-  translationModesForSettings,
 } from "../../lib/providerCapabilities";
 import {
   SOURCE_LANGUAGE_DISPLAY_NAMES,
   TARGET_LANGUAGE_DISPLAY_NAMES,
-  TRANSLATION_MODE_DISPLAY_NAMES,
   type SettingsSnapshot,
   type SourceLanguage,
   type SubtitleAlignment,
   type TargetLanguage,
-  type TranslationMode,
 } from "../../lib/types";
 import { sourceLanguageButtonTitle } from "../overlay/overlayModel";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
@@ -44,16 +40,18 @@ import {
 } from "./settingsSessionControlModel";
 import { SettingsRow, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
 import { SettingsSessionControls } from "./SettingsSessionControls";
+import { QuickStartGuide } from "./QuickStartGuide";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import "./settings.css";
 
-type SettingsCategory = "subtitles" | "service" | "general" | "export";
+type SettingsCategory = "subtitles" | "service" | "general" | "export" | "guide";
 
 const CATEGORY_SECTION_IDS: Record<SettingsCategory, string> = {
   subtitles: "subtitle-settings",
   service: "service-profiles",
   general: "application-settings",
   export: "session-export",
+  guide: "getting-started",
 };
 
 /** Compact settings surface shared by the macOS and Windows shells. */
@@ -112,8 +110,6 @@ export function SettingsView() {
   const sourceLanguages = sourceLanguagesForSettings(settings);
   const targetLanguages = targetLanguagesForSettings(settings);
   const chineseIsOriginalOnly = targetLanguages.includes("original");
-  const translationModes = translationModesForSettings(settings);
-  const effectiveTranslationMode = effectiveTranslationModeForSettings(settings);
   const isChangingSession = sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
   const sessionControl = settingsSessionControlState({
     statusKind: sessionStatusKind,
@@ -151,6 +147,7 @@ export function SettingsView() {
     service: I18N.settings.servicePageDescription,
     general: I18N.settings.generalPageDescription,
     export: I18N.settings.exportPageDescription,
+    guide: I18N.settings.quickStartDescription,
   };
 
   const selectCategory = useCallback((category: SettingsCategory) => {
@@ -256,13 +253,23 @@ export function SettingsView() {
           })}
         </nav>
         <div className="settings-sidebar-support">
+          <button
+            type="button"
+            className={`settings-category-nav__item settings-guide-entry${activeCategory === "guide" ? " is-selected" : ""}`}
+            aria-current={activeCategory === "guide" ? "page" : undefined}
+            aria-controls="getting-started-panel"
+            onClick={() => selectCategory("guide")}
+          >
+            <Icon name="captions-bubble" />
+            <span>{I18N.settings.quickStartTitle}</span>
+          </button>
           <SupportDiagnostics key={activeCategory} />
         </div>
       </aside>
       <div className="settings-console__scroll" ref={contentScrollRef}>
         <div className="settings-console__frame">
           <header className="settings-page-header">
-            <h1>{categories.find((category) => category.id === activeCategory)?.label}</h1>
+            <h1>{activeCategory === "guide" ? I18N.settings.quickStartTitle : categories.find((category) => category.id === activeCategory)?.label}</h1>
             <p>{pageDescriptions[activeCategory]}</p>
           </header>
           <SettingsSessionControls
@@ -282,6 +289,14 @@ export function SettingsView() {
             onConfigure={() => selectCategory("service")}
           />
           <div className="settings-layout">
+            {activeCategory === "guide" && (
+              <div id="getting-started-panel" className="settings-category-panel">
+                <QuickStartGuide
+                  onConfigureService={() => selectCategory("service")}
+                  onOpenSubtitles={() => selectCategory("subtitles")}
+                />
+              </div>
+            )}
             {activeCategory === "subtitles" && (
               <div id="subtitle-settings-panel" className="settings-category-panel">
                 <SettingsSection
@@ -331,7 +346,6 @@ export function SettingsView() {
                           label={I18N.settings.pulseStyle}
                           value={settings.pulseStyle}
                           options={[
-                            { value: "classic", label: I18N.settings.pulseStyleClassic },
                             { value: "syllable", label: I18N.settings.pulseStyleSyllable },
                             { value: "ribbon", label: I18N.settings.pulseStyleRibbon },
                           ]}
@@ -444,29 +458,6 @@ export function SettingsView() {
                       options={targetLanguages.map((language) => ({
                         value: language,
                         label: TARGET_LANGUAGE_DISPLAY_NAMES[language],
-                      }))}
-                    />
-                  </SettingsRow>
-
-                  <div className="settings-divider" />
-
-                  <SettingsRow
-                    label={I18N.settings.translationMode}
-                    description={translationModeHelp(effectiveTranslationMode)}
-                    align="start"
-                  >
-                    <SettingsSelect
-                      value={effectiveTranslationMode}
-                      disabled={sessionIsActive}
-                      label={I18N.settings.translationMode}
-                      onChange={(value) =>
-                        void saveSettings({
-                          translationMode: value as TranslationMode,
-                        })
-                      }
-                      options={translationModes.map((mode) => ({
-                        value: mode,
-                        label: TRANSLATION_MODE_DISPLAY_NAMES[mode],
                       }))}
                     />
                   </SettingsRow>
@@ -630,6 +621,8 @@ function settingsCategoryFromHash(hash: string): SettingsCategory | null {
       return "general";
     case CATEGORY_SECTION_IDS.export:
       return "export";
+    case CATEGORY_SECTION_IDS.guide:
+      return "guide";
     default:
       return null;
   }
@@ -661,17 +654,6 @@ function SourceLanguageButton({
       {selected && <Icon name="checkmark-circle" />}
     </button>
   );
-}
-
-function translationModeHelp(mode: TranslationMode): string {
-  switch (mode) {
-    case "turbo":
-      return I18N.modes.turboHelp;
-    case "highQuality":
-      return I18N.modes.highQualityHelp;
-    case "lowLatency":
-      return I18N.modes.lowLatencyHelp;
-  }
 }
 
 function sourceLanguageHelp(

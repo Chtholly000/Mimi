@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { setStoredUiLanguage } from "./i18n";
-import { connectionDiagnosticMessage, credentialErrorMessage, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
+import { connectionDiagnosticMessage, credentialErrorMessage, profileErrorMessage, diagnosticCopy } from "./connectionDiagnostics";
+import type { ConnectionDiagnostic } from "./ipc";
 afterEach(() => setStoredUiLanguage("en"));
 it("localizes shortcut and storage errors without losing recovery guidance", () => {
   setStoredUiLanguage("zh");
@@ -11,18 +12,23 @@ it("localizes shortcut and storage errors without losing recovery guidance", () 
 it("never interpolates arbitrary native errors or synthetic secrets", () => {
   expect(profileErrorMessage("synthetic-secret-private-value")).not.toContain("synthetic-secret");
 });
-it("keeps unauthenticated reachability distinct from valid credentials", () => {
+it("shows a short unavailable reason instead of a reachability disclaimer", () => {
   setStoredUiLanguage("zh");
-  const message = connectionDiagnosticMessage({ credential: "missing", network: "reachable" });
-  expect(message).toContain("尚未配置凭据");
-  expect(message).toContain("服务授权尚未验证");
-  expect(diagnosticCopy().details).toContain("HTTP 401");
+  const message = connectionDiagnosticMessage({ credential: "missing", service: "unavailable", reason: "credentialsMissing" });
+  expect(message).toBe("不可用: 请先保存凭据。");
+  expect(message).not.toContain("HTTP");
   expect(message).not.toContain("认证成功");
 });
-it("reports independent storage and network failures", () => {
-  setStoredUiLanguage("en");
-  expect(connectionDiagnosticMessage({ credential: "unavailable", network: "timeout" })).toContain("timed out");
-  expect(connectionDiagnosticMessage({ credential: "invalid", network: "reachable" })).toContain("Cannot read");
+it("localizes every service failure reason and leaves untested availability neutral", () => {
+  const reasons = ["credentialsMissing", "credentialsUnavailable", "invalidConfiguration", "authenticationRejected", "serviceRejected", "timeout", "unreachable"] as const;
+  for (const language of ["zh", "en", "ja"] as const) {
+    setStoredUiLanguage(language);
+    for (const reason of reasons) {
+      expect(connectionDiagnosticMessage({ credential: "present", service: "unavailable", reason })).toBe(`${diagnosticCopy().unavailable}: ${diagnosticCopy().reasons[reason]}`);
+    }
+    expect(connectionDiagnosticMessage({ credential: "present", service: "notTested", reason: null })).toBe(diagnosticCopy().notTested);
+    expect(connectionDiagnosticMessage({ credential: "present", service: "available", reason: null })).toBe(diagnosticCopy().available);
+  }
 });
 
 it("shows a short endpoint correction instead of the whole provider description", () => {
@@ -37,14 +43,7 @@ it("shows a short endpoint correction instead of the whole provider description"
   }
 });
 
-it("limits desktop recovery guidance to the detected platform", () => {
-  setStoredUiLanguage("zh");
-  expect(diagnosticPlatform("Mozilla Mac OS X")).toBe("macos");
-  expect(diagnosticCopy("macos").details).toContain("钥匙串");
-  expect(diagnosticCopy("macos").details).not.toContain("Debian");
-  expect(diagnosticCopy("windows").details).toContain("凭据管理器");
-  expect(diagnosticCopy("linux").details).toContain("Debian");
-  for (const platform of ["macos", "windows", "linux"] as const) {
-    expect(diagnosticCopy(platform).details).not.toContain("测试模式");
-  }
+it("never upgrades the former network-only contract to available", () => {
+  const legacy = { credential: "present", network: "reachable" } as unknown as ConnectionDiagnostic;
+  expect(connectionDiagnosticMessage(legacy)).toBe(diagnosticCopy().notTested);
 });

@@ -99,3 +99,13 @@ it("reuses a saved Alibaba key without sending a replacement over IPC", () => {
   expect(buildAlibabaTranslationCredentials(profile, emptyCredentialDraft(), "followService")?.kind).toBe("alibabaTranslation");
   expect(buildAlibabaTranslationCredentials({ ...profile, textTranslation: "deepLX" }, emptyCredentialDraft(), "deepLX")?.kind).toBe("alibabaTranslation");
 });
+
+it("requires a DeepL key for a new destination and never sends an address", () => {
+  const profile = { id: "ali", name: "Ali", provider: "alibabaCloud", credentialState: "present" } as const;
+  const draft = { ...emptyCredentialDraft(), endpoint: "https://example.com/translate", token: " synthetic-deepl-key " };
+  expect(buildAlibabaTranslationCredentials(profile, emptyCredentialDraft(), "deepL")).toBeNull();
+  expect(buildAlibabaTranslationCredentials(profile, draft, "deepL")).toEqual({ kind: "alibabaTranslation", apiKey: "", textTranslation: "deepL", endpoint: "", token: "synthetic-deepl-key" });
+  expect(buildAlibabaTranslationCredentials({ ...profile, textTranslation: "deepL" }, emptyCredentialDraft(), "deepL")).toEqual({ kind: "alibabaTranslation", apiKey: "", textTranslation: "deepL", endpoint: "", token: "" });
+  expect(buildAlibabaTranslationCredentials({ ...profile, credentialState: "missing" }, draft, "deepL")).toBeNull();
+  expect(buildAlibabaTranslationCredentials({ ...profile, credentialState: "missing" }, { ...draft, apiKey: " synthetic-asr " }, "deepL")).toEqual({ kind: "alibabaTranslation", apiKey: "synthetic-asr", textTranslation: "deepL", endpoint: "", token: "synthetic-deepl-key" });
+});

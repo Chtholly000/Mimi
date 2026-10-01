@@ -25,7 +25,7 @@ const SETTINGS: SettingsSnapshot = {
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
   pulseAnimation: null,
-  pulseStyle: "classic",
+  pulseStyle: "ribbon",
   subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,

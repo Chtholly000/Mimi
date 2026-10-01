@@ -10,6 +10,9 @@ pub struct CaptureStatus {
     pub kind: &'static str,
     pub strategy: &'static str,
     pub actual_device_name: Option<String>,
+    /// macOS's current default playback destination. ScreenCaptureKit captures
+    /// the system mix independently; this is not a selected capture device.
+    pub system_output_device_name: Option<String>,
     pub observation: Option<CaptureSignal>,
 }
 
@@ -27,6 +30,9 @@ pub mod census;
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+
+#[cfg(target_os = "macos")]
+pub mod macos_output;
 
 #[cfg(target_os = "windows")]
 pub mod windows;

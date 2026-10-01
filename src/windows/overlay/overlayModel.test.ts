@@ -284,11 +284,18 @@ describe("activity phase signals", () => {
 
 
 describe("compact lane budget", () => {
-  it("follows the display mode and lane role, never the window height", () => {
+  it("keeps the ordinary display-mode limits before the viewport has been measured", () => {
     expect(subtitleLaneBudget("bilingual", true)).toEqual({ source: 1, translation: 2 });
     expect(subtitleLaneBudget("bilingual", false)).toEqual({ source: 2, translation: 0 });
     expect(subtitleLaneBudget("translation", true)).toEqual({ source: 0, translation: 2 });
     expect(subtitleLaneBudget("original", false)).toEqual({ source: 2, translation: 0 });
+  });
+
+  it("yields the second line in a short viewport without removing either bilingual lane", () => {
+    expect(subtitleLaneBudget("bilingual", true, 49, 20)).toEqual({ source: 1, translation: 1 });
+    expect(subtitleLaneBudget("bilingual", true, 120, 20)).toEqual({ source: 1, translation: 2 });
+    expect(subtitleLaneBudget("translation", true, 40, 20)).toEqual({ source: 0, translation: 1 });
+    expect(subtitleLaneBudget("original", false, 40, 20)).toEqual({ source: 1, translation: 0 });
   });
 });
 

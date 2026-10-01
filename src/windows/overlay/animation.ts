@@ -1,4 +1,18 @@
 import { useEffect, useRef, useState } from "react";
+import type { SettingsSnapshot } from "../../lib/types";
+
+/** Keep the stabilizer's cached text inside its own utterance. Providers
+ * without stamps still get a new preview identity after a confirmed pair. */
+export function subtitleStreamKey(
+  displayMode: SettingsSnapshot["subtitleDisplayMode"],
+  lane: "source" | "translation",
+  utteranceId: string | null | undefined,
+  latestCommittedAt: number | null,
+): string {
+  return JSON.stringify([displayMode, lane, utteranceId == null
+    ? ["history", latestCommittedAt]
+    : ["utterance", utteranceId]]);
+}
 
 /** Tracks the user's reduced-motion preference reactively. */
 export function useReducedMotion(): boolean {

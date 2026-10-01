@@ -119,9 +119,11 @@ export function buildProviderCredentials(
 export function buildAlibabaTranslationCredentials(profile: ServiceProfile, draft: CredentialDraft, translation: TextTranslation): ProviderCredentialsInput | null {
   if (profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") return null;
   if (!draft.apiKey.trim() && profile.credentialState !== "present") return null;
-  const savedDeepLX = profile.credentialState === "present" && (profile.textTranslation ?? (profile.provider === "deepLX" ? "deepLX" : "followService")) === "deepLX";
-  if (translation === "deepLX" && !draft.endpoint.trim() && !savedDeepLX) return null;
-  return { kind: "alibabaTranslation", apiKey: draft.apiKey.trim(), textTranslation: translation, endpoint: translation === "deepLX" ? draft.endpoint.trim() : "", token: translation === "deepLX" ? draft.token.trim() : "" };
+  const savedTranslation = profile.textTranslation ?? (profile.provider === "deepLX" ? "deepLX" : "followService");
+  const keepsSavedDestination = profile.credentialState === "present" && translation === savedTranslation;
+  if (translation === "deepLX" && !draft.endpoint.trim() && !keepsSavedDestination) return null;
+  if (translation === "deepL" && !draft.token.trim() && !keepsSavedDestination) return null;
+  return { kind: "alibabaTranslation", apiKey: draft.apiKey.trim(), textTranslation: translation, endpoint: translation === "deepLX" ? draft.endpoint.trim() : "", token: translation === "followService" ? "" : draft.token.trim() };
 }
 
 /** Mirrors native DeepLX endpoint safety checks before any credential I/O. */

@@ -70,6 +70,9 @@ const EMPTY_SUBTITLES: SubtitleSnapshot = {
 };
 
 const INITIAL_SESSION: SessionStateEvent = {
+  apiLatencyMs: null,
+  translationLatencyMs: null,
+  translationLatencyKind: null,
   status: { kind: "idle" },
   isActive: false,
   isPaused: false,
@@ -92,13 +95,13 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   activeProfileId: "alibaba-default",
   sourceLanguage: "auto",
   targetLanguage: "zh",
-  translationMode: "lowLatency",
+  translationMode: "turbo",
   fontSize: 18,
   subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
   pulseAnimation: null,
-  pulseStyle: "classic",
+  pulseStyle: "ribbon",
   subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
@@ -232,6 +235,9 @@ export const useStore = create<StoreState>()((set, get) => ({
     const now = Date.now();
     set((state) => ({
       session: {
+        apiLatencyMs: null,
+        translationLatencyMs: null,
+        translationLatencyKind: null,
         status: { kind: "listening" },
         isActive: true,
         isPaused: false,
@@ -268,6 +274,9 @@ export const useStore = create<StoreState>()((set, get) => ({
       session: {
         ...state.session,
         status: { kind: "idle" },
+        apiLatencyMs: null,
+        translationLatencyMs: null,
+        translationLatencyKind: null,
         isActive: false,
         isPaused: false,
         isTranslationPending: false,
@@ -467,6 +476,7 @@ export const useStore = create<StoreState>()((set, get) => ({
       if (!profile || !["alibabaCloud", "deepLX"].includes(profile.provider)) throw new Error("provider-mismatch");
       if (!credentials.apiKey.trim() && profile.credentialState !== "present") throw new Error("credential-empty");
       if (credentials.textTranslation === "deepLX" && !credentials.endpoint.trim() && textTranslationForProfile(profile) !== "deepLX") throw new Error("credential-empty");
+      if (credentials.textTranslation === "deepL" && !credentials.token.trim() && textTranslationForProfile(profile) !== "deepL") throw new Error("credential-empty");
     } else if (Object.entries(credentials).some(([field, value]) => field !== "kind" && field !== "token" && !value.trim())) {
       throw new Error("credential-empty");
     }

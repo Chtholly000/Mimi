@@ -81,4 +81,23 @@ describe("local preview store", () => {
       selectSessionErrorMessage(replacement),
     );
   });
+
+  it("requires a new DeepL key in preview mode and never retains it in settings", async () => {
+    const original = useStore.getState();
+    const profile = { ...original.settings.profiles[0], provider: "alibabaCloud" as const, credentialState: "present" as const, textTranslation: "followService" as const };
+    useStore.setState({
+      settings: { ...original.settings, profiles: [profile], activeProfileId: profile.id },
+      session: { ...original.session, isActive: false, status: { kind: "idle" } },
+    });
+    try {
+      const credentials = { kind: "alibabaTranslation" as const, apiKey: "", textTranslation: "deepL" as const, endpoint: "", token: "" };
+      await expect(useStore.getState().saveProfileCredentials(profile.id, credentials)).rejects.toThrow("credential-empty");
+      const saved = await useStore.getState().saveProfileCredentials(profile.id, { ...credentials, token: "synthetic-deepl-key" });
+      expect(saved.profiles[0].textTranslation).toBe("deepL");
+      expect(JSON.stringify(saved)).not.toContain("synthetic-deepl-key");
+      await expect(useStore.getState().saveProfileCredentials(profile.id, credentials)).resolves.toMatchObject({ profiles: [{ textTranslation: "deepL" }] });
+    } finally {
+      useStore.setState({ settings: original.settings, session: original.session });
+    }
+  });
 });

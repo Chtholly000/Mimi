@@ -173,24 +173,33 @@ export function timelineClassName(blendsWithBackground: boolean): string {
 }
 
 /**
- * Visual-line budget for the compact presentation (the live tail and the
- * newest committed block). It follows the display mode and lane role, never the
- * window height: resizing the overlay reveals more history blocks instead of
- * rewriting the sentence the user is currently reading.
+ * Visual-line budget while following live subtitles, including confirmed
+ * history until the user scrolls up to read it. The ordinary limit is two
+ * reading lines; short viewports yield the second line so both bilingual
+ * lanes stay visible. Full confirmed text is unchanged by this viewport budget.
  */
+export const SUBTITLE_LINE_HEIGHT = 1.32;
+export const SUBTITLE_SOURCE_SCALE = 0.82;
+
 export function subtitleLaneBudget(
   displayMode: SettingsSnapshot["subtitleDisplayMode"],
   hasTranslation: boolean,
+  availableLaneHeight: number | null = null,
+  fontSize = 18,
 ): { source: number; translation: number } {
+  const sourceLine = Math.max(12, fontSize * SUBTITLE_SOURCE_SCALE) * SUBTITLE_LINE_HEIGHT;
+  const translationLine = fontSize * SUBTITLE_LINE_HEIGHT;
+  const linesThatFit = (lineHeight: number, remaining = availableLaneHeight) =>
+    remaining === null ? 2 : Math.max(1, Math.min(2, Math.floor(remaining / lineHeight)));
   switch (displayMode) {
     case "translation":
-      return { source: 0, translation: 2 };
+      return { source: 0, translation: linesThatFit(translationLine) };
     case "original":
-      return { source: 2, translation: 0 };
+      return { source: linesThatFit(sourceLine), translation: 0 };
     default:
       return hasTranslation
-        ? { source: 1, translation: 2 }
-        : { source: 2, translation: 0 };
+        ? { source: 1, translation: linesThatFit(translationLine, availableLaneHeight === null ? null : availableLaneHeight - sourceLine) }
+        : { source: linesThatFit(sourceLine), translation: 0 };
   }
 }
 

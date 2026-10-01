@@ -74,20 +74,11 @@ impl LiveTranslationConfiguration {
         }
     }
 
-    /// The mode actually used for a session: every non-Alibaba realtime
-    /// adapter uses its one supported turbo path. Alibaba preserves turbo and
-    /// otherwise routes automatic recognition to its low-latency pipeline.
+    /// Legacy mode values remain readable, but every new session uses Turbo.
+    /// Provider-specific transports and independent text destinations remain
+    /// resolved by the provider facade.
     pub fn effective_translation_mode(&self) -> TranslationMode {
-        if self.provider != ProviderKind::AlibabaCloud {
-            return TranslationMode::Turbo;
-        }
-        if self.translation_mode == TranslationMode::Turbo {
-            return TranslationMode::Turbo;
-        }
-        if self.source_language == SourceLanguage::Automatic {
-            return TranslationMode::LowLatency;
-        }
-        self.translation_mode
+        TranslationMode::Turbo
     }
 
     /// Returns a trimmed, validated copy of the configuration.
@@ -107,10 +98,8 @@ impl LiveTranslationConfiguration {
         {
             return Err(LiveTranslationConfigurationError::UnsupportedTargetLanguage);
         }
-        if !capabilities
-            .translation_modes
-            .contains(&self.translation_mode)
-        {
+        let translation_mode = self.effective_translation_mode();
+        if !capabilities.translation_modes.contains(&translation_mode) {
             return Err(LiveTranslationConfigurationError::UnsupportedTranslationMode);
         }
 
@@ -119,7 +108,7 @@ impl LiveTranslationConfiguration {
             credentials,
             source_language: self.source_language,
             target_language: self.target_language,
-            translation_mode: self.translation_mode,
+            translation_mode,
         })
     }
 }
@@ -139,11 +128,11 @@ mod tests {
     }
 
     #[test]
-    fn automatic_language_resolves_high_quality_to_low_latency() {
+    fn automatic_language_upgrades_legacy_high_quality_to_turbo() {
         let configuration = config("sk-test", SourceLanguage::Automatic);
         assert_eq!(
             configuration.effective_translation_mode(),
-            TranslationMode::LowLatency
+            TranslationMode::Turbo
         );
     }
 
@@ -173,22 +162,29 @@ mod tests {
         );
         assert_eq!(
             configuration.effective_translation_mode(),
-            TranslationMode::HighQuality
+            TranslationMode::Turbo
         );
     }
 
     #[test]
-    fn configuration_preserves_an_explicit_translation_mode() {
-        let configuration = LiveTranslationConfiguration::for_provider(
-            ProviderKind::AlibabaCloud,
-            "sk-test",
-            SourceLanguage::Japanese,
-            TargetLanguage::English,
+    fn configuration_normalizes_legacy_modes_without_changing_languages() {
+        for mode in [
+            TranslationMode::LowLatency,
             TranslationMode::HighQuality,
-        );
-        let validated = configuration.validated().unwrap();
-        assert_eq!(validated.translation_mode, TranslationMode::HighQuality);
-        assert_eq!(validated.target_language, TargetLanguage::English);
+            TranslationMode::Turbo,
+        ] {
+            let configuration = LiveTranslationConfiguration::for_provider(
+                ProviderKind::AlibabaCloud,
+                "sk-test",
+                SourceLanguage::Japanese,
+                TargetLanguage::English,
+                mode,
+            );
+            let validated = configuration.validated().unwrap();
+            assert_eq!(validated.translation_mode, TranslationMode::Turbo);
+            assert_eq!(validated.target_language, TargetLanguage::English);
+            assert_eq!(validated.source_language, SourceLanguage::Japanese);
+        }
     }
 
     #[test]

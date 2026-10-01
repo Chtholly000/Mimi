@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { overlayTopChromeLayout } from "./overlayChromeLayout";
+import { overlayTopChromeLayout, overlaySessionChromeLayout } from "./overlayChromeLayout";
 
 const CONTROL_ISLAND_RIGHT = 298;
 const CHROME_GAP = 6;
@@ -12,6 +12,20 @@ function handleEdges(layout: ReturnType<typeof overlayTopChromeLayout>) {
 }
 
 describe("overlay top chrome layout", () => {
+  it("keeps the native capsule clearance and recovery actions after a session fails", () => {
+    const error = overlaySessionChromeLayout(640, { isActive: false, status: { kind: "error", message: "unavailable" } });
+    const listening = overlaySessionChromeLayout(640, { isActive: true, status: { kind: "listening" } });
+    expect(error).toEqual(listening);
+    expect(error.topBandHeight).toBe(61);
+    expect(error.showActions).toBe(true);
+    expect(error.showControls).toBe(true);
+  });
+  it("leaves an idle overlay without an island in its smaller chrome layout", () => {
+    const idle = overlaySessionChromeLayout(640, { isActive: false, status: { kind: "idle" } });
+    expect(idle.showActions).toBe(false);
+    expect(idle.showControls).toBe(false);
+    expect(idle.topBandHeight).toBe(37);
+  });
   it("keeps the drag handle reachable to the right of the island at 360px", () => {
     const layout = overlayTopChromeLayout(360, true);
     const handle = handleEdges(layout);

@@ -6,10 +6,11 @@ import { OVERLAY_ACTIVITY_PHASES, hexToRgba } from "../../lib/types";
 import { ControlButton } from "./ControlButton";
 import { DragHandle } from "./DragHandle";
 import { PulseRing } from "./PulseRing";
+import { OverlayLatency } from "./OverlayLatency";
 import { ResizeHandles } from "./ResizeHandles";
 import { Timeline } from "./Timeline";
-import { useResolvedMotion, useStableText } from "./animation";
-import { overlayTopChromeLayout } from "./overlayChromeLayout";
+import { subtitleStreamKey, useResolvedMotion, useStableText } from "./animation";
+import { overlaySessionChromeLayout } from "./overlayChromeLayout";
 import {
   buildSubtitleBlocks,
   computeActivityPhase,
@@ -28,6 +29,7 @@ export function OverlayWindow() {
   const session = useStore((state) => state.session);
   const settings = useStore((state) => state.settings);
   const togglePaused = useStore((state) => state.togglePaused);
+  const start = useStore((state) => state.start);
   const clearSubtitles = useStore((state) => state.clearSubtitles);
   const setOverlayCollapsed = useStore((state) => state.setOverlayCollapsed);
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
@@ -40,10 +42,11 @@ export function OverlayWindow() {
     height:
       typeof window === "undefined" || !isTauri ? 136 : window.innerHeight,
   }));
-  const topChromeLayout = overlayTopChromeLayout(
+  const topChromeLayout = overlaySessionChromeLayout(
     Math.max(0, overlaySize.width - OVERLAY_INSET * 2),
-    session.isActive,
+    session,
   );
+  const showSessionControls = topChromeLayout.showControls;
 
   const collapsed = session.isOverlayCollapsed;
   const blendsWithBackground = settings.subtitleBlendsWithBackground;
@@ -84,17 +87,18 @@ export function OverlayWindow() {
   const translationPreview = livePreviews.find(
     (preview) => preview.kind === "translation",
   );
+  const latestCommittedAt = session.subtitles.history.at(-1)?.createdAt ?? null;
   const sourceDraftText = useStableText(
     sourcePreview?.text ?? "",
     sourcePreview === undefined || sourcePreview.isFinal ? 0 : 180,
     750,
-    `${settings.subtitleDisplayMode}-source`,
+    subtitleStreamKey(settings.subtitleDisplayMode, "source", session.subtitles.source.utteranceId, latestCommittedAt),
   );
   const translationDraftText = useStableText(
     translationPreview?.text ?? "",
     translationPreview === undefined || translationPreview.isFinal ? 0 : 400,
     1_500,
-    `${settings.subtitleDisplayMode}-translation`,
+    subtitleStreamKey(settings.subtitleDisplayMode, "translation", session.subtitles.translation.utteranceId, latestCommittedAt),
   );
   // Sentence blocks: committed utterances plus the live tail, original above
   // translation. The block carries the timestamp, the age fade and the live
@@ -192,10 +196,19 @@ export function OverlayWindow() {
   );
 
   function renderExpanded() {
-    const topBandHeight = (session.isActive ? 38 : 24) + 13;
+    const topBandHeight = topChromeLayout.topBandHeight;
     const emptyDensity = emptyStateDensity(overlaySize.height);
-    const showEmptyPulse = session.isActive && emptyDensity !== "minimal";
     const compactEmptyPulse = emptyDensity === "compact";
+    const pulseBaseSize = compactEmptyPulse ? 48 : 80;
+    const emptyFontSize = emptyDensity === "minimal" ? 12 : Math.max(12, settings.fontSize * 0.68);
+    const emptyGap = emptyDensity === "comfortable" ? 4 : 2;
+    const statusLines = overlaySize.width < 480 ? 2 : 1;
+    // Subtract the canvas inset, border, padding and the actual status-line
+    // budget so the prominent light also fits short native windows.
+    const emptyPulseSize = Math.min(pulseBaseSize, Math.max(0,
+      overlaySize.height - 24 - topBandHeight - emptyFontSize * 1.25 * statusLines - emptyGap,
+    ));
+    const showEmptyPulse = session.isActive && emptyDensity !== "minimal" && emptyPulseSize >= 24;
 
     if (blendsWithBackground) {
       return (
@@ -203,6 +216,7 @@ export function OverlayWindow() {
           className="relative flex h-full w-full overflow-hidden"
           data-presentation="background-blend"
         >
+          <OverlayLatency session={session} />
           <div
             className="flex min-h-0 w-full flex-col"
             style={{
@@ -257,6 +271,7 @@ export function OverlayWindow() {
         />
 
         <div className="relative flex h-full flex-col" style={{ padding: 5 }}>
+          <OverlayLatency session={session} />
           {/* Top band: the drag handle is absolutely positioned — centered
               horizontally on the window (left 50% + translateX) and pinned
               to the band's bottom — so no flex layout or the capsule/button
@@ -290,7 +305,7 @@ export function OverlayWindow() {
             </div>
           </div>
 
-          {session.isActive &&
+          {showSessionControls &&
             !settings.isOverlayLocked &&
             topChromeLayout.showActions && (
             <div
@@ -299,15 +314,15 @@ export function OverlayWindow() {
                 top: 10,
                 right: 10,
                 gap: 4,
-                opacity: isHovering || session.isPaused ? 1 : 0.54,
+                opacity: isHovering || session.isPaused || session.status.kind === "error" ? 1 : 0.75,
                 pointerEvents: "auto",
                 transition: "opacity 120ms ease",
               }}
             >
               <ControlButton
-                icon={session.isPaused ? "play" : "pause"}
-                label={pauseLabel}
-                onClick={() => void togglePaused()}
+                icon={session.status.kind === "error" || session.isPaused ? "play" : "pause"}
+                label={session.status.kind === "error" ? I18N.settings.start : pauseLabel}
+                onClick={() => void (session.status.kind === "error" ? start() : togglePaused())}
               />
               <ControlButton
                 icon="chevron-up"
@@ -349,7 +364,7 @@ export function OverlayWindow() {
             style={{
               // The top band floats over the canvas, so reserve its exact
               // height or subtitle rows will slide underneath the controls.
-              // The extra 13px follows the lowered handle position.
+              // The band includes space below the native control capsule.
               paddingTop: topBandHeight,
               height: "100%",
             }}
@@ -357,24 +372,24 @@ export function OverlayWindow() {
           {blocks.length === 0 ? (
             <div
               className="flex flex-1 flex-col items-center justify-center"
-              style={{ gap: emptyDensity === "comfortable" ? 12 : 4 }}
+              style={{ gap: emptyGap }}
             >
               {showEmptyPulse && (
                 <div
-                  className="flex items-center"
-                  style={{ height: compactEmptyPulse ? 24 : 56 }}
+                  className="flex shrink-0 items-center justify-center"
+                  style={{ height: emptyPulseSize, width: emptyPulseSize }}
                 >
-                  <PulseRing phase={phase} compact={compactEmptyPulse} motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
+                  <div style={{ transform: `scale(${emptyPulseSize / pulseBaseSize})` }}>
+                    <PulseRing phase={phase} prominent compact={compactEmptyPulse} motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
+                  </div>
                 </div>
               )}
               <div
                 style={{
                   width: "100%",
                   minWidth: 0,
-                  fontSize:
-                    emptyDensity === "minimal"
-                      ? 12
-                      : Math.max(12, settings.fontSize * 0.68),
+                  fontSize: emptyFontSize,
+                  lineHeight: 1.25,
                   fontWeight: 500,
                   color: emptyStateIsError(session)
                     ? "rgba(255,69,58,0.9)"

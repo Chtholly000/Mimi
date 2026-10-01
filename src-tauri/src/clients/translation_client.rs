@@ -14,6 +14,7 @@ use crate::clients::volcano_engine_client::{VolcanoEngineClient, VolcanoEngineCl
 use crate::clients::xai_realtime_client::{XAIRealtimeClient, XAIRealtimeClientError};
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::{ProviderCredentials, ProviderCredentialsError};
+use crate::core::diagnostics::TranslationLatency;
 use crate::core::models::TranslationMode;
 use crate::core::protocols::qwen_mt::{QwenMTClientError, QwenMTModel};
 use crate::core::provider::ProviderKind;
@@ -143,7 +144,23 @@ impl TranslationClient {
                 .map(Self::HighQuality)
                 .map_err(TranslationClientError::MT);
             }
-            ProviderKind::AlibabaCloud => {}
+            ProviderKind::AlibabaCloud => {
+                if let ProviderCredentials::DeepL {
+                    asr_api_key,
+                    api_key,
+                } = &credentials
+                {
+                    return HighQualityTranslationClient::new_deepl(
+                        asr_api_key,
+                        api_key,
+                        configuration.source_language,
+                        configuration.target_language,
+                        events,
+                    )
+                    .map(Self::HighQuality)
+                    .map_err(TranslationClientError::MT);
+                }
+            }
         }
         // Automatic source recognition omits the transcription language on
         // the wire so the recognition service detects the language per
@@ -181,8 +198,8 @@ impl TranslationClient {
                     configuration.source_language,
                     configuration.target_language,
                     QwenMTModel::Flash,
-                    Duration::from_millis(500),
-                    Duration::from_millis(2_000),
+                    Duration::from_millis(250),
+                    Duration::from_millis(1_000),
                     12,
                     events,
                 )
@@ -278,6 +295,16 @@ impl TranslationClient {
                 .await
                 .map_err(ConnectError::VolcanoEngine),
             Self::XaiRealtime(client) => client.ping(timeout).await.map_err(ConnectError::Xai),
+        }
+    }
+
+    /// Providers with an unambiguous measured boundary expose it here; an
+    /// unavailable measurement must stay absent rather than guess a duration.
+    pub fn translation_latency(&self) -> Option<TranslationLatency> {
+        match self {
+            Self::LowLatency(client) => client.translation_latency(),
+            Self::HighQuality(client) => client.translation_latency(),
+            _ => None,
         }
     }
 
@@ -441,19 +468,48 @@ mod tests {
     }
 
     #[test]
-    fn provider_factory_selects_alibaba() {
-        let configuration = LiveTranslationConfiguration::for_provider(
-            ProviderKind::AlibabaCloud,
-            "sk-test-not-real",
-            SourceLanguage::Automatic,
-            TargetLanguage::SimplifiedChinese,
+    fn deepl_text_override_uses_the_bounded_pipeline_and_preserves_original_mode() {
+        for target in [TargetLanguage::SimplifiedChinese, TargetLanguage::Original] {
+            let configuration = LiveTranslationConfiguration::with_credentials(
+                ProviderKind::AlibabaCloud,
+                ProviderCredentials::DeepL {
+                    asr_api_key: "synthetic-asr".into(),
+                    api_key: "synthetic-deepl:fx".into(),
+                },
+                SourceLanguage::Automatic,
+                target,
+                TranslationMode::Turbo,
+            )
+            .validated()
+            .unwrap();
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events).unwrap(),
+                TranslationClient::HighQuality(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn provider_factory_upgrades_every_alibaba_mode_to_the_turbo_pipeline() {
+        for mode in [
             TranslationMode::LowLatency,
-        );
-        let (events, _receiver) = provider_event_channel();
-        assert!(matches!(
-            TranslationClient::new(&configuration, events).unwrap(),
-            TranslationClient::LowLatency(_)
-        ));
+            TranslationMode::HighQuality,
+            TranslationMode::Turbo,
+        ] {
+            let configuration = LiveTranslationConfiguration::for_provider(
+                ProviderKind::AlibabaCloud,
+                "sk-test-not-real",
+                SourceLanguage::Automatic,
+                TargetLanguage::SimplifiedChinese,
+                mode,
+            );
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events).unwrap(),
+                TranslationClient::HighQuality(_)
+            ));
+        }
     }
 
     #[test]

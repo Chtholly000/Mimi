@@ -8,6 +8,8 @@ import { unitSpans } from "./animation";
 import { rowHorizontalPadding } from "./alignment";
 import {
   subtitleLaneBudget,
+  SUBTITLE_LINE_HEIGHT,
+  SUBTITLE_SOURCE_SCALE,
   timelineClassName,
   type SubtitleBlock,
 } from "./overlayModel";
@@ -17,15 +19,13 @@ const MONO_FONT =
   '"SF Mono", Menlo, Consolas, "Courier New", monospace';
 const IMMERSIVE_TEXT_SHADOW =
   "0 2px 5px rgba(0,0,0,0.98), 0 0 2px rgba(0,0,0,0.95), 0 0 12px rgba(0,0,0,0.72)";
-const LINE_HEIGHT = 1.45;
-const SOURCE_SCALE = 0.82;
 /** Vertical rhythm: lines of one utterance sit close, sentences breathe. */
 const LANE_GAP = 2;
-const BLOCK_PADDING_Y = 4;
-const LAST_BLOCK_PADDING_Y = 7;
+const BLOCK_PADDING_Y = 2;
+const LAST_BLOCK_PADDING_Y = 3;
 /** Separator gap for the card presentation; immersive mode uses space only. */
-const SEPARATOR_MARGIN_Y = 8;
-const IMMERSIVE_BLOCK_GAP = 12;
+const SEPARATOR_MARGIN_Y = 4;
+const IMMERSIVE_BLOCK_GAP = 6;
 interface TimelineProps {
   blocks: SubtitleBlock[];
   fontSize: number;
@@ -68,6 +68,17 @@ export const Timeline = memo(function Timeline({
   const previousModeRef = useRef(displayMode);
   const modeChangedRef = useRef(false);
   const [scroll] = useState(() => new TimelineScroll());
+  const [readingHistory, setReadingHistory] = useState(false);
+  const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+  const tight = viewportHeight !== null && viewportHeight < 80;
+  const laneGap = tight ? 1 : LANE_GAP;
+  const paddingTop = tight ? 0 : blendsWithBackground ? IMMERSIVE_BLOCK_GAP : BLOCK_PADDING_Y;
+  const paddingBottom = tight ? 1 : LAST_BLOCK_PADDING_Y;
+
+  useLayoutEffect(() => {
+    if (containerRef.current) scroll.reflow(containerRef.current);
+  }, [readingHistory, viewportHeight, scroll]);
 
   useLayoutEffect(() => {
     if (previousModeRef.current === displayMode) return;
@@ -87,45 +98,100 @@ export const Timeline = memo(function Timeline({
     scroll.contentChanged(element, newBlock && motionEnabled ? "smooth" : "instant");
   }, [blocks.length, lastTextLength, fontSize, alignment, blendsWithBackground, motionEnabled, displayMode, scroll]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = containerRef.current;
     if (!element) return;
-    return observeTimelineResize(element, () => scroll.reflow(element));
+    const resized = () => {
+      const height = Math.round(element.clientHeight);
+      if (height > 0) setViewportHeight(height);
+      scroll.reflow(element);
+    };
+    resized();
+    return observeTimelineResize(element, resized);
   }, [scroll]);
 
   return (
     <div
       ref={containerRef}
-      onWheel={(event) => scroll.userIntent(event.currentTarget)}
-      onTouchStart={(event) => scroll.userIntent(event.currentTarget)}
+      tabIndex={0}
+      onWheel={(event) => {
+        if (event.deltaY < 0) {
+          scroll.beginReading(event.currentTarget);
+          setReadingHistory(true);
+        } else {
+          scroll.userIntent(event.currentTarget);
+          // A downward gesture at the bottom also closes history when short
+          // content has no scrollbar and would not emit a scroll event.
+          if (event.deltaY > 0) {
+            scroll.scrolled(event.currentTarget);
+            setReadingHistory(!scroll.isFollowing());
+          }
+        }
+      }}
+      onTouchStart={(event) => {
+        touchStartYRef.current = event.touches[0]?.clientY ?? null;
+        scroll.userIntent(event.currentTarget);
+      }}
+      onTouchMove={(event) => {
+        const y = event.touches[0]?.clientY;
+        if (touchStartYRef.current !== null && y !== undefined && y - touchStartYRef.current > 2) {
+          scroll.beginReading(event.currentTarget);
+          setReadingHistory(true);
+          touchStartYRef.current = null;
+        }
+      }}
+      onTouchEnd={() => { touchStartYRef.current = null; }}
+      onTouchCancel={() => { touchStartYRef.current = null; }}
       onPointerDown={(event) => scroll.userIntent(event.currentTarget)}
       onKeyDown={(event) => {
-        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) scroll.userIntent(event.currentTarget);
+        if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
+          scroll.beginReading(event.currentTarget);
+          setReadingHistory(true);
+        } else if (event.key === "End") {
+          event.preventDefault();
+          scroll.followTail(event.currentTarget);
+          setReadingHistory(false);
+        } else if (["ArrowDown", "PageDown", " "].includes(event.key)) scroll.userIntent(event.currentTarget);
       }}
-      onScroll={(event) => scroll.scrolled(event.currentTarget)}
+      onScroll={(event) => {
+        scroll.scrolled(event.currentTarget);
+        setReadingHistory(!scroll.isFollowing());
+      }}
       className={timelineClassName(blendsWithBackground)}
-      style={{ overscrollBehavior: "contain" }}
+      style={{
+        display: "flex", flexDirection: "column",
+        overscrollBehavior: "contain", overflowAnchor: "none",
+      }}
     >
       {blocks.map((block, index) => {
-        const isFirst = index === 0;
         const isLast = index === blocks.length - 1;
         const distance = blocks.length - 1 - index;
-        // The live tail and the newest committed utterance share the compact
-        // presentation, so committing an utterance does not resize the panel;
-        // it expands only once the next utterance starts.
-        const compact = block.presentation !== "history";
+        // Following keeps completed long utterances in the same bounded tail
+        // as the live sentence. Their full text opens only on reading intent,
+        // so starting another sentence cannot turn the last one into a wall.
+        const compact = !readingHistory || block.presentation === "live";
         // Only a sentence that appears for the first time animates in. A
         // committed utterance replaces the live row it was already visible as,
         // so animating it again would blink the text the user is reading.
         const entering = block.presentation === "live";
         const streaming = block.streaming === true;
-        const budget = subtitleLaneBudget(displayMode, block.translation !== null);
+        const availableLaneHeight = viewportHeight === null ? null
+          : viewportHeight - paddingTop - paddingBottom - (block.source !== null && block.translation !== null ? laneGap : 0);
+        // When the original has not arrived, the translation owns the full
+        // viewport rather than reserving height for an absent reference lane.
+        const budgetMode = displayMode === "bilingual" && block.source === null ? "translation" : displayMode;
+        const budget = subtitleLaneBudget(budgetMode, block.translation !== null, availableLaneHeight, fontSize);
         return (
           <div
             key={block.id}
             data-utterance-id={block.id}
             className={entering ? "relative subtitle-block" : "relative"}
             style={{
+              // Short output stays at the reading edge instead of hanging
+              // beneath the controls. Auto margin yields to zero once the
+              // history overflows, keeping every sentence scrollable.
+              marginTop: index === 0 ? "auto" : undefined,
+              flexShrink: 0,
               paddingLeft: rowHorizontalPadding(
                 alignment,
                 "left",
@@ -136,14 +202,8 @@ export const Timeline = memo(function Timeline({
                 "right",
                 blendsWithBackground || !showTimestamps,
               ),
-              paddingTop: isFirst
-                ? blendsWithBackground
-                  ? IMMERSIVE_BLOCK_GAP
-                  : BLOCK_PADDING_Y
-                : blendsWithBackground
-                  ? IMMERSIVE_BLOCK_GAP
-                  : BLOCK_PADDING_Y,
-              paddingBottom: isLast ? LAST_BLOCK_PADDING_Y : BLOCK_PADDING_Y,
+              paddingTop,
+              paddingBottom: tight ? 1 : isLast ? LAST_BLOCK_PADDING_Y : BLOCK_PADDING_Y,
               // One age fade for the whole utterance: a long sentence that
               // wraps over several lines keeps a single visual level.
               opacity: blockOpacity(distance),
@@ -172,7 +232,7 @@ export const Timeline = memo(function Timeline({
                 {formatTimestamp(block.createdAt)}
               </span>
             ) : null}
-            <div style={{ display: "flex", flexDirection: "column", gap: LANE_GAP }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: laneGap }}>
               {block.source !== null ? (
                 <Lane
                   text={block.source}
@@ -227,7 +287,7 @@ interface LaneProps {
   text: string;
   kind: "source" | "translation";
   /** Visual lines to keep, newest text first in view; `null` renders the whole
-   * text, which is what history blocks do. */
+   * confirmed sentence when the user is reading history. */
   lines: number | null;
   fontSize: number;
   alignment: SubtitleAlignment;
@@ -289,12 +349,12 @@ function Lane({
   // there is one, otherwise the recognized original.
   const streamingMarker = streaming && (kind === "translation" || displayMode === "original");
   const body = renderLaneText(text, entering);
-  const laneFontSize = isSource ? Math.max(12, fontSize * SOURCE_SCALE) : fontSize;
+  const laneFontSize = isSource ? Math.max(12, fontSize * SUBTITLE_SOURCE_SCALE) : fontSize;
   const textStyle = {
     fontSize: laneFontSize,
     fontWeight: isSource ? 400 : 500,
     color: hexToRgba(isReference ? "#FFFFFF" : subtitleColorHex(color), isReference ? 0.72 : 1),
-    lineHeight: LINE_HEIGHT,
+    lineHeight: SUBTITLE_LINE_HEIGHT,
     overflowWrap: "break-word" as const,
     textShadow: blendsWithBackground ? IMMERSIVE_TEXT_SHADOW : undefined,
   };
@@ -315,7 +375,7 @@ function Lane({
     <CompactLane
       text={text}
       lines={lines}
-      lineHeightPx={laneFontSize * LINE_HEIGHT}
+      lineHeightPx={laneFontSize * SUBTITLE_LINE_HEIGHT}
       alignment={alignment}
       textStyle={textStyle}
       motionEnabled={motionEnabled}
@@ -363,8 +423,9 @@ function CompactLane({
   const viewportRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLSpanElement>(null);
   const { overflowed, innerHeight } = useLaneOverflow(viewportRef);
+  const maximumHeight = Math.round(lines * lineHeightPx);
   // Let the text glide upward when a new line pushes it instead of jumping.
-  useRollupGlide(innerRef, innerHeight, motionEnabled);
+  useRollupGlide(innerRef, innerHeight, motionEnabled && innerHeight > maximumHeight + 2);
   const body = renderLaneText(text, entering);
   return (
     <div
@@ -372,7 +433,9 @@ function CompactLane({
       aria-label={text}
       style={{
         position: "relative",
-        height: Math.round(lines * lineHeightPx),
+        // Reserve the limit only until the browser supplies its first layout;
+        // short sentences then take exactly the space their actual lines need.
+        height: innerHeight > 0 ? Math.min(innerHeight, maximumHeight) : maximumHeight,
         overflow: "hidden",
         // Fade the clipped edge so the roll-up reads as continuing text rather
         // than a cut.
@@ -430,7 +493,7 @@ function useLaneOverflow(viewportRef: RefObject<HTMLDivElement | null>): {
   innerHeight: number;
 } {
   const [measured, setMeasured] = useState({ overflowed: false, innerHeight: 0 });
-  useEffect(() => {
+  useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (viewport === null) return;
     const measure = () => {
@@ -439,10 +502,10 @@ function useLaneOverflow(viewportRef: RefObject<HTMLDivElement | null>): {
       const height = Math.round(inner.getBoundingClientRect().height);
       // Two pixels of hysteresis keep the marker from flickering on the exact
       // boundary while the text streams in.
-      setMeasured({
-        overflowed: height > viewport.clientHeight + 2,
-        innerHeight: height,
-      });
+      const overflowed = height > viewport.clientHeight + 2;
+      setMeasured(previous => previous.innerHeight === height && previous.overflowed === overflowed
+        ? previous
+        : { overflowed, innerHeight: height });
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -471,9 +534,16 @@ function useRollupGlide(
     const inner = innerRef.current;
     const previous = previousHeightRef.current;
     previousHeightRef.current = innerHeight;
-    if (inner === null || previous === 0 || innerHeight === previous) return;
-    if (!enabled) return;
-    const shift = previous - innerHeight;
+    if (inner === null) return;
+    if (!enabled) {
+      inner.style.transition = "none";
+      inner.style.transform = "translateY(0)";
+      return;
+    }
+    if (previous === 0 || innerHeight <= previous) return;
+    // bottom:0 has already moved existing text up by the new line's height.
+    // Restore its previous position with a positive offset, then slide up.
+    const shift = innerHeight - previous;
     inner.style.transition = "none";
     inner.style.transform = `translateY(${shift}px)`;
     void inner.offsetHeight;

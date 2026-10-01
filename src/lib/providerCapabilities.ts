@@ -7,6 +7,7 @@ import {
   type SettingsSnapshot,
   type SourceLanguage,
   type TargetLanguage,
+  type TextTranslation,
   type TranslationMode,
   targetLanguageAfterQuickSwitch,
 } from "./types";
@@ -82,7 +83,7 @@ export function activeServiceProfile(
   );
 }
 
-export function textTranslationForProfile(profile: ServiceProfile): "followService" | "deepLX" {
+export function textTranslationForProfile(profile: ServiceProfile): TextTranslation {
   return profile.textTranslation ?? (profile.provider === "deepLX" ? "deepLX" : "followService");
 }
 
@@ -173,19 +174,10 @@ export function translationModesForSettings(
     "profiles" | "activeProfileId" | "sourceLanguage"
   >,
 ): readonly TranslationMode[] {
-  const profile = activeServiceProfile(settings);
-  const provider = profile ? effectiveProviderForProfile(profile) : "alibabaCloud";
-  if (provider === "alibabaCloud" && settings.sourceLanguage === "auto") {
-    return ["lowLatency", "turbo"];
-  }
   return capabilitiesForSettings(settings).translationModes;
 }
 
-/**
- * Mirrors the backend's effective-mode priority: every non-Alibaba adapter
- * uses turbo; Alibaba preserves an explicitly selected turbo mode, then falls
- * back to low latency for automatic detection.
- */
+/** Legacy preferences remain readable; the active pipeline always uses Turbo. */
 export function effectiveTranslationModeForSettings(
   settings: Pick<
     SettingsSnapshot,
@@ -195,19 +187,7 @@ export function effectiveTranslationModeForSettings(
     | "translationMode"
   >,
 ): TranslationMode {
-  const profile = activeServiceProfile(settings);
-  const provider = profile ? effectiveProviderForProfile(profile) : "alibabaCloud";
-  const supportedModes = translationModesForSettings(settings);
-
-  if (provider !== "alibabaCloud") return "turbo";
-  if (settings.translationMode === "turbo") return "turbo";
-  if (settings.sourceLanguage === "auto") {
-    return "lowLatency";
-  }
-  if (supportedModes.includes(settings.translationMode)) {
-    return settings.translationMode;
-  }
-  return supportedModes[0] ?? settings.translationMode;
+  return translationModesForSettings(settings)[0] ?? "turbo";
 }
 
 export function subtitlePreferencesChanged(

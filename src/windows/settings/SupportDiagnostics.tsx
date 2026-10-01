@@ -8,28 +8,25 @@ import { writeDiagnosticClipboard } from "../../lib/diagnosticClipboard";
 
 const copy = {
   en: {
-    close: "Dismiss notification", title: "Need help?", copy: "Copy diagnostics", issue: "Give feedback on GitHub", details: "View details",
-    note: "No keys, audio or subtitles. GitHub feedback is public; review before submitting.",
-    copied: "Copied successfully", failed: "Could not copy. Open details and copy the text manually.",
-    loading: "Preparing…", prepareFailed: "Could not prepare diagnostics. Try again.",
+    close: "Dismiss notification", title: "Need help?", copy: "Copy diagnostics", issue: "Give feedback on GitHub",
+    copied: "Copied successfully", failed: "Could not copy. Try again or copy the report below manually.",
+    prepareFailed: "Could not prepare diagnostics. Try again.",
     opened: "GitHub opened. Review the report and describe the problem before submitting.",
     paste: "GitHub opened. Copy diagnostics, then paste them into the report before submitting.",
     openFailed: "Could not open GitHub. Copy diagnostics and visit the Mimi repository.", preview: "Diagnostic snapshot",
   },
   zh: {
-    close: "关闭提示", title: "遇到问题？", copy: "复制诊断信息", issue: "去 GitHub 反馈", details: "查看详细信息",
-    note: "不含密钥、音频或字幕。GitHub 反馈将公开，提交前请检查。",
-    copied: "复制成功", failed: "复制失败，请展开详情并手动复制文字。",
-    loading: "正在准备…", prepareFailed: "暂时无法准备诊断信息，请重试。",
+    close: "关闭提示", title: "遇到问题？", copy: "复制诊断信息", issue: "去 GitHub 反馈",
+    copied: "复制成功", failed: "复制失败，请重试或手动复制下方文字。",
+    prepareFailed: "暂时无法准备诊断信息，请重试。",
     opened: "已打开 GitHub。请检查内容、描述问题后再提交。",
     paste: "已打开 GitHub。请先复制诊断信息，再粘贴到反馈正文后提交。",
     openFailed: "暂时无法打开 GitHub，请复制诊断信息并前往 Mimi 仓库。", preview: "诊断快照",
   },
   ja: {
-    close: "通知を閉じる", title: "お困りですか？", copy: "診断情報をコピー", issue: "GitHub で報告", details: "詳細を表示",
-    note: "キー、音声、字幕は含みません。GitHub の報告は公開されます。送信前に確認してください。",
-    copied: "コピー成功", failed: "コピーできませんでした。詳細を開き、テキストを手動でコピーしてください。",
-    loading: "準備中…", prepareFailed: "診断情報を準備できませんでした。再試行してください。",
+    close: "通知を閉じる", title: "お困りですか？", copy: "診断情報をコピー", issue: "GitHub で報告",
+    copied: "コピー成功", failed: "コピーできませんでした。再試行するか、下のテキストを手動でコピーしてください。",
+    prepareFailed: "診断情報を準備できませんでした。再試行してください。",
     opened: "GitHub を開きました。内容を確認し、問題を説明してから送信してください。",
     paste: "GitHub を開きました。診断情報をコピーして本文に貼り付けてから送信してください。",
     openFailed: "GitHub を開けませんでした。診断情報をコピーし、Mimi リポジトリにアクセスしてください。", preview: "診断スナップショット",
@@ -43,7 +40,7 @@ export function SupportDiagnostics() {
   const [report, setReport] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [manualCopy, setManualCopy] = useState(false);
   const operation = useRef(false);
   const lifetime = useRef(0);
   const toast = useRef<TransientToast<Feedback> | null>(null);
@@ -70,10 +67,11 @@ export function SupportDiagnostics() {
     setReport(value);
     return value;
   };
-  const perform = async (action: "copy" | "issue" | "details") => {
+  const perform = async (action: "copy" | "issue") => {
     if (operation.current) return;
     operation.current = true;
     setBusy(true);
+    setManualCopy(false);
     toast.current?.clear();
     const currentLifetime = lifetime.current;
     const notify = (value: Feedback) => {
@@ -86,12 +84,16 @@ export function SupportDiagnostics() {
         setReport(issue.report);
         notify(issue.requiresPaste ? "paste" : "opened");
       } else {
-        // A visible preview is frozen; otherwise copy a fresh observation.
-        const value = action === "copy" && detailsOpen && report ? Promise.resolve(report) : prepare();
-        if (action === "copy") {
-          try { await writeDiagnosticClipboard(value); notify("copied"); }
-          catch { notify("failed"); }
-        } else await value;
+        // Preserve the click gesture for WebKit while preparing a fresh report.
+        const value = prepare();
+        try { await writeDiagnosticClipboard(value); notify("copied"); }
+        catch {
+          try {
+            await value;
+            if (currentLifetime === lifetime.current) setManualCopy(true);
+            notify("failed");
+          } catch { notify("prepareFailed"); }
+        }
       }
     } catch { notify(action === "issue" ? "openFailed" : "prepareFailed"); }
     finally { operation.current = false; setBusy(false); }
@@ -110,13 +112,6 @@ export function SupportDiagnostics() {
       <span>{text[feedback]}</span>
       <button type="button" aria-label={text.close} onClick={() => toast.current?.clear()}><X size={16} aria-hidden="true" /></button>
     </div>}
-    <details className="settings-session-help" onToggle={(event) => {
-      setDetailsOpen(event.currentTarget.open);
-      if (event.currentTarget.open && !operation.current) void perform("details");
-    }}>
-      <summary>{text.details}</summary>
-      {detailsOpen && <p className="settings-support-diagnostics__note">{text.note}</p>}
-      {report && <textarea aria-label={text.preview} value={report} readOnly rows={7} wrap="off" spellCheck={false} />}
-    </details>
+    {manualCopy && report && <textarea aria-label={text.preview} value={report} readOnly rows={7} wrap="off" spellCheck={false} />}
   </section>;
 }

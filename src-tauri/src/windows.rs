@@ -162,7 +162,7 @@ impl SubtitleOverlayMetrics {
     pub const REFERENCE_WIDTH: f64 = 640.0;
     pub const REFERENCE_HEIGHT: f64 = 136.0;
     pub const MINIMUM_WIDTH: f64 = 360.0;
-    pub const MINIMUM_HEIGHT: f64 = 100.0;
+    pub const MINIMUM_HEIGHT: f64 = 136.0;
     pub const MAXIMUM_WIDTH: f64 = 1_200.0;
     pub const MAXIMUM_HEIGHT: f64 = 600.0;
     pub const COLLAPSED_WIDTH: f64 = 280.0;
@@ -1973,11 +1973,11 @@ pub struct OverlayControlWindowManager;
 impl OverlayControlWindowManager {
     pub const ISLAND_WIDTH: f64 = 280.0;
     pub const ISLAND_HEIGHT: f64 = 30.0;
-    pub const PANEL_WIDTH: f64 = 320.0;
-    // Matches the first-open height of the full Alibaba control set; React
+    pub const PANEL_WIDTH: f64 = 280.0;
+    // Matches the compact control panel on first open; React
     // immediately replaces it with the measured provider/locale-specific
     // height, but this default avoids a visible clipped first frame.
-    pub const DEFAULT_PANEL_HEIGHT: f64 = 428.0;
+    pub const DEFAULT_PANEL_HEIGHT: f64 = 270.0;
     const MIN_PANEL_HEIGHT: f64 = 132.0;
     const MAX_PANEL_HEIGHT: f64 = 520.0;
     const ANCHOR_OFFSET_X: f64 = 18.0;
@@ -2717,7 +2717,7 @@ mod geometry_tests {
             (geometry.x, geometry.y, geometry.width, geometry.height),
             (400.0, 300.0, 640.0, 136.0)
         );
-        assert_eq!(geometry.min, (360.0, 100.0));
+        assert_eq!(geometry.min, (360.0, 136.0));
         assert_eq!(geometry.max, (1200.0, 600.0));
     }
 
@@ -3179,7 +3179,7 @@ mod geometry_tests {
         let geometry =
             overlay_control_geometry(OverlayControlMode::Panel, 400.0, 900.0, 356.0, WORK_AREA);
         assert_eq!(geometry.y, 900.0 + 30.0 - 356.0);
-        assert_eq!(geometry.width, 320.0);
+        assert_eq!(geometry.width, 280.0);
         assert_eq!(geometry.height, 356.0);
     }
 
@@ -3221,8 +3221,8 @@ mod geometry_tests {
         };
         let geometry =
             overlay_control_geometry(OverlayControlMode::Panel, 400.0, 160.0, 520.0, work_area);
-        assert_eq!(geometry.x, 108.0);
-        assert_eq!(geometry.width, 304.0);
+        assert_eq!(geometry.x, 132.0);
+        assert_eq!(geometry.width, 280.0);
         assert_eq!(geometry.y, 58.0);
         assert_eq!(geometry.height, 164.0);
     }

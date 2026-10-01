@@ -1,0 +1,25 @@
+.provider-icon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  vertical-align: middle;
+}
+
+.provider-icon__image {
+  display: block;
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
+.provider-icon__image--dark {
+  display: none;
+}
+
+.settings-console:not(.settings-console--light) .provider-icon__image--light {
+  display: none;
+}
+
+.settings-console:not(.settings-console--light) .provider-icon__image--dark {
+  display: block;
+}

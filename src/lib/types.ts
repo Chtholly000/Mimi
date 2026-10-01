@@ -40,6 +40,10 @@ export interface SubtitleSnapshot {
 }
 
 export interface SessionStateEvent {
+  /** Latest content-free timing samples. Absent values are not measurements. */
+  apiLatencyMs?: number | null;
+  translationLatencyMs?: number | null;
+  translationLatencyKind?: "request" | "follow" | null;
   status: SessionStatus;
   isActive: boolean;
   isPaused: boolean;
@@ -84,7 +88,7 @@ export interface SettingsSnapshot {
 }
 
 export type UiLanguage = "system" | "zh" | "en" | "ja";
-export type PulseStyle = "classic" | "syllable" | "ribbon";
+export type PulseStyle = "syllable" | "ribbon";
 export type SubtitleDisplayMode = "translation" | "bilingual" | "original";
 export type SubtitlePresetColor = "white" | "teal" | "yellow" | "green" | "pink";
 export type SubtitleColor = SubtitlePresetColor | `#${string}`;
@@ -121,7 +125,7 @@ export type ServiceProvider =
   | "xAIRealtime"
   | "deepLX";
 
-export type TextTranslation = "followService" | "deepLX";
+export type TextTranslation = "followService" | "deepL" | "deepLX";
 
 /** Write-only payload sent to the native secure credential store. */
 export type ProviderCredentialsInput =
@@ -183,8 +187,6 @@ export const SOURCE_LANGUAGE_QUICK_CASES: readonly SourceLanguage[] = [
 ];
 
 export const TRANSLATION_MODE_CASES: readonly TranslationMode[] = [
-  "lowLatency",
-  "highQuality",
   "turbo",
 ];
 

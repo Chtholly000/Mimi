@@ -11,6 +11,7 @@ use crate::audio::{
 use crate::clients::provider_events::provider_event_channel;
 use crate::clients::translation_client::TranslationClient;
 use crate::core::configuration::LiveTranslationConfiguration;
+use crate::core::diagnostics::{milliseconds, TranslationLatency, TranslationLatencyKind};
 use crate::core::models::{SessionStatus, SourceLanguage, TranslationMode, UtteranceRole};
 use crate::core::protocols::live_translate::LiveTranslateServerEvent;
 use crate::core::provider::ProviderKind;
@@ -73,6 +74,49 @@ pub struct SessionStateEvent {
     pub is_translation_pending: bool,
     #[serde(rename = "isTranslationTimedOut")]
     pub is_translation_timed_out: bool,
+    /// Existing WebSocket health-check round trip, including local send wait.
+    /// HQ/DeepLX probe their ASR socket, not the text-translation HTTP service.
+    pub api_latency_ms: Option<u64>,
+    /// Latest measured successful final; the kind identifies its boundaries.
+    pub translation_latency_ms: Option<u64>,
+    pub translation_latency_kind: Option<TranslationLatencyKind>,
+}
+
+#[derive(Clone, Copy)]
+struct HealthCheckLatency {
+    generation: u64,
+    task_id: u64,
+    milliseconds: u64,
+}
+
+fn visible_session_latencies(
+    status: &SessionStatus,
+    paused: bool,
+    recovering: bool,
+    generation: u64,
+    health_task_id: u64,
+    health_latency: Option<HealthCheckLatency>,
+    translation_latency: Option<TranslationLatency>,
+) -> (Option<u64>, Option<u64>, Option<TranslationLatencyKind>) {
+    if !matches!(status, SessionStatus::Listening)
+        || paused
+        || recovering
+        || generation == NO_GENERATION
+    {
+        return (None, None, None);
+    }
+    let api_latency = health_latency
+        .filter(|sample| {
+            sample.generation == generation
+                && sample.task_id == health_task_id
+                && health_task_id != NO_GENERATION
+        })
+        .map(|sample| sample.milliseconds);
+    (
+        api_latency,
+        translation_latency.map(|sample| sample.milliseconds),
+        translation_latency.map(|sample| sample.kind),
+    )
 }
 
 const NO_GENERATION: u64 = 0;
@@ -107,21 +151,11 @@ impl Drop for TeardownOperationGuard {
 }
 
 fn translation_mode_after_source_switch(
-    provider: ProviderKind,
-    source_language: SourceLanguage,
-    current_mode: TranslationMode,
+    _provider: ProviderKind,
+    _source_language: SourceLanguage,
+    _current_mode: TranslationMode,
 ) -> TranslationMode {
-    match (provider, source_language) {
-        (ProviderKind::AlibabaCloud, SourceLanguage::Automatic) => {
-            if current_mode == TranslationMode::Turbo {
-                TranslationMode::Turbo
-            } else {
-                TranslationMode::LowLatency
-            }
-        }
-        (ProviderKind::AlibabaCloud, _) => current_mode,
-        (_, _) => TranslationMode::Turbo,
-    }
+    TranslationMode::Turbo
 }
 
 fn pipeline_settings_mutation_is_allowed(
@@ -448,6 +482,9 @@ impl From<&TranslationSessionState> for SessionStateEvent {
                 .map(|language| language.code.clone()),
             is_translation_pending: state.is_translation_pending,
             is_translation_timed_out: state.is_translation_timed_out,
+            api_latency_ms: None,
+            translation_latency_ms: None,
+            translation_latency_kind: None,
         }
     }
 }
@@ -474,6 +511,7 @@ pub struct SessionManager {
     diagnostic_error: Arc<Mutex<Option<(SafeFailure, Instant)>>>,
     diagnostic_recovery: Arc<Mutex<Option<(RecoveryAction, Instant)>>>,
     diagnostic_capture: Arc<Mutex<Option<(CaptureObservation, Instant)>>>,
+    health_latency: Arc<Mutex<Option<HealthCheckLatency>>>,
     settings: Arc<SettingsStore>,
     controller: Arc<Mutex<TranslationSessionController>>,
     audio: Arc<Mutex<SystemAudioCapture>>,
@@ -549,6 +587,7 @@ impl SessionManager {
             diagnostic_error: Default::default(),
             diagnostic_recovery: Default::default(),
             diagnostic_capture: Default::default(),
+            health_latency: Default::default(),
             settings,
             controller: Arc::new(Mutex::new(TranslationSessionController::default())),
             audio: Arc::new(Mutex::new(audio_capture)),
@@ -682,6 +721,7 @@ impl SessionManager {
                     "manual_output"
                 },
                 actual_device_name,
+                system_output_device_name: None,
                 observation,
             }
         }
@@ -697,6 +737,16 @@ impl SessionManager {
                 },
                 strategy: "platform_capture",
                 actual_device_name: None,
+                system_output_device_name: {
+                    #[cfg(target_os = "macos")]
+                    {
+                        crate::audio::macos_output::default_output_device_name()
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        None
+                    }
+                },
                 observation,
             }
         }
@@ -1378,8 +1428,7 @@ impl SessionManager {
     }
 
     /// Quick-switches the source language, reconnecting when needed.
-    /// Alibaba automatic detection preserves an explicit Turbo choice and
-    /// otherwise normalizes to Low Latency. OpenAI always remains on Turbo.
+    /// Source changes preserve the single Turbo path for every provider.
     pub async fn switch_source_language(self: &Arc<Self>, language: SourceLanguage) {
         let switch_epoch = self.lifecycle_sequence.load(Ordering::SeqCst);
         let lifecycle = match self.settings_mutation_guard(false).await {
@@ -2101,10 +2150,28 @@ impl SessionManager {
         let Some(client) = self.client_for_generation(generation) else {
             return false;
         };
+        let started_at = Instant::now();
         match client.ping(Duration::from_secs(4)).await {
             Ok(()) => {
-                self.is_generation_current(generation)
-                    && self.health_task_id.load(Ordering::SeqCst) == task_id
+                let elapsed_ms = milliseconds(started_at, Instant::now());
+                {
+                    // Pair the validity check and write with health-task
+                    // replacement, so a late old probe cannot overwrite a
+                    // newer task's measurement after stop/reconnect.
+                    let _health_task = self.health_task.lock().unwrap();
+                    if !self.is_generation_current(generation)
+                        || self.health_task_id.load(Ordering::SeqCst) != task_id
+                    {
+                        return false;
+                    }
+                    *self.health_latency.lock().unwrap() = Some(HealthCheckLatency {
+                        generation,
+                        task_id,
+                        milliseconds: elapsed_ms,
+                    });
+                }
+                self.publish_state();
+                true
             }
             Err(error) => {
                 if !self.is_generation_current(generation)
@@ -2441,6 +2508,9 @@ impl SessionManager {
         }
         *slot = Some(client);
         self.client_generation.store(generation, Ordering::SeqCst);
+        // Settings can rebuild a client within the same lifecycle generation.
+        // Its new socket must not inherit the previous socket's probe time.
+        *self.health_latency.lock().unwrap() = None;
         Ok(())
     }
 
@@ -2665,6 +2735,25 @@ impl SessionManager {
         event.is_active |= self.is_recovering.load(Ordering::SeqCst);
         event.is_paused = self.is_paused();
         event.is_overlay_collapsed = self.is_overlay_collapsed();
+        let generation = self.active_generation.load(Ordering::SeqCst);
+        let translation_latency = self
+            .client_for_generation(generation)
+            .and_then(|client| client.translation_latency());
+        let (api_latency_ms, translation_latency_ms, translation_latency_kind) =
+            visible_session_latencies(
+                &state.status,
+                event.is_paused,
+                self.is_recovering.load(Ordering::SeqCst),
+                generation,
+                self.health_task_id.load(Ordering::SeqCst),
+                *self.health_latency.lock().unwrap(),
+                translation_latency,
+            );
+        if self.is_generation_current(generation) {
+            event.api_latency_ms = api_latency_ms;
+            event.translation_latency_ms = translation_latency_ms;
+            event.translation_latency_kind = translation_latency_kind;
+        }
         event
     }
 
@@ -2798,6 +2887,94 @@ impl SessionManager {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[test]
+    fn latency_payload_ignores_stopped_paused_reconnecting_and_failed_sessions() {
+        let health = Some(HealthCheckLatency {
+            generation: 41,
+            task_id: 9,
+            milliseconds: 80,
+        });
+        let translation = Some(TranslationLatency {
+            milliseconds: 120,
+            kind: TranslationLatencyKind::Request,
+        });
+        assert_eq!(
+            visible_session_latencies(
+                &SessionStatus::Listening,
+                false,
+                false,
+                41,
+                9,
+                health,
+                translation,
+            ),
+            (Some(80), Some(120), Some(TranslationLatencyKind::Request))
+        );
+        for (status, paused, recovering, generation) in [
+            (SessionStatus::Idle, false, false, 41),
+            (SessionStatus::Connecting, false, false, 41),
+            (SessionStatus::Stopping, false, false, 41),
+            (
+                SessionStatus::Error("synthetic failure".into()),
+                false,
+                false,
+                41,
+            ),
+            (SessionStatus::Listening, true, false, 41),
+            (SessionStatus::Listening, false, true, 41),
+            (SessionStatus::Listening, false, false, NO_GENERATION),
+        ] {
+            assert_eq!(
+                visible_session_latencies(
+                    &status,
+                    paused,
+                    recovering,
+                    generation,
+                    9,
+                    health,
+                    translation,
+                ),
+                (None, None, None)
+            );
+        }
+    }
+
+    #[test]
+    fn late_health_checks_cannot_supply_another_generation_or_task_measurement() {
+        let health = Some(HealthCheckLatency {
+            generation: 41,
+            task_id: 9,
+            milliseconds: 80,
+        });
+        for (generation, task_id) in [(42, 9), (41, 10), (41, NO_GENERATION)] {
+            assert_eq!(
+                visible_session_latencies(
+                    &SessionStatus::Listening,
+                    false,
+                    false,
+                    generation,
+                    task_id,
+                    health,
+                    None,
+                ),
+                (None, None, None)
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrapping_state_serializes_unknown_latencies_as_nullable_fields() {
+        let state = TranslationSessionState::default();
+        let payload = serde_json::to_value(SessionStateEvent::from(&state)).unwrap();
+        for field in [
+            "apiLatencyMs",
+            "translationLatencyMs",
+            "translationLatencyKind",
+        ] {
+            assert_eq!(payload.get(field), Some(&serde_json::Value::Null));
+        }
+    }
 
     #[test]
     fn ui_export_fixture_survives_stop_and_repeated_finalization_but_resets_on_new_start() {
@@ -3521,7 +3698,7 @@ mod lifecycle_tests {
                 SourceLanguage::Automatic,
                 TranslationMode::HighQuality,
             ),
-            TranslationMode::LowLatency
+            TranslationMode::Turbo
         );
         assert_eq!(
             translation_mode_after_source_switch(

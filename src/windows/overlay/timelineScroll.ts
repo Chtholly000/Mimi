@@ -1,4 +1,4 @@
-/** Owns scrolling only; sentence geometry, lane budgets and motion stay intact. */
+/** Owns follow/read intent and sentence anchors; never changes subtitle text. */
 export class TimelineScroll {
   private following = true;
   private userScrolling = false;
@@ -8,6 +8,25 @@ export class TimelineScroll {
   userIntent(element: HTMLElement) {
     this.userScrolling = true;
     this.rememberReading(element);
+  }
+
+  /** Enter full confirmed-history reading even if the compact rows do not
+   * overflow yet, so an upward wheel/key can reveal a single long sentence. */
+  beginReading(element: HTMLElement) {
+    this.userScrolling = true;
+    this.following = false;
+    this.rememberReading(element);
+  }
+
+  isFollowing(): boolean {
+    return this.following;
+  }
+
+  followTail(element: HTMLElement) {
+    this.following = true;
+    this.modeAnchor = false;
+    this.reading = null;
+    this.move(element, element.scrollHeight, "instant");
   }
 
   scrolled(element: HTMLElement) {

@@ -11,11 +11,9 @@ import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/sub
 import type { SubtitleDisplayMode } from "../../lib/types";
 import { targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import {
-  TRANSLATION_MODE_DISPLAY_NAMES,
   type OverlayActivityPhaseKind,
   type SettingsSnapshot,
   type SourceLanguage,
-  type TranslationMode,
 } from "../../lib/types";
 import {
   sourceLanguageButtonTitle,
@@ -28,7 +26,6 @@ import type { OverlayControlPanelModel } from "./overlayControlModel";
 type PendingAction =
   | "display"
   | "source"
-  | "mode"
   | "immersive"
   | "lock"
   | "settings";
@@ -43,7 +40,6 @@ interface OverlayControlPanelProps {
   isChangingSession: boolean;
   onDismiss: () => void;
   onSwitchSourceLanguage: (language: SourceLanguage) => Promise<void>;
-  onSwitchTranslationMode: (mode: TranslationMode) => Promise<void>;
   onSetSubtitleDisplayMode: (mode: SubtitleDisplayMode) => Promise<void>;
   onSetImmersiveMode: (enabled: boolean) => Promise<void>;
   onSetOverlayLocked: (locked: boolean) => Promise<void>;
@@ -60,7 +56,6 @@ export function OverlayControlPanel({
   isChangingSession,
   onDismiss,
   onSwitchSourceLanguage,
-  onSwitchTranslationMode,
   onSetSubtitleDisplayMode,
   onSetImmersiveMode,
   onSetOverlayLocked,
@@ -69,8 +64,8 @@ export function OverlayControlPanel({
   const { nativeShortcuts } = useDesktopShortcuts();
   const panelRef = useRef<HTMLElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const selectedSourceRef = useRef<HTMLButtonElement>(null);
-  const selectedModeRef = useRef<HTMLButtonElement>(null);
+  const sourceControlRef = useRef<HTMLDivElement>(null);
+  const displayControlRef = useRef<HTMLDivElement>(null);
   const immersiveRef = useRef<HTMLButtonElement>(null);
   const lockRef = useRef<HTMLButtonElement>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
@@ -110,11 +105,11 @@ export function OverlayControlPanel({
 
   useEffect(() => {
     const target = [
-      selectedSourceRef.current,
-      selectedModeRef.current,
+      sourceControlRef.current?.querySelector<HTMLButtonElement>('[role="combobox"]'),
+      displayControlRef.current?.querySelector<HTMLButtonElement>('[role="combobox"]'),
       immersiveRef.current,
       lockRef.current,
-    ].find((candidate) => candidate !== null && !candidate.disabled);
+    ].find((candidate) => candidate != null && !candidate.disabled);
     const animationFrame = window.requestAnimationFrame(() => target?.focus());
     return () => window.cancelAnimationFrame(animationFrame);
   }, []);
@@ -157,84 +152,32 @@ export function OverlayControlPanel({
           onToggle={onDismiss}
         />
 
-        <CaptureStatusRow />
+        <CaptureStatusRow
+          disabled={pendingAction !== null}
+          onShowAudioSettings={() => performAction("settings", onShowSettings, false)}
+        />
 
-        <div className="overlay-control-display">
-          <span>{I18N.settings.subtitleDisplay}{nativeShortcuts && <kbd>{subtitleDisplayShortcut()}</kbd>}</span>
+        <div ref={displayControlRef} className="overlay-control-picker" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>
+          <span>{I18N.settings.subtitleDisplay}</span>
           <Select label={I18N.settings.subtitleDisplay} value={settings.subtitleDisplayMode}
             options={SUBTITLE_DISPLAY_OPTIONS} disabled={pendingAction !== null}
             onChange={(value) => performAction("display", () => onSetSubtitleDisplayMode(value as SubtitleDisplayMode), false)} />
         </div>
 
         {model.sourceOptions.length > 0 && (
-          <fieldset className="overlay-control-group">
-            <legend>{I18N.overlay.sourceLanguage}</legend>
-            <div className="overlay-control-options">
-              {model.sourceOptions.map((language) => {
-                const selected = settings.sourceLanguage === language;
-                return (
-                  <button
-                    key={language}
-                    ref={selected ? selectedSourceRef : undefined}
-                    type="button"
-                    className={`overlay-control-option${selected ? " is-selected" : ""}`}
-                    aria-pressed={selected}
-                    disabled={!canChangeSessionSettings}
-                    onClick={() => {
-                      if (selected) {
-                        onDismiss();
-                        return;
-                      }
-                      performAction("source", () =>
-                        onSwitchSourceLanguage(language),
-                      );
-                    }}
-                  >
-                    <span>
-                      {sourceLanguageButtonTitle(
-                        language,
-                        chineseIsOriginalOnly,
-                      )}
-                    </span>
-                    {selected && <Icon name="checkmark" />}
-                  </button>
-                );
-              })}
-            </div>
-          </fieldset>
-        )}
-
-        {model.translationModeOptions.length > 0 && (
-          <fieldset className="overlay-control-group">
-            <legend>{I18N.overlay.translationMode}</legend>
-            <div className="overlay-control-options">
-              {model.translationModeOptions.map((mode) => {
-                const selected = model.effectiveTranslationMode === mode;
-                return (
-                  <button
-                    key={mode}
-                    ref={selected ? selectedModeRef : undefined}
-                    type="button"
-                    className={`overlay-control-option${selected ? " is-selected" : ""}`}
-                    aria-pressed={selected}
-                    disabled={!canChangeSessionSettings}
-                    onClick={() => {
-                      if (selected) {
-                        onDismiss();
-                        return;
-                      }
-                      performAction("mode", () =>
-                        onSwitchTranslationMode(mode),
-                      );
-                    }}
-                  >
-                    <span>{TRANSLATION_MODE_DISPLAY_NAMES[mode]}</span>
-                    {selected && <Icon name="checkmark" />}
-                  </button>
-                );
-              })}
-            </div>
-          </fieldset>
+          <div ref={sourceControlRef} className="overlay-control-picker">
+            <span>{I18N.overlay.sourceLanguage}</span>
+            <Select
+              label={I18N.overlay.sourceLanguage}
+              value={settings.sourceLanguage}
+              options={model.sourceOptions.map((language) => ({
+                value: language,
+                label: sourceLanguageButtonTitle(language, chineseIsOriginalOnly),
+              }))}
+              disabled={!canChangeSessionSettings}
+              onChange={(value) => performAction("source", () => onSwitchSourceLanguage(value as SourceLanguage))}
+            />
+          </div>
         )}
 
         <div className="overlay-control-divider" />
@@ -245,7 +188,7 @@ export function OverlayControlPanel({
           role="switch"
           aria-checked={model.immersiveModeEnabled}
           aria-label={I18N.overlay.immersiveMode}
-          className="overlay-control-setting"
+          className={`overlay-control-setting${model.immersiveModeEnabled ? " is-on" : ""}`}
           disabled={pendingAction !== null}
           onClick={() =>
             performAction("immersive", () =>
@@ -258,11 +201,6 @@ export function OverlayControlPanel({
           </span>
           <span className="overlay-control-setting__copy">
             <strong>{I18N.overlay.immersiveMode}</strong>
-            <small>
-              {model.immersiveModeEnabled
-                ? I18N.overlay.immersiveModeOn
-                : I18N.overlay.immersiveModeOff}
-            </small>
           </span>
           <span className="overlay-control-switch" aria-hidden="true">
             <span />
@@ -275,7 +213,7 @@ export function OverlayControlPanel({
           role="switch"
           aria-checked={model.overlayLocked}
           aria-label={I18N.overlay.lockPosition}
-          className="overlay-control-setting"
+          className={`overlay-control-setting${model.overlayLocked ? " is-on" : ""}`}
           disabled={pendingAction !== null}
           onClick={() =>
             performAction("lock", () =>
@@ -292,11 +230,6 @@ export function OverlayControlPanel({
                 ? I18N.overlay.unlockPosition
                 : I18N.overlay.lockPosition}
             </strong>
-            <small>
-              {model.overlayLocked
-                ? I18N.overlay.positionLocked
-                : I18N.overlay.positionUnlocked}
-            </small>
           </span>
           <span className="overlay-control-switch" aria-hidden="true">
             <span />

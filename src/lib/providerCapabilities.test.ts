@@ -37,7 +37,7 @@ const BASE_SETTINGS: SettingsSnapshot = {
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
   pulseAnimation: null,
-  pulseStyle: "classic",
+  pulseStyle: "ribbon",
   subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
@@ -49,7 +49,7 @@ const BASE_SETTINGS: SettingsSnapshot = {
 };
 
 describe("provider capabilities", () => {
-  it("exposes the full existing control set for manual Alibaba input", () => {
+  it("keeps language controls and only Turbo for manual Alibaba input", () => {
     const settings = { ...BASE_SETTINGS, sourceLanguage: "ja" as const };
     expect(sourceLanguagesForSettings(settings)).toEqual([
       "auto",
@@ -64,21 +64,12 @@ describe("provider capabilities", () => {
       "en",
       "ja",
     ]);
-    expect(translationModesForSettings(settings)).toEqual([
-      "lowLatency",
-      "highQuality",
-      "turbo",
-    ]);
+    expect(translationModesForSettings(settings)).toEqual(["turbo"]);
   });
 
-  it("uses Alibaba's low-latency path for automatic detection", () => {
-    expect(translationModesForSettings(BASE_SETTINGS)).toEqual([
-      "lowLatency",
-      "turbo",
-    ]);
-    expect(effectiveTranslationModeForSettings(BASE_SETTINGS)).toBe(
-      "lowLatency",
-    );
+  it("normalizes legacy Alibaba preferences to Turbo for automatic detection", () => {
+    expect(translationModesForSettings(BASE_SETTINGS)).toEqual(["turbo"]);
+    expect(effectiveTranslationModeForSettings(BASE_SETTINGS)).toBe("turbo");
   });
 
   it("keeps Alibaba on turbo even with automatic detection", () => {
@@ -263,4 +254,13 @@ it("applies actual Audio3+DeepLX capabilities only when selected", () => {
   expect(translationModesForSettings(settings)).toEqual(["turbo"]);
   expect(effectiveTranslationModeForSettings(settings)).toBe("turbo");
   expect(effectiveProviderForProfile({ ...BASE_SETTINGS.profiles[1], textTranslation: "deepLX" })).toBe("openAIRealtime");
+});
+
+it("keeps Alibaba recognition and Original mode when using official DeepL", () => {
+  const profile = { ...BASE_SETTINGS.profiles[0], textTranslation: "deepL" as const };
+  const settings: SettingsSnapshot = { ...BASE_SETTINGS, profiles: [profile] };
+  expect(textTranslationForProfile(profile)).toBe("deepL");
+  expect(effectiveProviderForProfile(profile)).toBe("alibabaCloud");
+  expect(sourceLanguagesForSettings(settings)).toEqual(sourceLanguagesForSettings(BASE_SETTINGS));
+  expect(targetLanguagesForSettings(settings)).toContain("original");
 });

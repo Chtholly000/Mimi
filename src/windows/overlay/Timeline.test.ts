@@ -5,16 +5,16 @@ import { emptyStateDensity, timelineClassName } from "./overlayModel";
 describe("subtitle row alignment", () => {
   it("keeps the timestamp gutter on the left for right-aligned wrapped text", () => {
     expect(rowHorizontalPadding("left", "left", false)).toBe(57);
-    expect(rowHorizontalPadding("left", "right", false)).toBe(18);
+    expect(rowHorizontalPadding("left", "right", false)).toBe(10);
     expect(rowHorizontalPadding("right", "left", false)).toBe(57);
-    expect(rowHorizontalPadding("right", "right", false)).toBe(18);
+    expect(rowHorizontalPadding("right", "right", false)).toBe(10);
   });
 
   it("keeps centered and background-blended subtitles symmetric", () => {
     expect(rowHorizontalPadding("center", "left", false)).toBe(57);
     expect(rowHorizontalPadding("center", "right", false)).toBe(57);
-    expect(rowHorizontalPadding("right", "left", true)).toBe(18);
-    expect(rowHorizontalPadding("right", "right", true)).toBe(18);
+    expect(rowHorizontalPadding("right", "left", true)).toBe(10);
+    expect(rowHorizontalPadding("right", "right", true)).toBe(10);
   });
 });
 

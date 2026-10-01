@@ -1,7 +1,7 @@
 //! Live-translate WebSocket client (`qwen3.5-livetranslate-flash-realtime`).
 
 use crate::clients::provider_events::ProviderEventSender;
-use crate::core::diagnostics::milliseconds;
+use crate::core::diagnostics::{milliseconds, TranslationLatency, TranslationLatencyKind};
 use crate::core::models::{SourceLanguage, TargetLanguage, UtteranceRole};
 use crate::core::protocols::live_translate::{
     LiveTranslateEndpoint, LiveTranslateEventIdentity, LiveTranslateRequestEncoder,
@@ -65,6 +65,13 @@ struct Inner {
     received_session_finished: AtomicBool,
     pong_notify: Notify,
     receive_task: Mutex<Option<JoinHandle<()>>>,
+    translation_latency: Arc<std::sync::Mutex<StreamTranslationLatency>>,
+}
+
+#[derive(Default)]
+struct StreamTranslationLatency {
+    generation: u64,
+    value: Option<TranslationLatency>,
 }
 
 // Keep only monotonic timings and fixed labels. Dropping a send during
@@ -142,6 +149,7 @@ impl LiveTranslateClient {
                 received_session_finished: AtomicBool::new(false),
                 pong_notify: Notify::new(),
                 receive_task: Mutex::new(None),
+                translation_latency: Default::default(),
             }),
             endpoint: LiveTranslateEndpoint::new()
                 .map_err(|_| LiveTranslateClientError::MissingAPIKey)?,
@@ -157,6 +165,7 @@ impl LiveTranslateClient {
     /// server readiness acknowledgement.
     pub async fn connect(&self) -> Result<(), LiveTranslateClientError> {
         self.disconnect().await;
+        let latency_generation = self.inner.translation_latency.lock().unwrap().generation;
 
         let mut request = self
             .endpoint
@@ -192,6 +201,7 @@ impl LiveTranslateClient {
             Arc::clone(&self.inner),
             self.events.clone(),
             setup_tx,
+            latency_generation,
         ));
         *self.inner.receive_task.lock().await = Some(task);
 
@@ -248,6 +258,15 @@ impl LiveTranslateClient {
             .map_err(|_| LiveTranslateClientError::HealthCheckTimedOut)?
     }
 
+    /// Waiting after the same utterance's source final arrives until its
+    /// translation final arrives. A translation that arrived first needs 0ms.
+    pub fn translation_latency(&self) -> Option<TranslationLatency> {
+        if !self.target_language.translates_audio() {
+            return None;
+        }
+        self.inner.translation_latency.lock().unwrap().value
+    }
+
     /// Sends `session.finish`, waits briefly for `session.finished`, then
     /// disconnects.
     pub async fn finish(&self, timeout: Duration) {
@@ -267,6 +286,11 @@ impl LiveTranslateClient {
     }
 
     pub async fn disconnect(&self) {
+        {
+            let mut latency = self.inner.translation_latency.lock().unwrap();
+            latency.generation = latency.generation.wrapping_add(1);
+            latency.value = None;
+        }
         if let Some(task) = self.inner.receive_task.lock().await.take() {
             task.abort();
         }
@@ -325,6 +349,8 @@ struct TrackedUtterance {
     source_language: Option<String>,
     source_final: bool,
     translation_final: Option<String>,
+    source_final_at: Option<Instant>,
+    translation_final_at: Option<Instant>,
 }
 
 /// Pairs live-translate recognition and translation finals by the provider's own
@@ -346,6 +372,8 @@ struct LiveTranslatePairAligner {
     /// Response item id -> the input item it answers.
     responses: HashMap<String, String>,
     response_order: VecDeque<String>,
+    translation_latency: Arc<std::sync::Mutex<StreamTranslationLatency>>,
+    latency_generation: u64,
 }
 
 impl LiveTranslatePairAligner {
@@ -354,6 +382,15 @@ impl LiveTranslatePairAligner {
         &mut self,
         event: &LiveTranslateServerEvent,
         identity: &LiveTranslateEventIdentity,
+    ) -> Vec<LiveTranslateServerEvent> {
+        self.observe_at(event, identity, Instant::now())
+    }
+
+    fn observe_at(
+        &mut self,
+        event: &LiveTranslateServerEvent,
+        identity: &LiveTranslateEventIdentity,
+        received_at: Instant,
     ) -> Vec<LiveTranslateServerEvent> {
         // A created item links a response item to the input item it answers.
         if let (Some(item_id), Some(previous_item_id)) = (
@@ -385,6 +422,9 @@ impl LiveTranslatePairAligner {
                 utterance.source_text = text.clone();
                 utterance.source_language = language.clone();
                 utterance.source_final |= is_final;
+                if is_final && utterance.source_final_at.is_none() {
+                    utterance.source_final_at = Some(received_at);
+                }
                 events.push(LiveTranslateServerEvent::UtteranceText {
                     utterance_id: item_id.to_string(),
                     role: UtteranceRole::Source,
@@ -426,7 +466,9 @@ impl LiveTranslatePairAligner {
                 // longer receive its final, so its own text is the best source.
                 let allow_draft_source =
                     matches!(&self.current_source_id, Some(current) if current != &source_id);
-                self.track(&source_id).translation_final = Some(text.clone());
+                let utterance = self.track(&source_id);
+                utterance.translation_final = Some(text.clone());
+                utterance.translation_final_at = Some(received_at);
                 self.take_pair(&source_id, allow_draft_source)
             }
             // A graceful close is the last point where an unmatched translation
@@ -486,9 +528,22 @@ impl LiveTranslatePairAligner {
         }
         let source = utterance.source_text.trim().to_string();
         let language = utterance.source_language.clone();
+        let measured_latency = utterance
+            .source_final_at
+            .zip(utterance.translation_final_at)
+            .map(|(source_at, translation_at)| TranslationLatency {
+                milliseconds: milliseconds(source_at, translation_at),
+                kind: TranslationLatencyKind::Follow,
+            });
         self.retire(source_id);
         if source.is_empty() || translation.trim().is_empty() {
             return Vec::new();
+        }
+        {
+            let mut latency = self.translation_latency.lock().unwrap();
+            if latency.generation == self.latency_generation {
+                latency.value = measured_latency;
+            }
         }
         vec![LiveTranslateServerEvent::SubtitleFinalPair {
             source,
@@ -524,8 +579,13 @@ async fn receive_loop(
     inner: Arc<Inner>,
     events: ProviderEventSender,
     setup: watch::Sender<SetupState>,
+    latency_generation: u64,
 ) {
-    let mut aligner = LiveTranslatePairAligner::default();
+    let mut aligner = LiveTranslatePairAligner {
+        translation_latency: Arc::clone(&inner.translation_latency),
+        latency_generation,
+        ..Default::default()
+    };
     while let Some(message) = stream.next().await {
         let decoded = match message {
             Ok(Message::Text(text)) => LiveTranslateServerEvent::decode_with_identity(&text),
@@ -686,6 +746,7 @@ mod tests {
             received_session_finished: AtomicBool::new(false),
             pong_notify: Notify::new(),
             receive_task: Mutex::new(None),
+            translation_latency: Default::default(),
         }
     }
 
@@ -770,6 +831,133 @@ mod tests {
         LiveTranslateServerEvent::Ignored {
             kind: "conversation.item.created".into(),
         }
+    }
+
+    #[test]
+    fn follow_latency_uses_its_own_final_boundaries_in_either_arrival_order() {
+        let start = Instant::now();
+        for (translation_first, expected_ms) in [(false, 125), (true, 0)] {
+            let mut aligner = LiveTranslatePairAligner::default();
+            aligner.observe_at(
+                &created_item(),
+                &identity("response", Some("source")),
+                start,
+            );
+            let source = LiveTranslateServerEvent::SourceFinal {
+                text: "Synthetic source.".into(),
+                language: None,
+            };
+            let translation = LiveTranslateServerEvent::TranslationFinal("合成译文。".into());
+            let (first, first_id, second, second_id) = if translation_first {
+                (&translation, "response", &source, "source")
+            } else {
+                (&source, "source", &translation, "response")
+            };
+            aligner.observe_at(first, &identity(first_id, None), start);
+            assert!(aligner.translation_latency.lock().unwrap().value.is_none());
+            aligner.observe_at(
+                second,
+                &identity(second_id, None),
+                start + Duration::from_millis(125),
+            );
+            assert_eq!(
+                aligner.translation_latency.lock().unwrap().value,
+                Some(TranslationLatency {
+                    milliseconds: expected_ms,
+                    kind: TranslationLatencyKind::Follow,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn a_late_translation_measures_its_source_instead_of_the_next_utterance() {
+        let start = Instant::now();
+        let mut aligner = LiveTranslatePairAligner::default();
+        aligner.observe_at(
+            &created_item(),
+            &identity("response_old", Some("source_old")),
+            start,
+        );
+        for (id, offset) in [("source_old", 0), ("source_new", 100)] {
+            aligner.observe_at(
+                &LiveTranslateServerEvent::SourceFinal {
+                    text: "Synthetic source.".into(),
+                    language: None,
+                },
+                &identity(id, None),
+                start + Duration::from_millis(offset),
+            );
+        }
+        aligner.observe_at(
+            &LiveTranslateServerEvent::TranslationFinal("合成译文。".into()),
+            &identity("response_old", None),
+            start + Duration::from_millis(250),
+        );
+        assert_eq!(
+            aligner.translation_latency.lock().unwrap().value,
+            Some(TranslationLatency {
+                milliseconds: 250,
+                kind: TranslationLatencyKind::Follow,
+            })
+        );
+    }
+
+    #[test]
+    fn fallback_and_obsolete_streams_cannot_guess_or_publish_follow_latency() {
+        for obsolete in [false, true] {
+            let start = Instant::now();
+            let mut aligner = LiveTranslatePairAligner::default();
+            aligner.observe_at(
+                &created_item(),
+                &identity("response", Some("source")),
+                start,
+            );
+            let source = if obsolete {
+                LiveTranslateServerEvent::SourceFinal {
+                    text: "Synthetic source.".into(),
+                    language: None,
+                }
+            } else {
+                LiveTranslateServerEvent::SourceDraft {
+                    text: "Synthetic source.".into(),
+                    language: None,
+                }
+            };
+            aligner.observe_at(&source, &identity("source", None), start);
+            if obsolete {
+                aligner.translation_latency.lock().unwrap().generation += 1;
+            }
+            aligner.observe_at(
+                &LiveTranslateServerEvent::TranslationFinal("合成译文。".into()),
+                &identity("response", None),
+                start + Duration::from_millis(200),
+            );
+            aligner.observe_at(
+                &LiveTranslateServerEvent::SessionFinished,
+                &LiveTranslateEventIdentity::default(),
+                start + Duration::from_millis(300),
+            );
+            assert!(aligner.translation_latency.lock().unwrap().value.is_none());
+        }
+    }
+
+    #[test]
+    fn original_mode_does_not_report_a_translation_measurement() {
+        let (events, _receiver) = provider_event_channel();
+        let client = LiveTranslateClient::new(
+            "synthetic-key",
+            SourceLanguage::English,
+            TargetLanguage::Original,
+            BTreeMap::new(),
+            events,
+        )
+        .unwrap();
+        client.inner.translation_latency.lock().unwrap().value = Some(TranslationLatency {
+            milliseconds: 125,
+            kind: TranslationLatencyKind::Follow,
+        });
+        assert_eq!(client.translation_latency(), None);
     }
 
     #[test]

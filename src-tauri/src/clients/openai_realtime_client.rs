@@ -88,7 +88,7 @@ impl OpenAIRealtimeClient {
         Self::with_endpoint(api_key, target_language, events, endpoint)
     }
 
-    fn with_endpoint(
+    pub(super) fn with_endpoint(
         api_key: &str,
         target_language: TargetLanguage,
         events: ProviderEventSender,

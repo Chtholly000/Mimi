@@ -11,4 +11,5 @@ pub mod tencent_cloud;
 pub mod volcano_engine;
 pub mod xai_realtime;
 
+pub mod deepl;
 pub mod deeplx;

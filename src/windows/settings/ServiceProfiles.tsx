@@ -2,6 +2,7 @@ import { testProfileConnection, type ConnectionDiagnostic } from "../../lib/ipc"
 import { profileErrorMessage, diagnosticCopy } from "../../lib/connectionDiagnostics";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Icon } from "../../components/Icon";
+import { ProviderIcon } from "../../components/ProviderIcon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
 import { SERVICE_PROVIDERS, subtitlePreferencesChanged, textTranslationForProfile } from "../../lib/providerCapabilities";
 import {
@@ -259,7 +260,7 @@ export function ServiceProfiles({
             {I18N.settings.backToServices}
           </button>
           <div className="service-detail__identity">
-            <ProviderMark provider={selectedProfile.provider} />
+            <ProviderIcon provider={selectedProfile.provider} />
             <span>
               <h2>{selectedProfile.provider === "deepLX" && selectedProfile.name === "DeepLX (Audio 3.0 ASR)" ? providerDisplayName("alibabaCloud") : selectedProfile.name}</h2>
               <small>{providerDescription(selectedProfile.provider === "deepLX" ? "alibabaCloud" : selectedProfile.provider)}</small>
@@ -279,7 +280,7 @@ export function ServiceProfiles({
             setPendingAction("test-connection"); setDiagnostic(null);
             void testProfileConnection(profileId)
               .then(result => setDiagnostic({ profileId, result, error: null }))
-              .catch((error: unknown) => setDiagnostic({ profileId, result: null, error: profileErrorMessage(error) }))
+              .catch(() => setDiagnostic({ profileId, result: null, error: `${diagnosticCopy().unavailable}: ${diagnosticCopy().checkFailed}` }))
               .finally(() => setPendingAction(null));
           }} />
           <SelectedCredentialEditor
@@ -407,10 +408,10 @@ export function ServiceProfiles({
                   }}
                   aria-label={`${profile.name}: ${profile.credentialState === "present" && profile.id !== settings.activeProfileId ? I18N.settings.useProfile : I18N.settings.editProfile}`}
                 >
-                  <ProviderMark provider={profile.provider} />
+                  <ProviderIcon provider={profile.provider} />
                   <span className="service-row__copy">
                     <strong>{profile.provider === "deepLX" && profile.name === "DeepLX (Audio 3.0 ASR)" ? providerDisplayName("alibabaCloud") : profile.name}</strong>
-                    <small>{textTranslationForProfile(profile) === "deepLX" ? I18N.settings.deepLXChain : providerDisplayName(profile.provider)}</small>
+                    <small>{textTranslationForProfile(profile) === "deepL" ? I18N.settings.deepLChain : textTranslationForProfile(profile) === "deepLX" ? I18N.settings.deepLXChain : providerDisplayName(profile.provider)}</small>
                   </span>
                   <span className="service-row__state">
                     <CredentialBadge state={profile.credentialState} />
@@ -753,7 +754,7 @@ function ProviderPicker({
             disabled={disabled}
             onClick={() => onChoose(provider)}
           >
-            <ProviderMark provider={provider} />
+            <ProviderIcon provider={provider} />
             <span>
               <strong>{providerDisplayName(provider)}</strong>
               <small>{providerDescription(provider)}</small>
@@ -763,33 +764,6 @@ function ProviderPicker({
         ))}
       </div>
     </div>
-  );
-}
-
-function ProviderMark({
-  provider,
-  compact = false,
-}: {
-  provider: ServiceProvider;
-  compact?: boolean;
-}) {
-  return (
-    <span
-      className="provider-mark"
-      data-provider={provider}
-      data-compact={compact}
-      aria-hidden="true"
-    >
-      <Icon
-        name={
-          provider === "alibabaCloud" || provider === "deepLX" || provider === "azureOpenAIRealtime"
-            ? "cloud"
-            : provider === "xAIRealtime"
-              ? "waves"
-              : "languages"
-        }
-      />
-    </span>
   );
 }
 
