@@ -53,7 +53,13 @@ export class TimelineScroll {
     // A bounded history may evict the old sentence; preserve the current
     // reading position rather than jumping to the newest sentence in that case.
     if (block) {
-      this.move(element, this.top(element, block) - this.reading.offset, "instant");
+      // Removing an original lane can make a sentence shorter than the
+      // former reading offset. Reveal that same sentence's start rather than
+      // leaving it entirely above the viewport and showing its successor.
+      const rect = block.getBoundingClientRect();
+      const offset = -this.reading.offset >= rect.bottom - rect.top ? 0 : this.reading.offset;
+      this.reading.offset = offset;
+      this.move(element, this.top(element, block) - offset, "instant");
       this.userScrolling = true;
     }
   }

@@ -35,3 +35,12 @@ it("does not stop following merely because someone clicks or selects text withou
   scroll.contentChanged(element, "smooth");
   expect(scrollTo).toHaveBeenLastCalledWith({ top: 200, behavior: "smooth" });
 });
+
+it("reveals the same read sentence when removing a lane makes its previous offset exceed the new height", () => {
+  const { element, scroll } = fixture();
+  scroll.userIntent(element); element.scrollTop = 30; scroll.scrolled(element);
+  const older = element.children[0] as HTMLElement;
+  older.getBoundingClientRect = () => ({ top: -element.scrollTop, bottom: 20 - element.scrollTop } as DOMRect);
+  scroll.displayChanged(element);
+  expect(element.scrollTop).toBe(0);
+});
