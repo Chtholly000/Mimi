@@ -79,6 +79,8 @@ export interface SettingsSnapshot {
   retainSessionHistory: boolean;
   recordSessionAudio: boolean;
   windowsAudioSource: string;
+  /** macOS only; false retains menu-bar utility behavior. */
+  showInDock: boolean;
 }
 
 export type UiLanguage = "system" | "zh" | "en" | "ja";
@@ -105,6 +107,7 @@ export interface SettingsDraft {
   retainSessionHistory?: boolean;
   recordSessionAudio?: boolean;
   windowsAudioSource?: string;
+  showInDock?: boolean;
 }
 
 export type ServiceProvider =

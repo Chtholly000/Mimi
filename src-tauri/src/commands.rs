@@ -92,6 +92,7 @@ pub struct SettingsSnapshotPayload {
     pub retain_session_history: bool,
     pub record_session_audio: bool,
     pub windows_audio_source: String,
+    pub show_in_dock: bool,
 }
 
 #[cfg(test)]
@@ -237,10 +238,12 @@ mod tests {
             retain_session_history: false,
             record_session_audio: false,
             windows_audio_source: String::new(),
+            show_in_dock: false,
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["activeProfileId"], "alibaba-default");
         assert_eq!(json["pulseStyle"], "ribbon");
+        assert_eq!(json["showInDock"], false);
         assert_eq!(json["profiles"][0]["provider"], "alibabaCloud");
         assert_eq!(json["profiles"][0]["credentialState"], "present");
         assert_eq!(json["profiles"][0]["textTranslation"], "followService");
@@ -389,6 +392,7 @@ impl SettingsSnapshotPayload {
                     retain_session_history: prefs.retain_session_history,
                     record_session_audio: prefs.record_session_audio,
                     windows_audio_source: prefs.windows_audio_source,
+                    show_in_dock: prefs.show_in_dock,
                 }
             }
         }
@@ -421,6 +425,7 @@ impl SettingsSnapshotPayload {
             retain_session_history: prefs.retain_session_history,
             record_session_audio: prefs.record_session_audio,
             windows_audio_source: prefs.windows_audio_source,
+            show_in_dock: prefs.show_in_dock,
         })
     }
 }
@@ -444,6 +449,7 @@ pub struct SettingsDraft {
     pub retain_session_history: Option<bool>,
     pub record_session_audio: Option<bool>,
     pub windows_audio_source: Option<String>,
+    pub show_in_dock: Option<bool>,
 }
 
 /// Reads public settings and per-profile credential presence. API-key values
@@ -535,10 +541,11 @@ pub async fn settings_save(
 ) -> Result<SettingsSnapshotPayload, String> {
     if (draft.retain_session_history.is_some()
         || draft.record_session_audio.is_some()
-        || draft.windows_audio_source.is_some())
+        || draft.windows_audio_source.is_some()
+        || draft.show_in_dock.is_some())
         && window.label() != "settings"
     {
-        return Err("Export and sound-source preferences can only be changed in settings.".into());
+        return Err("These preferences can only be changed in settings.".into());
     }
     apply_settings_draft(&app, &state, draft).await
 }
@@ -569,6 +576,10 @@ fn apply_settings_draft_guarded(
     state: &AppState,
     draft: SettingsDraft,
 ) -> Result<SettingsSnapshotPayload, String> {
+    #[cfg(not(target_os = "macos"))]
+    if draft.show_in_dock.is_some() {
+        return Err("dock-preference-unsupported".into());
+    }
     let changes_ui_language = draft.ui_language.is_some();
     let enables_background_blend = draft.subtitle_blends_with_background == Some(true);
     ensure_settings_draft_allowed(&draft, state.session.has_active_session())?;
@@ -587,14 +598,14 @@ fn apply_settings_draft_guarded(
         || draft.ui_language.is_some()
         || draft.retain_session_history.is_some()
         || draft.record_session_audio.is_some()
-        || draft.windows_audio_source.is_some();
+        || draft.windows_audio_source.is_some()
+        || draft.show_in_dock.is_some();
     if !needs_save {
         return SettingsSnapshotPayload::try_from_store(&state.settings);
     }
 
-    state
-        .settings
-        .save_preferences_for_active_profile(|prefs| {
+    let save_preferences = || {
+        state.settings.save_preferences_for_active_profile(|prefs| {
             if let Some(source_language) = draft.source_language {
                 prefs.source_language = source_language;
             }
@@ -640,10 +651,23 @@ fn apply_settings_draft_guarded(
             if let Some(locked) = draft.is_overlay_locked {
                 prefs.overlay_locked = locked;
             }
+            if let Some(show) = draft.show_in_dock {
+                prefs.show_in_dock = show;
+            }
             if let Some(language) = &draft.ui_language {
                 prefs.ui_language = Some(language.clone());
             }
-        })?;
+        })
+    };
+    #[cfg(target_os = "macos")]
+    crate::mac_dock::save_with_policy(
+        state.settings.preferences().show_in_dock,
+        draft.show_in_dock,
+        |show| crate::mac_dock::apply(app, show),
+        save_preferences,
+    )?;
+    #[cfg(not(target_os = "macos"))]
+    save_preferences()?;
     state
         .session
         .apply_archive_opt_out(draft.retain_session_history, draft.record_session_audio);

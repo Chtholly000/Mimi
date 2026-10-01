@@ -34,6 +34,7 @@ const BASE_SETTINGS: SettingsSnapshot = {
   retainSessionHistory: false,
   recordSessionAudio: false,
   windowsAudioSource: "",
+  showInDock: false,
 };
 
 describe("overlay control panel model", () => {

@@ -106,6 +106,7 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   retainSessionHistory: false,
   recordSessionAudio: false,
   windowsAudioSource: "",
+  showInDock: false,
 };
 
 interface StoreState {

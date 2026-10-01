@@ -33,9 +33,16 @@ const SETTINGS: SettingsSnapshot = {
   retainSessionHistory: false,
   recordSessionAudio: false,
   windowsAudioSource: "",
+  showInDock: false,
 };
 
 describe("mergeSettingsSnapshot", () => {
+  it("keeps a Dock choice through unrelated settings and allows explicitly hiding again", () => {
+    const enabled = mergeSettingsSnapshot(SETTINGS, { showInDock: true });
+    expect(mergeSettingsSnapshot(enabled, { uiLanguage: "ja" }).showInDock).toBe(true);
+    expect(mergeSettingsSnapshot(enabled, { showInDock: false }).showInDock).toBe(false);
+  });
+
   it("changes pulse style without changing explicit motion or unrelated choices", () => {
     const previous = { ...SETTINGS, pulseAnimation: false, subtitleAnimation: true, fontSize: 19 };
     const changed = mergeSettingsSnapshot(previous, { pulseStyle: "ribbon" });

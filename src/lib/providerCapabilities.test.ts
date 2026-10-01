@@ -45,6 +45,7 @@ const BASE_SETTINGS: SettingsSnapshot = {
   retainSessionHistory: false,
   recordSessionAudio: false,
   windowsAudioSource: "",
+  showInDock: false,
 };
 
 describe("provider capabilities", () => {

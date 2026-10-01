@@ -102,6 +102,8 @@ pub struct Preferences {
     pub record_session_audio: bool,
     /// Empty means follow the Windows default output, including live changes.
     pub windows_audio_source: String,
+    /// macOS Dock/Cmd-Tab presence. Legacy installations remain accessory utilities.
+    pub show_in_dock: bool,
 }
 
 impl Default for Preferences {
@@ -125,6 +127,7 @@ impl Default for Preferences {
             retain_session_history: false,
             record_session_audio: false,
             windows_audio_source: String::new(),
+            show_in_dock: false,
         }
     }
 }
@@ -1733,6 +1736,30 @@ mod tests {
         );
         store.delete_api_key(&profile.id).unwrap();
         assert_eq!(store.credential_diagnostic(&profile), "missing");
+    }
+
+    #[test]
+    fn dock_visibility_keeps_legacy_default_and_persists_without_credentials() {
+        let legacy: Preferences = serde_json::from_str(r#"{"ui_language":"ja"}"#).unwrap();
+        assert!(!legacy.show_in_dock);
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        store
+            .save_preferences_for_active_profile(|prefs| prefs.show_in_dock = true)
+            .unwrap();
+        let profile = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Synthetic")
+            .unwrap();
+        store.select_profile(&profile.id).unwrap();
+        let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        assert!(reloaded.preferences().show_in_dock);
+        reloaded
+            .save_preferences(|prefs| prefs.show_in_dock = false)
+            .unwrap();
+        let final_store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        assert!(!final_store.preferences().show_in_dock);
+        assert!(fake.state.lock().unwrap().loads.is_empty());
     }
 
     #[test]

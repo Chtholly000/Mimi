@@ -31,6 +31,7 @@ import { WindowsAudioSource } from "./WindowsAudioSource";
 import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
 import { useSettingsTheme } from "./useSettingsTheme";
+import { DockPreference } from "./DockPreference";
 import { AppearancePicker } from "./AppearancePicker";
 import { PulseRing } from "../overlay/PulseRing";
 import type { PulseStyle } from "../../lib/types";
@@ -592,6 +593,8 @@ export function SettingsView() {
                 </SettingsRow>
 
                 <div className="settings-divider" />
+
+                <DockPreference />
 
                 <SoftwareUpdate />
               </SettingsSection>

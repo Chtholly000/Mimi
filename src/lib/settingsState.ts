@@ -112,6 +112,7 @@ export function mergeSettingsSnapshot(
     pulseStyle: draft.pulseStyle ?? current.pulseStyle,
     subtitleAnimation: draft.subtitleAnimation ?? current.subtitleAnimation,
     windowsAudioSource: draft.windowsAudioSource ?? current.windowsAudioSource,
+    showInDock: draft.showInDock ?? current.showInDock,
     subtitleBlendsWithBackground:
       draft.subtitleBlendsWithBackground ??
       current.subtitleBlendsWithBackground,

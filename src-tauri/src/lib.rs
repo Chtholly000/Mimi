@@ -8,6 +8,8 @@ mod core;
 mod desktop_shortcuts;
 #[cfg(target_os = "linux")]
 mod linux_startup;
+#[cfg(any(target_os = "macos", test))]
+mod mac_dock;
 mod session_export;
 mod session_history;
 mod session_manager;
@@ -84,13 +86,6 @@ pub fn run() {
         .setup(move |app| {
             tracing::info!("mimi starting");
 
-            // macOS only admits accessory utilities into another app's true
-            // full-screen presentation. mimi already exposes its lifecycle
-            // through the menu-bar tray, so it does not need a Dock or Cmd-Tab
-            // presence of its own.
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-
             // Dev-build marker: the settings window is created from the
             // static config title, so adjust it at runtime so the dev binary
             // is distinguishable from the installed release app.
@@ -124,6 +119,10 @@ pub fn run() {
                     &app.config().identifier,
                 )
             });
+            // Keep the existing accessory default; Dock visibility is a
+            // global preference, independent of service credentials.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(crate::mac_dock::policy(settings.preferences().show_in_dock));
             // A deterministic standard-overlay fixture is useful for native
             // window-level checks. It changes only the in-memory UI-test
             // snapshot; `SettingsStore` never persists UI-test writes.
@@ -365,8 +364,18 @@ pub fn run() {
             commands::app_show_settings,
             commands::app_quit,
         ])
-        .run(context)
-        .expect("error while running tauri application");
+        .build(context)
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if app.state::<AppState>().settings.preferences().show_in_dock {
+                    let _ = commands::app_show_settings(app.clone(), None);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
 fn record_ui_test_tray_visible() {
