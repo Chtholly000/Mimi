@@ -31,6 +31,8 @@ pub enum ServiceAvailability {
 pub enum ConnectionCheckReason {
     CredentialsMissing,
     CredentialsUnavailable,
+    CredentialsServiceUnavailable,
+    CredentialsAccessDenied,
     InvalidConfiguration,
     AuthenticationRejected,
     ServiceRejected,
@@ -67,6 +69,8 @@ impl ConnectionDiagnostic {
             "present" => return None,
             "missing" => ConnectionCheckReason::CredentialsMissing,
             "unavailable" => ConnectionCheckReason::CredentialsUnavailable,
+            "serviceUnavailable" => ConnectionCheckReason::CredentialsServiceUnavailable,
+            "accessDenied" => ConnectionCheckReason::CredentialsAccessDenied,
             _ => ConnectionCheckReason::InvalidConfiguration,
         };
         Some(Self::unavailable(credential, reason))
@@ -318,6 +322,14 @@ mod tests {
         for (credential, reason) in [
             ("missing", ConnectionCheckReason::CredentialsMissing),
             ("unavailable", ConnectionCheckReason::CredentialsUnavailable),
+            (
+                "serviceUnavailable",
+                ConnectionCheckReason::CredentialsServiceUnavailable,
+            ),
+            (
+                "accessDenied",
+                ConnectionCheckReason::CredentialsAccessDenied,
+            ),
             ("invalid", ConnectionCheckReason::InvalidConfiguration),
         ] {
             let result = ConnectionDiagnostic::credential_failure(credential).unwrap();

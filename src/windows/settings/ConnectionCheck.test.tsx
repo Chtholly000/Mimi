@@ -41,3 +41,15 @@ it("checks only on explicit click and blocks repeat checks while pending", async
   await act(() => root.render(<ConnectionCheck result={null} error={null} pending disabled={false} onCheck={onCheck} />));
   await act(() => host.querySelector("button")!.click()); expect(onCheck).toHaveBeenCalledOnce();
 });
+
+it("shows distinct recovery for Linux service and access failures without reporting a saved key", async () => {
+  for (const language of ["en", "zh", "ja"] as const) {
+    setStoredUiLanguage(language);
+    for (const [credential, reason] of [["serviceUnavailable", "credentialsServiceUnavailable"], ["accessDenied", "credentialsAccessDenied"], ["missing", "credentialsMissing"]] as const) {
+      await act(() => root.render(<ConnectionCheck result={{ credential, service: "unavailable", reason }} error={null} pending={false} disabled={false} onCheck={vi.fn()} platform="linux" />));
+      expect(host.querySelector('.settings-feedback[data-tone="error"]')?.textContent).toBe(`${diagnosticCopy("linux").unavailable}: ${diagnosticCopy("linux").reasons[reason]}`);
+      expect(host.querySelector("details")).toBeNull();
+      expect(host.querySelector('[data-tone="success"]')).toBeNull();
+    }
+  }
+});

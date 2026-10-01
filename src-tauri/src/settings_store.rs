@@ -35,6 +35,8 @@ const LEGACY_MIGRATION_TOMBSTONE_ACCOUNT: &str = "migration:legacy-alibaba:v1";
 const LEGACY_MIGRATION_TOMBSTONE_VALUE: &str = "complete";
 const PROFILE_CATALOG_UNAVAILABLE: &str = "Service profile settings are unavailable.";
 const CREDENTIAL_STORE_UNAVAILABLE: &str = "credential_store_unavailable";
+const CREDENTIAL_SERVICE_UNAVAILABLE: &str = "credential_service_unavailable";
+const CREDENTIAL_STORE_ACCESS_DENIED: &str = "credential_store_access_denied";
 const PREFERENCES_UNAVAILABLE: &str = "Settings could not be saved.";
 const PROFILE_NOT_FOUND: &str = "The service profile does not exist.";
 const LAST_PROFILE: &str = "At least one service profile is required.";
@@ -146,6 +148,45 @@ pub enum CredentialState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretStoreError {
     Unavailable,
+    #[cfg(any(target_os = "linux", test))]
+    ServiceUnavailable,
+    #[cfg(any(target_os = "linux", test))]
+    AccessDenied,
+}
+
+impl SecretStoreError {
+    fn public_error(self) -> String {
+        match self {
+            Self::Unavailable => CREDENTIAL_STORE_UNAVAILABLE,
+            #[cfg(any(target_os = "linux", test))]
+            Self::ServiceUnavailable => CREDENTIAL_SERVICE_UNAVAILABLE,
+            #[cfg(any(target_os = "linux", test))]
+            Self::AccessDenied => CREDENTIAL_STORE_ACCESS_DENIED,
+        }
+        .to_string()
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn secret_service_operation_error(error: keyring_core::Error) -> SecretStoreError {
+    // NoStorageAccess covers locked storage, dismissed prompts, and unavailable
+    // results. Do not assert that the collection is locked or expose its payload.
+    match error {
+        keyring_core::Error::NoStorageAccess(_) => SecretStoreError::AccessDenied,
+        _ => SecretStoreError::Unavailable,
+    }
+}
+
+fn keyring_operation_error(error: keyring_core::Error) -> SecretStoreError {
+    #[cfg(target_os = "linux")]
+    {
+        secret_service_operation_error(error)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = error;
+        SecretStoreError::Unavailable
+    }
 }
 
 /// Small keyed abstraction over the OS credential store. Tests provide an
@@ -183,9 +224,13 @@ fn credential_entry(service: &str, account: &str) -> Result<keyring_core::Entry,
         // in a LazyLock, including failure. A desktop Secret Service can appear
         // later, so use the same backend directly with a fresh encrypted session.
         use keyring_core::api::CredentialStoreApi;
-        zbus_secret_service_keyring_store::Store::new()
-            .and_then(|store| store.build(service, account, None))
-            .map_err(|_| SecretStoreError::Unavailable)
+        // An initialization failure means no encrypted service session could
+        // be established; it does not prove that a provider is uninstalled.
+        let store = zbus_secret_service_keyring_store::Store::new()
+            .map_err(|_| SecretStoreError::ServiceUnavailable)?;
+        store
+            .build(service, account, None)
+            .map_err(keyring_operation_error)
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
@@ -275,15 +320,13 @@ impl SecretStore for KeyringSecretStore {
                 Ok(Some(password))
             }
             Err(keyring_core::Error::NoEntry) => Ok(None),
-            Err(_) => Err(SecretStoreError::Unavailable),
+            Err(error) => Err(keyring_operation_error(error)),
         }
     }
 
     fn save(&self, service: &str, account: &str, value: &str) -> Result<(), SecretStoreError> {
         let entry = credential_entry(service, account)?;
-        entry
-            .set_password(value)
-            .map_err(|_| SecretStoreError::Unavailable)?;
+        entry.set_password(value).map_err(keyring_operation_error)?;
         #[cfg(target_os = "windows")]
         enforce_local_credential_persistence(&entry, value)?;
         Ok(())
@@ -293,7 +336,7 @@ impl SecretStore for KeyringSecretStore {
         let entry = credential_entry(service, account)?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-            Err(_) => Err(SecretStoreError::Unavailable),
+            Err(error) => Err(keyring_operation_error(error)),
         }
     }
 }
@@ -708,7 +751,7 @@ impl SettingsStore {
             .ok_or_else(|| PROFILE_NOT_FOUND.to_string())?;
         let previous_secret = self
             .load_api_key_for_profile(&profile)
-            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+            .map_err(SecretStoreError::public_error)?;
 
         let previous_destination = self.destination_value(&profile)?;
 
@@ -740,7 +783,7 @@ impl SettingsStore {
         // The old provider also accepts the current providers' normalized
         // subset, and startup revalidates both documents after a crash.
         self.persist_preferences_value(&next_prefs)?;
-        if self.delete_profile_credentials(&profile).is_err() {
+        if let Err(error) = self.delete_profile_credentials(&profile) {
             let secret_restored = previous_secret
                 .as_deref()
                 .map(|value| self.save_api_key_for_profile(&profile, value))
@@ -757,7 +800,7 @@ impl SettingsStore {
             if !secret_restored || !destination_restored {
                 tracing::warn!("service profile delete rollback failed label=credential_restore");
             }
-            return Err(CREDENTIAL_STORE_UNAVAILABLE.to_string());
+            return Err(error);
         }
         if let Err(error) = self.persist_catalog_value(&next_catalog) {
             // Restore the credential when the public catalog cannot commit.
@@ -815,6 +858,8 @@ impl SettingsStore {
             });
         match self.credentials_for_profile(profile) {
             Err(error) if error == CREDENTIAL_STORE_UNAVAILABLE => "unavailable",
+            Err(error) if error == CREDENTIAL_SERVICE_UNAVAILABLE => "serviceUnavailable",
+            Err(error) if error == CREDENTIAL_STORE_ACCESS_DENIED => "accessDenied",
             Err(_) => "invalid",
             Ok(None) => "missing",
             Ok(Some(_)) => "present",
@@ -833,7 +878,7 @@ impl SettingsStore {
     fn load_api_key(&self) -> Result<Option<String>, String> {
         let profile = self.active_profile()?;
         self.load_api_key_for_profile(&profile)
-            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())
+            .map_err(SecretStoreError::public_error)
     }
 
     #[cfg(test)]
@@ -887,7 +932,7 @@ impl SettingsStore {
             self.profile_keychain_service,
             &Self::destination_account(profile),
         )
-        .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())
+        .map_err(SecretStoreError::public_error)
     }
 
     fn write_destination_value(
@@ -899,10 +944,10 @@ impl SettingsStore {
         match value {
             Some(value) => {
                 self.save_secret(self.profile_keychain_service, &account, value)
-                    .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+                    .map_err(SecretStoreError::public_error)?;
                 let verified = self
                     .load_secret_uncached(self.profile_keychain_service, &account)
-                    .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+                    .map_err(SecretStoreError::public_error)?;
                 if verified.as_deref() != Some(value) {
                     self.secret_cache
                         .lock()
@@ -915,7 +960,7 @@ impl SettingsStore {
             }
             None => self
                 .delete_secret(self.profile_keychain_service, &account)
-                .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string()),
+                .map_err(SecretStoreError::public_error),
         }
     }
 
@@ -925,7 +970,7 @@ impl SettingsStore {
     ) -> Result<Option<ProviderCredentials>, String> {
         let Some(value) = self
             .load_api_key_for_profile(profile)
-            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?
+            .map_err(SecretStoreError::public_error)?
         else {
             return Ok(None);
         };
@@ -993,7 +1038,7 @@ impl SettingsStore {
         }
         let previous = self
             .load_api_key_for_profile(profile)
-            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+            .map_err(SecretStoreError::public_error)?;
         let previous_credentials = previous
             .as_deref()
             .map(|value| ProviderCredentials::decode_for_profile(profile, value))
@@ -1403,16 +1448,16 @@ impl SettingsStore {
             // The tombstone must be durable before deletion so a missing new
             // slot can never revive an older single-slot Alibaba credential.
             self.write_legacy_tombstone()
-                .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+                .map_err(SecretStoreError::public_error)?;
             // Explicit removal is also the point where rollback-era single
             // slots are retired. Keep the current profile credential intact
             // unless every legacy deletion succeeds.
             self.delete_legacy_alibaba_credentials()
-                .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+                .map_err(SecretStoreError::public_error)?;
         }
         let account = credential_account(profile);
         self.delete_secret(self.profile_keychain_service, &account)
-            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())
+            .map_err(SecretStoreError::public_error)
     }
 
     fn delete_legacy_alibaba_credentials(&self) -> Result<(), SecretStoreError> {
@@ -1433,10 +1478,10 @@ impl SettingsStore {
     ) -> Result<(), String> {
         let account = credential_account(profile);
         self.save_secret(self.profile_keychain_service, &account, value)
-            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+            .map_err(SecretStoreError::public_error)?;
         let verified = self
             .load_secret_uncached(self.profile_keychain_service, &account)
-            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+            .map_err(SecretStoreError::public_error)?;
         if verified.as_deref() != Some(value) {
             self.secret_cache
                 .lock()
@@ -1767,7 +1812,15 @@ mod tests {
             false,
         );
         let profile = store.active_profile().unwrap();
-        assert_eq!(store.credential_diagnostic(&profile), "unavailable");
+        assert_eq!(store.credential_diagnostic(&profile), "serviceUnavailable");
+        assert_eq!(
+            store.credential_state(&profile),
+            CredentialState::Unavailable
+        );
+        assert_eq!(
+            store.save_api_key(&profile.id, "synthetic-recovery-value"),
+            Err(CREDENTIAL_SERVICE_UNAVAILABLE.to_string())
+        );
 
         struct Daemon(std::process::Child);
         impl Drop for Daemon {
@@ -2079,6 +2132,7 @@ mod tests {
     #[derive(Default)]
     struct FakeState {
         values: HashMap<SecretCacheKey, String>,
+        failures: HashMap<SecretCacheKey, SecretStoreError>,
         unavailable: HashSet<SecretCacheKey>,
         unavailable_deletes: HashSet<SecretCacheKey>,
         loads: Vec<SecretCacheKey>,
@@ -2139,6 +2193,9 @@ mod tests {
             let key = cache_key(service, account);
             let mut state = self.state.lock().unwrap();
             state.loads.push(key.clone());
+            if let Some(error) = state.failures.get(&key) {
+                return Err(*error);
+            }
             if state.unavailable.contains(&key) {
                 return Err(SecretStoreError::Unavailable);
             }
@@ -2148,6 +2205,9 @@ mod tests {
         fn save(&self, service: &str, account: &str, value: &str) -> Result<(), SecretStoreError> {
             let key = cache_key(service, account);
             let mut state = self.state.lock().unwrap();
+            if let Some(error) = state.failures.get(&key) {
+                return Err(*error);
+            }
             if state.unavailable.contains(&key) {
                 return Err(SecretStoreError::Unavailable);
             }
@@ -2158,6 +2218,9 @@ mod tests {
         fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError> {
             let key = cache_key(service, account);
             let mut state = self.state.lock().unwrap();
+            if let Some(error) = state.failures.get(&key) {
+                return Err(*error);
+            }
             if state.unavailable.contains(&key) || state.unavailable_deletes.contains(&key) {
                 return Err(SecretStoreError::Unavailable);
             }
@@ -2168,6 +2231,101 @@ mod tests {
 
     fn settings(fake: &FakeSecretStore) -> SettingsStore {
         SettingsStore::in_memory(Box::new(fake.clone()), false)
+    }
+
+    #[test]
+    fn linux_storage_access_errors_are_classified_without_exposing_payloads() {
+        let private_detail = "synthetic-private-native-detail";
+        let access = keyring_core::Error::NoStorageAccess(Box::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            private_detail,
+        )));
+        assert_eq!(
+            secret_service_operation_error(access),
+            SecretStoreError::AccessDenied
+        );
+        let failure =
+            keyring_core::Error::PlatformFailure(Box::new(std::io::Error::other(private_detail)));
+        for error in [
+            failure,
+            keyring_core::Error::BadEncoding(private_detail.as_bytes().to_vec()),
+            keyring_core::Error::NoDefaultStore,
+        ] {
+            let safe = secret_service_operation_error(error);
+            assert_eq!(safe, SecretStoreError::Unavailable);
+            assert!(!safe.public_error().contains(private_detail));
+        }
+    }
+
+    #[test]
+    fn credential_failures_preserve_categories_and_recover_without_plaintext_storage() {
+        for (failure, diagnostic, public_error) in [
+            (
+                SecretStoreError::Unavailable,
+                "unavailable",
+                CREDENTIAL_STORE_UNAVAILABLE,
+            ),
+            (
+                SecretStoreError::ServiceUnavailable,
+                "serviceUnavailable",
+                CREDENTIAL_SERVICE_UNAVAILABLE,
+            ),
+            (
+                SecretStoreError::AccessDenied,
+                "accessDenied",
+                CREDENTIAL_STORE_ACCESS_DENIED,
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let fake = FakeSecretStore::default();
+            let store = SettingsStore::load_with_secret(
+                directory.path().to_path_buf(),
+                false,
+                Box::new(fake.clone()),
+                PROFILE_KEYCHAIN_SERVICE,
+                false,
+            );
+            let profile = store.active_profile().unwrap();
+            let slot = cache_key(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile));
+            fake.state
+                .lock()
+                .unwrap()
+                .failures
+                .insert(slot.clone(), failure);
+            assert_eq!(
+                store.credential_state(&profile),
+                CredentialState::Unavailable
+            );
+            assert_eq!(store.credential_diagnostic(&profile), diagnostic);
+            assert_eq!(store.configuration().unwrap_err().to_string(), public_error);
+            assert_eq!(
+                store
+                    .save_api_key(&profile.id, "synthetic-recovery-value")
+                    .unwrap_err(),
+                public_error
+            );
+            assert_eq!(store.delete_api_key(&profile.id).unwrap_err(), public_error);
+            assert_eq!(store.active_profile().unwrap().id, profile.id);
+            assert_eq!(
+                fake.value(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile)),
+                None
+            );
+
+            fake.state.lock().unwrap().failures.remove(&slot);
+            assert_eq!(store.credential_diagnostic(&profile), "missing");
+            assert_eq!(store.credential_state(&profile), CredentialState::Missing);
+            store
+                .save_api_key(&profile.id, "synthetic-recovery-value")
+                .unwrap();
+            assert_eq!(store.credential_diagnostic(&profile), "present");
+            for path in [store.prefs_path.clone(), store.catalog_path.clone()] {
+                if let Ok(json) = std::fs::read_to_string(path) {
+                    assert!(!json.contains("synthetic-recovery-value"));
+                }
+            }
+            store.delete_api_key(&profile.id).unwrap();
+            assert_eq!(store.credential_diagnostic(&profile), "missing");
+        }
     }
 
     fn translation_request(

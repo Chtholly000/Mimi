@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
+import { credentialUnavailableHelp } from "../../lib/connectionDiagnostics";
 import { textTranslationForProfile } from "../../lib/providerCapabilities";
 import { buildAlibabaTranslationCredentials, deepLXEndpointIsValid, emptyCredentialDraft } from "../../lib/providerCredentials";
 import type { ProviderCredentialsInput, ServiceProfile, TextTranslation } from "../../lib/types";
@@ -76,14 +77,14 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, feed
   };
 
   return <div className="credential-panel" aria-busy={busy}>
-    {profile.credentialState === "unavailable" && <p role="status" className="credential-unavailable">{I18N.settings.credentialUnavailableHelp}</p>}
+    {profile.credentialState === "unavailable" && <p role="status" className="credential-unavailable">{credentialUnavailableHelp()}</p>}
     <form className="credential-form" onSubmit={submit}>
       {saved && !editingKey ? <span className="credential-panel__saved-actions">
         <button type="button" className="settings-button settings-button--quiet" disabled={disabled} onClick={() => setEditingKey(true)}>{I18N.settings.replaceCredentials}</button>
         <button type="button" className="settings-link settings-link--danger" disabled={disabled || confirmingDelete} onClick={onRequestDelete}>{I18N.settings.deleteCredentials}</button>
       </span> : <label className="settings-field" htmlFor={`${inputId}-apiKey`}>
         <span>{I18N.settings.apiKey}</span>
-        <input id={`${inputId}-apiKey`} type="password" autoComplete="new-password" spellCheck={false} disabled={disabled} value={draft.apiKey} placeholder={I18N.settings.apiKeyPlaceholder} aria-describedby={noteId} onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))} />
+        <input id={`${inputId}-apiKey`} type="password" autoComplete="new-password" spellCheck={false} disabled={disabled} value={draft.apiKey} placeholder={I18N.settings.apiKeyPlaceholder} aria-describedby={noteId} onChange={(event) => { setEditingKey(true); setDraft((current) => ({ ...current, apiKey: event.target.value })); }} />
       </label>}
       <details className="settings-advanced" open={advancedOpen} onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}>
         <summary>{I18N.settings.advancedTranslation}</summary>
