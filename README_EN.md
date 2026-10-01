@@ -91,6 +91,23 @@ in Settings, the overlay control panel, or the tray. Switch instantly with
 without restarting translation. Bilingual mode pairs confirmed sentences and
 previews the recognized original while a translation is pending.
 
+## Contributors
+
+Thanks to everyone contributing to Mimi. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved.
+
+Special thanks to [@yebuwudong](https://github.com/yebuwudong) for contributing the native [Android port in PR #37](https://github.com/yuxino/mimi/pull/37). [Download Android](https://github.com/yuxino/mimi/releases/latest); see its [setup and verification notes](android/README.md).
+
+<p>
+  <a href="https://github.com/yuxino"><img src="docs/assets/contributors/yuxino.svg" width="64" height="64" alt="@yuxino"></a>
+  <a href="https://github.com/inhome"><img src="docs/assets/contributors/inhome.svg" width="64" height="64" alt="@inhome"></a>
+  <a href="https://github.com/LLLin000"><img src="docs/assets/contributors/LLLin000.svg" width="64" height="64" alt="@LLLin000"></a>
+  <a href="https://github.com/yebuwudong"><img src="docs/assets/contributors/yebuwudong.svg" width="64" height="64" alt="@yebuwudong"></a>
+</p>
+
+[View GitHub's contribution history](https://github.com/yuxino/mimi/graphs/contributors). The wall reflects publicly attributed contributions on the default branch; pending work is listed separately.
+
+Currently under review: [@LLLin000's subtitle animation #67](https://github.com/yuxino/mimi/pull/67) and [Windows audio update #89](https://github.com/yuxino/mimi/pull/89), included in [integration acceptance #88](https://github.com/yuxino/mimi/pull/88).
+
 ## Community links
 
 [LINUX DO](https://linux.do/)
