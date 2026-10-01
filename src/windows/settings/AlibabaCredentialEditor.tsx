@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
+import { credentialUnavailableHelp } from "../../lib/connectionDiagnostics";
 import { textTranslationForProfile } from "../../lib/providerCapabilities";
 import { buildAlibabaTranslationCredentials, deepLXEndpointIsValid, emptyCredentialDraft } from "../../lib/providerCredentials";
 import type { ProviderCredentialsInput, ServiceProfile, TextTranslation } from "../../lib/types";
@@ -69,7 +70,7 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, feed
 
   return <div className="credential-panel" aria-busy={busy}>
     {savedTranslation === "deepLX" && <p className="settings-caption">{I18N.settings.deepLXChain}</p>}
-    {profile.credentialState === "unavailable" && <p role="status" className="credential-unavailable">{I18N.settings.credentialUnavailableHelp}</p>}
+    {profile.credentialState === "unavailable" && <p role="status" className="credential-unavailable">{credentialUnavailableHelp()}</p>}
     <form className="credential-form" onSubmit={submit}>
       {saved && !editingKey ? <span className="credential-panel__saved-actions">
         <button type="button" className="settings-button settings-button--quiet" disabled={disabled} onClick={() => setEditingKey(true)}>{I18N.settings.replaceCredentials}</button>

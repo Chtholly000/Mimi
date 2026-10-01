@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { setStoredUiLanguage } from "../../lib/i18n";
 import { ConnectionCheck } from "./ConnectionCheck";
+import { diagnosticCopy } from "../../lib/connectionDiagnostics";
 let host: HTMLDivElement; let root: Root;
 beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); setStoredUiLanguage("zh"); host = document.createElement("div"); document.body.append(host); root = createRoot(host); });
 afterEach(async () => { await act(() => root.unmount()); host.remove(); setStoredUiLanguage("en"); });
@@ -29,4 +30,15 @@ it("checks only on explicit click and blocks repeat checks while pending", async
   await act(() => host.querySelector("button")!.click()); expect(onCheck).toHaveBeenCalledOnce();
   await act(() => root.render(<ConnectionCheck result={null} error={null} pending disabled onCheck={onCheck} />));
   await act(() => host.querySelector("button")!.click()); expect(onCheck).toHaveBeenCalledOnce();
+});
+
+it("shows distinct recovery for Linux service and access failures without reporting a saved key", async () => {
+  for (const language of ["en", "zh", "ja"] as const) {
+    setStoredUiLanguage(language);
+    for (const credential of ["serviceUnavailable", "accessDenied", "missing"] as const) {
+      await act(() => root.render(<ConnectionCheck result={{ credential, network: "notTested" }} error={null} pending={false} disabled={false} onCheck={vi.fn()} platform="linux" />));
+      expect(host.querySelector('.settings-feedback[data-tone="error"]')?.textContent).toContain(diagnosticCopy("linux")[credential]);
+      expect(host.querySelector("details")!.open).toBe(false);
+    }
+  }
 });

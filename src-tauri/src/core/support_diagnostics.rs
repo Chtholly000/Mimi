@@ -65,11 +65,17 @@ impl SafeFailure {
                 code: "AUTHENTICATION_FAILED",
             };
         }
-        if error == "credential_store_unavailable" {
+        let storage_code = match error {
+            "credential_store_unavailable" => Some("CREDENTIAL_STORE_UNAVAILABLE"),
+            "credential_service_unavailable" => Some("CREDENTIAL_SERVICE_UNAVAILABLE"),
+            "credential_store_access_denied" => Some("CREDENTIAL_STORE_ACCESS_DENIED"),
+            _ => None,
+        };
+        if let Some(code) = storage_code {
             return Self {
                 phase: "setup",
                 category: "credential_storage",
-                code: "CREDENTIAL_STORE_UNAVAILABLE",
+                code,
             };
         }
         if error == "The selected sound output is unavailable. Stop subtitles and choose another sound source in Settings." { return Self { phase: "capture_setup", category: "device_unavailable", code: "OUTPUT_UNAVAILABLE" }; }
@@ -292,6 +298,33 @@ mod tests {
         assert_eq!(error.phase, "asr_recognition");
         assert_eq!(error.category, "timeout");
         assert_ne!(error.category, "device_unavailable");
+    }
+
+    #[test]
+    fn credential_storage_categories_use_fixed_content_free_codes() {
+        for (label, code) in [
+            (
+                "credential_store_unavailable",
+                "CREDENTIAL_STORE_UNAVAILABLE",
+            ),
+            (
+                "credential_service_unavailable",
+                "CREDENTIAL_SERVICE_UNAVAILABLE",
+            ),
+            (
+                "credential_store_access_denied",
+                "CREDENTIAL_STORE_ACCESS_DENIED",
+            ),
+        ] {
+            let failure = SafeFailure::from_error(label);
+            assert_eq!(failure.phase, "setup");
+            assert_eq!(failure.category, "credential_storage");
+            assert_eq!(failure.code, code);
+        }
+        assert_eq!(
+            SafeFailure::from_error("credential_service_unavailable: private detail").code,
+            "OTHER"
+        );
     }
 
     #[test]
