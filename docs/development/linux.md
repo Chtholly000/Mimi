@@ -64,9 +64,32 @@ speakers or headphones. A missing monitor or disconnected sound server is an
 error, not permission to record another source.
 
 If capture fails, check that the sound server is running and that normal apps
-can play through the default output. If credentials are unavailable, check
-that a Secret Service provider is running on your desktop D-Bus session and
-its collection is unlocked. Do not paste keys into environment variables.
+can play through the default output.
+
+### Credential recovery
+
+Mimi needs a compatible [Secret Service provider](https://specifications.freedesktop.org/secret-service/latest/)
+on the current desktop's session D-Bus. A running D-Bus session or an installed
+wallet executable alone does not provide this service.
+
+- **Cannot connect to Secret Service:** use your distribution's package manager
+  to install a compatible provider, such as GNOME Keyring, and enable its
+  desktop-session integration. Follow your distribution's login setup; sign
+  out and back in if it requires a fresh session. Installing Mimi's `.deb`
+  normally installs its `gnome-keyring` dependency, but extracting the package
+  manually bypasses that step. AppImage users must provide the service too.
+- **Storage locked or access denied:** unlock the collection in your desktop's
+  password manager and handle any system authorization prompt. A dismissed
+  prompt is not a missing API key. GNOME Keyring can unlock the login collection
+  through the distribution's [login integration](https://wiki.gnome.org/Projects/GnomeKeyring/Pam).
+- **No credentials configured:** once storage is accessible, save the service's
+  credentials in Mimi. A reachable server does not establish authentication.
+
+Use **Check connection** after recovery. It retries failed credential reads
+without restarting Mimi. Failed saves and connection checks retain unsaved
+editor values; retry **Save** once the service is accessible. Mimi does not
+install or configure a keyring, change its password or permissions, or use file
+or environment-variable credential fallbacks.
 
 ## Build and verification
 

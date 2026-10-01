@@ -620,6 +620,7 @@ function CredentialEditor({
                   placeholder={copy.placeholder}
                   onChange={(event) => {
                     const value = event.target.value;
+                    setEditingSavedCredential(true);
                     setDraft((current) => ({ ...current, [field]: value }));
                     if (field === "endpoint" && endpointInvalid) setEndpointInvalid(!deepLXEndpointIsValid(value));
                   }}

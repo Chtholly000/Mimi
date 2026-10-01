@@ -2,7 +2,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { I18N } from "../../lib/i18n";
+import { I18N, setStoredUiLanguage } from "../../lib/i18n";
+import { diagnosticCopy } from "../../lib/connectionDiagnostics";
 import type { ServiceProfile } from "../../lib/types";
 import { AlibabaCredentialEditor } from "./AlibabaCredentialEditor";
 
@@ -17,7 +18,7 @@ beforeEach(() => {
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   props = { profile, inputId: "test", disabled: false, busy: false, feedback: null, onSave: vi.fn().mockResolvedValue(null), onRequestDelete: vi.fn(), onConfirmDelete: vi.fn(), confirmingDelete: false, onCancelDelete: vi.fn() };
 });
-afterEach(async () => { await act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+afterEach(async () => { await act(() => root.unmount()); host.remove(); setStoredUiLanguage("en"); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function render(next = props) { props = next; await act(() => root.render(<AlibabaCredentialEditor {...props} />)); }
 async function change(selector: string, value: string) {
   const node = host.querySelector<HTMLInputElement | HTMLSelectElement>(selector)!;
@@ -86,4 +87,20 @@ it("clears drafts before confirmed deletion and respects an active-session lock"
   expect((host.querySelector("input") as HTMLInputElement).value).toBe("");
   await render({ ...props, disabled: true });
   expect([...host.querySelectorAll<HTMLInputElement | HTMLSelectElement>("input, select")].every((node) => node.disabled)).toBe(true);
+});
+
+it("uses platform-aware Linux guidance for unavailable storage in each language", async () => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla Linux");
+  for (const language of ["en", "zh", "ja"] as const) {
+    setStoredUiLanguage(language);
+    await render({ ...props, profile: { ...profile, credentialState: "unavailable" } });
+    expect(host.querySelector('[role="status"]')?.textContent).toBe(diagnosticCopy("linux").storage);
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("GNOME Keyring");
+  }
+});
+
+it("discards the write-only draft after a successful save", async () => {
+  await render({ ...props, profile: { ...profile, credentialState: "unavailable" }, onSave: vi.fn().mockResolvedValue({}) });
+  await change("input", "synthetic-asr"); await submit();
+  expect((host.querySelector("input") as HTMLInputElement).value).toBe("");
 });

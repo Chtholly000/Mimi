@@ -274,7 +274,7 @@ export function appDesktopShortcutCommands(): Promise<DesktopShortcutCommands | 
 }
 
 export interface ConnectionDiagnostic {
-  credential: "present" | "missing" | "unavailable" | "invalid";
+  credential: "present" | "missing" | "unavailable" | "serviceUnavailable" | "accessDenied" | "invalid";
   network: "reachable" | "timeout" | "unreachable" | "notTested";
 }
 export function testProfileConnection(profileId: string): Promise<ConnectionDiagnostic> {
