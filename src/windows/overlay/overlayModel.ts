@@ -76,6 +76,7 @@ export function computeActivityPhase(
       isPaused: session.isPaused,
       detectedLanguage: session.detectedLanguage,
       isTranslationPending: session.isTranslationPending,
+      isTranslationPreviewPending: session.isTranslationPreviewPending,
       hasRecognizingSourceDraft: source.text !== "" && !source.isFinal,
     },
     settings,
@@ -87,6 +88,7 @@ interface ActivityPhaseSignals {
   isPaused: boolean;
   detectedLanguage: string | null;
   isTranslationPending: boolean;
+  isTranslationPreviewPending?: boolean;
   hasRecognizingSourceDraft: boolean;
 }
 
@@ -103,7 +105,7 @@ export function computeActivityPhaseFromSignals(
     case "stopping":
       return "connecting";
     case "listening": {
-      if (
+      if (signals.isTranslationPreviewPending ||
         isWaitingForFinalTranslation(
           settings,
           signals.detectedLanguage,
@@ -174,32 +176,53 @@ export function timelineClassName(blendsWithBackground: boolean): string {
 
 /**
  * Visual-line budget while following live subtitles, including confirmed
- * history until the user scrolls up to read it. The ordinary limit is two
- * reading lines; short viewports yield the second line so both bilingual
- * lanes stay visible. Full confirmed text is unchanged by this viewport budget.
+ * history until the user scrolls up to read it. Use the actual window height;
+ * a large window must not keep the same two-line limit as a narrow strip.
+ * A short lane gives its spare space to the other language. Full confirmed
+ * text remains available when reading history.
  */
 export const SUBTITLE_LINE_HEIGHT = 1.32;
-export const SUBTITLE_SOURCE_SCALE = 0.82;
+export const SUBTITLE_SOURCE_SCALE = 0.9;
+
+export function subtitleSourceScale(availableLaneHeight: number | null): number {
+  return availableLaneHeight !== null && availableLaneHeight < 78 ? 0.82 : SUBTITLE_SOURCE_SCALE;
+}
 
 export function subtitleLaneBudget(
   displayMode: SettingsSnapshot["subtitleDisplayMode"],
   hasTranslation: boolean,
   availableLaneHeight: number | null = null,
   fontSize = 18,
+  measured: { source: number; translation: number } | null = null,
 ): { source: number; translation: number } {
-  const sourceLine = Math.max(12, fontSize * SUBTITLE_SOURCE_SCALE) * SUBTITLE_LINE_HEIGHT;
-  const translationLine = fontSize * SUBTITLE_LINE_HEIGHT;
+  const sourceScale = subtitleSourceScale(availableLaneHeight);
+  const sourceLine = Math.ceil((displayMode === "bilingual"
+    ? Math.max(12, fontSize * sourceScale) : fontSize) * SUBTITLE_LINE_HEIGHT);
+  const translationLine = Math.ceil(fontSize * SUBTITLE_LINE_HEIGHT);
   const linesThatFit = (lineHeight: number, remaining = availableLaneHeight) =>
-    remaining === null ? 2 : Math.max(1, Math.min(2, Math.floor(remaining / lineHeight)));
+    remaining === null ? 2 : Math.max(1, Math.floor(remaining / lineHeight));
   switch (displayMode) {
     case "translation":
       return { source: 0, translation: linesThatFit(translationLine) };
     case "original":
       return { source: linesThatFit(sourceLine), translation: 0 };
-    default:
-      return hasTranslation
-        ? { source: 1, translation: linesThatFit(translationLine, availableLaneHeight === null ? null : availableLaneHeight - sourceLine) }
-        : { source: linesThatFit(sourceLine), translation: 0 };
+    default: {
+      if (!hasTranslation) return { source: linesThatFit(sourceLine), translation: 0 };
+      if (availableLaneHeight === null) return { source: 1, translation: 2 };
+      // The original is a readable reference, with most of the space going
+      // to the translation. Measured short text yields space in either lane.
+      let source = linesThatFit(sourceLine, availableLaneHeight * 0.36);
+      if (measured && measured.source > 0) {
+        source = Math.min(source, Math.max(1, Math.ceil(measured.source / sourceLine)));
+      }
+      let translation = linesThatFit(translationLine, availableLaneHeight - source * sourceLine);
+      if (measured && measured.translation > 0) {
+        translation = Math.min(translation, Math.max(1, Math.ceil(measured.translation / translationLine)));
+        source = linesThatFit(sourceLine, availableLaneHeight - translation * translationLine);
+        if (measured.source > 0) source = Math.min(source, Math.max(1, Math.ceil(measured.source / sourceLine)));
+      }
+      return { source, translation };
+    }
   }
 }
 
@@ -262,8 +285,8 @@ export function buildSubtitleBlocks(
 /**
  * The live preview line: the current unconfirmed translation (or a just-final
  * line that has not yet entered history). The overlay renders it as the
- * timeline's last row — dimmed with a trailing ellipsis — so streaming
- * updates never look like a separate pile at the bottom. Returns `null` when
+ * timeline's last row so streaming updates stay in the same reading flow.
+ * Returns `null` when
  * there is nothing to preview.
  */
 function visibleDraft(
@@ -282,6 +305,7 @@ interface LiveSubtitlePreview {
   text: string;
   isFinal: boolean;
   kind: "translation" | "source";
+  isStable?: true;
 }
 
 /**
@@ -303,16 +327,18 @@ export function visibleLiveSubtitle(
   );
   const showSource = settings.subtitleDisplayMode === "original" ||
     settings.subtitleDisplayMode === "bilingual";
+  const sameLanguage = isSameLanguageMode(settings, detectedLanguage);
   // Source/translation snapshots have no shared utterance identity. Only
   // committed history can form a bilingual pair; preview the recognition
   // independently until that pair arrives, never attach a stale translation.
   const bilingualWithoutSource = settings.subtitleDisplayMode === "bilingual" &&
     subtitles.source.text.trim() === "";
-  if ((!showSource || bilingualWithoutSource) && translation !== null) {
+  if ((!showSource || bilingualWithoutSource) && translation !== null &&
+    (!sameLanguage || subtitles.source.text.trim() === "")) {
     return { ...translation, kind: "translation" };
   }
 
-  if (!showSource && !isSameLanguageMode(settings, detectedLanguage)) return null;
+  if (!showSource && !sameLanguage) return null;
 
   const source = subtitles.source;
   if (source.text === "") return null;
@@ -327,13 +353,15 @@ export function visibleLiveSubtitle(
     !isTranslationPending &&
     !isTranslationTimedOut &&
     latestPair?.source === source.text &&
-    (showSource || currentTranslationMatchesLatestPair);
+    (showSource || sameLanguage || currentTranslationMatchesLatestPair);
   if (sourceIsAlreadyCommitted) return null;
 
   return {
     text: source.text,
     isFinal: source.isFinal,
-    kind: "source",
+    // Recognition is also the reading text in an original-target or
+    // same-language session. Put it in the visible single-language lane.
+    kind: settings.subtitleDisplayMode === "translation" ? "translation" : "source",
   };
 }
 
@@ -355,7 +383,23 @@ export function visibleLiveSubtitles(
   detectedLanguage: string | null,
   isTranslationPending: boolean,
   isTranslationTimedOut: boolean,
+  preferAtomicPreview = false,
 ): LiveSubtitlePreview[] {
+  if (preferAtomicPreview && !isSameLanguageMode(settings, detectedLanguage) && settings.subtitleDisplayMode !== "original") {
+    const pair = subtitles.previewPair;
+    if (pair) {
+      const source: LiveSubtitlePreview = { kind: "source", text: pair.source, isFinal: false, isStable: true };
+      const translation: LiveSubtitlePreview = { kind: "translation", text: pair.translation, isFinal: false, isStable: true };
+      return settings.subtitleDisplayMode === "bilingual" ? [source, translation] : [translation];
+    }
+    // The first recognition may appear before a complete preview exists.
+    // A new request's tiny SSE prefixes must not repeatedly erase and rebuild
+    // the text the reader just saw. Final history remains independent.
+    if (settings.subtitleDisplayMode !== "bilingual") return [];
+    const source = visibleLiveSubtitle({ ...subtitles, translation: { text: "", isFinal: false } }, settings,
+      detectedLanguage, isTranslationPending, isTranslationTimedOut);
+    return source?.kind === "source" ? [source] : [];
+  }
   const preview = visibleLiveSubtitle(
     subtitles,
     settings,
@@ -369,7 +413,7 @@ export function visibleLiveSubtitles(
   if (preview?.kind === "translation") return previews;
   // Same-language drafts can differ briefly while the two streams advance.
   // Showing both would duplicate one language in the bilingual display.
-  if (preview?.kind === "source" && isSameLanguageMode(settings, detectedLanguage)) {
+  if (isSameLanguageMode(settings, detectedLanguage)) {
     return previews;
   }
   const translation = visibleDraft(subtitles.translation, subtitles.history);
@@ -439,6 +483,8 @@ export function hasSubtitleContent(subtitles: SubtitleSnapshot): boolean {
   return (
     subtitles.source.text !== "" ||
     subtitles.translation.text !== "" ||
+    (subtitles.previewPair !== undefined && subtitles.previewPair !== null &&
+      (subtitles.previewPair.source.trim() !== "" || subtitles.previewPair.translation.trim() !== "")) ||
     subtitles.history.length > 0
   );
 }

@@ -4,8 +4,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import { diagnosticCopy } from "../../lib/connectionDiagnostics";
+import { profileRevealCredential } from "../../lib/ipc";
 import type { ServiceProfile } from "../../lib/types";
 import { AlibabaCredentialEditor } from "./AlibabaCredentialEditor";
+
+vi.mock("../../lib/ipc", () => ({ isTauri: false, profileRevealCredential: vi.fn() }));
 
 let root: Root;
 let host: HTMLDivElement;
@@ -15,6 +18,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.stubGlobal("scrollIntoView", vi.fn());
   Element.prototype.scrollIntoView = vi.fn();
+  vi.mocked(profileRevealCredential).mockReset();
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   props = { profile, inputId: "test", disabled: false, busy: false, feedback: null, onSave: vi.fn().mockResolvedValue(null), onRequestDelete: vi.fn(), onConfirmDelete: vi.fn(), confirmingDelete: false, onCancelDelete: vi.fn() };
 });
@@ -157,7 +161,7 @@ it("clears destination secrets when switching between DeepL and a custom service
   expect(props.onSave).not.toHaveBeenCalled();
 });
 
-it("keeps a saved DeepL key write-only and permits replacing only the Alibaba key", async () => {
+it("keeps a saved DeepL key hidden by default and permits replacing only the Alibaba key", async () => {
   await render({ ...props, profile: { ...profile, textTranslation: "deepL" } });
   expect(host.querySelector("#test-endpoint")).toBeNull();
   expect(host.querySelector<HTMLInputElement>("#test-token")!.value).toBe("");
@@ -165,6 +169,49 @@ it("keeps a saved DeepL key write-only and permits replacing only the Alibaba ke
   const replace = [...host.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === I18N.settings.replaceCredentials)!;
   await act(() => replace.click()); await change("#test-apiKey", "synthetic-new-asr"); await submit();
   expect(props.onSave).toHaveBeenCalledWith({ kind: "alibabaTranslation", apiKey: "synthetic-new-asr", textTranslation: "deepL", endpoint: "", token: "" });
+});
+
+it("shows a saved destination key only on demand for its saved route and clears it when translation settings close", async () => {
+  await render({ ...props, profile: { ...profile, textTranslation: "deepL" } });
+  expect(profileRevealCredential).not.toHaveBeenCalled();
+  expect(host.querySelector(".stored-credential-reveal")).toBeNull();
+  await expandAdvanced();
+  vi.mocked(profileRevealCredential).mockResolvedValue("synthetic-saved-deepl-key");
+  await act(async () => { host.querySelector<HTMLButtonElement>(".stored-credential-reveal button")!.click(); });
+  expect(profileRevealCredential).toHaveBeenCalledExactlyOnceWith({ profileId: profile.id, field: "token", textTranslation: "deepL" });
+  expect(host.querySelector<HTMLInputElement>(".stored-credential-reveal input")!.value).toBe("synthetic-saved-deepl-key");
+  expect(host.querySelector<HTMLInputElement>("#test-token")!.value).toBe("");
+  expect(props.onSave).not.toHaveBeenCalled();
+  await act(() => {
+    const advanced = host.querySelector<HTMLDetailsElement>("details")!;
+    advanced.open = false; advanced.dispatchEvent(new Event("toggle"));
+  });
+  expect(host.querySelector(".stored-credential-reveal")).toBeNull();
+  await expandAdvanced();
+  expect(host.querySelector(".stored-credential-reveal input")).toBeNull();
+});
+
+it("discards an in-flight saved DeepL reveal when the draft selects another route", async () => {
+  let complete!: (value: string) => void;
+  vi.mocked(profileRevealCredential).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+  await render({ ...props, profile: { ...profile, textTranslation: "deepL" } }); await expandAdvanced();
+  await act(() => host.querySelector<HTMLButtonElement>(".stored-credential-reveal button")!.click());
+  await chooseTranslation("deepLX");
+  await act(async () => { complete("synthetic-old-route-key"); });
+  expect(host.querySelector(".stored-credential-reveal")).toBeNull();
+  expect(host.querySelector<HTMLInputElement>("#test-token")!.value).toBe("");
+  await chooseTranslation("deepL");
+  expect(host.querySelector(".stored-credential-reveal input")).toBeNull();
+  expect(profileRevealCredential).toHaveBeenCalledOnce();
+});
+
+it("requests the legacy ASR field when viewing a historical custom profile's saved recognition key", async () => {
+  await render({ ...props, profile: { ...profile, provider: "deepLX" } });
+  await act(() => [...host.querySelectorAll<HTMLButtonElement>("button")].find((node) => node.textContent === I18N.settings.replaceCredentials)!.click());
+  vi.mocked(profileRevealCredential).mockResolvedValue("synthetic-asr-key");
+  await act(async () => { host.querySelector<HTMLButtonElement>(".stored-credential-reveal button")!.click(); });
+  expect(profileRevealCredential).toHaveBeenCalledExactlyOnceWith({ profileId: profile.id, field: "asrApiKey" });
+  expect(host.querySelector<HTMLInputElement>("#test-apiKey")!.value).toBe("");
 });
 
 it("does not carry a DeepL key draft into an externally selected custom destination", async () => {

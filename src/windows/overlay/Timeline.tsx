@@ -1,13 +1,13 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { hexToRgba } from "../../lib/types";
 import { subtitleColorHex } from "../../lib/subtitleColor";
 import type { SettingsSnapshot, SubtitleAlignment, SubtitleColor } from "../../lib/types";
 import { observeTimelineResize } from "./timelineResize";
 import { TimelineScroll } from "./timelineScroll";
-import { unitSpans } from "./animation";
 import { rowHorizontalPadding } from "./alignment";
 import {
   subtitleLaneBudget,
+  subtitleSourceScale,
   SUBTITLE_LINE_HEIGHT,
   SUBTITLE_SOURCE_SCALE,
   timelineClassName,
@@ -24,7 +24,7 @@ const LANE_GAP = 2;
 const BLOCK_PADDING_Y = 2;
 const LAST_BLOCK_PADDING_Y = 3;
 /** Separator gap for the card presentation; immersive mode uses space only. */
-const SEPARATOR_MARGIN_Y = 4;
+const SEPARATOR_MARGIN_Y = 7;
 const IMMERSIVE_BLOCK_GAP = 6;
 interface TimelineProps {
   blocks: SubtitleBlock[];
@@ -37,6 +37,7 @@ interface TimelineProps {
   displayMode: SettingsSnapshot["subtitleDisplayMode"];
   /** Optional metadata; hidden by default so sentence boundaries lead. */
   showTimestamps?: boolean;
+  showSubtitleDividers?: boolean;
   blendsWithBackground?: boolean;
   /** Resolved motion setting: gates the roll-up glide. */
   motionEnabled?: boolean;
@@ -55,6 +56,7 @@ export const Timeline = memo(function Timeline({
   blendsWithBackground = false,
   motionEnabled = true,
   showTimestamps = false,
+  showSubtitleDividers = false,
 }: TimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Keep the newest content pinned to the bottom: the block count changes when
@@ -70,6 +72,7 @@ export const Timeline = memo(function Timeline({
   const [scroll] = useState(() => new TimelineScroll());
   const [readingHistory, setReadingHistory] = useState(false);
   const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+  const [laneMeasurements, setLaneMeasurements] = useState({ blockId: "", source: 0, translation: 0 });
   const touchStartYRef = useRef<number | null>(null);
   const tight = viewportHeight !== null && viewportHeight < 80;
   const laneGap = tight ? 1 : LANE_GAP;
@@ -78,7 +81,7 @@ export const Timeline = memo(function Timeline({
 
   useLayoutEffect(() => {
     if (containerRef.current) scroll.reflow(containerRef.current);
-  }, [readingHistory, viewportHeight, scroll]);
+  }, [readingHistory, viewportHeight, showSubtitleDividers, scroll]);
 
   useLayoutEffect(() => {
     if (previousModeRef.current === displayMode) return;
@@ -174,13 +177,23 @@ export const Timeline = memo(function Timeline({
         // committed utterance replaces the live row it was already visible as,
         // so animating it again would blink the text the user is reading.
         const entering = block.presentation === "live";
-        const streaming = block.streaming === true;
         const availableLaneHeight = viewportHeight === null ? null
           : viewportHeight - paddingTop - paddingBottom - (block.source !== null && block.translation !== null ? laneGap : 0);
         // When the original has not arrived, the translation owns the full
         // viewport rather than reserving height for an absent reference lane.
         const budgetMode = displayMode === "bilingual" && block.source === null ? "translation" : displayMode;
-        const budget = subtitleLaneBudget(budgetMode, block.translation !== null, availableLaneHeight, fontSize);
+        const budget = subtitleLaneBudget(budgetMode, block.translation !== null, availableLaneHeight, fontSize,
+          isLast && laneMeasurements.blockId === block.id ? laneMeasurements : null);
+        const measureLane = (kind: "source" | "translation", height: number) => {
+          if (!isLast) return;
+          setLaneMeasurements(previous => {
+            const current = previous.blockId === block.id ? previous : { blockId: block.id, source: 0, translation: 0 };
+            return current[kind] === height ? previous : { ...current, [kind]: height };
+          });
+        };
+        // Previous sentences retain one line in each selected language.
+        // Bilingual must not silently remove its original while following.
+        const previousReference = compact && !isLast;
         return (
           <div
             key={block.id}
@@ -233,11 +246,11 @@ export const Timeline = memo(function Timeline({
               </span>
             ) : null}
             <div style={{ display: "flex", flexDirection: "column", gap: laneGap }}>
-              {block.source !== null ? (
+              {block.source !== null && displayMode !== "translation" ? (
                 <Lane
                   text={block.source}
                   kind="source"
-                  lines={compact && budget.source > 0 ? budget.source : null}
+                  lines={compact && budget.source > 0 ? previousReference ? 1 : budget.source : null}
                   fontSize={fontSize}
                   alignment={alignment}
                   displayMode={displayMode}
@@ -245,14 +258,15 @@ export const Timeline = memo(function Timeline({
                   blendsWithBackground={blendsWithBackground}
                   motionEnabled={motionEnabled}
                   entering={entering}
-                  streaming={streaming}
+                  sourceScale={subtitleSourceScale(availableLaneHeight)}
+                  onMeasure={height => measureLane("source", height)}
                 />
               ) : null}
-              {block.translation !== null ? (
+              {block.translation !== null && displayMode !== "original" ? (
                 <Lane
                   text={block.translation}
                   kind="translation"
-                  lines={compact && budget.translation > 0 ? budget.translation : null}
+                  lines={compact && budget.translation > 0 ? previousReference ? 1 : budget.translation : null}
                   fontSize={fontSize}
                   alignment={alignment}
                   displayMode={displayMode}
@@ -260,19 +274,20 @@ export const Timeline = memo(function Timeline({
                   blendsWithBackground={blendsWithBackground}
                   motionEnabled={motionEnabled}
                   entering={entering}
-                  streaming={streaming}
+                  onMeasure={height => measureLane("translation", height)}
                 />
               ) : null}
             </div>
             {/* The separator belongs to the sentence above: it fades and
                 scrolls away with it, and Immersive Mode keeps space only. */}
-            {!isLast && !blendsWithBackground ? (
+            {showSubtitleDividers && !isLast && !blendsWithBackground ? (
               <div
                 aria-hidden="true"
                 className="subtitle-separator"
                 style={{
                   height: 1,
-                  margin: `${SEPARATOR_MARGIN_Y}px 0`,
+                  width: "100%",
+                  margin: `${SEPARATOR_MARGIN_Y}px auto`,
                 }}
               />
             ) : null}
@@ -297,34 +312,9 @@ interface LaneProps {
   motionEnabled: boolean;
   /** Runs the lane fade only for text that was not on screen before. */
   entering: boolean;
-  /** The lane may still change: it carries the streaming marker. */
-  streaming: boolean;
-}
-
-/**
- * Lane text while it is still arriving: each unit is its own element keyed by
- * its offset, so the CSS fade runs once per unit as it mounts and never replays
- * for text that is already on screen. Settled rows render plain text instead,
- * which leaves no wrappers behind once the stream ends.
- */
-function renderLaneText(text: string, entering: boolean): ReactNode {
-  if (!entering) return text;
-  return unitSpans(text).map((unit) => (
-    <span key={unit.start} className="stream-chunk">
-      {unit.text}
-    </span>
-  ));
-}
-
-/** The typing wave that rides the end of the text still arriving. */
-function StreamingDots() {
-  return (
-    <span className="stream-dots" aria-hidden="true">
-      <span />
-      <span />
-      <span />
-    </span>
-  );
+  hidden?: boolean;
+  onMeasure?: (height: number) => void;
+  sourceScale?: number;
 }
 
 function Lane({
@@ -338,23 +328,22 @@ function Lane({
   blendsWithBackground,
   motionEnabled,
   entering,
-  streaming,
+  hidden = false,
+  onMeasure,
+  sourceScale = SUBTITLE_SOURCE_SCALE,
 }: LaneProps) {
   const isSource = kind === "source";
   // In bilingual mode the recognized original is the reference lane: neutral
   // white, slightly smaller. In a single-language mode the visible lane is the
   // reading target and uses the user's subtitle color.
   const isReference = isSource && displayMode === "bilingual";
-  // The marker follows the text that is still arriving: the translation when
-  // there is one, otherwise the recognized original.
-  const streamingMarker = streaming && (kind === "translation" || displayMode === "original");
-  const body = renderLaneText(text, entering);
-  const laneFontSize = isSource ? Math.max(12, fontSize * SUBTITLE_SOURCE_SCALE) : fontSize;
+  const laneFontSize = isReference ? Math.max(12, fontSize * sourceScale) : fontSize;
+  const lineHeightPx = Math.ceil(laneFontSize * SUBTITLE_LINE_HEIGHT);
   const textStyle = {
     fontSize: laneFontSize,
-    fontWeight: isSource ? 400 : 500,
-    color: hexToRgba(isReference ? "#FFFFFF" : subtitleColorHex(color), isReference ? 0.72 : 1),
-    lineHeight: SUBTITLE_LINE_HEIGHT,
+    fontWeight: isReference ? 400 : 500,
+    color: hexToRgba(isReference ? "#FFFFFF" : subtitleColorHex(color), isReference ? 0.86 : 1),
+    lineHeight: `${lineHeightPx}px`,
     overflowWrap: "break-word" as const,
     textShadow: blendsWithBackground ? IMMERSIVE_TEXT_SHADOW : undefined,
   };
@@ -363,10 +352,10 @@ function Lane({
     return (
       <span
         className={entering ? "block min-w-0 subtitle-lane" : "block min-w-0"}
-        style={{ textAlign: alignment, ...textStyle }}
+        hidden={hidden}
+        style={{ textAlign: alignment, ...textStyle, display: hidden ? "none" : undefined }}
       >
-        {body}
-        {streamingMarker ? <StreamingDots /> : null}
+        {text}
       </span>
     );
   }
@@ -375,12 +364,13 @@ function Lane({
     <CompactLane
       text={text}
       lines={lines}
-      lineHeightPx={laneFontSize * SUBTITLE_LINE_HEIGHT}
+      lineHeightPx={lineHeightPx}
       alignment={alignment}
       textStyle={textStyle}
       motionEnabled={motionEnabled}
       entering={entering}
-      streamingMarker={streamingMarker}
+      hidden={hidden}
+      onMeasure={onMeasure}
     />
   );
 }
@@ -391,13 +381,14 @@ interface CompactLaneProps {
   lineHeightPx: number;
   motionEnabled: boolean;
   entering: boolean;
-  streamingMarker: boolean;
   alignment: SubtitleAlignment;
+  hidden?: boolean;
+  onMeasure?: (height: number) => void;
   textStyle: {
     fontSize: number;
     fontWeight: number;
     color: string;
-    lineHeight: number;
+    lineHeight: string;
     overflowWrap: "break-word";
     textShadow: string | undefined;
   };
@@ -416,35 +407,30 @@ function CompactLane({
   lineHeightPx,
   motionEnabled,
   entering,
-  streamingMarker,
   alignment,
   textStyle,
+  hidden = false,
+  onMeasure,
 }: CompactLaneProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLSpanElement>(null);
-  const { overflowed, innerHeight } = useLaneOverflow(viewportRef);
+  const { overflowed, innerHeight } = useLaneOverflow(viewportRef, onMeasure);
   const maximumHeight = Math.round(lines * lineHeightPx);
   // Let the text glide upward when a new line pushes it instead of jumping.
   useRollupGlide(innerRef, innerHeight, motionEnabled && innerHeight > maximumHeight + 2);
-  const body = renderLaneText(text, entering);
   return (
     <div
       ref={viewportRef}
       aria-label={text}
+      aria-hidden={hidden || undefined}
+      hidden={hidden}
       style={{
+        display: hidden ? "none" : undefined,
         position: "relative",
         // Reserve the limit only until the browser supplies its first layout;
         // short sentences then take exactly the space their actual lines need.
         height: innerHeight > 0 ? Math.min(innerHeight, maximumHeight) : maximumHeight,
         overflow: "hidden",
-        // Fade the clipped edge so the roll-up reads as continuing text rather
-        // than a cut.
-        maskImage: overflowed
-          ? "linear-gradient(to bottom, transparent 0, black 7px)"
-          : undefined,
-        WebkitMaskImage: overflowed
-          ? "linear-gradient(to bottom, transparent 0, black 7px)"
-          : undefined,
       }}
     >
       <span
@@ -463,36 +449,20 @@ function CompactLane({
           ...textStyle,
         }}
       >
-        {body}
-        {streamingMarker ? <StreamingDots /> : null}
-      </span>
-      <span
-        aria-hidden="true"
-        style={{
-          position: "absolute",
-          left: 2,
-          top: 0,
-          width: 14,
-          textAlign: "center",
-          color: "rgba(255,255,255,0.42)",
-          fontSize: Math.max(10, textStyle.fontSize * 0.62),
-          lineHeight: textStyle.lineHeight,
-          opacity: overflowed ? 1 : 0,
-          transition: "opacity 180ms ease-out",
-        }}
-      >
-        {"…"}
+        {text}
       </span>
     </div>
   );
 }
 
 /** Whether the lane's text overflows its budget, plus its laid-out height. */
-function useLaneOverflow(viewportRef: RefObject<HTMLDivElement | null>): {
+function useLaneOverflow(viewportRef: RefObject<HTMLDivElement | null>, onMeasure?: (height: number) => void): {
   overflowed: boolean;
   innerHeight: number;
 } {
   const [measured, setMeasured] = useState({ overflowed: false, innerHeight: 0 });
+  const reportHeight = useRef(onMeasure);
+  useLayoutEffect(() => { reportHeight.current = onMeasure; });
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
     if (viewport === null) return;
@@ -500,6 +470,7 @@ function useLaneOverflow(viewportRef: RefObject<HTMLDivElement | null>): {
       const inner = viewport.firstElementChild;
       if (inner === null) return;
       const height = Math.round(inner.getBoundingClientRect().height);
+      reportHeight.current?.(height);
       // Two pixels of hysteresis keep the marker from flickering on the exact
       // boundary while the text streams in.
       const overflowed = height > viewport.clientHeight + 2;
@@ -557,7 +528,7 @@ function blockOpacity(distance: number): number {
     case 0:
       return 1;
     case 1:
-      return 0.68;
+      return 0.82;
     default:
       return 0.44;
   }

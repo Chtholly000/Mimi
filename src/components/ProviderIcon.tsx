@@ -6,7 +6,7 @@ import gemini from "../assets/providers/gemini.svg";
 import azure from "../assets/providers/azure.svg";
 import volcanoEngine from "../assets/providers/volcano-engine.png";
 import tencentCloud from "../assets/providers/tencent-cloud.svg";
-import baiduTranslate from "../assets/providers/baidu-translate.png";
+import baiduTranslate from "../assets/providers/baidu-translate.jpg";
 import xAI from "../assets/providers/xai.png";
 import "./provider-icon.css";
 

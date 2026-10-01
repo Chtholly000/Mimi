@@ -1,4 +1,5 @@
 import type { SettingsDraft, SettingsSnapshot } from "./types";
+import { DEFAULT_NETWORK_PROXY, validateNetworkProxy } from "./networkProxy";
 
 type Unlisten = () => void;
 
@@ -16,89 +17,97 @@ interface SnapshotStreamConsumers<Settings, Session> {
   applySession: (session: Session) => void;
 }
 
+export const SNAPSHOT_STEP_TIMEOUT_MS = 12_000;
+
+export class SnapshotBootstrapTimeoutError extends Error {
+  constructor() { super("snapshot-step-timeout"); }
+}
+
+function withSnapshotDeadline<Value>(operation: Promise<Value>): Promise<Value> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new SnapshotBootstrapTimeoutError()), SNAPSHOT_STEP_TIMEOUT_MS);
+    operation.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 /**
  * Installs event listeners before requesting boot snapshots. Events received
- * while either snapshot is in flight are buffered and win over the older
- * response, closing the otherwise unavoidable listen-after-read race.
+ * while a snapshot is in flight are buffered and win over the older response.
+ * Each stream progresses independently with a deadline for each native step:
+ * a delayed credential snapshot must not hold back the session snapshot.
  */
 export async function initializeSnapshotStreams<Settings, Session>(
   sources: SnapshotStreamSources<Settings, Session>,
   consumers: SnapshotStreamConsumers<Settings, Session>,
 ): Promise<Unlisten[]> {
-  let isBootstrapping = true;
-  let bufferedSettings: Settings | undefined;
-  let bufferedSession: Session | undefined;
-
-  const receiveSettings = (settings: Settings) => {
-    if (isBootstrapping) {
-      bufferedSettings = settings;
-    } else {
-      consumers.applySettings(settings);
-    }
-  };
-  const receiveSession = (session: Session) => {
-    if (isBootstrapping) {
-      bufferedSession = session;
-    } else {
-      consumers.applySession(session);
-    }
+  let active = true;
+  const unlisteners: Unlisten[] = [];
+  const clearBuffers: Unlisten[] = [];
+  const safelyUnlisten = (unlisten: Unlisten) => {
+    try { unlisten(); } catch { /* Continue cleaning other subscriptions. */ }
   };
 
-  const listenerResults = await Promise.allSettled([
-    sources.listenSettings(receiveSettings),
-    sources.listenSession(receiveSession),
-  ]);
-  const unlisteners = listenerResults.flatMap((result) =>
-    result.status === "fulfilled" ? [result.value] : [],
-  );
-
-  if (listenerResults.some((result) => result.status === "rejected")) {
-    isBootstrapping = false;
-    for (const unlisten of unlisteners) {
-      try {
-        unlisten();
-      } catch {
-        // A failed listener is already unusable; continue cleaning the rest.
-      }
+  const startStream = async <Snapshot>(
+    listen: (handler: (snapshot: Snapshot) => void) => Promise<Unlisten>,
+    getSnapshot: () => Promise<Snapshot>,
+    apply: (snapshot: Snapshot) => void,
+  ) => {
+    let bootstrapping = true;
+    let buffered: Snapshot | undefined;
+    clearBuffers.push(() => { buffered = undefined; });
+    try {
+      const subscription = listen((snapshot) => {
+        if (!active) return;
+        if (bootstrapping) buffered = snapshot;
+        else apply(snapshot);
+      }).then((unlisten) => {
+        // A listen command can complete after its UI attempt has expired.
+        if (active) unlisteners.push(unlisten);
+        else safelyUnlisten(unlisten);
+      });
+      await withSnapshotDeadline(subscription);
+    } catch (error) {
+      active = false;
+      throw error instanceof SnapshotBootstrapTimeoutError ? error : new Error("snapshot-listener-unavailable");
     }
-    throw new Error("snapshot-listener-unavailable");
-  }
-
-  const [settingsResult, sessionResult] = await Promise.allSettled([
-    sources.getSettings(),
-    sources.getSession(),
-  ]);
-
-  if (settingsResult.status === "rejected" || sessionResult.status === "rejected") {
-    isBootstrapping = false;
-    for (const unlisten of unlisteners) {
-      try {
-        unlisten();
-      } catch {
-        // Snapshot retry must not retain a partially initialized listener.
-      }
+    if (!active) return;
+    let snapshot: Snapshot;
+    try { snapshot = await withSnapshotDeadline(getSnapshot()); }
+    catch (error) {
+      active = false;
+      throw error instanceof SnapshotBootstrapTimeoutError ? error : new Error("boot-snapshot-unavailable");
     }
-    throw new Error("boot-snapshot-unavailable");
+    if (!active) return;
+    // Selecting the buffered event and enabling live mode happen in one turn.
+    const latest = buffered ?? snapshot;
+    buffered = undefined;
+    bootstrapping = false;
+    apply(latest);
+  };
+
+  try {
+    await Promise.all([
+      startStream(sources.listenSettings, sources.getSettings, consumers.applySettings),
+      startStream(sources.listenSession, sources.getSession, consumers.applySession),
+    ]);
+    return unlisteners.map((unlisten) => () => { active = false; safelyUnlisten(unlisten); });
+  } catch (error) {
+    active = false;
+    for (const clear of clearBuffers) clear();
+    for (const unlisten of unlisteners) safelyUnlisten(unlisten);
+    throw error;
   }
-
-  const settings =
-    bufferedSettings ?? settingsResult.value;
-  const session =
-    bufferedSession ?? sessionResult.value;
-
-  // JavaScript runs these assignments and callbacks in one turn, so an event
-  // cannot slip between selecting the buffered values and enabling live mode.
-  isBootstrapping = false;
-  consumers.applySettings(settings);
-  consumers.applySession(session);
-
-  return unlisteners;
 }
 
 export function mergeSettingsSnapshot(
   current: SettingsSnapshot,
   draft: SettingsDraft,
 ): SettingsSnapshot {
+  const networkProxy = draft.networkProxy === undefined ? null
+    : validateNetworkProxy(draft.networkProxy.mode, draft.networkProxy.url);
   return {
     ...current,
     sourceLanguage: draft.sourceLanguage ?? current.sourceLanguage,
@@ -108,11 +117,15 @@ export function mergeSettingsSnapshot(
     subtitleColor: draft.subtitleColor ?? current.subtitleColor,
     subtitleAlignment: draft.subtitleAlignment ?? current.subtitleAlignment,
     subtitleDisplayMode: draft.subtitleDisplayMode ?? current.subtitleDisplayMode,
+    showSubtitleDividers: draft.showSubtitleDividers ?? current.showSubtitleDividers,
     pulseAnimation: draft.pulseAnimation ?? current.pulseAnimation,
     pulseStyle: draft.pulseStyle ?? current.pulseStyle,
     subtitleAnimation: draft.subtitleAnimation ?? current.subtitleAnimation,
     windowsAudioSource: draft.windowsAudioSource ?? current.windowsAudioSource,
     showInDock: draft.showInDock ?? current.showInDock,
+    // Do not put an invalid or credential-bearing URL into the global UI
+    // snapshot while native validation is still pending.
+    networkProxy: networkProxy && "config" in networkProxy ? networkProxy.config : current.networkProxy ?? DEFAULT_NETWORK_PROXY,
     subtitleBlendsWithBackground:
       draft.subtitleBlendsWithBackground ??
       current.subtitleBlendsWithBackground,

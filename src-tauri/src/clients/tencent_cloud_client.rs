@@ -16,7 +16,7 @@ use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -77,6 +77,7 @@ struct Inner {
 /// interpolated into an error or diagnostic event.
 #[derive(Clone)]
 pub struct TencentCloudClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint_override: Option<url::Url>,
     app_id: String,
@@ -88,6 +89,15 @@ pub struct TencentCloudClient {
 }
 
 impl TencentCloudClient {
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         app_id: &str,
         secret_id: &str,
@@ -132,6 +142,7 @@ impl TencentCloudClient {
         events: ProviderEventSender,
     ) -> Self {
         Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
@@ -186,10 +197,13 @@ impl TencentCloudClient {
         let request = endpoint
             .into_client_request()
             .map_err(|_| TencentCloudClientError::TransportFailure)?;
-        let (socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
-            .await
-            .map_err(|_| TencentCloudClientError::TransportFailure)?
-            .map_err(|_| TencentCloudClientError::TransportFailure)?;
+        let (socket, _) = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            super::provider_network::websocket(request, &self.network),
+        )
+        .await
+        .map_err(|_| TencentCloudClientError::TransportFailure)?
+        .map_err(|_| TencentCloudClientError::TransportFailure)?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);

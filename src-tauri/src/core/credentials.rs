@@ -24,6 +24,48 @@ pub enum ProviderCredentialsError {
     InvalidField,
     #[error("The saved credentials could not be read.")]
     InvalidStoredValue,
+    #[error("credential_reveal_field_mismatch")]
+    InvalidRevealField,
+}
+
+/// Explicit single-field reveal requests, never part of normal snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CredentialRevealField {
+    ApiKey,
+    AsrApiKey,
+    Token,
+    SecretId,
+    SecretKey,
+    AppKey,
+}
+
+impl CredentialRevealField {
+    pub fn allowed_for(
+        self,
+        profile: &ServiceProfile,
+        expected_text_translation: Option<TextTranslation>,
+    ) -> bool {
+        match self {
+            Self::ApiKey => {
+                profile.provider.uses_api_key_only()
+                    || profile.provider == ProviderKind::AzureOpenAIRealtime
+            }
+            Self::AsrApiKey => matches!(
+                profile.provider,
+                ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+            ),
+            Self::Token => {
+                matches!(
+                    profile.provider,
+                    ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+                ) && profile.text_translation() != TextTranslation::FollowService
+                    && expected_text_translation == Some(profile.text_translation())
+            }
+            Self::SecretId | Self::SecretKey => profile.provider == ProviderKind::TencentCloud,
+            Self::AppKey => profile.provider == ProviderKind::BaiduTranslate,
+        }
+    }
 }
 
 /// Write-only IPC payload and keychain representation. The tagged JSON form is
@@ -85,6 +127,94 @@ impl fmt::Debug for ProviderCredentials {
 }
 
 impl ProviderCredentials {
+    /// Returns only the requested known-provider field. An independent text
+    /// destination must match the saved route, so an unsaved route switch
+    /// cannot reveal another service's token or official API key.
+    pub fn revealed_field(
+        &self,
+        profile: &ServiceProfile,
+        field: CredentialRevealField,
+        expected_text_translation: Option<TextTranslation>,
+    ) -> Result<Option<&str>, ProviderCredentialsError> {
+        use CredentialRevealField as Field;
+        if !field.allowed_for(profile, expected_text_translation) {
+            return Err(ProviderCredentialsError::InvalidRevealField);
+        }
+        let value = match (field, self) {
+            (Field::ApiKey, Self::ApiKey { api_key }) if profile.provider.uses_api_key_only() => {
+                api_key
+            }
+            (Field::ApiKey, Self::AzureOpenAI { api_key, .. })
+                if profile.provider == ProviderKind::AzureOpenAIRealtime =>
+            {
+                api_key
+            }
+            (Field::ApiKey, Self::DeepL { asr_api_key, .. } | Self::DeepLX { asr_api_key, .. })
+                if profile.provider == ProviderKind::AlibabaCloud =>
+            {
+                asr_api_key
+            }
+            (
+                Field::AsrApiKey,
+                Self::DeepL { asr_api_key, .. } | Self::DeepLX { asr_api_key, .. },
+            ) if matches!(
+                profile.provider,
+                ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+            ) =>
+            {
+                asr_api_key
+            }
+            (Field::AsrApiKey, Self::ApiKey { api_key })
+                if matches!(
+                    profile.provider,
+                    ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+                ) =>
+            {
+                api_key
+            }
+            (Field::SecretId, Self::TencentCloud { secret_id, .. })
+                if profile.provider == ProviderKind::TencentCloud =>
+            {
+                secret_id
+            }
+            (Field::SecretKey, Self::TencentCloud { secret_key, .. })
+                if profile.provider == ProviderKind::TencentCloud =>
+            {
+                secret_key
+            }
+            (Field::AppKey, Self::BaiduTranslate { app_key, .. })
+                if profile.provider == ProviderKind::BaiduTranslate =>
+            {
+                app_key
+            }
+            (Field::Token, Self::DeepL { api_key, .. })
+                if matches!(
+                    profile.provider,
+                    ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+                ) && profile.text_translation() == TextTranslation::DeepL
+                    && expected_text_translation == Some(TextTranslation::DeepL) =>
+            {
+                api_key
+            }
+            (Field::Token, Self::DeepLX { token, .. })
+                if matches!(
+                    profile.provider,
+                    ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+                ) && profile.text_translation() == TextTranslation::DeepLX
+                    && expected_text_translation == Some(TextTranslation::DeepLX) =>
+            {
+                token
+            }
+            _ => return Err(ProviderCredentialsError::InvalidRevealField),
+        };
+        if value.chars().count() > MAXIMUM_CREDENTIAL_FIELD_LENGTH
+            || value.chars().any(char::is_control)
+        {
+            return Err(ProviderCredentialsError::InvalidStoredValue);
+        }
+        Ok((!value.is_empty()).then_some(value.as_str()))
+    }
+
     pub fn api_key(value: impl Into<String>) -> Self {
         Self::ApiKey {
             api_key: value.into(),
@@ -355,6 +485,122 @@ fn validated_azure_endpoint(value: &str) -> Result<String, ProviderCredentialsEr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_reveal_is_single_field_and_provider_scoped() {
+        let tencent =
+            ServiceProfile::new("tencent", "Tencent", ProviderKind::TencentCloud).unwrap();
+        let credentials = ProviderCredentials::TencentCloud {
+            app_id: "123".into(),
+            secret_id: "synthetic-id".into(),
+            secret_key: "synthetic-key".into(),
+        };
+        assert_eq!(
+            credentials.revealed_field(&tencent, CredentialRevealField::SecretId, None),
+            Ok(Some("synthetic-id"))
+        );
+        assert_eq!(
+            credentials.revealed_field(&tencent, CredentialRevealField::SecretKey, None),
+            Ok(Some("synthetic-key"))
+        );
+        let alibaba = ServiceProfile::alibaba_default();
+        assert_eq!(
+            credentials.revealed_field(&alibaba, CredentialRevealField::SecretKey, None),
+            Err(ProviderCredentialsError::InvalidRevealField)
+        );
+        assert_eq!(
+            credentials.revealed_field(&tencent, CredentialRevealField::ApiKey, None),
+            Err(ProviderCredentialsError::InvalidRevealField)
+        );
+        assert!(!format!("{credentials:?}").contains("synthetic"));
+        for field in ["endpoint", "appId", "api_key", "unknown"] {
+            assert!(
+                serde_json::from_str::<CredentialRevealField>(&format!("\"{field}\"")).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn credential_reveal_requires_the_saved_independent_route() {
+        let mut profile = ServiceProfile::alibaba_default();
+        profile.text_translation = Some(TextTranslation::DeepL);
+        let official = ProviderCredentials::DeepL {
+            asr_api_key: "synthetic-asr".into(),
+            api_key: "synthetic-official:fx".into(),
+        };
+        assert_eq!(
+            official.revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::DeepL)
+            ),
+            Ok(Some("synthetic-official:fx"))
+        );
+        assert_eq!(
+            official.revealed_field(&profile, CredentialRevealField::ApiKey, None),
+            Ok(Some("synthetic-asr"))
+        );
+        for route in [
+            None,
+            Some(TextTranslation::DeepLX),
+            Some(TextTranslation::FollowService),
+        ] {
+            assert_eq!(
+                official.revealed_field(&profile, CredentialRevealField::Token, route),
+                Err(ProviderCredentialsError::InvalidRevealField)
+            );
+        }
+        profile.text_translation = Some(TextTranslation::DeepLX);
+        let custom = ProviderCredentials::DeepLX {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "https://example.com/translate".into(),
+            token: String::new(),
+        };
+        assert_eq!(
+            custom.revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::DeepLX)
+            ),
+            Ok(None)
+        );
+        let mut legacy = ServiceProfile::new("legacy", "Legacy", ProviderKind::DeepLX).unwrap();
+        legacy.text_translation = Some(TextTranslation::FollowService);
+        assert_eq!(
+            ProviderCredentials::api_key("synthetic-asr").revealed_field(
+                &legacy,
+                CredentialRevealField::AsrApiKey,
+                None
+            ),
+            Ok(Some("synthetic-asr"))
+        );
+        let request = ProviderCredentials::AlibabaTranslation {
+            api_key: "synthetic-asr".into(),
+            text_translation: TextTranslation::DeepLX,
+            endpoint: String::new(),
+            token: "synthetic-request".into(),
+        };
+        assert_eq!(
+            request.revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::DeepLX)
+            ),
+            Err(ProviderCredentialsError::InvalidRevealField)
+        );
+    }
+
+    #[test]
+    fn credential_reveal_rejects_corrupt_field_without_echoing_it() {
+        let profile = ServiceProfile::alibaba_default();
+        for value in ["synthetic-private\nbody".into(), "x".repeat(1_025)] {
+            let error = ProviderCredentials::api_key(value)
+                .revealed_field(&profile, CredentialRevealField::ApiKey, None)
+                .unwrap_err();
+            assert_eq!(error, ProviderCredentialsError::InvalidStoredValue);
+            assert!(!error.to_string().contains("synthetic-private"));
+        }
+    }
 
     #[test]
     fn alibaba_translation_request_is_write_only_and_debug_redacted() {

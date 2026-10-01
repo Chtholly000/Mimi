@@ -3,6 +3,7 @@ import {
   isTauri,
   listenOverlayControlMode,
   overlayControlGetState,
+  overlayControlSetIslandWidth,
   overlayPopoverHide,
   overlayPopoverToggle,
   type OverlayControlMode,
@@ -32,6 +33,7 @@ export function OverlayControlWindow() {
   const isTranslationPending = useStore(
     (state) => state.session.isTranslationPending,
   );
+  const isTranslationPreviewPending = useStore((state) => state.session.isTranslationPreviewPending);
   const hasRecognizingSourceDraft = useStore(
     selectHasRecognizingSourceDraft,
   );
@@ -56,6 +58,10 @@ export function OverlayControlWindow() {
     } else {
       setMode("island");
     }
+  }, []);
+
+  const reportIslandWidth = useCallback((width: number) => {
+    void overlayControlSetIslandWidth(width).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -95,14 +101,13 @@ export function OverlayControlWindow() {
     return () => window.removeEventListener("keydown", dismissOnEscape);
   }, [dismiss, mode]);
 
-  if (mode === "hidden") return null;
-
   const phase = computeActivityPhaseFromSignals(
     {
       statusKind: sessionStatusKind,
       isPaused: sessionIsPaused,
       detectedLanguage,
       isTranslationPending,
+      isTranslationPreviewPending,
       hasRecognizingSourceDraft,
     },
     settings,
@@ -118,39 +123,43 @@ export function OverlayControlWindow() {
   const isChangingSession =
     sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
 
-  if (mode === "panel") {
-    return (
-      <OverlayControlPanel
-        phase={phase}
-        status={status}
-        settings={settings}
-        model={model}
-        isPaused={sessionIsPaused}
-        isWaitingForFinalTranslation={isWaiting}
-        isChangingSession={isChangingSession}
-        onDismiss={dismiss}
-        onSwitchSourceLanguage={switchSourceLanguage}
-        onSetSubtitleDisplayMode={(subtitleDisplayMode) => saveSettings({ subtitleDisplayMode })}
-        onSetImmersiveMode={(subtitleBlendsWithBackground) =>
-          saveSettings({ subtitleBlendsWithBackground })
-        }
-        onSetOverlayLocked={setOverlayLocked}
-        onShowSettings={showSettings}
-      />
-    );
-  }
-
   return (
-    <LanguageStatusCapsule
-      phase={phase}
-      status={status}
-      settings={settings}
-      effectiveMode={model.effectiveTranslationMode}
-      isPaused={sessionIsPaused}
-      isWaitingForFinalTranslation={isWaiting}
-      expanded={false}
-      onToggle={toggle}
-    />
+    <>
+      {mode === "panel" && (
+        <OverlayControlPanel
+          phase={phase}
+          status={status}
+          settings={settings}
+          model={model}
+          isPaused={sessionIsPaused}
+          isWaitingForFinalTranslation={isWaiting}
+          isChangingSession={isChangingSession}
+          onDismiss={dismiss}
+          onSwitchSourceLanguage={switchSourceLanguage}
+          onSetSubtitleDisplayMode={(subtitleDisplayMode) => saveSettings({ subtitleDisplayMode })}
+          onSetImmersiveMode={(subtitleBlendsWithBackground) =>
+            saveSettings({ subtitleBlendsWithBackground })
+          }
+          onSetOverlayLocked={setOverlayLocked}
+          onShowSettings={showSettings}
+        />
+      )}
+      <div
+        className={mode === "island" ? undefined : "overlay-control-island-measure"}
+        aria-hidden={mode === "island" ? undefined : true}
+      >
+        <LanguageStatusCapsule
+          phase={phase}
+          status={status}
+          settings={settings}
+          isPaused={sessionIsPaused}
+          isWaitingForFinalTranslation={isWaiting}
+          expanded={false}
+          onToggle={toggle}
+          onWidthChange={isTauri ? reportIslandWidth : undefined}
+        />
+      </div>
+    </>
   );
 }
 

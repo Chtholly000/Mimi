@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 const GENERIC_PROVIDER_ERROR: &str = "OpenAI Realtime Translation rejected the session.";
 const GENERIC_PROTOCOL_ERROR: &str = "OpenAI Realtime Translation returned an invalid response.";
@@ -70,6 +70,7 @@ struct Inner {
 
 #[derive(Clone)]
 pub struct OpenAIRealtimeClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint: url::Url,
     api_key: String,
@@ -78,6 +79,15 @@ pub struct OpenAIRealtimeClient {
 }
 
 impl OpenAIRealtimeClient {
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         api_key: &str,
         target_language: TargetLanguage,
@@ -102,6 +112,7 @@ impl OpenAIRealtimeClient {
             return Err(OpenAIRealtimeClientError::InvalidTargetLanguage);
         }
         Ok(Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
@@ -146,16 +157,19 @@ impl OpenAIRealtimeClient {
                 .map_err(|_| OpenAIRealtimeClientError::MissingAPIKey)?,
         );
 
-        let (socket, _) = tokio::time::timeout(Duration::from_secs(15), connect_async(request))
-            .await
-            .map_err(|_| OpenAIRealtimeClientError::TransportFailure)?
-            .map_err(|error| {
-                if super::connection_diagnostics::authentication_rejected(&error) {
-                    OpenAIRealtimeClientError::AuthenticationFailed
-                } else {
-                    OpenAIRealtimeClientError::TransportFailure
-                }
-            })?;
+        let (socket, _) = tokio::time::timeout(
+            Duration::from_secs(15),
+            super::provider_network::websocket(request, &self.network),
+        )
+        .await
+        .map_err(|_| OpenAIRealtimeClientError::TransportFailure)?
+        .map_err(|error| {
+            if super::connection_diagnostics::authentication_rejected(&error) {
+                OpenAIRealtimeClientError::AuthenticationFailed
+            } else {
+                OpenAIRealtimeClientError::TransportFailure
+            }
+        })?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);

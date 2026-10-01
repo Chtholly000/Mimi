@@ -19,6 +19,15 @@ describe("overlay top chrome layout", () => {
     expect(error.topBandHeight).toBe(61);
     expect(error.showActions).toBe(true);
     expect(error.showControls).toBe(true);
+    expect(error.showPrimaryAction).toBe(true);
+  });
+  it("retains the pause or retry action at the native minimum width", () => {
+    for (const status of [{ kind: "listening" } as const, { kind: "error", message: "unavailable" } as const]) {
+      const layout = overlaySessionChromeLayout(348, { isActive: status.kind === "listening", status });
+      expect(layout.showActions).toBe(false);
+      expect(layout.showPrimaryAction).toBe(true);
+      expect(layout.topBandHeight).toBe(61);
+    }
   });
   it("leaves an idle overlay without an island in its smaller chrome layout", () => {
     const idle = overlaySessionChromeLayout(640, { isActive: false, status: { kind: "idle" } });

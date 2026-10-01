@@ -4,6 +4,7 @@ use crate::clients::audio3_client::{Audio3ASRClient, Audio3ASRClientError};
 use crate::clients::deepl_client::DeepLClient;
 use crate::clients::deeplx_client::DeepLXClient;
 use crate::clients::provider_events::provider_event_channel;
+use crate::clients::provider_network::ProviderNetwork;
 use crate::clients::qwen_mt_client::QwenMTClient;
 use crate::clients::translation_client::{ConnectError, TranslationClient};
 use crate::core::configuration::LiveTranslationConfiguration;
@@ -11,7 +12,7 @@ use crate::core::credentials::ProviderCredentials;
 use crate::core::models::{SourceLanguage, TargetLanguage};
 use crate::core::protocols::deepl::DeepLError;
 use crate::core::protocols::deeplx::DeepLXError;
-use crate::core::protocols::qwen_mt::{QwenMTClientError, QwenMTModel};
+use crate::core::protocols::qwen_mt::{QwenMTClientError, REALTIME_MT_MODEL};
 use crate::core::provider::ProviderKind;
 use serde::Serialize;
 use std::time::Duration;
@@ -122,13 +123,17 @@ async fn probe_realtime(
 async fn probe_alibaba(
     configuration: &LiveTranslationConfiguration,
 ) -> Result<(), ConnectionCheckReason> {
+    let network = ProviderNetwork::resolve(&configuration.network_proxy)
+        .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
     let key = match &configuration.credentials {
         ProviderCredentials::ApiKey { api_key } => api_key,
         ProviderCredentials::DeepLX { asr_api_key, .. }
         | ProviderCredentials::DeepL { asr_api_key, .. } => asr_api_key,
         _ => return Err(ConnectionCheckReason::InvalidConfiguration),
     };
-    let asr = Audio3ASRClient::new(key, configuration.source_language)
+    let mut asr = Audio3ASRClient::new(key, configuration.source_language)
+        .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+    asr.set_network(network.clone())
         .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
     let (events, _receiver) = provider_event_channel();
     asr.set_event_sender(events).await;
@@ -137,7 +142,7 @@ async fn probe_alibaba(
         asr.connect_for_probe(&task_id)
             .await
             .map_err(|error| audio3_reason(&error))?;
-        probe_text_translation(configuration).await
+        probe_text_translation(configuration, &network).await
     })
     .await
     .map_err(|_| ConnectionCheckReason::Timeout)
@@ -148,6 +153,7 @@ async fn probe_alibaba(
 
 async fn probe_text_translation(
     configuration: &LiveTranslationConfiguration,
+    network: &ProviderNetwork,
 ) -> Result<(), ConnectionCheckReason> {
     // Check both saved credentials even when the current display uses source
     // text only. The fixed test does not change the listening configuration.
@@ -161,39 +167,57 @@ async fn probe_text_translation(
         (SourceLanguage::English, "Hello.")
     };
     let translation = match &configuration.credentials {
-        ProviderCredentials::ApiKey { api_key } => QwenMTClient::new(
-            api_key,
-            configuration.source_language,
-            target,
-            QwenMTModel::Flash,
-            Some(
-                crate::core::protocols::qwen_mt::QwenMTDomainHint::spoken_dialogue(
+        ProviderCredentials::ApiKey { api_key } => {
+            let mut client = QwenMTClient::new(
+                api_key,
+                configuration.source_language,
+                target,
+                REALTIME_MT_MODEL,
+                Some(
+                    crate::core::protocols::qwen_mt::QwenMTDomainHint::spoken_dialogue(
+                        configuration.source_language,
+                        target,
+                    ),
+                ),
+                crate::core::protocols::qwen_mt::QwenMTDomainHint::filler_terms(
                     configuration.source_language,
                     target,
                 ),
-            ),
-            crate::core::protocols::qwen_mt::QwenMTDomainHint::filler_terms(
-                configuration.source_language,
-                target,
-            ),
-            Duration::from_secs(8),
-        )
-        .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?
-        .translate_streaming(phrase, Some(source), &[], |_| {})
-        .await
-        .map_err(|error| qwen_reason(&error))?,
+                Duration::from_secs(8),
+            )
+            .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .set_network(network.clone())
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .translate_streaming(phrase, Some(source), &[], |_| {})
+                .await
+                .map_err(|error| qwen_reason(&error))?
+        }
         ProviderCredentials::DeepLX {
             endpoint, token, ..
-        } => DeepLXClient::new(endpoint, token, source, target)
-            .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?
-            .translate(phrase, Some(source))
-            .await
-            .map_err(|error| deeplx_reason(&error))?,
-        ProviderCredentials::DeepL { api_key, .. } => DeepLClient::new(api_key, source, target)
-            .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?
-            .translate(phrase, Some(source))
-            .await
-            .map_err(|error| deepl_reason(&error))?,
+        } => {
+            let mut client = DeepLXClient::new(endpoint, token, source, target)
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .set_network(network.clone())
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .translate(phrase, Some(source))
+                .await
+                .map_err(|error| deeplx_reason(&error))?
+        }
+        ProviderCredentials::DeepL { api_key, .. } => {
+            let mut client = DeepLClient::new(api_key, source, target)
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .set_network(network.clone())
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .translate(phrase, Some(source))
+                .await
+                .map_err(|error| deepl_reason(&error))?
+        }
         _ => return Err(ConnectionCheckReason::InvalidConfiguration),
     };
     if translation.trim().is_empty() {
@@ -576,10 +600,94 @@ mod tests {
                 TargetLanguage::Japanese,
                 TranslationMode::Turbo,
             );
-            assert_eq!(probe_text_translation(&configuration).await, expected);
+            let network = ProviderNetwork::resolve(&crate::core::network_proxy::ProxyConfig {
+                mode: crate::core::network_proxy::ProxyMode::Direct,
+                url: None,
+            })
+            .unwrap();
+            assert_eq!(
+                probe_text_translation(&configuration, &network).await,
+                expected
+            );
             server.await.unwrap();
         }
     }
+    #[tokio::test]
+    async fn text_probe_uses_the_custom_proxy_instead_of_the_direct_endpoint() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let unused_destination = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let destination = unused_destination.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut buffer = [0; 2048];
+                let length = socket.read(&mut buffer).await.unwrap();
+                assert!(length > 0);
+                request.extend_from_slice(&buffer[..length]);
+                if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let length: usize = String::from_utf8_lossy(&request[..end])
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|value| value.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.starts_with(&format!("POST http://{destination}/translate HTTP/1.1")));
+            let body = r#"{"code":200,"data":"Synthetic proxy response"}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let configuration = LiveTranslationConfiguration::with_credentials(
+            ProviderKind::DeepLX,
+            ProviderCredentials::DeepLX {
+                asr_api_key: "synthetic-asr".into(),
+                endpoint: format!("http://{destination}"),
+                token: String::new(),
+            },
+            SourceLanguage::English,
+            TargetLanguage::Japanese,
+            TranslationMode::Turbo,
+        )
+        .with_network_proxy(crate::core::network_proxy::ProxyConfig {
+            mode: crate::core::network_proxy::ProxyMode::Custom,
+            url: Some(format!("http://{proxy}")),
+        });
+        let network = ProviderNetwork::resolve(&configuration.network_proxy).unwrap();
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                probe_text_translation(&configuration, &network)
+            )
+            .await
+            .unwrap(),
+            Ok(())
+        );
+        server.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), unused_destination.accept())
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
     fn production_http_client_initializes_tls_in_a_fresh_process() {
         const FLAG: &str = "MIMI_TEST_FRESH_HTTP_CLIENT";
@@ -592,7 +700,7 @@ mod tests {
                 "fixture-only",
                 SourceLanguage::Automatic,
                 TargetLanguage::Japanese,
-                QwenMTModel::Flash,
+                REALTIME_MT_MODEL,
                 None,
                 Vec::new(),
                 Duration::from_secs(8),

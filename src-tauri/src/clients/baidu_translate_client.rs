@@ -16,7 +16,7 @@ use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -78,6 +78,7 @@ struct Inner {
 /// only in the provider's required START frame and never included in errors.
 #[derive(Clone)]
 pub struct BaiduTranslateClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint: url::Url,
     app_id: String,
@@ -88,6 +89,15 @@ pub struct BaiduTranslateClient {
 }
 
 impl BaiduTranslateClient {
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         app_id: &str,
         app_key: &str,
@@ -118,6 +128,7 @@ impl BaiduTranslateClient {
         events: ProviderEventSender,
     ) -> Self {
         Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
@@ -171,10 +182,13 @@ impl BaiduTranslateClient {
             .clone()
             .into_client_request()
             .map_err(|_| BaiduTranslateClientError::TransportFailure)?;
-        let (socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
-            .await
-            .map_err(|_| BaiduTranslateClientError::TransportFailure)?
-            .map_err(|_| BaiduTranslateClientError::TransportFailure)?;
+        let (socket, _) = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            super::provider_network::websocket(request, &self.network),
+        )
+        .await
+        .map_err(|_| BaiduTranslateClientError::TransportFailure)?
+        .map_err(|_| BaiduTranslateClientError::TransportFailure)?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);

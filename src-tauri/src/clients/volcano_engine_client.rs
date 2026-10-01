@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -282,6 +282,7 @@ struct Inner {
 /// messages are never logged or surfaced by this client.
 #[derive(Clone)]
 pub struct VolcanoEngineClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint: url::Url,
     api_key: String,
@@ -291,6 +292,15 @@ pub struct VolcanoEngineClient {
 }
 
 impl VolcanoEngineClient {
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         api_key: &str,
         source_language: SourceLanguage,
@@ -316,6 +326,7 @@ impl VolcanoEngineClient {
         VolcanoEngineRequestEncoder::validate_languages(source_language, target_language)
             .map_err(map_language_error)?;
         Ok(Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
@@ -364,10 +375,13 @@ impl VolcanoEngineClient {
             HeaderValue::from_static(VolcanoEngineEndpoint::RESOURCE_ID),
         );
 
-        let (socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
-            .await
-            .map_err(|_| VolcanoEngineClientError::ConnectionTimedOut)?
-            .map_err(|_| VolcanoEngineClientError::TransportFailure)?;
+        let (socket, _) = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            super::provider_network::websocket(request, &self.network),
+        )
+        .await
+        .map_err(|_| VolcanoEngineClientError::ConnectionTimedOut)?
+        .map_err(|_| VolcanoEngineClientError::TransportFailure)?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);

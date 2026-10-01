@@ -51,7 +51,16 @@
 }
 
 .overlay-control-island {
+  width: max-content;
   opacity: 1;
+}
+
+.overlay-control-island-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .overlay-control-island:hover,
@@ -103,20 +112,6 @@
 .overlay-control-island__summary > strong {
   color: var(--control-text);
   font-weight: 650;
-}
-
-.overlay-control-island__divider {
-  width: 1px;
-  height: 11px;
-  flex: 0 0 auto;
-  background: var(--control-border);
-}
-
-.overlay-control-island__mode {
-  flex: 0 0 auto;
-  color: var(--control-text-muted);
-  font-size: 10.5px;
-  white-space: nowrap;
 }
 
 .overlay-control-panel {

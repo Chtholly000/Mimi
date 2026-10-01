@@ -10,7 +10,9 @@ pub struct TranslationSessionState {
     pub subtitles: SubtitleSnapshot,
     pub detected_language: Option<DetectedLanguage>,
     pub is_translation_pending: bool,
+    pub is_translation_preview_pending: bool,
     pub is_translation_timed_out: bool,
+    pub translation_recovery: Option<crate::core::diagnostics::TranslationRecovery>,
 }
 
 impl Default for TranslationSessionState {
@@ -20,7 +22,9 @@ impl Default for TranslationSessionState {
             subtitles: SubtitleSnapshot::empty(),
             detected_language: None,
             is_translation_pending: false,
+            is_translation_preview_pending: false,
             is_translation_timed_out: false,
+            translation_recovery: None,
         }
     }
 }
@@ -29,9 +33,28 @@ impl Default for TranslationSessionState {
 pub struct TranslationSessionController {
     pub state: TranslationSessionState,
     subtitle_reducer: SubtitleReducer,
+    preview_pending_id: Option<u64>,
 }
 
 impl TranslationSessionController {
+    pub fn accepts_confirmed_pair(
+        &self,
+        utterance_id: u64,
+        source: &str,
+        translation: &str,
+    ) -> bool {
+        !source.trim().is_empty()
+            && !translation.trim().is_empty()
+            && crate::core::models::subtitle_text_within_limit(source)
+            && crate::core::models::subtitle_text_within_limit(translation)
+            && self.subtitle_reducer.is_new_confirmation_id(utterance_id)
+    }
+
+    fn clear_preview_pending(&mut self) {
+        self.preview_pending_id = None;
+        self.state.is_translation_preview_pending = false;
+    }
+
     pub fn archive(&self) -> &super::session_archive::TranscriptArchive {
         &self.subtitle_reducer.archive
     }
@@ -40,6 +63,8 @@ impl TranslationSessionController {
     }
 
     pub fn begin_connecting(&mut self) {
+        self.clear_preview_pending();
+        self.state.translation_recovery = None;
         self.subtitle_reducer.reset_transient();
         self.state.subtitles = self.subtitle_reducer.snapshot.clone();
         self.state.status = SessionStatus::Connecting;
@@ -49,10 +74,14 @@ impl TranslationSessionController {
     }
 
     pub fn did_connect(&mut self) {
+        self.clear_preview_pending();
+        self.state.translation_recovery = None;
         self.state.status = SessionStatus::Listening;
     }
 
     pub fn did_pause(&mut self) {
+        self.clear_preview_pending();
+        self.state.translation_recovery = None;
         self.state.status = SessionStatus::Listening;
         self.state.is_translation_pending = false;
     }
@@ -67,17 +96,23 @@ impl TranslationSessionController {
     }
 
     pub fn begin_stopping(&mut self) {
+        self.clear_preview_pending();
+        self.state.translation_recovery = None;
         self.state.status = SessionStatus::Stopping;
         self.state.is_translation_pending = false;
     }
 
     pub fn did_stop(&mut self) {
+        self.clear_preview_pending();
+        self.state.translation_recovery = None;
         self.state.status = SessionStatus::Idle;
         self.state.is_translation_pending = false;
         self.state.is_translation_timed_out = false;
     }
 
     pub fn did_fail(&mut self, message: impl Into<String>) {
+        self.clear_preview_pending();
+        self.state.translation_recovery = None;
         self.state.status = SessionStatus::Error(message.into());
         self.state.is_translation_pending = false;
     }
@@ -90,12 +125,19 @@ impl TranslationSessionController {
     }
 
     pub fn handle(&mut self, event: LiveTranslateServerEvent) {
+        if !event.text_within_limit() {
+            return;
+        }
         // Alibaba teardown can emit synthetic source/translation cleanup
         // finals, which are intentionally ignored. OpenAI has no separate
         // final events: a real `session.closed` may flush one client-aligned
         // atomic pair, and that verified tail is safe to keep.
         if self.state.status == SessionStatus::Stopping
-            && !matches!(event, LiveTranslateServerEvent::SubtitleFinalPair { .. })
+            && !matches!(
+                event,
+                LiveTranslateServerEvent::SubtitleFinalPair { .. }
+                    | LiveTranslateServerEvent::SubtitleConfirmedPair { .. }
+            )
         {
             return;
         }
@@ -108,18 +150,53 @@ impl TranslationSessionController {
                 self.subtitle_reducer
                     .apply(crate::core::models::SubtitleEvent::SourceDraft(text));
             }
-            LiveTranslateServerEvent::SourceFinal { text, language } => {
+            LiveTranslateServerEvent::SourceFinal { text, language }
+            | LiveTranslateServerEvent::SourceUtteranceFinal { text, language, .. } => {
                 self.update_detected_language(language.as_deref());
                 self.subtitle_reducer
                     .apply(crate::core::models::SubtitleEvent::SourceFinal(text));
             }
             LiveTranslateServerEvent::TranslationStarted => {
+                self.clear_preview_pending();
+                self.state.translation_recovery = None;
                 self.state.is_translation_pending = true;
                 self.state.is_translation_timed_out = false;
             }
+            LiveTranslateServerEvent::PreviewTranslationStarted { request_id } => {
+                self.preview_pending_id = Some(request_id);
+                self.state.is_translation_preview_pending = true;
+                self.state.translation_recovery = None;
+            }
+            LiveTranslateServerEvent::PreviewTranslationFinished { request_id } => {
+                if self.preview_pending_id == Some(request_id) {
+                    self.clear_preview_pending();
+                }
+            }
+            LiveTranslateServerEvent::TranslationDeferred(recovery) => {
+                self.clear_preview_pending();
+                self.state.translation_recovery = Some(recovery);
+                self.state.is_translation_pending = false;
+                self.state.is_translation_timed_out = false;
+            }
             LiveTranslateServerEvent::TranslationDraft(text) => {
+                if !text.trim().is_empty() {
+                    self.state.translation_recovery = None;
+                }
                 self.subtitle_reducer
                     .apply(crate::core::models::SubtitleEvent::TranslationDraft(text));
+            }
+            LiveTranslateServerEvent::SubtitlePreviewPair {
+                source,
+                language,
+                translation,
+            } => {
+                self.update_detected_language(language.as_deref());
+                self.state.translation_recovery = None;
+                self.subtitle_reducer
+                    .apply(crate::core::models::SubtitleEvent::PreviewPair {
+                        source,
+                        translation,
+                    });
             }
             LiveTranslateServerEvent::UtteranceText {
                 utterance_id,
@@ -140,6 +217,8 @@ impl TranslationSessionController {
                     });
             }
             LiveTranslateServerEvent::TranslationFinal(text) => {
+                self.clear_preview_pending();
+                self.state.translation_recovery = None;
                 self.state.is_translation_pending = false;
                 self.state.is_translation_timed_out = false;
                 self.subtitle_reducer
@@ -150,11 +229,34 @@ impl TranslationSessionController {
                 language,
                 translation,
             } => {
+                self.clear_preview_pending();
+                self.state.translation_recovery = None;
                 self.update_detected_language(language.as_deref());
                 self.state.is_translation_pending = false;
                 self.state.is_translation_timed_out = false;
                 self.subtitle_reducer
                     .apply(crate::core::models::SubtitleEvent::FinalPair {
+                        source,
+                        translation,
+                    });
+            }
+            LiveTranslateServerEvent::SubtitleConfirmedPair {
+                utterance_id,
+                source,
+                language,
+                translation,
+            } => {
+                if !self.accepts_confirmed_pair(utterance_id, &source, &translation) {
+                    return;
+                }
+                self.clear_preview_pending();
+                self.state.translation_recovery = None;
+                self.update_detected_language(language.as_deref());
+                self.state.is_translation_pending = false;
+                self.state.is_translation_timed_out = false;
+                self.subtitle_reducer
+                    .apply(crate::core::models::SubtitleEvent::ConfirmedPair {
+                        utterance_id,
                         source,
                         translation,
                     });
@@ -177,6 +279,201 @@ impl TranslationSessionController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replayed_confirmation_cannot_clear_pending_work_or_rewind_a_live_pair() {
+        let mut controller = TranslationSessionController::default();
+        let replay = LiveTranslateServerEvent::SubtitleConfirmedPair {
+            utterance_id: 1,
+            source: "Synthetic final".into(),
+            language: Some("en".into()),
+            translation: "Synthetic final translation".into(),
+        };
+        controller.handle(replay.clone());
+        controller.handle(LiveTranslateServerEvent::SubtitlePreviewPair {
+            source: "New synthetic source".into(),
+            language: Some("ja".into()),
+            translation: "New synthetic translation".into(),
+        });
+        controller.handle(LiveTranslateServerEvent::TranslationStarted);
+        let expected = controller.state.clone();
+        controller.handle(replay);
+        assert_eq!(controller.state, expected);
+        controller.handle(LiveTranslateServerEvent::SubtitleConfirmedPair {
+            utterance_id: 2,
+            source: " ".into(),
+            language: Some("en".into()),
+            translation: "Synthetic incomplete result".into(),
+        });
+        assert_eq!(controller.state, expected);
+    }
+
+    #[test]
+    fn oversized_events_cannot_clear_pending_recovery_or_claim_a_confirmation() {
+        let mut controller = TranslationSessionController::default();
+        controller.handle(LiveTranslateServerEvent::SubtitlePreviewPair {
+            source: "Synthetic complete source".into(),
+            language: Some("ja".into()),
+            translation: "Synthetic complete translation".into(),
+        });
+        controller.handle(LiveTranslateServerEvent::TranslationStarted);
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 7 });
+        controller.state.translation_recovery =
+            Some(crate::core::diagnostics::TranslationRecovery {
+                reason: crate::core::diagnostics::TranslationRecoveryReason::RateLimited,
+                retry_after_ms: 4_000,
+                retry_scheduled: true,
+            });
+        let expected = controller.state.clone();
+        let oversized = "x".repeat(crate::core::models::MAX_SUBTITLE_TEXT_BYTES + 1);
+        for event in [
+            LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 1,
+                text: oversized.clone(),
+                language: Some("en".into()),
+            },
+            LiveTranslateServerEvent::TranslationDraft(oversized.clone()),
+            LiveTranslateServerEvent::SubtitleConfirmedPair {
+                utterance_id: 1,
+                source: "valid".into(),
+                language: Some("en".into()),
+                translation: oversized,
+            },
+        ] {
+            controller.handle(event);
+            assert_eq!(controller.state, expected);
+        }
+        controller.handle(LiveTranslateServerEvent::SubtitleConfirmedPair {
+            utterance_id: 1,
+            source: "Synthetic valid final".into(),
+            language: Some("en".into()),
+            translation: "Synthetic valid translation".into(),
+        });
+        assert_eq!(controller.state.subtitles.history.len(), 1);
+        assert!(!controller.state.is_translation_pending);
+        assert!(!controller.state.is_translation_preview_pending);
+    }
+
+    #[test]
+    fn preview_http_pending_is_owner_matched_and_does_not_change_final_pairing() {
+        let mut controller = TranslationSessionController::default();
+        controller.did_connect();
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 1 });
+        assert!(controller.state.is_translation_preview_pending);
+        assert!(!controller.state.is_translation_pending);
+        controller.handle(LiveTranslateServerEvent::SourceDraft {
+            text: "Synthetic source".into(),
+            language: Some("en".into()),
+        });
+        controller.handle(LiveTranslateServerEvent::TranslationDraft(
+            "Synthetic partial".into(),
+        ));
+        assert!(controller.state.is_translation_preview_pending);
+        assert!(controller.state.subtitles.history.is_empty());
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 2 });
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationFinished { request_id: 1 });
+        assert!(controller.state.is_translation_preview_pending);
+        controller.clear_translation_pending();
+        assert!(controller.state.is_translation_preview_pending);
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationFinished { request_id: 2 });
+        assert!(!controller.state.is_translation_preview_pending);
+        assert!(!controller.state.is_translation_pending);
+        assert!(controller.state.subtitles.history.is_empty());
+    }
+
+    #[test]
+    fn preview_cleanup_cannot_clear_a_final_and_final_start_clears_old_preview() {
+        let mut controller = TranslationSessionController::default();
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 1 });
+        controller.handle(LiveTranslateServerEvent::TranslationStarted);
+        assert!(!controller.state.is_translation_preview_pending);
+        assert!(controller.state.is_translation_pending);
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationFinished { request_id: 1 });
+        assert!(controller.state.is_translation_pending);
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 2 });
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationFinished { request_id: 2 });
+        assert!(!controller.state.is_translation_preview_pending);
+        assert!(controller.state.is_translation_pending);
+    }
+
+    #[test]
+    fn preview_pending_is_cleared_on_each_session_lifecycle_boundary() {
+        let boundaries: [fn(&mut TranslationSessionController); 6] = [
+            TranslationSessionController::begin_connecting,
+            TranslationSessionController::did_connect,
+            TranslationSessionController::did_pause,
+            TranslationSessionController::begin_stopping,
+            TranslationSessionController::did_stop,
+            |controller| controller.did_fail("synthetic failure"),
+        ];
+        for boundary in boundaries {
+            let mut controller = TranslationSessionController::default();
+            controller
+                .handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 1 });
+            boundary(&mut controller);
+            assert!(!controller.state.is_translation_preview_pending);
+            assert!(controller.preview_pending_id.is_none());
+        }
+    }
+
+    #[test]
+    fn translation_backoff_is_nonterminal_and_lifecycle_or_valid_text_clears_it() {
+        use crate::core::diagnostics::{TranslationRecovery, TranslationRecoveryReason};
+        let recovery = TranslationRecovery {
+            reason: TranslationRecoveryReason::RateLimited,
+            retry_after_ms: 4_000,
+            retry_scheduled: true,
+        };
+        let mut controller = TranslationSessionController::default();
+        controller.did_connect();
+        controller.handle(LiveTranslateServerEvent::TranslationStarted);
+        controller.handle(LiveTranslateServerEvent::TranslationDeferred(recovery));
+        assert_eq!(controller.state.status, SessionStatus::Listening);
+        assert!(controller.state.status.is_active());
+        assert!(!controller.state.is_translation_pending);
+        assert!(!controller.state.is_translation_timed_out);
+        assert_eq!(controller.state.translation_recovery, Some(recovery));
+        let idle_recovery = TranslationRecovery {
+            retry_scheduled: false,
+            ..recovery
+        };
+        controller.handle(LiveTranslateServerEvent::TranslationDeferred(idle_recovery));
+        controller.handle(LiveTranslateServerEvent::SourceDraft {
+            text: "recognition keeps running without a scheduled retry".into(),
+            language: Some("en".into()),
+        });
+        assert_eq!(controller.state.translation_recovery, Some(idle_recovery));
+        assert_eq!(controller.state.status, SessionStatus::Listening);
+        assert!(!controller.state.is_translation_pending);
+        controller.handle(LiveTranslateServerEvent::TranslationDeferred(recovery));
+        controller.handle(LiveTranslateServerEvent::SourceDraft {
+            text: "new synthetic recognition".into(),
+            language: Some("en".into()),
+        });
+        assert_eq!(controller.state.translation_recovery, Some(recovery));
+        controller.handle(LiveTranslateServerEvent::TranslationDraft(
+            "valid synthetic preview".into(),
+        ));
+        assert_eq!(controller.state.translation_recovery, None);
+        for finish in [
+            TranslationSessionController::did_pause,
+            TranslationSessionController::begin_stopping,
+            TranslationSessionController::did_stop,
+            TranslationSessionController::begin_connecting,
+        ] {
+            controller.handle(LiveTranslateServerEvent::TranslationDeferred(recovery));
+            finish(&mut controller);
+            assert_eq!(controller.state.translation_recovery, None);
+        }
+        controller.did_connect();
+        controller.handle(LiveTranslateServerEvent::TranslationDeferred(recovery));
+        controller.handle(LiveTranslateServerEvent::TranslationStarted);
+        assert_eq!(controller.state.translation_recovery, None);
+        controller.handle(LiveTranslateServerEvent::TranslationDeferred(recovery));
+        controller.did_fail("credential_authentication_failed");
+        assert_eq!(controller.state.translation_recovery, None);
+        assert!(!controller.state.status.is_active());
+    }
 
     #[test]
     fn session_follows_the_happy_path_lifecycle() {

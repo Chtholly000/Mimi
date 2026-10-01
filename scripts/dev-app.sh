@@ -420,6 +420,10 @@ if ! codesign --verify --deep --strict "$CANONICAL_APP" \
 fi
 INSTALL_COMMITTED=1
 rm -rf "$PREVIOUS_APP"
+# The signed bundle is a disposable copy of the incremental build binary.
+# Keep one discoverable dev application; retaining this copy makes Spotlight
+# offer a second launch target with the same bundle identifier.
+rm -rf "$BUILD_APP"
 
 echo "Installed stable development app: $CANONICAL_APP"
 echo "Designated requirement: $NEW_REQUIREMENT"

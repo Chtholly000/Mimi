@@ -293,9 +293,27 @@ describe("compact lane budget", () => {
 
   it("yields the second line in a short viewport without removing either bilingual lane", () => {
     expect(subtitleLaneBudget("bilingual", true, 49, 20)).toEqual({ source: 1, translation: 1 });
-    expect(subtitleLaneBudget("bilingual", true, 120, 20)).toEqual({ source: 1, translation: 2 });
+    expect(subtitleLaneBudget("bilingual", true, 120, 20)).toEqual({ source: 1, translation: 3 });
     expect(subtitleLaneBudget("translation", true, 40, 20)).toEqual({ source: 0, translation: 1 });
     expect(subtitleLaneBudget("original", false, 40, 20)).toEqual({ source: 1, translation: 0 });
+    expect(subtitleLaneBudget("original", false, 48, 20)).toEqual({ source: 1, translation: 0 });
+    expect(subtitleLaneBudget("bilingual", false, 48, 20)).toEqual({ source: 2, translation: 0 });
+  });
+
+  it("uses a tall window instead of clipping every language to two lines", () => {
+    expect(subtitleLaneBudget("original", false, 240, 18).source).toBe(10);
+    expect(subtitleLaneBudget("translation", true, 240, 18).translation).toBe(10);
+    const pair = subtitleLaneBudget("bilingual", true, 240, 18);
+    expect(pair.source).toBeGreaterThan(2);
+    expect(pair.translation).toBeGreaterThan(2);
+    expect(pair.source * 22 + pair.translation * 24).toBeLessThanOrEqual(240);
+  });
+
+  it("gives a short lane's unused space to the longer language in either direction", () => {
+    expect(subtitleLaneBudget("bilingual", true, 240, 18, { source: 22, translation: 480 }))
+      .toEqual({ source: 1, translation: 9 });
+    expect(subtitleLaneBudget("bilingual", true, 240, 18, { source: 440, translation: 24 }))
+      .toEqual({ source: 9, translation: 1 });
   });
 });
 

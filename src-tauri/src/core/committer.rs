@@ -1,8 +1,6 @@
 //! Tracks the latest cumulative ASR draft and derives replaceable preview
 //! candidates without advancing any durable subtitle boundary.
 
-const SENTENCE_DELIMITERS: [char; 7] = ['。', '！', '？', '.', '!', '?', '\n'];
-
 pub struct ASRDraftCommitter {
     long_incomplete_commit_threshold: usize,
     latest_draft: String,
@@ -18,17 +16,6 @@ impl ASRDraftCommitter {
 
     pub fn has_pending_text(&self) -> bool {
         Self::is_meaningful(&self.latest_draft)
-    }
-
-    /// Returns the complete-sentence portion of the current draft without
-    /// making it durable. An incomplete trailing sentence remains part of the
-    /// latest draft and can be included by a later preview.
-    pub fn preview_complete_sentences(&self) -> Option<String> {
-        if self.latest_draft.is_empty() {
-            return None;
-        }
-        let (complete, _) = Self::split_sentences(&self.latest_draft);
-        Self::is_meaningful(&complete).then_some(complete)
     }
 
     /// Returns the whole latest draft without making it durable. When
@@ -47,25 +34,15 @@ impl ASRDraftCommitter {
 
     /// Replaces the cumulative provider draft and returns its normalized text.
     pub fn update_draft(&mut self, text: &str) -> String {
+        if !crate::core::models::subtitle_text_within_limit(text) {
+            return self.latest_draft.clone();
+        }
         self.latest_draft = text.trim().to_string();
         self.latest_draft.clone()
     }
 
     pub fn reset(&mut self) {
         self.latest_draft.clear();
-    }
-
-    fn split_sentences(text: &str) -> (String, String) {
-        let mut complete = String::new();
-        let mut current = String::new();
-        for character in text.chars() {
-            current.push(character);
-            if SENTENCE_DELIMITERS.contains(&character) {
-                complete.push_str(&current);
-                current.clear();
-            }
-        }
-        (complete, current)
     }
 
     /// Text is meaningful when it contains a non-whitespace, non-punctuation
@@ -108,11 +85,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn oversized_draft_keeps_the_previous_complete_candidate_and_exact_utf8_is_accepted() {
+        let mut committer = ASRDraftCommitter::default();
+        committer.update_draft("Synthetic previous candidate");
+        let exact = "🙂".repeat(crate::core::models::MAX_SUBTITLE_TEXT_BYTES / 4);
+        assert_eq!(
+            committer.update_draft(&format!("{exact}a")),
+            "Synthetic previous candidate"
+        );
+        assert_eq!(
+            committer.preview_latest_draft(false).as_deref(),
+            Some("Synthetic previous candidate")
+        );
+        assert_eq!(committer.update_draft(&exact), exact);
+    }
+
+    #[test]
     fn keeps_an_incomplete_draft_pending() {
         let mut committer = ASRDraftCommitter::default();
 
         assert_eq!(committer.update_draft("今日は"), "今日は");
-        assert_eq!(committer.preview_complete_sentences(), None);
         assert!(committer.has_pending_text());
         assert_eq!(
             committer.preview_latest_draft(false).as_deref(),
@@ -127,23 +119,19 @@ mod tests {
         let _ = committer.update_draft(draft);
 
         assert_eq!(
-            committer.preview_complete_sentences().as_deref(),
-            Some("こんにちは。")
-        );
-        assert_eq!(
             committer.preview_latest_draft(false).as_deref(),
             Some(draft)
         );
     }
 
     #[test]
-    fn previews_multiple_complete_sentences_together() {
+    fn previews_multiple_sentences_with_the_incomplete_tail() {
         let mut committer = ASRDraftCommitter::default();
         let _ = committer.update_draft("あ！え？うん。まだ");
 
         assert_eq!(
-            committer.preview_complete_sentences().as_deref(),
-            Some("あ！え？うん。")
+            committer.preview_latest_draft(false).as_deref(),
+            Some("あ！え？うん。まだ")
         );
     }
 
@@ -152,15 +140,15 @@ mod tests {
         let mut english = ASRDraftCommitter::default();
         let _ = english.update_draft("Hello there. How are you?");
         assert_eq!(
-            english.preview_complete_sentences().as_deref(),
+            english.preview_latest_draft(false).as_deref(),
             Some("Hello there. How are you?")
         );
 
         let mut chinese = ASRDraftCommitter::default();
         let _ = chinese.update_draft("你好！今天天气不错。明天");
         assert_eq!(
-            chinese.preview_complete_sentences().as_deref(),
-            Some("你好！今天天气不错。")
+            chinese.preview_latest_draft(false).as_deref(),
+            Some("你好！今天天气不错。明天")
         );
     }
 
@@ -181,7 +169,6 @@ mod tests {
         let _ = committer.update_draft("……！？");
 
         assert!(!committer.has_pending_text());
-        assert_eq!(committer.preview_complete_sentences(), None);
         assert_eq!(committer.preview_latest_draft(false), None);
     }
 
@@ -190,7 +177,7 @@ mod tests {
         let mut committer = ASRDraftCommitter::default();
         let _ = committer.update_draft("こんにちは。");
         assert_eq!(
-            committer.preview_complete_sentences().as_deref(),
+            committer.preview_latest_draft(false).as_deref(),
             Some("こんにちは。")
         );
 
@@ -209,7 +196,6 @@ mod tests {
         committer.reset();
 
         assert!(!committer.has_pending_text());
-        assert_eq!(committer.preview_complete_sentences(), None);
         assert_eq!(committer.preview_latest_draft(false), None);
     }
 }

@@ -24,6 +24,7 @@ function render(
   blocks: SubtitleBlock[],
   displayMode: SettingsSnapshot["subtitleDisplayMode"] = "bilingual",
   blendsWithBackground = false,
+  showSubtitleDividers = false,
 ): string {
   return renderToStaticMarkup(
     <Timeline
@@ -33,14 +34,10 @@ function render(
       color="white"
       displayMode={displayMode}
       blendsWithBackground={blendsWithBackground}
+      showSubtitleDividers={showSubtitleDividers}
     />,
   ).replaceAll(" ", "");
 }
-
-const SOURCE_FONT_PX = Math.max(12, 18 * 0.82);
-/** Mirrors the lane viewport height: whole lines are reserved, then rounded. */
-const laneHeight = (lines: number, fontPx: number) =>
-  Math.round(lines * fontPx * 1.32);
 
 describe("sentence block presentation", () => {
   it("keeps long confirmed history compact while following, retaining its full text", () => {
@@ -50,11 +47,11 @@ describe("sentence block presentation", () => {
     expect(html).toContain('aria-label="Helloworld"');
   });
 
-  it("clips the live tail to its line budget and keeps the full text accessible", () => {
+  it("reserves a small fallback before layout and keeps the full text accessible", () => {
     const html = render([HISTORY, LIVE]);
     // Bilingual live budget: one recognized line, two translation lines.
-    expect(html).toContain(`height:${laneHeight(1, SOURCE_FONT_PX)}px`);
-    expect(html).toContain(`height:${laneHeight(2, 18)}px`);
+    expect(html).toContain("height:22px");
+    expect(html).toContain("height:48px");
     expect(html).toContain("overflow:hidden");
     expect(html).toContain('aria-label="Streamingsource"');
     expect(html).toContain('aria-label="流式译文"');
@@ -63,20 +60,24 @@ describe("sentence block presentation", () => {
   it("sizes the compact budget from the display mode", () => {
     // Translation-only keeps two translation lines and no recognized lane.
     const translationOnly = render([{ ...LIVE, source: null }], "translation");
-    expect(translationOnly).toContain(`height:${laneHeight(2, 18)}px`);
+    expect(translationOnly).toContain("height:48px");
     expect(translationOnly).not.toContain('aria-label="Streamingsource"');
 
     // Original-only, and bilingual before its translation arrives, keep two
     // recognized lines.
     for (const mode of ["original", "bilingual"] as const) {
       const html = render([{ ...LIVE, translation: null }], mode);
-      expect(html).toContain(`height:${laneHeight(2, SOURCE_FONT_PX)}px`);
+      expect(html).toContain(mode === "bilingual" ? "height:44px" : "height:48px");
     }
   });
 
-  it("draws a sentence separator in the card presentation only", () => {
-    expect(render([HISTORY, LIVE])).toContain("subtitle-separator");
-    expect(render([HISTORY, LIVE], "bilingual", true)).not.toContain(
+  it("defaults sentence dividers off and enables one readable rule between sentences only", () => {
+    expect(render([HISTORY, LIVE])).not.toContain("subtitle-separator");
+    const enabled = render([HISTORY, LIVE], "bilingual", false, true);
+    expect(enabled.match(/subtitle-separator/g)).toHaveLength(1);
+    expect(enabled).toContain("width:100%");
+    expect(render([LIVE], "bilingual", false, true)).not.toContain("subtitle-separator");
+    expect(render([HISTORY, LIVE], "bilingual", true, true)).not.toContain(
       "subtitle-separator",
     );
   });

@@ -82,6 +82,28 @@ use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 #[cfg(target_os = "macos")]
 mod macos_control_dismiss;
 
+#[cfg(target_os = "macos")]
+mod macos_pointer;
+
+#[cfg(target_os = "macos")]
+pub fn remove_overlay_pointer_tracking(app: &AppHandle) {
+    macos_pointer::clear(app, true);
+}
+
+#[cfg(target_os = "macos")]
+pub fn clear_overlay_pointer_hover(app: &AppHandle) {
+    macos_pointer::clear(app, false);
+}
+
+#[cfg(target_os = "macos")]
+pub async fn set_overlay_pointer_cursor(
+    app: &AppHandle,
+    point: crate::core::overlay_pointer::OverlayPointerPosition,
+    pointing: bool,
+) -> Result<bool, String> {
+    macos_pointer::set_pointer_cursor(app, point, pointing).await
+}
+
 #[cfg(target_os = "windows")]
 mod windows_workspace;
 
@@ -282,6 +304,7 @@ pub enum OverlayControlMode {
 #[derive(Debug)]
 struct OverlayControlStateInner {
     mode: OverlayControlMode,
+    island_width: f64,
     panel_height: f64,
     generation: u64,
 }
@@ -306,6 +329,10 @@ impl OverlayPresentationState {
         }
         if window.set_ignore_cursor_events(enabled).is_ok() {
             *current = Some(enabled);
+            #[cfg(target_os = "macos")]
+            if enabled {
+                macos_pointer::clear(window.app_handle(), false);
+            }
         }
     }
 
@@ -318,6 +345,7 @@ impl Default for OverlayControlState {
     fn default() -> Self {
         Self(std::sync::Mutex::new(OverlayControlStateInner {
             mode: OverlayControlMode::Hidden,
+            island_width: OverlayControlWindowManager::DEFAULT_ISLAND_WIDTH,
             panel_height: OverlayControlWindowManager::DEFAULT_PANEL_HEIGHT,
             generation: 0,
         }))
@@ -350,6 +378,20 @@ impl OverlayControlState {
             return false;
         }
         state.panel_height = height;
+        true
+    }
+
+    fn dimensions(&self) -> (f64, f64) {
+        let state = self.0.lock().unwrap();
+        (state.island_width, state.panel_height)
+    }
+
+    fn set_island_width(&self, width: f64) -> bool {
+        let mut state = self.0.lock().unwrap();
+        if (state.island_width - width).abs() < 0.5 {
+            return false;
+        }
+        state.island_width = width;
         true
     }
 
@@ -506,6 +548,8 @@ impl OverlayWindowManager {
                     presentation.invalidate();
                 }
                 configure_overlay_window(&window);
+                #[cfg(target_os = "macos")]
+                macos_pointer::install(&window);
                 #[cfg(target_os = "linux")]
                 follow_linux_overlay_on_map(&window);
                 pipeline_log!("overlay window created");
@@ -566,6 +610,8 @@ impl OverlayWindowManager {
         if is_active && !visible {
             show_overlay_window(&window);
         } else if !is_active && visible {
+            #[cfg(target_os = "macos")]
+            macos_pointer::clear(app, false);
             let _ = window.hide();
         }
     }
@@ -1971,8 +2017,10 @@ const OVERLAY_CONTROL_MODE_EVENT: &str = "overlay-control-mode";
 pub struct OverlayControlWindowManager;
 
 impl OverlayControlWindowManager {
-    pub const ISLAND_WIDTH: f64 = 280.0;
+    pub const DEFAULT_ISLAND_WIDTH: f64 = 200.0;
     pub const ISLAND_HEIGHT: f64 = 30.0;
+    const MIN_ISLAND_WIDTH: f64 = 80.0;
+    const MAX_ISLAND_WIDTH: f64 = 512.0;
     pub const PANEL_WIDTH: f64 = 280.0;
     // Matches the compact control panel on first open; React
     // immediately replaces it with the measured provider/locale-specific
@@ -1995,7 +2043,7 @@ impl OverlayControlWindowManager {
         let builder =
             WebviewWindowBuilder::new(app, "overlay-control", WebviewUrl::App("index.html".into()))
                 .title(dev_title("mimi"))
-                .inner_size(Self::ISLAND_WIDTH, Self::ISLAND_HEIGHT)
+                .inner_size(Self::DEFAULT_ISLAND_WIDTH, Self::ISLAND_HEIGHT)
                 .resizable(false)
                 .transparent(true)
                 .decorations(false)
@@ -2138,6 +2186,24 @@ impl OverlayControlWindowManager {
         }
     }
 
+    /// Caches the collapsed capsule's intrinsic width independently of the
+    /// panel. Hidden and expanded surfaces only remember this measurement;
+    /// a late report must neither reveal a hidden window nor shrink a panel.
+    pub fn set_island_width(app: &AppHandle, width: f64) {
+        let Some(width) = measured_island_width(width) else {
+            return;
+        };
+        let current_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(state) = current_app.try_state::<OverlayControlState>() else {
+                return;
+            };
+            if state.set_island_width(width) && state.mode() == OverlayControlMode::Island {
+                Self::apply_geometry(&current_app, OverlayControlMode::Island);
+            }
+        });
+    }
+
     /// Keeps the child surface attached to the overlay on platforms where an
     /// owned/transient window does not automatically move with its owner, and
     /// performs the final cross-platform clamp after movement settles. macOS
@@ -2213,11 +2279,18 @@ impl OverlayControlWindowManager {
         let Some((anchor_x, anchor_y, work_area)) = Self::overlay_anchor(app) else {
             return false;
         };
-        let panel_height = app
+        let (island_width, panel_height) = app
             .try_state::<OverlayControlState>()
-            .map(|state| state.snapshot().1)
-            .unwrap_or(Self::DEFAULT_PANEL_HEIGHT);
-        let geometry = overlay_control_geometry(mode, anchor_x, anchor_y, panel_height, work_area);
+            .map(|state| state.dimensions())
+            .unwrap_or((Self::DEFAULT_ISLAND_WIDTH, Self::DEFAULT_PANEL_HEIGHT));
+        let geometry = overlay_control_geometry(
+            mode,
+            anchor_x,
+            anchor_y,
+            island_width,
+            panel_height,
+            work_area,
+        );
         #[cfg(target_os = "linux")]
         {
             use gtk::prelude::*;
@@ -2324,20 +2397,29 @@ fn control_mode_for_presentation(
     }
 }
 
+fn measured_island_width(width: f64) -> Option<f64> {
+    width.is_finite().then(|| {
+        width.ceil().clamp(
+            OverlayControlWindowManager::MIN_ISLAND_WIDTH,
+            OverlayControlWindowManager::MAX_ISLAND_WIDTH,
+        )
+    })
+}
+
 fn overlay_control_geometry(
     mode: OverlayControlMode,
     anchor_x: f64,
     anchor_y: f64,
+    island_width: f64,
     panel_height: f64,
     work_area: LogicalWorkArea,
 ) -> OverlayControlGeometry {
     let margin = OverlayControlWindowManager::WORK_AREA_MARGIN;
     let (width, requested_height) = match mode {
         OverlayControlMode::Panel => (OverlayControlWindowManager::PANEL_WIDTH, panel_height),
-        OverlayControlMode::Hidden | OverlayControlMode::Island => (
-            OverlayControlWindowManager::ISLAND_WIDTH,
-            OverlayControlWindowManager::ISLAND_HEIGHT,
-        ),
+        OverlayControlMode::Hidden | OverlayControlMode::Island => {
+            (island_width, OverlayControlWindowManager::ISLAND_HEIGHT)
+        }
     };
     let width = width.min((work_area.width - margin * 2.0).max(1.0));
     let available_height = (work_area.height - margin * 2.0).max(1.0);
@@ -3176,8 +3258,14 @@ mod geometry_tests {
 
     #[test]
     fn panel_grows_upward_when_it_would_overflow_bottom() {
-        let geometry =
-            overlay_control_geometry(OverlayControlMode::Panel, 400.0, 900.0, 356.0, WORK_AREA);
+        let geometry = overlay_control_geometry(
+            OverlayControlMode::Panel,
+            400.0,
+            900.0,
+            180.0,
+            356.0,
+            WORK_AREA,
+        );
         assert_eq!(geometry.y, 900.0 + 30.0 - 356.0);
         assert_eq!(geometry.width, 280.0);
         assert_eq!(geometry.height, 356.0);
@@ -3185,8 +3273,14 @@ mod geometry_tests {
 
     #[test]
     fn panel_keeps_its_anchor_when_there_is_room_below() {
-        let geometry =
-            overlay_control_geometry(OverlayControlMode::Panel, 400.0, 300.0, 356.0, WORK_AREA);
+        let geometry = overlay_control_geometry(
+            OverlayControlMode::Panel,
+            400.0,
+            300.0,
+            180.0,
+            356.0,
+            WORK_AREA,
+        );
         assert_eq!(geometry.y, 300.0);
     }
 
@@ -3203,6 +3297,7 @@ mod geometry_tests {
             OverlayControlMode::Island,
             -1800.0,
             -200.0,
+            180.0,
             356.0,
             work_area,
         );
@@ -3219,12 +3314,98 @@ mod geometry_tests {
             height: 180.0,
             coordinate_scale: 1.0,
         };
-        let geometry =
-            overlay_control_geometry(OverlayControlMode::Panel, 400.0, 160.0, 520.0, work_area);
+        let geometry = overlay_control_geometry(
+            OverlayControlMode::Panel,
+            400.0,
+            160.0,
+            180.0,
+            520.0,
+            work_area,
+        );
         assert_eq!(geometry.x, 132.0);
         assert_eq!(geometry.width, 280.0);
         assert_eq!(geometry.y, 58.0);
         assert_eq!(geometry.height, 164.0);
+    }
+
+    #[test]
+    fn island_hugs_measured_content_without_changing_the_panel_width_or_left_anchor() {
+        for width in [148.0, 188.0, 312.0] {
+            let island = overlay_control_geometry(
+                OverlayControlMode::Island,
+                400.0,
+                300.0,
+                width,
+                356.0,
+                WORK_AREA,
+            );
+            let panel = overlay_control_geometry(
+                OverlayControlMode::Panel,
+                400.0,
+                300.0,
+                width,
+                356.0,
+                WORK_AREA,
+            );
+            assert_eq!((island.x, island.y, island.width), (400.0, 300.0, width));
+            assert_eq!((panel.x, panel.y, panel.width), (400.0, 300.0, 280.0));
+        }
+    }
+
+    #[test]
+    fn measured_width_updates_keep_hidden_and_panel_modes_and_dismiss_generation() {
+        let state = OverlayControlState::default();
+        assert!(state.set_island_width(148.0));
+        assert_eq!(state.snapshot(), (OverlayControlMode::Hidden, 270.0, 0));
+        assert_eq!(state.dimensions(), (148.0, 270.0));
+        assert!(state.set_mode(OverlayControlMode::Panel));
+        assert!(state.set_panel_height(356.0));
+        assert!(state.set_island_width(312.0));
+        assert!(!state.set_island_width(312.0));
+        assert_eq!(state.snapshot(), (OverlayControlMode::Panel, 356.0, 1));
+        assert_eq!(state.dimensions(), (312.0, 356.0));
+    }
+
+    #[test]
+    fn island_measurements_are_finite_rounded_and_bounded() {
+        assert_eq!(measured_island_width(173.2), Some(174.0));
+        assert_eq!(measured_island_width(2.0), Some(80.0));
+        assert_eq!(measured_island_width(10000.0), Some(512.0));
+        assert_eq!(measured_island_width(f64::NAN), None);
+        assert_eq!(measured_island_width(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn island_width_clamps_to_short_screens_without_using_panel_width() {
+        let work_area = LogicalWorkArea {
+            x: 100.0,
+            y: 50.0,
+            width: 320.0,
+            height: 180.0,
+            coordinate_scale: 1.0,
+        };
+        let island = overlay_control_geometry(
+            OverlayControlMode::Island,
+            400.0,
+            160.0,
+            180.0,
+            520.0,
+            work_area,
+        );
+        assert_eq!((island.x, island.y, island.width), (232.0, 160.0, 180.0));
+        let narrow = LogicalWorkArea {
+            width: 100.0,
+            ..work_area
+        };
+        let island = overlay_control_geometry(
+            OverlayControlMode::Island,
+            400.0,
+            160.0,
+            312.0,
+            520.0,
+            narrow,
+        );
+        assert_eq!((island.x, island.y, island.width), (108.0, 160.0, 84.0));
     }
 
     #[test]

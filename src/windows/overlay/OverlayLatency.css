@@ -17,6 +17,21 @@
 .overlay-latency > span:not(.overlay-latency__separator) { display: flex; align-items: baseline; gap: 5px; }
 .overlay-latency strong { font-weight: 600; font-variant-numeric: tabular-nums; }
 .overlay-latency__separator { opacity: 0.55; }
+.overlay-action-feedback {
+  pointer-events: none;
+  position: absolute;
+  top: 47px;
+  left: 18px;
+  right: 18px;
+  z-index: 2;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  line-height: 12px;
+  color: rgba(255, 255, 255, 0.9);
+  text-align: left;
+}
 [data-presentation="background-blend"] .overlay-latency {
   color: rgba(255, 255, 255, 0.9);
   text-shadow: 0 1px 3px #000, 0 0 5px #000;

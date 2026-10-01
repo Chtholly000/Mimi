@@ -7,7 +7,6 @@ import { I18N, providerDisplayName } from "../../lib/i18n";
 import { isTauri } from "../../lib/ipc";
 import {
   activeServiceProfile,
-  effectiveTranslationModeForSettings,
   sourceLanguagesForSettings,
   targetLanguagesForSettings,
 } from "../../lib/providerCapabilities";
@@ -18,7 +17,6 @@ import {
 } from "../../lib/store";
 import {
   TARGET_LANGUAGE_DISPLAY_NAMES,
-  TRANSLATION_MODE_DISPLAY_NAMES,
   targetLanguageTranslatesAudio,
   type SettingsSnapshot,
   type SourceLanguage,
@@ -78,6 +76,7 @@ export function TrayPanel() {
 
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
+  const operationPending = useRef(false);
   const panelRef = useRef<HTMLElement>(null);
 
   const activeProfile = activeServiceProfile(settings);
@@ -100,16 +99,20 @@ export function TrayPanel() {
     name: PendingAction,
     operation: () => Promise<void>,
   ) => {
-    if (pendingAction !== null) return;
+    if (operationPending.current) return;
+    operationPending.current = true;
     setPendingAction(name);
     setOperationError(null);
     void operation()
       .catch((error: unknown) => {
         setOperationError(
-          actionErrorMessage(error, I18N.settings.profileActionFailed),
+          name === "quit" ? I18N.tray.quitFailed : actionErrorMessage(error, I18N.settings.profileActionFailed),
         );
       })
-      .finally(() => setPendingAction(null));
+      .finally(() => {
+        operationPending.current = false;
+        setPendingAction(null);
+      });
   };
 
   const runSessionAction = (action: TraySessionAction) => {
@@ -390,9 +393,11 @@ export function TrayPanel() {
         <button
           type="button"
           disabled={anyActionPending}
+          aria-busy={pendingAction === "quit"}
+          data-action="quit"
           onClick={() => performAction("quit", quit)}
         >
-          {I18N.tray.quit}
+          {pendingAction === "quit" ? I18N.tray.quitting : I18N.tray.quit}
         </button>
       </footer>
     </section>
@@ -575,9 +580,5 @@ function translationSummary(settings: SettingsSnapshot) {
     return I18N.tray.originalOnly;
   }
   const target = TARGET_LANGUAGE_DISPLAY_NAMES[settings.targetLanguage];
-  const mode =
-    TRANSLATION_MODE_DISPLAY_NAMES[
-      effectiveTranslationModeForSettings(settings)
-    ];
-  return `${I18N.settings.translateTo} ${target} · ${mode}`;
+  return `${I18N.settings.translateTo} ${target}`;
 }

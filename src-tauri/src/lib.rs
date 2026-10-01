@@ -205,6 +205,10 @@ pub fn run() {
         .on_window_event(|window, event| {
             let app = window.app_handle();
             match event {
+                #[cfg(target_os = "macos")]
+                WindowEvent::Destroyed if window.label() == "overlay" => {
+                    windows::remove_overlay_pointer_tracking(app);
+                }
                 // The overlay geometry manager folds the final frame in after
                 // a debounce; transient states (control panel, collapse
                 // animation steps) are never persisted.
@@ -302,6 +306,10 @@ pub fn run() {
                         || window.label() == "tray-panel" =>
                 {
                     api.prevent_close();
+                    #[cfg(target_os = "macos")]
+                    if window.label() == "overlay" {
+                        windows::clear_overlay_pointer_hover(app);
+                    }
                     if let Err(error) = window.hide() {
                         tracing::warn!(
                             window_label = window.label(),
@@ -334,6 +342,7 @@ pub fn run() {
             commands::profile_save_credentials,
             commands::profile_test_connection,
             commands::profile_delete_api_key,
+            commands::profile_reveal_credential,
             crate::session_export::session_archive_state,
             crate::session_export::session_transcript_page,
             crate::session_export::session_history_list,
@@ -350,12 +359,14 @@ pub fn run() {
             commands::session_switch_translation_mode,
             commands::overlay_set_collapsed,
             commands::overlay_set_locked,
+            commands::overlay_set_pointer_cursor,
             commands::overlay_show,
             commands::overlay_move_start,
             commands::overlay_popover_toggle,
             commands::overlay_popover_hide,
             commands::overlay_control_state,
             commands::overlay_control_set_panel_height,
+            commands::overlay_control_set_island_width,
             commands::session_get_state,
             commands::resize_start,
             commands::resize_move,
@@ -367,6 +378,10 @@ pub fn run() {
         .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::RunEvent::Exit) {
+                windows::remove_overlay_pointer_tracking(app);
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = event {
                 if app.state::<AppState>().settings.preferences().show_in_dock {
@@ -682,9 +697,17 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     let session = Arc::clone(&state.session);
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        session.stop().await;
-                        if session.persist_current_history().is_ok() {
-                            app.exit(0);
+                        if commands::quit_application(app.clone(), session)
+                            .await
+                            .is_err()
+                        {
+                            // archive_state exposes the existing, content-free
+                            // historySaveError; the export page explains why
+                            // quitting failed and keeps its retry reachable.
+                            let _ = commands::app_show_settings(
+                                app,
+                                Some(commands::SettingsNavigationTarget::Export),
+                            );
                         }
                     });
                 }

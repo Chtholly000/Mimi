@@ -1,6 +1,18 @@
 import { afterEach, expect, it } from "vitest";
 import { I18N, setStoredUiLanguage } from "./i18n";
 import { connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
+
+it("localizes exhausted translation recovery without showing internal labels", () => {
+  for (const language of ["zh", "en", "ja"] as const) {
+    setStoredUiLanguage(language);
+    expect(credentialErrorMessage("translation_rate_limited")).toBe(diagnosticCopy().translationLimited);
+    expect(credentialErrorMessage("translation_temporarily_unavailable")).toBe(diagnosticCopy().translationTemporary);
+    expect(credentialErrorMessage("translation_source_unsupported")).toBe(diagnosticCopy().translationSourceUnsupported);
+    expect(credentialErrorMessage("subtitle_text_too_large")).toBe(diagnosticCopy().subtitleTooLarge);
+    expect(credentialErrorMessage("The subtitle service returned too much text.")).toBe(diagnosticCopy().subtitleTooLarge);
+    expect(credentialErrorMessage("Translation fell behind live audio. mimi is reconnecting.")).toBe(diagnosticCopy().translationBacklog);
+  }
+});
 import type { ConnectionDiagnostic } from "./ipc";
 afterEach(() => setStoredUiLanguage("en"));
 it("localizes shortcut and storage errors without losing recovery guidance", () => {

@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const SETUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -122,6 +122,7 @@ impl Drop for SendTiming {
 /// session event channel. `disconnect` is idempotent and cancels the task.
 #[derive(Clone)]
 pub struct LiveTranslateClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint: LiveTranslateEndpoint,
     api_key: String,
@@ -132,6 +133,15 @@ pub struct LiveTranslateClient {
 }
 
 impl LiveTranslateClient {
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         api_key: &str,
         source_language: SourceLanguage,
@@ -144,6 +154,7 @@ impl LiveTranslateClient {
             return Err(LiveTranslateClientError::MissingAPIKey);
         }
         Ok(Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
                 sink: Mutex::new(None),
                 received_session_finished: AtomicBool::new(false),
@@ -179,16 +190,19 @@ impl LiveTranslateClient {
             HeaderValue::from_str(&auth).map_err(|_| LiveTranslateClientError::MissingAPIKey)?,
         );
 
-        let (socket, _response) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
-            .await
-            .map_err(|_| LiveTranslateClientError::ConnectionTimedOut)?
-            .map_err(|error| {
-                if super::connection_diagnostics::authentication_rejected(&error) {
-                    LiveTranslateClientError::AuthenticationFailed
-                } else {
-                    LiveTranslateClientError::TransportFailure
-                }
-            })?;
+        let (socket, _response) = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            super::provider_network::websocket(request, &self.network),
+        )
+        .await
+        .map_err(|_| LiveTranslateClientError::ConnectionTimedOut)?
+        .map_err(|error| {
+            if super::connection_diagnostics::authentication_rejected(&error) {
+                LiveTranslateClientError::AuthenticationFailed
+            } else {
+                LiveTranslateClientError::TransportFailure
+            }
+        })?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner

@@ -11,14 +11,19 @@ use crate::audio::{
 use crate::clients::provider_events::provider_event_channel;
 use crate::clients::translation_client::TranslationClient;
 use crate::core::configuration::LiveTranslationConfiguration;
-use crate::core::diagnostics::{milliseconds, TranslationLatency, TranslationLatencyKind};
+use crate::core::credentials::ProviderCredentials;
+use crate::core::diagnostics::{
+    milliseconds, TranslationLatency, TranslationLatencyKind, TranslationRecovery,
+};
 use crate::core::models::{SessionStatus, SourceLanguage, TranslationMode, UtteranceRole};
+use crate::core::preview_pacing::MTRequestBudget;
 use crate::core::protocols::live_translate::LiveTranslateServerEvent;
+use crate::core::protocols::qwen_mt::{QwenMTModel, REALTIME_MT_MODEL};
 use crate::core::provider::ProviderKind;
 use crate::core::session::{TranslationSessionController, TranslationSessionState};
 use crate::core::support_diagnostics::{
-    Availability, CaptureObservation, DiagnosticFacts, DiagnosticStatus, OutputSelection,
-    RecoveryAction, SafeFailure,
+    Availability, CaptureObservation, DiagnosticEvent, DiagnosticFacts, DiagnosticJournal,
+    DiagnosticStatus, LifecycleAction, OutputSelection, RecoveryAction, SafeFailure, TextEventKind,
 };
 use crate::pipeline_log;
 use crate::session_history::SessionHistory;
@@ -72,14 +77,16 @@ pub struct SessionStateEvent {
     pub detected_language: Option<String>,
     #[serde(rename = "isTranslationPending")]
     pub is_translation_pending: bool,
+    pub is_translation_preview_pending: bool,
     #[serde(rename = "isTranslationTimedOut")]
     pub is_translation_timed_out: bool,
     /// Existing WebSocket health-check round trip, including local send wait.
     /// HQ/DeepLX probe their ASR socket, not the text-translation HTTP service.
     pub api_latency_ms: Option<u64>,
-    /// Latest measured successful final; the kind identifies its boundaries.
+    /// Latest current successful preview/final; the kind identifies boundaries.
     pub translation_latency_ms: Option<u64>,
     pub translation_latency_kind: Option<TranslationLatencyKind>,
+    pub translation_recovery: Option<TranslationRecovery>,
 }
 
 #[derive(Clone, Copy)]
@@ -122,6 +129,108 @@ fn visible_session_latencies(
 const NO_GENERATION: u64 = 0;
 const SESSION_START_CANCELLED: &str = "The session start was superseded by a newer request.";
 const RECOVERY_ATTEMPTS: usize = 4;
+
+#[derive(Clone, PartialEq, Eq)]
+enum MTBudgetRoute {
+    Qwen(QwenMTModel),
+    DeepL,
+    DeepLX,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct MTBudgetScope {
+    profile_id: String,
+    provider: ProviderKind,
+    route: MTBudgetRoute,
+}
+
+impl MTBudgetScope {
+    fn for_configuration(
+        profile_id: String,
+        configuration: &LiveTranslationConfiguration,
+    ) -> Option<Self> {
+        let route = match &configuration.credentials {
+            ProviderCredentials::DeepL { .. } => MTBudgetRoute::DeepL,
+            ProviderCredentials::DeepLX { .. } => MTBudgetRoute::DeepLX,
+            ProviderCredentials::ApiKey { .. }
+                if configuration.provider == ProviderKind::AlibabaCloud =>
+            {
+                let model = match configuration.effective_translation_mode() {
+                    TranslationMode::Turbo => REALTIME_MT_MODEL,
+                    TranslationMode::HighQuality => QwenMTModel::Plus,
+                    TranslationMode::LowLatency => return None,
+                };
+                MTBudgetRoute::Qwen(model)
+            }
+            _ => return None,
+        };
+        Some(Self {
+            profile_id,
+            provider: configuration.provider,
+            route,
+        })
+    }
+}
+
+/// One bounded continuation slot. Its token rejects late teardown snapshots
+/// after stop/new-start or after another client/route has already been prepared.
+#[derive(Default)]
+struct MTBudgetContinuity {
+    token: u64,
+    client_scope: Option<(u64, u64, MTBudgetScope)>,
+    retained: Option<(MTBudgetScope, MTRequestBudget)>,
+}
+
+impl MTBudgetContinuity {
+    fn reset(&mut self) {
+        self.token = self.token.wrapping_add(1).max(1);
+        self.client_scope = None;
+        self.retained = None;
+    }
+
+    fn prepare(
+        &mut self,
+        generation: u64,
+        scope: Option<MTBudgetScope>,
+    ) -> Option<MTRequestBudget> {
+        let Some(scope) = scope else {
+            self.reset();
+            return None;
+        };
+        if self
+            .retained
+            .as_ref()
+            .is_some_and(|(previous, _)| previous != &scope)
+        {
+            self.retained = None;
+        }
+        self.token = self.token.wrapping_add(1).max(1);
+        self.client_scope = Some((generation, self.token, scope.clone()));
+        self.retained
+            .as_ref()
+            .filter(|(previous, _)| previous == &scope)
+            .map(|(_, budget)| *budget)
+    }
+
+    fn take_lease(&mut self, generation: u64) -> Option<(u64, MTBudgetScope)> {
+        if self
+            .client_scope
+            .as_ref()
+            .is_none_or(|(owner, _, _)| *owner != generation)
+        {
+            return None;
+        }
+        self.client_scope
+            .take()
+            .map(|(_, token, scope)| (token, scope))
+    }
+
+    fn remember(&mut self, token: u64, scope: MTBudgetScope, budget: MTRequestBudget) {
+        if token == self.token {
+            self.retained = Some((scope, budget));
+        }
+    }
+}
 
 struct LifecycleOperationGuard {
     count: Arc<AtomicUsize>,
@@ -341,14 +450,43 @@ fn generation_accepts_event(
     generation != NO_GENERATION
         && (active_generation == generation
             || (stopping_tail_generation == generation
-                && matches!(event, LiveTranslateServerEvent::SubtitleFinalPair { .. })))
+                && matches!(
+                    event,
+                    LiveTranslateServerEvent::SubtitleFinalPair { .. }
+                        | LiveTranslateServerEvent::SubtitleConfirmedPair { .. }
+                )))
+}
+
+fn confirmed_history_tail_changed(
+    previous: Option<&crate::core::models::SubtitlePair>,
+    current: Option<&crate::core::models::SubtitlePair>,
+) -> bool {
+    current.is_some_and(|current| {
+        previous.is_none_or(|previous| {
+            current.created_at_ms != previous.created_at_ms || current != previous
+        })
+    })
 }
 
 fn provider_error_is_retryable(code: &str) -> bool {
     matches!(
         code,
-        "transport_error" | "provider_event_backlog_overflow" | "translation_backlog_overflow"
+        "transport_error"
+            | "provider_event_backlog_overflow"
+            | "translation_backlog_overflow"
+            | "translation_rate_limited"
+            | "translation_temporarily_unavailable"
     )
+}
+
+fn provider_recovery_minimum_delay(code: &str) -> Duration {
+    match code {
+        // A new client must not bypass the MT cooldown by replacing the
+        // generation after finite retries or bounded final-queue pressure.
+        "translation_rate_limited" | "translation_backlog_overflow" => Duration::from_secs(8),
+        "translation_temporarily_unavailable" => Duration::from_millis(600),
+        _ => Duration::ZERO,
+    }
 }
 
 fn clear_task_slot_if_id(
@@ -481,10 +619,12 @@ impl From<&TranslationSessionState> for SessionStateEvent {
                 .as_ref()
                 .map(|language| language.code.clone()),
             is_translation_pending: state.is_translation_pending,
+            is_translation_preview_pending: state.is_translation_preview_pending,
             is_translation_timed_out: state.is_translation_timed_out,
             api_latency_ms: None,
             translation_latency_ms: None,
             translation_latency_kind: None,
+            translation_recovery: state.translation_recovery,
         }
     }
 }
@@ -511,6 +651,7 @@ pub struct SessionManager {
     diagnostic_error: Arc<Mutex<Option<(SafeFailure, Instant)>>>,
     diagnostic_recovery: Arc<Mutex<Option<(RecoveryAction, Instant)>>>,
     diagnostic_capture: Arc<Mutex<Option<(CaptureObservation, Instant)>>>,
+    diagnostic_journal: Arc<Mutex<DiagnosticJournal>>,
     health_latency: Arc<Mutex<Option<HealthCheckLatency>>>,
     settings: Arc<SettingsStore>,
     controller: Arc<Mutex<TranslationSessionController>>,
@@ -525,6 +666,7 @@ pub struct SessionManager {
     history_save_error: Arc<AtomicBool>,
     client: Arc<Mutex<Option<TranslationClient>>>,
     client_generation: Arc<AtomicU64>,
+    mt_budget_continuity: Arc<Mutex<MTBudgetContinuity>>,
     audio_pipeline: Arc<Mutex<Option<Arc<AudioSendPipeline>>>>,
     audio_pipeline_generation: Arc<AtomicU64>,
     capture_generation: Arc<AtomicU64>,
@@ -587,6 +729,7 @@ impl SessionManager {
             diagnostic_error: Default::default(),
             diagnostic_recovery: Default::default(),
             diagnostic_capture: Default::default(),
+            diagnostic_journal: Default::default(),
             health_latency: Default::default(),
             settings,
             controller: Arc::new(Mutex::new(TranslationSessionController::default())),
@@ -601,6 +744,7 @@ impl SessionManager {
             history_save_error: Arc::new(AtomicBool::new(false)),
             client: Arc::new(Mutex::new(None)),
             client_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
+            mt_budget_continuity: Default::default(),
             audio_pipeline: Arc::new(Mutex::new(None)),
             audio_pipeline_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
             capture_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
@@ -672,12 +816,82 @@ impl SessionManager {
     }
 
     fn record_diagnostic_failure(&self, error: &str) {
-        *self.diagnostic_error.lock().unwrap() =
-            Some((SafeFailure::from_error(error), Instant::now()));
+        self.record_safe_failure(SafeFailure::from_error(error));
+    }
+
+    fn record_safe_failure(&self, classification: SafeFailure) {
+        *self.diagnostic_error.lock().unwrap() = Some((classification, Instant::now()));
+        self.record_diagnostic_event(DiagnosticEvent::Failure { classification });
+    }
+
+    fn record_diagnostic_event(&self, event: DiagnosticEvent) {
+        self.diagnostic_journal
+            .lock()
+            .unwrap()
+            .record(event, milliseconds(self.diagnostic_epoch, Instant::now()));
+    }
+
+    /// Recheck event admission under the generation gate before recording.
+    /// No journal or generation lock crosses an await.
+    fn record_accepted_provider_event(
+        &self,
+        generation: u64,
+        event: &LiveTranslateServerEvent,
+    ) -> bool {
+        let _transition = self.generation_transition.lock().unwrap();
+        if !self.accepts_event(generation, event) || self.is_paused() {
+            return false;
+        }
+        if let LiveTranslateServerEvent::Error { code, message } = event {
+            self.record_safe_failure(SafeFailure::from_provider_error(code, message));
+        }
+        let mut journal = self.diagnostic_journal.lock().unwrap();
+        let text_kind = match event {
+            LiveTranslateServerEvent::SourceDraft { .. } => Some(TextEventKind::SourceDraft),
+            LiveTranslateServerEvent::SourceFinal { .. }
+            | LiveTranslateServerEvent::SourceUtteranceFinal { .. } => {
+                Some(TextEventKind::SourceFinal)
+            }
+            LiveTranslateServerEvent::TranslationDraft(_) => Some(TextEventKind::TranslationDraft),
+            LiveTranslateServerEvent::TranslationFinal(_) => Some(TextEventKind::TranslationFinal),
+            LiveTranslateServerEvent::SubtitleFinalPair { .. }
+            | LiveTranslateServerEvent::SubtitleConfirmedPair { .. } => {
+                Some(TextEventKind::ConfirmedPair)
+            }
+            LiveTranslateServerEvent::UtteranceText { role, is_final, .. } => {
+                Some(match (role, is_final) {
+                    (UtteranceRole::Source, false) => TextEventKind::SourceDraft,
+                    (UtteranceRole::Source, true) => TextEventKind::SourceFinal,
+                    (UtteranceRole::Translation, false) => TextEventKind::TranslationDraft,
+                    (UtteranceRole::Translation, true) => TextEventKind::TranslationFinal,
+                })
+            }
+            _ => None,
+        };
+        if let Some(kind) = text_kind {
+            journal.observe_text(kind);
+        }
+        if let LiveTranslateServerEvent::TranslationDeferred(recovery) = event {
+            journal.record(
+                DiagnosticEvent::TranslationBackoff {
+                    recovery: *recovery,
+                },
+                milliseconds(self.diagnostic_epoch, Instant::now()),
+            );
+        }
+        true
     }
 
     fn record_recovery_action(&self, action: RecoveryAction) {
         *self.diagnostic_recovery.lock().unwrap() = Some((action, Instant::now()));
+        self.record_diagnostic_event(DiagnosticEvent::Recovery { action });
+    }
+
+    fn record_recovery_if_current(&self, action: RecoveryAction, epoch: u64) {
+        let _transition = self.generation_transition.lock().unwrap();
+        if self.is_lifecycle_request_current(epoch) {
+            self.record_recovery_action(action);
+        }
     }
 
     fn current_capture_observation(&self) -> Option<CaptureObservation> {
@@ -775,7 +989,15 @@ impl SessionManager {
             .as_ref()
             .map(|config| (Some(config.provider), config.effective_translation_mode()))
             .unwrap_or((provider, prefs.translation_mode));
-        let (status, translation_pending, translation_timed_out) = {
+        let generation = self.active_generation.load(Ordering::SeqCst);
+        let (
+            status,
+            translation_pending,
+            translation_preview_pending,
+            translation_timed_out,
+            session_status,
+            translation_recovery,
+        ) = {
             let controller = self.controller.lock().unwrap();
             let status = match controller.state.status {
                 SessionStatus::Idle => DiagnosticStatus::Idle,
@@ -788,7 +1010,10 @@ impl SessionManager {
             (
                 status,
                 controller.state.is_translation_pending,
+                controller.state.is_translation_preview_pending,
                 controller.state.is_translation_timed_out,
+                controller.state.status.clone(),
+                controller.state.translation_recovery,
             )
         };
         let capture = self
@@ -835,6 +1060,28 @@ impl SessionManager {
         #[cfg(not(target_os = "windows"))]
         let (output_selection, output_availability) =
             (OutputSelection::PlatformSystemAudio, Availability::Unknown);
+        let translation_latency = self
+            .client_for_generation(generation)
+            .and_then(|client| client.translation_latency());
+        let (mut api_latency_ms, mut translation_latency_ms, mut translation_latency_kind) =
+            visible_session_latencies(
+                &session_status,
+                self.is_paused(),
+                self.is_recovering.load(Ordering::SeqCst),
+                generation,
+                self.health_task_id.load(Ordering::SeqCst),
+                *self.health_latency.lock().unwrap(),
+                translation_latency,
+            );
+        let translation_recovery = if self.is_generation_current(generation) {
+            translation_recovery
+        } else {
+            api_latency_ms = None;
+            translation_latency_ms = None;
+            translation_latency_kind = None;
+            None
+        };
+        let journal = self.diagnostic_journal.lock().unwrap().snapshot();
         DiagnosticFacts {
             provider,
             mode,
@@ -843,6 +1090,7 @@ impl SessionManager {
             output_availability,
             capture,
             translation_pending,
+            translation_preview_pending,
             translation_timed_out,
             last_error: self
                 .diagnostic_error
@@ -854,7 +1102,15 @@ impl SessionManager {
                 .lock()
                 .unwrap()
                 .map(|(action, at)| (action, crate::core::diagnostics::milliseconds(at, now))),
-            elapsed_ms: crate::core::diagnostics::milliseconds(self.diagnostic_epoch, now),
+            api_latency_ms,
+            translation_latency_ms,
+            translation_latency_kind,
+            translation_recovery,
+            journal,
+            elapsed_ms: crate::core::diagnostics::milliseconds(
+                self.diagnostic_epoch,
+                Instant::now(),
+            ),
         }
     }
 
@@ -908,7 +1164,32 @@ impl SessionManager {
 
     /// Starts (or restarts) a listening session with the saved settings.
     pub async fn start(self: &Arc<Self>, clear_subtitles: bool) -> Result<(), String> {
+        self.record_diagnostic_event(DiagnosticEvent::Lifecycle {
+            action: LifecycleAction::StartRequested,
+        });
+        let status_label = {
+            let controller = self.controller.lock().unwrap();
+            match &controller.state.status {
+                SessionStatus::Idle => "idle",
+                SessionStatus::Connecting => "connecting",
+                SessionStatus::Listening => "listening",
+                SessionStatus::Stopping => "stopping",
+                SessionStatus::Error(_) => "error",
+            }
+        };
+        pipeline_log!(
+            "session start entered status={} generation={} recovering={} startBusy={} teardownOperations={}",
+            status_label,
+            self.active_generation.load(Ordering::SeqCst),
+            u8::from(self.is_recovering.load(Ordering::SeqCst)),
+            u8::from(self.start_in_progress.load(Ordering::SeqCst)),
+            self.teardown_operations.load(Ordering::SeqCst),
+        );
         if !try_begin_start(&self.start_in_progress) {
+            self.record_diagnostic_event(DiagnosticEvent::Lifecycle {
+                action: LifecycleAction::StartBusy,
+            });
+            pipeline_log!("session start skipped label=start_in_progress");
             return Ok(());
         }
         let _start_request = StartRequestGuard {
@@ -919,6 +1200,10 @@ impl SessionManager {
             self.is_recovering.load(Ordering::SeqCst),
             self.active_generation.load(Ordering::SeqCst),
         ) {
+            self.record_diagnostic_event(DiagnosticEvent::Lifecycle {
+                action: LifecycleAction::StartAlreadyActive,
+            });
+            pipeline_log!("session start skipped label=active_session");
             return Ok(());
         }
         let _operation = self.begin_lifecycle_operation();
@@ -931,8 +1216,26 @@ impl SessionManager {
                 self.active_generation.load(Ordering::SeqCst),
             )
         {
+            self.record_diagnostic_event(DiagnosticEvent::Lifecycle {
+                action: if self.is_lifecycle_request_current(request_generation) {
+                    LifecycleAction::StartAlreadyActive
+                } else {
+                    LifecycleAction::StartSuperseded
+                },
+            });
+            pipeline_log!(
+                "session start skipped label={}",
+                if self.is_lifecycle_request_current(request_generation) {
+                    "active_session_after_teardown"
+                } else {
+                    "superseded"
+                }
+            );
             return Ok(());
         }
+        // A manual start is a new session; server quota can still be exhausted,
+        // but no old client accounting may be restored into this new intent.
+        self.mt_budget_continuity.lock().unwrap().reset();
         // A manual start during recovery backoff is the newer user intent.
         // Cancel the old owner before installing this generation so its
         // global recovery flag cannot affect the new session's error path.
@@ -1131,6 +1434,23 @@ impl SessionManager {
                 error.to_string()
             })?;
             self.ensure_generation_current(generation)?;
+            let scope =
+                self.settings.active_profile().ok().and_then(|profile| {
+                    MTBudgetScope::for_configuration(profile.id, &configuration)
+                });
+            let budget = {
+                let _transition = self.generation_transition.lock().unwrap();
+                self.ensure_generation_current(generation)?;
+                if !self.is_lifecycle_request_current(generation) {
+                    return Err(SESSION_START_CANCELLED.into());
+                }
+                self.mt_budget_continuity
+                    .lock()
+                    .unwrap()
+                    .prepare(generation, scope)
+            };
+            new_client.restore_mt_request_budget(budget).await;
+            self.ensure_generation_current(generation)?;
             self.install_client(generation, new_client)?;
 
             // Start consuming before awaiting setup: a provider may acknowledge
@@ -1154,6 +1474,7 @@ impl SessionManager {
             let connect_result = match connect_result {
                 Ok(result) => result,
                 Err(error) => {
+                    self.remember_mt_request_budget(generation, &client).await;
                     let _ = tokio::time::timeout(Duration::from_secs(1), client.disconnect()).await;
                     return Err(error);
                 }
@@ -1161,6 +1482,7 @@ impl SessionManager {
             connect_result.map_err(|error| error.to_string())?;
             tokio::task::yield_now().await;
             if let Err(error) = self.ensure_generation_current(generation) {
+                self.remember_mt_request_budget(generation, &client).await;
                 let _ = tokio::time::timeout(Duration::from_secs(1), client.disconnect()).await;
                 return Err(error);
             }
@@ -1255,9 +1577,13 @@ impl SessionManager {
     }
 
     pub async fn stop(self: &Arc<Self>) {
+        self.record_diagnostic_event(DiagnosticEvent::Lifecycle {
+            action: LifecycleAction::StopRequested,
+        });
         self.record_recovery_action(RecoveryAction::UserStopped);
         let _operation = self.begin_lifecycle_operation();
         let _stop_request = self.next_lifecycle_request();
+        self.mt_budget_continuity.lock().unwrap().reset();
         let stopping_generation = self.active_generation.swap(NO_GENERATION, Ordering::SeqCst);
         if stopping_generation != NO_GENERATION {
             self.stopping_tail_generation
@@ -1365,6 +1691,9 @@ impl SessionManager {
             return;
         }
         let paused_generation = self.active_generation.swap(NO_GENERATION, Ordering::SeqCst);
+        self.record_diagnostic_event(DiagnosticEvent::Lifecycle {
+            action: LifecycleAction::PauseRequested,
+        });
         pipeline_log!("session pause requested");
         self.is_paused.store(true, Ordering::SeqCst);
         self.stop_health_checks().await;
@@ -1392,6 +1721,9 @@ impl SessionManager {
             return;
         }
         pipeline_log!("session resume requested");
+        self.record_diagnostic_event(DiagnosticEvent::Lifecycle {
+            action: LifecycleAction::ResumeRequested,
+        });
         let paused_configuration = self.active_settings.lock().unwrap().clone();
         self.is_paused.store(false, Ordering::SeqCst);
         self.active_generation
@@ -1868,6 +2200,24 @@ impl SessionManager {
             return;
         }
 
+        if let LiveTranslateServerEvent::SubtitleConfirmedPair {
+            utterance_id,
+            source,
+            translation,
+            ..
+        } = &event
+        {
+            // A replay is not an accepted final: it must not cancel a newer
+            // request's timeout or inflate the content-free journal counts.
+            if !self.controller.lock().unwrap().accepts_confirmed_pair(
+                *utterance_id,
+                source,
+                translation,
+            ) {
+                return;
+            }
+        }
+
         if let LiveTranslateServerEvent::Error { code, message } = &mut event {
             if matches!(
                 code.as_str(),
@@ -1880,8 +2230,8 @@ impl SessionManager {
             }
         }
 
-        if let LiveTranslateServerEvent::Error { message, .. } = &event {
-            self.record_diagnostic_failure(message);
+        if !self.record_accepted_provider_event(generation, &event) {
+            return;
         }
 
         if let LiveTranslateServerEvent::Error { code, message } = &event {
@@ -1907,7 +2257,7 @@ impl SessionManager {
                     }
                     return;
                 }
-                pipeline_log!("session transport error code={}", code);
+                pipeline_log!("session recoverable provider error code={}", code);
                 self.cancel_translation_timeout();
                 self.controller.lock().unwrap().begin_connecting();
                 self.publish_state();
@@ -1915,7 +2265,9 @@ impl SessionManager {
                 self.stop_health_checks().await;
                 self.cleanup_generation_without_pump(generation).await;
                 if !recovery_owns_attempt {
-                    self.queue_recovery(generation, message.clone()).await;
+                    let minimum_delay = provider_recovery_minimum_delay(code);
+                    self.queue_recovery_with_delay(generation, message.clone(), minimum_delay)
+                        .await;
                 }
                 return;
             }
@@ -1927,12 +2279,14 @@ impl SessionManager {
             event,
             LiveTranslateServerEvent::TranslationFinal(_)
                 | LiveTranslateServerEvent::SubtitleFinalPair { .. }
+                | LiveTranslateServerEvent::SubtitleConfirmedPair { .. }
                 | LiveTranslateServerEvent::UtteranceText {
                     role: UtteranceRole::Translation,
                     is_final: true,
                     ..
                 }
                 | LiveTranslateServerEvent::Error { .. }
+                | LiveTranslateServerEvent::TranslationDeferred(_)
         ) {
             self.cancel_translation_timeout();
         }
@@ -1954,7 +2308,7 @@ impl SessionManager {
             let previous = controller.state.subtitles.history.last().cloned();
             controller.handle(event.clone());
             let current = controller.state.subtitles.history.last();
-            (current != previous.as_ref())
+            confirmed_history_tail_changed(previous.as_ref(), current)
                 .then(|| current.cloned())
                 .flatten()
         };
@@ -2102,6 +2456,7 @@ impl SessionManager {
             return;
         }
         pipeline_log!("runtime stream failed label={}", diagnostic_label);
+        self.record_diagnostic_failure(diagnostic_label);
         self.controller.lock().unwrap().begin_connecting();
         self.publish_state();
         let _lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
@@ -2193,6 +2548,16 @@ impl SessionManager {
     }
 
     async fn queue_recovery(self: &Arc<Self>, failed_generation: u64, failure_message: String) {
+        self.queue_recovery_with_delay(failed_generation, failure_message, Duration::ZERO)
+            .await;
+    }
+
+    async fn queue_recovery_with_delay(
+        self: &Arc<Self>,
+        failed_generation: u64,
+        failure_message: String,
+        minimum_delay: Duration,
+    ) {
         if self.is_paused() || self.active_settings.lock().unwrap().is_none() {
             return;
         }
@@ -2205,14 +2570,19 @@ impl SessionManager {
         let self_arc = self.clone();
         let task = tokio::spawn(async move {
             self_arc
-                .recover_connection(failed_generation, failure_message)
+                .recover_connection(failed_generation, failure_message, minimum_delay)
                 .await;
             self_arc.clear_recovery_task_if_id(task_id);
         });
         *slot = Some(task);
     }
 
-    async fn recover_connection(self: &Arc<Self>, failed_generation: u64, failure_message: String) {
+    async fn recover_connection(
+        self: &Arc<Self>,
+        failed_generation: u64,
+        failure_message: String,
+        minimum_delay: Duration,
+    ) {
         if self.is_paused() || self.is_recovering.load(Ordering::SeqCst) {
             return;
         }
@@ -2222,7 +2592,7 @@ impl SessionManager {
         if !self.is_lifecycle_request_current(recovery_generation) {
             return;
         }
-        self.record_recovery_action(RecoveryAction::Retrying);
+        self.record_recovery_if_current(RecoveryAction::Retrying, recovery_generation);
         pipeline_log!("session recovery started");
         self.is_recovering.store(true, Ordering::SeqCst);
         self.recovery_retry_generation
@@ -2236,7 +2606,7 @@ impl SessionManager {
         let mut recovered = false;
         let mut recovery_epoch = recovery_generation;
         for attempt in 0..RECOVERY_ATTEMPTS {
-            let delay = recovery_delay(attempt, failed_generation);
+            let delay = recovery_delay(attempt, failed_generation).max(minimum_delay);
             pipeline_log!(
                 "session recovery attempt={} delayMs={}",
                 attempt + 1,
@@ -2269,7 +2639,7 @@ impl SessionManager {
             drop(lifecycle);
             match self.establish_session(false, recovery_generation).await {
                 Ok(()) => {
-                    self.record_recovery_action(RecoveryAction::Recovered);
+                    self.record_recovery_if_current(RecoveryAction::Recovered, recovery_generation);
                     recovered = true;
                     break;
                 }
@@ -2313,7 +2683,7 @@ impl SessionManager {
                 clear_recovery_atoms(&self.is_recovering, &self.recovery_retry_generation);
                 return;
             }
-            self.record_recovery_action(RecoveryAction::RetriesExhausted);
+            self.record_recovery_if_current(RecoveryAction::RetriesExhausted, recovery_epoch);
             self.record_diagnostic_failure(&failure_message);
             pipeline_log!("session recovery exhausted");
             self.clear_active_settings_for_generation(recovery_generation);
@@ -2718,10 +3088,28 @@ impl SessionManager {
         }
         self.stop_capture_for_generation(generation).await;
         if let Some(client) = self.take_client_for_generation(generation) {
+            self.remember_mt_request_budget(generation, &client).await;
             let _ = tokio::time::timeout(Duration::from_secs(2), client.disconnect()).await;
         }
         if stop_pump {
             self.stop_pump_for_generation(generation);
+        }
+    }
+
+    async fn remember_mt_request_budget(&self, generation: u64, client: &TranslationClient) {
+        let lease = self
+            .mt_budget_continuity
+            .lock()
+            .unwrap()
+            .take_lease(generation);
+        let Some((token, scope)) = lease else {
+            return;
+        };
+        if let Some(budget) = client.suspend_mt_request_budget().await {
+            self.mt_budget_continuity
+                .lock()
+                .unwrap()
+                .remember(token, scope, budget);
         }
     }
 
@@ -2766,6 +3154,21 @@ impl SessionManager {
     /// dirty flag. Status-only changes therefore reach the UI within 60ms
     /// and bursty chunks are folded into one emit.
     pub fn publish_state(self: &Arc<Self>) {
+        let status = {
+            let controller = self.controller.lock().unwrap();
+            match controller.state.status {
+                SessionStatus::Idle => DiagnosticStatus::Idle,
+                SessionStatus::Connecting => DiagnosticStatus::Connecting,
+                SessionStatus::Stopping => DiagnosticStatus::Stopping,
+                SessionStatus::Listening if self.is_paused() => DiagnosticStatus::Paused,
+                SessionStatus::Listening => DiagnosticStatus::Listening,
+                SessionStatus::Error(_) => DiagnosticStatus::Error,
+            }
+        };
+        self.diagnostic_journal
+            .lock()
+            .unwrap()
+            .observe_status(status, milliseconds(self.diagnostic_epoch, Instant::now()));
         self.publish_dirty.store(true, Ordering::SeqCst);
         let Ok(guard) = Arc::clone(&self.publish_lock).try_lock_owned() else {
             return;
@@ -2889,6 +3292,118 @@ mod lifecycle_tests {
     use super::*;
 
     #[test]
+    fn repeated_confirmations_trigger_private_file_append_even_when_text_is_equal() {
+        let first = crate::core::models::SubtitlePair::new(
+            "Synthetic source".into(),
+            "Synthetic translation".into(),
+            1,
+        );
+        let second = crate::core::models::SubtitlePair::new(
+            first.source.clone(),
+            first.translation.clone(),
+            2,
+        );
+        assert_eq!(
+            first, second,
+            "legacy text equality intentionally ignores timestamps"
+        );
+        assert!(confirmed_history_tail_changed(Some(&first), Some(&second)));
+        assert!(!confirmed_history_tail_changed(
+            Some(&second),
+            Some(&second)
+        ));
+        assert!(confirmed_history_tail_changed(None, Some(&first)));
+        assert!(!confirmed_history_tail_changed(Some(&first), None));
+    }
+
+    #[test]
+    fn preview_pending_is_serialized_separately_from_final_pending() {
+        let mut controller = TranslationSessionController::default();
+        controller.did_connect();
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 42 });
+        let payload = serde_json::to_value(SessionStateEvent::from(&controller.state)).unwrap();
+        assert_eq!(payload["isTranslationPreviewPending"], true);
+        assert_eq!(payload["isTranslationPending"], false);
+        assert!(payload.get("requestId").is_none());
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationFinished { request_id: 42 });
+        let payload = serde_json::to_value(SessionStateEvent::from(&controller.state)).unwrap();
+        assert_eq!(payload["isTranslationPreviewPending"], false);
+    }
+
+    fn synthetic_mt_scope(profile_id: &str, route: MTBudgetRoute) -> MTBudgetScope {
+        MTBudgetScope {
+            profile_id: profile_id.into(),
+            provider: ProviderKind::AlibabaCloud,
+            route,
+        }
+    }
+
+    #[test]
+    fn pause_and_reconnect_keep_same_profile_budget_but_stop_rejects_late_teardown() {
+        use crate::core::preview_pacing::{
+            PreviewCandidate, PreviewRequestPacer, RATE_LIMIT_PREVIEW_PAUSE,
+        };
+        let now = Instant::now();
+        let mut pacer = PreviewRequestPacer::default();
+        pacer.record_candidate_start(
+            now,
+            PreviewCandidate::new("Synthetic request", Some("en"), 0),
+        );
+        pacer.suppress_after_rate_limit(now);
+        pacer.set_shared_cooldown(Some(now + Duration::from_secs(8)));
+        let mut continuity = MTBudgetContinuity::default();
+        let scope = synthetic_mt_scope("fixture-profile", MTBudgetRoute::Qwen(REALTIME_MT_MODEL));
+        assert!(continuity.prepare(7, Some(scope.clone())).is_none());
+        let (token, owned_scope) = continuity.take_lease(7).unwrap();
+        continuity.remember(token, owned_scope, pacer.export_budget());
+        let restored = continuity.prepare(8, Some(scope.clone())).unwrap();
+        let mut resumed = PreviewRequestPacer::default();
+        resumed.restore_budget(restored);
+        assert_eq!(resumed.suppression_remaining(now), RATE_LIMIT_PREVIEW_PAUSE);
+        assert_eq!(
+            resumed.next_shared_start_at(now),
+            now + Duration::from_secs(8)
+        );
+        let (old_token, old_scope) = continuity.take_lease(8).unwrap();
+        continuity.reset();
+        continuity.remember(old_token, old_scope, restored);
+        assert!(
+            continuity.prepare(9, Some(scope)).is_none(),
+            "late paused/recovery export must not undo explicit stop"
+        );
+    }
+
+    #[test]
+    fn mt_budget_continuation_never_crosses_profiles_routes_models_or_new_client_tokens() {
+        use crate::core::preview_pacing::PreviewRequestPacer;
+        let scope = synthetic_mt_scope("fixture-profile", MTBudgetRoute::Qwen(REALTIME_MT_MODEL));
+        for different in [
+            synthetic_mt_scope("other-profile", MTBudgetRoute::Qwen(REALTIME_MT_MODEL)),
+            synthetic_mt_scope("fixture-profile", MTBudgetRoute::DeepL),
+            synthetic_mt_scope("fixture-profile", MTBudgetRoute::Qwen(QwenMTModel::Plus)),
+        ] {
+            let mut continuity = MTBudgetContinuity::default();
+            continuity.prepare(7, Some(scope.clone()));
+            let (token, owned_scope) = continuity.take_lease(7).unwrap();
+            continuity.remember(
+                token,
+                owned_scope,
+                PreviewRequestPacer::default().export_budget(),
+            );
+            assert!(continuity.prepare(8, Some(different)).is_none());
+            continuity.remember(
+                token,
+                scope.clone(),
+                PreviewRequestPacer::default().export_budget(),
+            );
+            assert!(
+                continuity.retained.is_none(),
+                "superseded old-client export must remain rejected"
+            );
+        }
+    }
+
+    #[test]
     fn latency_payload_ignores_stopped_paused_reconnecting_and_failed_sessions() {
         let health = Some(HealthCheckLatency {
             generation: 41,
@@ -2971,6 +3486,7 @@ mod lifecycle_tests {
             "apiLatencyMs",
             "translationLatencyMs",
             "translationLatencyKind",
+            "translationRecovery",
         ] {
             assert_eq!(payload.get(field), Some(&serde_json::Value::Null));
         }
@@ -3056,11 +3572,55 @@ mod lifecycle_tests {
             "transport_error",
             "provider_event_backlog_overflow",
             "translation_backlog_overflow",
+            "translation_rate_limited",
+            "translation_temporarily_unavailable",
         ] {
             assert!(provider_error_is_retryable(code));
         }
         assert!(!provider_error_is_retryable("invalid_api_key"));
         assert!(!provider_error_is_retryable("invalid_configuration"));
+        assert!(!provider_error_is_retryable(
+            "translation_authentication_failed"
+        ));
+        assert!(!provider_error_is_retryable("translation_failed"));
+    }
+
+    #[test]
+    fn mt_recovery_cannot_bypass_service_cooldown_by_replacing_the_client() {
+        for code in ["translation_rate_limited", "translation_backlog_overflow"] {
+            assert!(provider_error_is_retryable(code));
+            assert_eq!(
+                provider_recovery_minimum_delay(code),
+                Duration::from_secs(8)
+            );
+            for attempt in 0..RECOVERY_ATTEMPTS {
+                assert!(
+                    recovery_delay(attempt, 42).max(provider_recovery_minimum_delay(code))
+                        >= Duration::from_secs(8)
+                );
+            }
+        }
+        assert_eq!(
+            provider_recovery_minimum_delay("translation_temporarily_unavailable"),
+            Duration::from_millis(600)
+        );
+        assert_eq!(
+            provider_recovery_minimum_delay("transport_error"),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn stale_translation_backoff_cannot_change_a_replacement_or_stopping_session() {
+        let event = LiveTranslateServerEvent::TranslationDeferred(TranslationRecovery {
+            reason: crate::core::diagnostics::TranslationRecoveryReason::RateLimited,
+            retry_after_ms: 4_000,
+            retry_scheduled: true,
+        });
+        assert!(generation_accepts_event(41, NO_GENERATION, 41, &event));
+        assert!(!generation_accepts_event(42, 41, 41, &event));
+        assert!(!generation_accepts_event(NO_GENERATION, 41, 41, &event));
+        assert!(!generation_accepts_event(42, NO_GENERATION, 41, &event));
     }
 
     #[test]
@@ -3188,6 +3748,24 @@ mod lifecycle_tests {
             generation,
             generation,
             &LiveTranslateServerEvent::TranslationDraft("stale".into()),
+        ));
+        let identified_pair = LiveTranslateServerEvent::SubtitleConfirmedPair {
+            utterance_id: 1,
+            source: "Synthetic tail".into(),
+            language: Some("en".into()),
+            translation: "Synthetic translation".into(),
+        };
+        assert!(generation_accepts_event(
+            NO_GENERATION,
+            generation,
+            generation,
+            &identified_pair
+        ));
+        assert!(!generation_accepts_event(
+            generation + 1,
+            NO_GENERATION,
+            generation,
+            &identified_pair
         ));
     }
 

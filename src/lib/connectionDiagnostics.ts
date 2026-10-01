@@ -12,10 +12,15 @@ const copy = {
     invalid: "Cannot read the saved credentials. Save them again.",
     auth: "The service rejected authentication. Check your key and account access, then update the credentials.",
     quota: "The service limit was reached. Try again later or check your quota.",
+    translationLimited: "The service is still limiting requests. Try again later.",
+    translationTemporary: "Translation is temporarily unavailable. Reconnect to try again.",
+    translationBacklog: "Translation fell behind. Reconnect to continue.",
+    translationSourceUnsupported: "This translation model does not support the detected language.",
+    subtitleTooLarge: "The service returned too much text. Reconnect to continue.",
     timeout: "Connection timed out. Check your network or proxy, then try again.",
     unreachable: "Secure connection failed. Check your network, proxy and system clock.",
     test: "Check connection", testing: "Checking…",
-    available: "Available", unavailable: "Unavailable", notTested: "Not checked",
+    available: "Connection available", unavailable: "Unavailable", notTested: "Not checked",
     checkFailed: "Check failed. Try again.",
     macosRecovery: "Unlock Keychain or allow access, then check again.",
     windowsRecovery: "Check access in Credential Manager, then try again.",
@@ -41,10 +46,15 @@ const copy = {
     invalid: "无法读取已保存的凭据，请重新保存。",
     auth: "服务拒绝了认证。请检查密钥和账号权限，再更新凭据。",
     quota: "服务限额已触发，请稍后重试或检查额度。",
+    translationLimited: "服务仍在限流，请稍后重试。",
+    translationTemporary: "翻译暂时不可用，请重新连接。",
+    translationBacklog: "翻译未能跟上，请重新连接。",
+    translationSourceUnsupported: "当前翻译模型不支持检测到的语言。",
+    subtitleTooLarge: "服务返回的字幕过长，请重新连接。",
     timeout: "连接超时。检查网络或代理后重试。",
     unreachable: "安全连接失败。请检查网络、代理和系统时间。",
     test: "检查连接", testing: "正在检查…",
-    available: "可用", unavailable: "不可用", notTested: "尚未检查",
+    available: "连接可用", unavailable: "不可用", notTested: "尚未检查",
     checkFailed: "检查失败，请重试。",
     macosRecovery: "解锁钥匙串或允许访问后重试。",
     windowsRecovery: "检查凭据管理器的访问权限后重试。",
@@ -70,10 +80,15 @@ const copy = {
     invalid: "保存された認証情報を読めません。もう一度保存してください。",
     auth: "認証が拒否されました。キーとアカウントの権限を確認し、認証情報を更新してください。",
     quota: "サービスの上限に達しました。しばらくして再試行するか、利用枠を確認してください。",
+    translationLimited: "サービスの制限が続いています。しばらくして再試行してください。",
+    translationTemporary: "翻訳を一時的に利用できません。再接続してください。",
+    translationBacklog: "翻訳が遅れています。再接続してください。",
+    translationSourceUnsupported: "現在の翻訳モデルは検出された言語に対応していません。",
+    subtitleTooLarge: "サービスの字幕が長すぎます。再接続してください。",
     timeout: "接続がタイムアウトしました。ネットワークやプロキシを確認してください。",
     unreachable: "安全な接続に失敗しました。ネットワーク、プロキシ、システム時刻を確認してください。",
     test: "接続を確認", testing: "確認中…",
-    available: "利用可能", unavailable: "利用不可", notTested: "未確認",
+    available: "接続可能", unavailable: "利用不可", notTested: "未確認",
     checkFailed: "確認に失敗しました。もう一度お試しください。",
     macosRecovery: "キーチェーンのロック解除かアクセス許可後、再確認してください。",
     windowsRecovery: "資格情報マネージャーのアクセスを確認し、再試行してください。",
@@ -139,6 +154,11 @@ const deepLXErrors = {
 /** Match only sanitized backend labels; never interpolate arbitrary native errors. */
 export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlatform): string | null {
   if (typeof error !== "string") return null;
+  if (error === "translation_rate_limited") return diagnosticCopy().translationLimited;
+  if (error === "translation_temporarily_unavailable") return diagnosticCopy().translationTemporary;
+  if (error === "translation_source_unsupported") return diagnosticCopy().translationSourceUnsupported;
+  if (error === "subtitle_text_too_large" || error === "The subtitle service returned too much text.") return diagnosticCopy().subtitleTooLarge;
+  if (error === "Translation fell behind live audio. mimi is reconnecting.") return diagnosticCopy().translationBacklog;
   if (error.startsWith("You exceeded your current quota, please check your plan and billing details.")) return diagnosticCopy().quota;
   const dlx = deepLXErrors[effectiveUiLanguage()];
   if (error.startsWith("DeepLX timed out.")) return dlx.timeout;

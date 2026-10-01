@@ -5,10 +5,11 @@
 //! account in the operating-system credential store.
 
 use crate::core::configuration::LiveTranslationConfiguration;
-use crate::core::credentials::ProviderCredentials;
+use crate::core::credentials::{CredentialRevealField, ProviderCredentials};
 use crate::core::models::{
     SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
 };
+use crate::core::network_proxy::ProxyConfig;
 use crate::core::provider::{
     ProviderKind, ProviderPreferences, ServiceProfile, TextTranslation, DEFAULT_ALIBABA_PROFILE_ID,
 };
@@ -90,6 +91,7 @@ pub struct Preferences {
     pub subtitle_color: SubtitleColor,
     pub subtitle_alignment: SubtitleAlignment,
     pub subtitle_display_mode: SubtitleDisplayMode,
+    pub show_subtitle_dividers: bool,
     /// Animation switches: `None` follows the system reduce-motion setting.
     pub pulse_animation: Option<bool>,
     pub pulse_style: PulseStyle,
@@ -107,6 +109,7 @@ pub struct Preferences {
     pub windows_audio_source: String,
     /// macOS Dock/Cmd-Tab presence. Legacy installations remain accessory utilities.
     pub show_in_dock: bool,
+    pub network_proxy: ProxyConfig,
 }
 
 impl Default for Preferences {
@@ -119,6 +122,7 @@ impl Default for Preferences {
             subtitle_color: SubtitleColor::White,
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
+            show_subtitle_dividers: false,
             pulse_animation: None,
             pulse_style: PulseStyle::Ribbon,
             subtitle_animation: None,
@@ -131,6 +135,7 @@ impl Default for Preferences {
             record_session_audio: false,
             windows_audio_source: String::new(),
             show_in_dock: false,
+            network_proxy: ProxyConfig::default(),
         }
     }
 }
@@ -622,6 +627,10 @@ impl SettingsStore {
         next.font_size = next
             .font_size
             .clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end());
+        next.network_proxy = next
+            .network_proxy
+            .validate()
+            .map_err(|error| error.to_string())?;
         self.persist_preferences_value(&next)?;
         *current = next;
         Ok(())
@@ -872,6 +881,59 @@ impl SettingsStore {
             Ok(None) => CredentialState::Missing,
             Err(_) => CredentialState::Unavailable,
         }
+    }
+
+    /// Explicit settings-window action only. Uses the existing profile-scoped
+    /// OS store/cache path and never changes preferences or emits a snapshot.
+    pub fn reveal_credential(
+        &self,
+        profile_id: &str,
+        field: CredentialRevealField,
+        text_translation: Option<TextTranslation>,
+    ) -> Result<Option<String>, String> {
+        let profile = self.profile(profile_id)?;
+        if !field.allowed_for(&profile, text_translation) {
+            return Err("credential_reveal_field_mismatch".into());
+        }
+        // Read only the selected field's existing OS-store slot. In particular,
+        // an unavailable MT destination must not prevent revealing the ASR key.
+        if field == CredentialRevealField::Token {
+            if let Some(value) = self.destination_value(&profile)? {
+                let destination: TextTranslationDestination = serde_json::from_str(&value)
+                    .map_err(|_| "credential_store_unavailable".to_string())?;
+                let credentials = match profile.text_translation() {
+                    TextTranslation::DeepL => ProviderCredentials::DeepL {
+                        asr_api_key: String::new(),
+                        api_key: destination.deep_l_api_key.unwrap_or_default(),
+                    },
+                    TextTranslation::DeepLX => ProviderCredentials::DeepLX {
+                        asr_api_key: String::new(),
+                        endpoint: destination.endpoint,
+                        token: destination.token,
+                    },
+                    TextTranslation::FollowService => unreachable!(),
+                };
+                return credentials
+                    .revealed_field(&profile, field, text_translation)
+                    .map(|value| value.map(str::to_owned))
+                    .map_err(|_| "credential_store_unavailable".to_string());
+            }
+            if profile.provider != ProviderKind::DeepLX {
+                return Ok(None);
+            }
+        }
+        let Some(value) = self
+            .load_api_key_for_profile(&profile)
+            .map_err(SecretStoreError::public_error)?
+        else {
+            return Ok(None);
+        };
+        let credentials = ProviderCredentials::decode_for_profile(&profile, &value)
+            .map_err(|_| "credential_store_unavailable".to_string())?;
+        credentials
+            .revealed_field(&profile, field, text_translation)
+            .map(|value| value.map(str::to_owned))
+            .map_err(|_| "credential_reveal_field_mismatch".into())
     }
 
     #[cfg(test)]
@@ -1305,6 +1367,7 @@ impl SettingsStore {
             prefs.target_language,
             prefs.translation_mode,
         )
+        .with_network_proxy(prefs.network_proxy)
         .validated()
         .map_err(|error| error.to_string())
     }
@@ -2231,6 +2294,168 @@ mod tests {
 
     fn settings(fake: &FakeSecretStore) -> SettingsStore {
         SettingsStore::in_memory(Box::new(fake.clone()), false)
+    }
+
+    #[test]
+    fn credential_reveal_is_selected_profile_only_and_does_not_touch_migration() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let default = ServiceProfile::alibaba_default();
+        let other = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Other")
+            .unwrap();
+        fake.put(
+            PROFILE_KEYCHAIN_SERVICE,
+            &credential_account(&default),
+            "synthetic-default",
+        );
+        fake.put(
+            PROFILE_KEYCHAIN_SERVICE,
+            &credential_account(&other),
+            "synthetic-other",
+        );
+        fake.put(
+            LEGACY_KEYCHAIN_SERVICE_V3,
+            LEGACY_KEYCHAIN_ACCOUNT,
+            "synthetic-legacy",
+        );
+        assert_eq!(
+            store
+                .reveal_credential(&other.id, CredentialRevealField::ApiKey, None)
+                .unwrap()
+                .as_deref(),
+            Some("synthetic-other")
+        );
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&default)),
+            0
+        );
+        assert_eq!(
+            store
+                .reveal_credential(&default.id, CredentialRevealField::ApiKey, None)
+                .unwrap()
+                .as_deref(),
+            Some("synthetic-default")
+        );
+        assert_eq!(
+            fake.load_count(LEGACY_KEYCHAIN_SERVICE_V3, LEGACY_KEYCHAIN_ACCOUNT),
+            0
+        );
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, LEGACY_MIGRATION_TOMBSTONE_ACCOUNT),
+            0
+        );
+        assert_eq!(store.active_profile().unwrap().id, default.id);
+        let snapshot =
+            serde_json::to_string(&(store.profile_catalog().unwrap(), store.preferences()))
+                .unwrap();
+        assert!(!snapshot.contains("synthetic-"));
+    }
+
+    #[test]
+    fn credential_reveal_has_safe_missing_failure_and_mismatch_results() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Missing")
+            .unwrap();
+        assert_eq!(
+            store
+                .reveal_credential(
+                    &profile.id,
+                    CredentialRevealField::Token,
+                    Some(TextTranslation::DeepLX)
+                )
+                .unwrap_err(),
+            "credential_reveal_field_mismatch"
+        );
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile)),
+            0
+        );
+        assert_eq!(
+            store.reveal_credential(&profile.id, CredentialRevealField::ApiKey, None),
+            Ok(None)
+        );
+        let failing = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Unavailable")
+            .unwrap();
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &credential_account(&failing));
+        assert_eq!(
+            store
+                .reveal_credential(&failing.id, CredentialRevealField::ApiKey, None)
+                .unwrap_err(),
+            CREDENTIAL_STORE_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn credential_reveal_destination_is_saved_route_scoped_and_independent_of_asr() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::AlibabaCloud, "Speech")
+            .unwrap();
+        store
+            .save_credentials(
+                &profile.id,
+                &translation_request(
+                    TextTranslation::DeepL,
+                    "synthetic-asr",
+                    "",
+                    "synthetic-official:fx",
+                ),
+            )
+            .unwrap();
+        let profile = store.profile(&profile.id).unwrap();
+        let account = SettingsStore::destination_account(&profile);
+        let count = fake.load_count(PROFILE_KEYCHAIN_SERVICE, &account);
+        assert_eq!(
+            store
+                .reveal_credential(
+                    &profile.id,
+                    CredentialRevealField::Token,
+                    Some(TextTranslation::DeepLX)
+                )
+                .unwrap_err(),
+            "credential_reveal_field_mismatch"
+        );
+        assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, &account), count);
+        assert_eq!(
+            store
+                .reveal_credential(
+                    &profile.id,
+                    CredentialRevealField::Token,
+                    Some(TextTranslation::DeepL)
+                )
+                .unwrap()
+                .as_deref(),
+            Some("synthetic-official:fx")
+        );
+        // A broken destination must not make the independent ASR key unreadable.
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &account);
+        store
+            .secret_cache
+            .lock()
+            .unwrap()
+            .remove(&cache_key(PROFILE_KEYCHAIN_SERVICE, &account));
+        assert_eq!(
+            store
+                .reveal_credential(&profile.id, CredentialRevealField::ApiKey, None)
+                .unwrap()
+                .as_deref(),
+            Some("synthetic-asr")
+        );
+        assert_eq!(
+            store
+                .reveal_credential(
+                    &profile.id,
+                    CredentialRevealField::Token,
+                    Some(TextTranslation::DeepL)
+                )
+                .unwrap_err(),
+            CREDENTIAL_STORE_UNAVAILABLE
+        );
     }
 
     #[test]
@@ -3585,6 +3810,7 @@ mod tests {
             SubtitleDisplayMode::Translation
         );
         assert!(!preferences.subtitle_blends_with_background);
+        assert!(!preferences.show_subtitle_dividers);
         assert_eq!(preferences.pulse_style, PulseStyle::Ribbon);
     }
 
@@ -3722,6 +3948,97 @@ mod tests {
             assert_eq!(reloaded.preferences().subtitle_display_mode, mode);
         }
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn subtitle_dividers_persist_without_changing_provider_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        store
+            .save_api_key(DEFAULT_ALIBABA_PROFILE_ID, "synthetic-asr")
+            .unwrap();
+        let original_configuration = store.configuration().unwrap();
+        assert!(!store.preferences().show_subtitle_dividers);
+        for enabled in [true, false] {
+            store
+                .save_preferences_for_active_profile(|prefs| prefs.show_subtitle_dividers = enabled)
+                .unwrap();
+            assert_eq!(store.configuration().unwrap(), original_configuration);
+            let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+            assert_eq!(reloaded.preferences().show_subtitle_dividers, enabled);
+        }
+    }
+
+    #[test]
+    fn network_proxy_persists_globally_and_probe_and_session_use_identical_configuration() {
+        use crate::core::network_proxy::ProxyMode;
+        let legacy: Preferences = serde_json::from_str(r#"{"ui_language":"ja"}"#).unwrap();
+        assert_eq!(legacy.network_proxy, ProxyConfig::default());
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        store
+            .save_api_key(DEFAULT_ALIBABA_PROFILE_ID, "synthetic-asr")
+            .unwrap();
+        let profile = store.active_profile().unwrap();
+        let original = store.configuration().unwrap();
+        for proxy in [
+            ProxyConfig {
+                mode: ProxyMode::Custom,
+                url: Some("socks5h://127.0.0.1:1080".into()),
+            },
+            ProxyConfig {
+                mode: ProxyMode::Direct,
+                url: None,
+            },
+            ProxyConfig::default(),
+        ] {
+            store
+                .save_preferences_for_active_profile(|prefs| prefs.network_proxy = proxy.clone())
+                .unwrap();
+            assert_eq!(store.configuration().unwrap().network_proxy, proxy);
+            assert_eq!(
+                store
+                    .configuration_for_profile_probe(&profile)
+                    .unwrap()
+                    .network_proxy,
+                proxy
+            );
+            let other = store
+                .create_profile(ProviderKind::OpenAIRealtime, "Synthetic")
+                .unwrap();
+            store.select_profile(&other.id).unwrap();
+            assert_eq!(store.preferences().network_proxy, proxy);
+            store.select_profile(&profile.id).unwrap();
+            let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+            assert_eq!(reloaded.preferences().network_proxy, proxy);
+        }
+        assert_eq!(original.network_proxy, ProxyConfig::default());
+    }
+
+    #[test]
+    fn invalid_proxy_save_rolls_back_memory_and_disk_without_storing_authentication() {
+        use crate::core::network_proxy::ProxyMode;
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        store
+            .save_preferences(|prefs| prefs.font_size = 19.0)
+            .unwrap();
+        let before = store.preferences();
+        let result = store.save_preferences(|prefs| {
+            prefs.font_size = 20.0;
+            prefs.network_proxy = ProxyConfig {
+                mode: ProxyMode::Custom,
+                url: Some("http://synthetic-user:synthetic-password@127.0.0.1:8888".into()),
+            };
+        });
+        assert!(result.is_err());
+        assert_eq!(store.preferences(), before);
+        let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        assert_eq!(reloaded.preferences(), before);
+        assert!(fake.state.lock().unwrap().values.is_empty());
     }
 
     #[test]

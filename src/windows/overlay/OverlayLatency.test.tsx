@@ -34,9 +34,39 @@ describe("overlay timing observations", () => {
   });
   it("shows missing measurements without inventing a timing", async () => {
     await render();
-    expect(host.querySelectorAll("strong")[0].textContent).toBe("—");
-    expect(host.querySelectorAll("strong")[1].textContent).toBe("—");
+    expect(host.querySelectorAll("strong")[0].textContent).toBe("Pending");
+    expect(host.querySelectorAll("strong")[1].textContent).toBe("Pending");
     expect(host.textContent).not.toContain("0 ms");
+  });
+  it("shows active work and rate-limit recovery instead of an unexplained dash", async () => {
+    await render({ isTranslationPending: true });
+    expect(host.textContent).toContain("Translating");
+    await render({ translationRecovery: { reason: "rateLimited", retryAfterMs: 4000 } });
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("Rate limited; retrying");
+    await render({ translationRecovery: { reason: "temporarilyUnavailable", retryAfterMs: 600 } });
+    expect(host.textContent).toContain("Unavailable; retrying");
+    await render({ isPaused: true, translationRecovery: { reason: "rateLimited", retryAfterMs: 4000 } });
+    expect(host.textContent).not.toContain("retrying");
+  });
+  it("shows actual preview work independently of waiting for a final translation", async () => {
+    await render({ isTranslationPending: false, isTranslationPreviewPending: true, translationLatencyMs: 450 });
+    expect(host.textContent).toContain("Translating");
+    await render({ isTranslationPending: false, isTranslationPreviewPending: false, translationLatencyMs: 450 });
+    expect(host.textContent).toContain("450 ms");
+  });
+  it("does not promise a translation measurement in recognition-only sessions", async () => {
+    await act(async () => root.render(<OverlayLatency session={session} translationRequired={false} />));
+    expect(host.querySelectorAll("strong")).toHaveLength(1);
+    expect(host.textContent).not.toContain("Translation");
+  });
+  it("does not claim a retry remains scheduled after bounded preview retries exhaust", async () => {
+    await render({ translationRecovery: { reason: "rateLimited", retryAfterMs: 4000, retryScheduled: false } });
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("Translation rate limited");
+    expect(host.textContent).not.toContain("retrying");
+    await render({ translationRecovery: { reason: "temporarilyUnavailable", retryAfterMs: 600, retryScheduled: false } });
+    expect(host.textContent).toContain("Translation unavailable");
+    await render({ translationRecovery: { reason: "rateLimited", retryAfterMs: 4000, retryScheduled: true } });
+    expect(host.textContent).toContain("Rate limited; retrying");
   });
   it("distinguishes translation request time from matching-final wait", async () => {
     await render({ apiLatencyMs: 120, translationLatencyMs: 700, translationLatencyKind: "request" });

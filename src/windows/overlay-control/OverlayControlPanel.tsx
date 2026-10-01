@@ -145,7 +145,6 @@ export function OverlayControlPanel({
           phase={phase}
           status={status}
           settings={settings}
-          effectiveMode={model.effectiveTranslationMode}
           isPaused={isPaused}
           isWaitingForFinalTranslation={isWaitingForFinalTranslation}
           expanded

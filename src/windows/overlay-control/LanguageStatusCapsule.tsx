@@ -1,9 +1,8 @@
+import { useLayoutEffect, useRef } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
 import {
   OVERLAY_ACTIVITY_PHASES,
-  TRANSLATION_MODE_DISPLAY_NAMES,
-  targetLanguageTranslatesAudio,
   type OverlayActivityPhaseKind,
   type SettingsSnapshot,
 } from "../../lib/types";
@@ -16,11 +15,11 @@ interface LanguageStatusCapsuleProps {
   phase: OverlayActivityPhaseKind;
   status: LanguageStatus;
   settings: SettingsSnapshot;
-  effectiveMode: SettingsSnapshot["translationMode"];
   isPaused: boolean;
   isWaitingForFinalTranslation: boolean;
   expanded: boolean;
   onToggle: () => void;
+  onWidthChange?: (width: number) => void;
 }
 
 /** Compact, always-reachable entry point for the subtitle control panel. */
@@ -28,17 +27,14 @@ export function LanguageStatusCapsule({
   phase,
   status,
   settings,
-  effectiveMode,
   isPaused,
   isWaitingForFinalTranslation,
   expanded,
   onToggle,
+  onWidthChange,
 }: LanguageStatusCapsuleProps) {
-  const translatesAudio = targetLanguageTranslatesAudio(settings.targetLanguage);
+  const capsuleRef = useRef<HTMLButtonElement>(null);
   const pulseOn = useResolvedMotion(settings.pulseAnimation);
-  const modeLabel = translatesAudio
-    ? TRANSLATION_MODE_DISPLAY_NAMES[effectiveMode]
-    : I18N.overlay.originalOnly;
   const transientLabel =
     phase === "error" || phase === "idle"
       ? OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel
@@ -50,16 +46,35 @@ export function LanguageStatusCapsule({
   const actionLabel = expanded
     ? I18N.overlay.closeControls
     : I18N.overlay.openControls;
-  const compact = capsuleLabels(settings, effectiveMode, phase === "error" || phase === "idle" ? phase : isPaused ? "paused" : isWaitingForFinalTranslation ? "translating" : null);
-  const fullLabel = `${transientLabel ? `${transientLabel} · ` : ""}${status.source} ${status.separator} ${status.target} · ${modeLabel}`;
+  const compact = capsuleLabels(settings, phase === "error" || phase === "idle" ? phase : isPaused ? "paused" : isWaitingForFinalTranslation ? "translating" : null);
+  const fullLabel = `${transientLabel ? `${transientLabel} · ` : ""}${status.source} ${status.separator} ${status.target}`;
+
+  useLayoutEffect(() => {
+    const capsule = capsuleRef.current;
+    if (expanded || !onWidthChange || !capsule) return;
+    let lastWidth = 0;
+    const measure = () => {
+      const width = Math.ceil(capsule.getBoundingClientRect().width);
+      if (width <= 0 || width === lastWidth) return;
+      lastWidth = width;
+      onWidthChange(width);
+    };
+    // max-content makes this independent of the previous native window size.
+    // Measure synchronously too: a hidden WebView may defer animation frames.
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(capsule);
+    return () => observer.disconnect();
+  }, [expanded, onWidthChange]);
 
   return (
     <button
+      ref={capsuleRef}
       type="button"
       className={expanded ? "overlay-control-header" : "overlay-control-island"}
       onClick={onToggle}
       title={`${fullLabel}. ${actionLabel}`}
-      aria-label={`${OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel}${I18N.overlay.accessibilityCurrentLanguagePrefix}${status.source} ${status.separator} ${status.target}, ${modeLabel}. ${actionLabel}`}
+      aria-label={`${OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel}${I18N.overlay.accessibilityCurrentLanguagePrefix}${status.source} ${status.separator} ${status.target}. ${actionLabel}`}
       aria-haspopup={expanded ? undefined : "dialog"}
       aria-expanded={expanded ? undefined : false}
       aria-controls={expanded ? undefined : "overlay-control-panel"}
@@ -73,8 +88,6 @@ export function LanguageStatusCapsule({
         <span aria-hidden="true">{status.separator}</span>
         <span>{compact.target}</span>
       </span>
-      <span className="overlay-control-island__divider" aria-hidden="true" />
-      <span className="overlay-control-island__mode">{compact.mode}</span>
       <Icon name={expanded ? "chevron-up" : "chevron-down"} />
     </button>
   );

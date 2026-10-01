@@ -1,6 +1,8 @@
 import { audio3ErrorMessage } from "./audio3Errors";
 import { audioSourceErrorMessage } from "./windowsAudioSource";
 import { credentialErrorMessage } from "./connectionDiagnostics";
+import { shareUnchangedSubtitleHistory } from "./sessionSnapshot";
+import { DEFAULT_NETWORK_PROXY, validateNetworkProxy } from "./networkProxy";
 /**
  * Global zustand store. In Tauri it forwards every action to the Rust backend
  * and applies `session-state` / `settings-changed` events as they arrive. In a
@@ -50,6 +52,7 @@ import {
   initializeSnapshotStreams,
   mergeSettingsSnapshot,
   SettingsSaveCoordinator,
+  SnapshotBootstrapTimeoutError,
   SnapshotResponseGate,
 } from "./settingsState";
 import type {
@@ -100,6 +103,7 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  showSubtitleDividers: false,
   pulseAnimation: null,
   pulseStyle: "ribbon",
   subtitleAnimation: null,
@@ -110,12 +114,16 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   recordSessionAudio: false,
   windowsAudioSource: "",
   showInDock: false,
+  networkProxy: DEFAULT_NETWORK_PROXY,
 };
 
 interface StoreState {
   session: SessionStateEvent;
   settings: SettingsSnapshot;
   initialized: boolean;
+  initializationStatus: "idle" | "loading" | "ready" | "error";
+  initializationError: "timeout" | "unavailable" | null;
+  hasSettingsSnapshot: boolean;
   init: () => Promise<void>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
@@ -173,57 +181,68 @@ export function selectHasRecognizingSourceDraft(state: SessionStoreSlice) {
 const unlisteners: UnlistenFn[] = [];
 const settingsSaveCoordinator = new SettingsSaveCoordinator();
 const settingsResponseGate = new SnapshotResponseGate();
-let initializationRetryTimer: number | undefined;
-let initializationRetryDelay = 500;
+let initializationAttempt: Promise<void> | null = null;
+let initializationGeneration = 0;
 
 export const useStore = create<StoreState>()((set, get) => ({
   session: INITIAL_SESSION,
   settings: INITIAL_SETTINGS,
   initialized: false,
+  initializationStatus: isTauri ? "idle" : "ready",
+  initializationError: null,
+  hasSettingsSnapshot: !isTauri,
 
-  init: async () => {
-    if (get().initialized) return;
+  init: () => {
+    if (get().initialized) return Promise.resolve();
+    if (initializationAttempt) return initializationAttempt;
     // Set the guard synchronously: React StrictMode double-invokes effects
     // in development, and both calls would otherwise register listeners.
-    set({ initialized: true });
-    if (isTauri) {
-      try {
-        unlisteners.push(
-          ...(await initializeSnapshotStreams(
-            {
-              listenSettings: listenSettingsChanged,
-              listenSession: listenSessionState,
-              getSettings: settingsGet,
-              getSession: sessionGetState,
-            },
-            {
-              applySettings: (settings) => {
-                settingsResponseGate.advance();
-                settingsSaveCoordinator.invalidate();
-                set({ settings });
-                // Language switches initiated from any window reach every other
-                // window through this event without reloading the WebView.
-                syncUiLanguageFromSettings(settings);
-              },
-              applySession: (session) => set({ session }),
-            },
-          )),
-        );
-        initializationRetryDelay = 500;
-      } catch {
-        // Stay fail-closed and retry listener + snapshot setup as one unit.
-        // Partial listeners are removed by initializeSnapshotStreams.
-        set({ initialized: false });
-        if (initializationRetryTimer === undefined) {
-          const delay = initializationRetryDelay;
-          initializationRetryDelay = Math.min(delay * 2, 8_000);
-          initializationRetryTimer = window.setTimeout(() => {
-            initializationRetryTimer = undefined;
-            void get().init();
-          }, delay);
-        }
-      }
+    if (!isTauri) {
+      set({ initialized: true, initializationStatus: "ready", hasSettingsSnapshot: true });
+      return Promise.resolve();
     }
+    const generation = ++initializationGeneration;
+    set({ initializationStatus: "loading", initializationError: null });
+    const attempt = initializeSnapshotStreams(
+      {
+        listenSettings: listenSettingsChanged,
+        listenSession: listenSessionState,
+        getSettings: settingsGet,
+        getSession: sessionGetState,
+      },
+      {
+        applySettings: (settings) => {
+          if (generation !== initializationGeneration) return;
+          settingsResponseGate.advance();
+          settingsSaveCoordinator.invalidate();
+          set({ settings, hasSettingsSnapshot: true });
+          // Language switches initiated from any window reach every other
+          // window through this event without reloading the WebView.
+          syncUiLanguageFromSettings(settings);
+        },
+        applySession: (session) => {
+          if (generation !== initializationGeneration) return;
+          set((state) => ({ session: shareUnchangedSubtitleHistory(state.session, session) }));
+        },
+      },
+    ).then((listeners) => {
+      if (generation !== initializationGeneration) {
+        for (const unlisten of listeners) unlisten();
+        return;
+      }
+      unlisteners.push(...listeners);
+      set({ initialized: true, initializationStatus: "ready", initializationError: null });
+    }).catch((error: unknown) => {
+      if (generation !== initializationGeneration) return;
+      // Expire this attempt. Retry is explicit so a blocked OS credential
+      // read cannot accumulate more native reads in the background.
+      initializationGeneration += 1;
+      set({ initialized: false, initializationStatus: "error", initializationError: error instanceof SnapshotBootstrapTimeoutError ? "timeout" : "unavailable" });
+    }).finally(() => {
+      if (initializationAttempt === attempt) initializationAttempt = null;
+    });
+    initializationAttempt = attempt;
+    return attempt;
   },
 
   start: async () => {
@@ -353,6 +372,16 @@ export const useStore = create<StoreState>()((set, get) => ({
   saveSettings: async (draft) => {
     const previous = get().settings;
     if (!isTauri) {
+      if (draft.networkProxy !== undefined && (get().session.isActive || get().session.isPaused || sessionSettingsAreChanging(get().session))) {
+        throw new Error("network_proxy_change_requires_stop");
+      }
+      if (draft.networkProxy !== undefined) {
+        const validated = validateNetworkProxy(draft.networkProxy.mode, draft.networkProxy.url);
+        if ("error" in validated) {
+          const label = { invalidUrl: "network_proxy_invalid_url", unsupportedScheme: "network_proxy_unsupported_scheme", authenticationUnsupported: "network_proxy_authentication_unsupported" }[validated.error];
+          throw new Error(label);
+        }
+      }
       set({ settings: mergeSettingsSnapshot(previous, draft) });
       return;
     }

@@ -24,6 +24,9 @@ export function overlaySessionChromeLayout(
   return {
     ...overlayTopChromeLayout(width, showControls),
     showControls,
+    // The native capsule plus one primary action fit at the native minimum
+    // width. Secondary actions remain available through the capsule panel.
+    showPrimaryAction: showControls && width >= CONTROL_ISLAND_RIGHT + CHROME_GAP + ACTION_BUTTON_WIDTH + ACTION_ROW_RIGHT_MARGIN,
     topBandHeight: showControls ? 61 : 37,
   };
 }

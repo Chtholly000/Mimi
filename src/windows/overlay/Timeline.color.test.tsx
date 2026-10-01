@@ -51,11 +51,11 @@ describe("subtitle colors", () => {
     ).replaceAll(" ", "");
     // The recognized original is the neutral reference lane, the translation
     // reads in the user's subtitle color.
-    expect(html).toContain("color:rgba(255,255,255,0.72)");
+    expect(html).toContain("color:rgba(255,255,255,0.86)");
     expect(html).toContain("color:rgba(18,52,86,1)");
     // The age fade belongs to the block, so both lanes of the older utterance
     // step back together.
-    expect(html).toContain("opacity:0.68");
+    expect(html).toContain("opacity:0.82");
   });
 
   it("keeps the recognized lane primary when it is the only language shown", () => {
@@ -69,5 +69,18 @@ describe("subtitle colors", () => {
       />,
     ).replaceAll(" ", "");
     expect(html).toContain("color:rgba(18,52,86,1)");
+    expect(html).toContain("font-size:18px");
+  });
+
+  it("keeps the same reference size and contrast before its bilingual translation arrives", () => {
+    const html = renderToStaticMarkup(
+      <Timeline blocks={[block({ source: "Recognized phrase", translation: null, presentation: "live", streaming: true })]}
+        fontSize={18} alignment="center" color="white" displayMode="bilingual" />,
+    ).replaceAll(" ", "");
+    expect(html).toContain("font-size:16.2px");
+    expect(html).toContain("color:rgba(255,255,255,0.86)");
+    expect(html).not.toContain("stream-dots");
+    expect(html).toContain("Recognizedphrase");
+    expect(html).not.toContain("stream-chunk");
   });
 });

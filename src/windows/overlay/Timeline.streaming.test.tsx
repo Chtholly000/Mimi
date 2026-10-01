@@ -51,31 +51,21 @@ function laneMarkup(markup: string, label: string): string {
   return next === -1 ? rest : rest.slice(0, next);
 }
 
-/** Text of every element carrying a class inside one lane. */
-function laneUnits(markup: string, label: string, className: string): string[] {
-  return [
-    ...laneMarkup(markup, label).matchAll(
-      new RegExp(`class="${className}"[^>]*>([^<]*)<`, "g"),
-    ),
-  ].map((m) => m[1]);
-}
-
 describe("live streaming row", () => {
-  it("marks the text still arriving with the typing wave", () => {
+  it("renders arriving and settled text identically without an inline status marker", () => {
     const markup = render([LIVE_STREAMING]);
-    expect(markup).toContain('class="stream-dots"');
-    expect(markup.match(/<span><\/span>/g)?.length).toBe(3);
+    expect(markup).not.toContain("stream-dots");
+    expect(markup).toBe(render([LIVE_SETTLED]));
   });
 
-  it("wraps each arriving unit so it can fade in, without losing text", () => {
+  it("shows each revised phrase immediately at full opacity without word fades", () => {
     const markup = render([LIVE_STREAMING]);
-    const units = laneUnits(markup, "它并未附着", "stream-chunk");
-    expect(units.length).toBeGreaterThan(1);
-    expect(units.join("")).toBe("它并未附着");
+    expect(laneMarkup(markup, "它并未附着")).toContain("它并未附着");
+    expect(markup).not.toContain("stream-chunk");
     expect(markup).toContain("It is not attached");
   });
 
-  it("drops the wave when the session is not producing text", () => {
+  it("keeps settled body text free of loaders", () => {
     expect(render([LIVE_SETTLED])).not.toContain("stream-dots");
   });
 });
@@ -101,11 +91,11 @@ describe("committed row", () => {
 });
 
 describe("display modes", () => {
-  it("marks the original when it is the lane being written", () => {
+  it("keeps original-only arriving text plain", () => {
     const original = render([LIVE_STREAMING], "original");
-    const dotsAt = original.indexOf("stream-dots");
-    expect(dotsAt).toBeGreaterThan(-1);
-    expect(dotsAt).toBeGreaterThan(original.indexOf("It is not attached"));
+    expect(original).not.toContain("stream-dots");
+    expect(original).toContain("It is not attached");
+    expect(original).toBe(render([LIVE_SETTLED], "original"));
     expect(original).not.toContain("它并未附着");
   });
 
@@ -118,14 +108,24 @@ describe("display modes", () => {
   });
 });
 
-describe("streaming units", () => {
-  it("concatenate back to the lane text in both lanes", () => {
+describe("streaming corrections", () => {
+  it("replaces a correction as one phrase without fading words again", () => {
     const markup = render([LIVE_STREAMING]);
-    expect(laneUnits(markup, "它并未附着", "stream-chunk").join("")).toBe("它并未附着");
-    expect(laneUnits(markup, "It is not attached", "stream-chunk").join("")).toBe(
-      "It is not attached",
-    );
+    const corrected = render([{ ...LIVE_STREAMING, translation: "它没有附着在表面上" }]);
+    expect(markup).toContain("它并未附着");
+    expect(corrected).toContain("它没有附着在表面上");
+    expect(corrected).not.toContain("它并未附着");
+    expect(corrected).not.toContain("stream-chunk");
   });
+});
+
+it.each(["Wait... really?", "等等……真的吗？", "待って…本当？", "잠깐... 정말?"])("preserves literal punctuation in arriving source text: %s", (source) => {
+  const block = { ...LIVE_STREAMING, source, translation: null };
+  const markup = render([block], "original");
+  expect(markup).toContain(source);
+  expect(markup).toContain(`aria-label="${source}"`);
+  expect(markup).not.toContain("stream-dots");
+  expect(markup).toBe(render([{ ...block, streaming: undefined }], "original"));
 });
 
 // Hiding metadata does not remove any subtitle sentence or language lane.

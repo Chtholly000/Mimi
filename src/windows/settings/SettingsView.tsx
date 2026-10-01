@@ -42,15 +42,20 @@ import { SettingsRow, SettingsSection, SettingsSelect } from "./SettingsPrimitiv
 import { SettingsSessionControls } from "./SettingsSessionControls";
 import { QuickStartGuide } from "./QuickStartGuide";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
+import { SettingsQuitFooter } from "./SettingsQuitFooter";
+import { useSessionAction } from "../overlay/useSessionAction";
+import { SettingsInitializationStatus } from "./SettingsInitializationStatus";
+import { NetworkProxySettings } from "./NetworkProxySettings";
 import "./settings.css";
 
-type SettingsCategory = "subtitles" | "service" | "general" | "export" | "guide";
+type SettingsCategory = "subtitles" | "service" | "general" | "export" | "diagnostics" | "guide";
 
 const CATEGORY_SECTION_IDS: Record<SettingsCategory, string> = {
   subtitles: "subtitle-settings",
   service: "service-profiles",
   general: "application-settings",
   export: "session-export",
+  diagnostics: "diagnostics",
   guide: "getting-started",
 };
 
@@ -64,16 +69,24 @@ export function SettingsView() {
   const sessionErrorMessage = useStore(selectSessionErrorMessage);
   const sessionIsActive = useStore((state) => state.session.isActive);
   const sessionIsPaused = useStore((state) => state.session.isPaused);
+  const translationRecoveryReason = useStore((state) => state.session.translationRecovery?.reason);
+  const translationRecoveryRetryScheduled = useStore((state) => state.session.translationRecovery?.retryScheduled);
   const settings = useStore((state) => state.settings);
+  const initializationStatus = useStore((state) => state.initializationStatus);
+  const initializationError = useStore((state) => state.initializationError);
+  const initialize = useStore((state) => state.init);
+  const initializationReady = initializationStatus === "ready";
   // A switch shows what the overlay actually does: an untouched switch follows
   // the system's reduce-motion preference.
   const pulseOn = useResolvedMotion(settings.pulseAnimation);
   const motionOn = useResolvedMotion(settings.subtitleAnimation);
   const start = useStore((state) => state.start);
   const stop = useStore((state) => state.stop);
+  const togglePaused = useStore((state) => state.togglePaused);
   const switchSourceLanguage = useStore((state) => state.switchSourceLanguage);
   const saveSettings = useStore((state) => state.saveSettings);
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
+  const quit = useStore((state) => state.quit);
 
   const activeProfile =
     settings.profiles.find((profile) => profile.id === settings.activeProfileId) ??
@@ -88,6 +101,8 @@ export function SettingsView() {
     useState<SettingsSessionPendingAction>(null);
   const [sessionActionError, setSessionActionError] = useState(false);
   const [sessionActionCoordinator] = useState(() => new SettingsSessionActionCoordinator());
+  const resumeInFlight = useRef(false);
+  const { pending: sessionIsResuming, failed: sessionResumeFailed, run: runResume, clearFailure: clearResumeFailure } = useSessionAction();
   const locationSelectedCategory = useRef(locationCategory !== null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const initialCredentialState = useRef(activeProfile?.credentialState);
@@ -122,7 +137,7 @@ export function SettingsView() {
   const categories: readonly {
     id: SettingsCategory;
     label: string;
-    icon: "captions-bubble" | "languages" | "gear" | "download";
+    icon: "captions-bubble" | "languages" | "gear" | "download" | "shield-check";
   }[] = [
     {
       id: "subtitles",
@@ -134,12 +149,13 @@ export function SettingsView() {
       label: I18N.settings.serviceProfilesTitle,
       icon: "languages",
     },
+    { id: "export", label: I18N.settings.sessionExportTitle, icon: "download" },
     {
       id: "general",
       label: I18N.settings.applicationTitle,
       icon: "gear",
     },
-    { id: "export", label: I18N.settings.sessionExportTitle, icon: "download" },
+    { id: "diagnostics", label: I18N.settings.diagnosticsTitle, icon: "shield-check" },
   ];
 
   const pageDescriptions: Record<SettingsCategory, string> = {
@@ -147,6 +163,7 @@ export function SettingsView() {
     service: I18N.settings.servicePageDescription,
     general: I18N.settings.generalPageDescription,
     export: I18N.settings.exportPageDescription,
+    diagnostics: I18N.settings.diagnosticsPageDescription,
     guide: I18N.settings.quickStartDescription,
   };
 
@@ -157,42 +174,75 @@ export function SettingsView() {
     window.history.replaceState(null, "", `#${CATEGORY_SECTION_IDS[category]}`);
   }, []);
 
+  useEffect(() => {
+    const navigateFromHash = () => {
+      const category = settingsCategoryFromHash(window.location.hash);
+      if (category) selectCategory(category);
+    };
+    window.addEventListener("hashchange", navigateFromHash);
+    return () => window.removeEventListener("hashchange", navigateFromHash);
+  }, [selectCategory]);
+
   const changeSession = useCallback(
     (checked: boolean) => {
       const pendingAction: Exclude<SettingsSessionPendingAction, null> = checked ? "start" : "stop";
-      if (!sessionActionCoordinator.begin(pendingAction)) {
+      if (resumeInFlight.current || !sessionActionCoordinator.begin(pendingAction)) {
         return;
       }
       setSessionPendingAction(pendingAction);
       setSessionActionError(false);
+      clearResumeFailure();
       void (checked ? start() : stop()).catch(() => {
         if (!sessionActionCoordinator.commandRejected(pendingAction)) return;
         setSessionActionError(true);
         setSessionPendingAction(null);
       });
     },
-    [sessionActionCoordinator, start, stop],
+    [sessionActionCoordinator, start, stop, clearResumeFailure],
   );
+
+  const resumeSession = useCallback(() => {
+    const session = useStore.getState().session;
+    if (resumeInFlight.current || sessionActionCoordinator.pendingAction !== null ||
+      !session.isActive || !session.isPaused || session.status.kind === "connecting" || session.status.kind === "stopping") return;
+    resumeInFlight.current = true;
+    setSessionActionError(false);
+    // Resuming changes isPaused while statusKind can remain "listening".
+    // Release this action on IPC completion instead of waiting for a lifecycle
+    // transition required by the independent start/stop coordinator.
+    void runResume(async () => {
+      try {
+        await togglePaused();
+      } catch (error) {
+        const current = useStore.getState().session;
+        // A tray/shortcut resume or stop supersedes a late IPC rejection.
+        if (current.isActive && current.isPaused) throw error;
+      }
+    }).finally(() => { resumeInFlight.current = false; });
+  }, [sessionActionCoordinator, runResume, togglePaused]);
 
   useEffect(() => {
     return useStore.subscribe((state, previousState) => {
       const statusKind = selectSessionStatusKind(state);
       const previousStatusKind = selectSessionStatusKind(previousState);
       const isActive = state.session.isActive;
-      if (statusKind === previousStatusKind && isActive === previousState.session.isActive) {
+      const lifecycleChanged = statusKind !== previousStatusKind || isActive !== previousState.session.isActive;
+      if (!lifecycleChanged && state.session.isPaused === previousState.session.isPaused) {
         return;
       }
       // A fresh native transition is authoritative even when it came from the
       // tray or global shortcut. Do not leave an earlier settings IPC failure
       // visible beside a subsequently successful session state.
       setSessionActionError(false);
+      clearResumeFailure();
+      if (!lifecycleChanged) return;
       const pendingAction = sessionActionCoordinator.observeNativeState({
         statusKind,
         isActive,
       });
       setSessionPendingAction((current) => (current === pendingAction ? current : pendingAction));
     });
-  }, [sessionActionCoordinator]);
+  }, [sessionActionCoordinator, clearResumeFailure]);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -200,10 +250,11 @@ export function SettingsView() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
-    void listenSettingsNavigation(() => {
-      selectCategory("service");
+    void listenSettingsNavigation((target) => {
+      const category = target === "export" ? "export" : "service";
+      selectCategory(category);
       window.requestAnimationFrame(() => {
-        document.getElementById("settings-category-service")?.focus();
+        document.getElementById(`settings-category-${category}`)?.focus();
       });
     })
       .then(async (installedUnlisten) => {
@@ -225,46 +276,47 @@ export function SettingsView() {
   return (
     <main className={`settings-console settings-console--${resolvedTheme}`}>
       <aside className="settings-sidebar">
-        <div className="settings-brand">
-          <span className="settings-brand__name">mimi</span>
-          <span className="settings-brand__label">{I18N.settings.windowTitle}</span>
-        </div>
-        <nav
-          key={activeCategory}
-          className="settings-category-nav"
-          aria-label={I18N.settings.windowTitle}
-        >
-          {categories.map((category) => {
-            const selected = activeCategory === category.id;
-            return (
-              <button
-                key={category.id}
-                id={`settings-category-${category.id}`}
-                type="button"
-                className={`settings-category-nav__item${selected ? " is-selected" : ""}`}
-                aria-current={selected ? "page" : undefined}
-                aria-controls={`${CATEGORY_SECTION_IDS[category.id]}-panel`}
-                onClick={() => selectCategory(category.id)}
-              >
-                <Icon name={category.icon} />
-                <span>{category.label}</span>
-              </button>
-            );
-          })}
-        </nav>
-        <div className="settings-sidebar-support">
-          <button
-            type="button"
-            className={`settings-category-nav__item settings-guide-entry${activeCategory === "guide" ? " is-selected" : ""}`}
-            aria-current={activeCategory === "guide" ? "page" : undefined}
-            aria-controls="getting-started-panel"
-            onClick={() => selectCategory("guide")}
+        <div className="settings-sidebar-scroll">
+          <div className="settings-brand">
+            <span className="settings-brand__name">mimi</span>
+            <span className="settings-brand__label">{I18N.settings.windowTitle}</span>
+          </div>
+          <nav
+            className="settings-category-nav"
+            aria-label={I18N.settings.windowTitle}
           >
-            <Icon name="captions-bubble" />
-            <span>{I18N.settings.quickStartTitle}</span>
-          </button>
-          <SupportDiagnostics key={activeCategory} />
+            {categories.map((category) => {
+              const selected = activeCategory === category.id;
+              return (
+                <button
+                  key={category.id}
+                  id={`settings-category-${category.id}`}
+                  type="button"
+                  className={`settings-category-nav__item${selected ? " is-selected" : ""}`}
+                  aria-current={selected ? "page" : undefined}
+                  aria-controls={`${CATEGORY_SECTION_IDS[category.id]}-panel`}
+                  onClick={() => selectCategory(category.id)}
+                >
+                  <Icon name={category.icon} />
+                  <span>{category.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+          <div className="settings-sidebar-support">
+            <button
+              type="button"
+              className={`settings-category-nav__item settings-guide-entry${activeCategory === "guide" ? " is-selected" : ""}`}
+              aria-current={activeCategory === "guide" ? "page" : undefined}
+              aria-controls="getting-started-panel"
+              onClick={() => selectCategory("guide")}
+            >
+              <Icon name="captions-bubble" />
+              <span>{I18N.settings.quickStartTitle}</span>
+            </button>
+          </div>
         </div>
+        <SettingsQuitFooter onQuit={quit} />
       </aside>
       <div className="settings-console__scroll" ref={contentScrollRef}>
         <div className="settings-console__frame">
@@ -272,23 +324,33 @@ export function SettingsView() {
             <h1>{activeCategory === "guide" ? I18N.settings.quickStartTitle : categories.find((category) => category.id === activeCategory)?.label}</h1>
             <p>{pageDescriptions[activeCategory]}</p>
           </header>
-          <SettingsSessionControls
+          {initializationReady && (activeCategory === "subtitles" || activeCategory === "service") && <SettingsSessionControls
+            compact={activeCategory === "service"}
+            retrying={sessionPendingAction === "start" && sessionStatusKind === "error"}
+            resuming={sessionIsResuming}
+            resumeFailed={sessionResumeFailed}
             checked={sessionControl.checked}
-            disabled={sessionControl.disabled}
+            disabled={sessionControl.disabled || sessionIsResuming}
             status={sessionControl.visibleStatus}
-            statusText={settingsSessionStatusText(sessionControl.visibleStatus, sessionErrorMessage)}
+            statusText={sessionControl.visibleStatus === "listening" && translationRecoveryReason
+              ? translationRecoveryRetryScheduled === false
+                ? translationRecoveryReason === "rateLimited" ? I18N.overlay.translationLimited : I18N.overlay.translationUnavailable
+                : translationRecoveryReason === "rateLimited" ? I18N.overlay.translationRateLimited : I18N.overlay.translationRetrying
+              : settingsSessionStatusText(sessionControl.visibleStatus, sessionErrorMessage)}
             isActive={sessionIsActive}
-            isChanging={isChangingSession || sessionPendingAction !== null}
+            isChanging={isChangingSession || sessionPendingAction !== null || sessionIsResuming}
             immersive={settings.subtitleBlendsWithBackground}
             canConfigure={sessionControl.canConfigure}
             actionFailed={sessionActionError}
             nativeShortcuts={nativeShortcuts}
             desktopShortcuts={desktopShortcuts}
             onSessionChange={changeSession}
+            onResume={resumeSession}
             onImmersiveChange={(subtitleBlendsWithBackground) => void saveSettings({ subtitleBlendsWithBackground })}
             onConfigure={() => selectCategory("service")}
-          />
+          />}
           <div className="settings-layout">
+            {!initializationReady ? <SettingsInitializationStatus status={initializationStatus} error={initializationError} onRetry={() => { void initialize(); }} /> : <>
             {activeCategory === "guide" && (
               <div id="getting-started-panel" className="settings-category-panel">
                 <QuickStartGuide
@@ -304,7 +366,6 @@ export function SettingsView() {
                   title={I18N.settings.subtitleTitle}
                   hideHeading
                 >
-                  <WindowsAudioSource />
                   <div
                     className="subtitle-preview"
                     data-immersive={settings.subtitleBlendsWithBackground}
@@ -350,6 +411,13 @@ export function SettingsView() {
                             { value: "ribbon", label: I18N.settings.pulseStyleRibbon },
                           ]}
                           onChange={(value) => void saveSettings({ pulseStyle: value as PulseStyle })}
+                        />
+                      </SettingsRow>
+                      <SettingsRow label={I18N.settings.subtitleDividers} description={I18N.settings.subtitleDividersHelp}>
+                        <Switch
+                          checked={settings.showSubtitleDividers}
+                          aria-label={I18N.settings.subtitleDividers}
+                          onChange={(showSubtitleDividers) => void saveSettings({ showSubtitleDividers })}
                         />
                       </SettingsRow>
                       <SettingsRow
@@ -414,54 +482,6 @@ export function SettingsView() {
                       </SettingsRow>
                     </div>
                   </div>
-                  <div className="settings-field-group">
-                    <span className="settings-field-group__label" id="source-language-label">
-                      {I18N.settings.sourceLanguage}
-                    </span>
-                    <div
-                      className="source-language-grid"
-                      data-count={sourceLanguages.length}
-                      role="group"
-                      aria-labelledby="source-language-label"
-                    >
-                      {sourceLanguages.map((language) => (
-                        <SourceLanguageButton
-                          key={language}
-                          language={language}
-                          selected={settings.sourceLanguage === language}
-                          chineseIsOriginalOnly={chineseIsOriginalOnly}
-                          disabled={isChangingSession || sourceLanguages.length === 1}
-                          onSelect={() => void switchSourceLanguage(language)}
-                        />
-                      ))}
-                    </div>
-                    <p className="settings-help">
-                      {sourceLanguageHelp(sessionStatusKind, settings, chineseIsOriginalOnly)}
-                    </p>
-                  </div>
-
-                  <div className="settings-divider" />
-
-                  <SettingsRow label={I18N.settings.translateTo}>
-                    <SettingsSelect
-                      value={settings.targetLanguage}
-                      disabled={
-                        sessionIsActive ||
-                        (settings.sourceLanguage === "zh" && targetLanguages.includes("original"))
-                      }
-                      label={I18N.settings.translateTo}
-                      onChange={(value) =>
-                        void saveSettings({
-                          targetLanguage: value as TargetLanguage,
-                        })
-                      }
-                      options={targetLanguages.map((language) => ({
-                        value: language,
-                        label: TARGET_LANGUAGE_DISPLAY_NAMES[language],
-                      }))}
-                    />
-                  </SettingsRow>
-
                   <div className="settings-divider" />
 
                   <details className="subtitle-placement">
@@ -487,11 +507,37 @@ export function SettingsView() {
               </div>
             )}
 
-            {activeCategory === "service" && (
-              <div id="service-profiles-panel" className="settings-category-panel">
-                <ServiceProfiles settings={settings} sessionIsActive={sessionIsActive} />
+            <div id="service-profiles-panel" className={`settings-category-panel${activeCategory !== "service" ? " is-inactive" : ""}`}>
+                <ServiceProfiles settings={settings} sessionIsActive={sessionIsActive} sessionStatusKind={sessionStatusKind} visible={activeCategory === "service"} />
+                <SettingsSection id="translation-languages" title={I18N.settings.subtitleLanguages}>
+                  <WindowsAudioSource />
+                  {activeProfile && <p className="settings-caption language-profile-caption">{I18N.settings.activeProfileLanguages(activeProfile.name)}</p>}
+                  <div className="settings-field-group">
+                    <span className="settings-field-group__label" id="source-language-label">
+                      {I18N.settings.sourceLanguage}
+                    </span>
+                    <div className="source-language-grid" data-count={sourceLanguages.length} role="group" aria-labelledby="source-language-label">
+                      {sourceLanguages.map((language) => (
+                        <SourceLanguageButton key={language} language={language} selected={settings.sourceLanguage === language} chineseIsOriginalOnly={chineseIsOriginalOnly} disabled={isChangingSession || sourceLanguages.length === 1} onSelect={() => void switchSourceLanguage(language)} />
+                      ))}
+                    </div>
+                    <p className="settings-help">{sourceLanguageHelp(sessionStatusKind, settings, chineseIsOriginalOnly)}</p>
+                  </div>
+                  <div className="settings-field-group">
+                    <span className="settings-field-group__label" id="target-language-label">{I18N.settings.translateTo}</span>
+                    <div className="source-language-grid target-language-grid" data-count={targetLanguages.length} role="group" aria-labelledby="target-language-label">
+                      {targetLanguages.map((language) => <button key={language} type="button" className={`source-language-button${settings.targetLanguage === language ? " is-selected" : ""}`} aria-pressed={settings.targetLanguage === language} disabled={sessionIsActive || (settings.sourceLanguage === "zh" && targetLanguages.includes("original"))} onClick={() => { if (language !== settings.targetLanguage) void saveSettings({ targetLanguage: language as TargetLanguage }); }}>
+                        <span>{TARGET_LANGUAGE_DISPLAY_NAMES[language]}</span>
+                        {settings.targetLanguage === language && <Icon name="checkmark-circle" />}
+                      </button>)}
+                    </div>
+                  </div>
+                </SettingsSection>
               </div>
-            )}
+
+            <div id="diagnostics-panel" className={`settings-category-panel${activeCategory !== "diagnostics" ? " is-inactive" : ""}`}>
+              <SupportDiagnostics visible={activeCategory === "diagnostics"} />
+            </div>
 
             <div
               id="application-settings-panel"
@@ -500,6 +546,8 @@ export function SettingsView() {
               <SettingsSection id="application-settings" title={I18N.settings.appearance}>
                 <AppearancePicker value={theme} onChange={changeTheme} />
               </SettingsSection>
+              <NetworkProxySettings value={settings.networkProxy} disabled={sessionIsActive || sessionIsPaused || isChangingSession}
+                onSave={(networkProxy) => saveSettings({ networkProxy })} />
               <SettingsSection id="application-preferences" title={I18N.settings.preferencesTitle}>
                 <SettingsRow
                   label={I18N.settings.appLanguage}
@@ -542,6 +590,7 @@ export function SettingsView() {
             >
               <SessionExport visible={activeCategory === "export"} />
             </div>
+            </>}
           </div>
         </div>
       </div>
@@ -621,6 +670,8 @@ function settingsCategoryFromHash(hash: string): SettingsCategory | null {
       return "general";
     case CATEGORY_SECTION_IDS.export:
       return "export";
+    case CATEGORY_SECTION_IDS.diagnostics:
+      return "diagnostics";
     case CATEGORY_SECTION_IDS.guide:
       return "guide";
     default:

@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -60,6 +60,7 @@ struct Inner {
 
 #[derive(Clone)]
 pub struct Audio3ASRClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint: Audio3ASREndpoint,
     api_key: String,
@@ -69,6 +70,15 @@ pub struct Audio3ASRClient {
 }
 
 impl Audio3ASRClient {
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         api_key: &str,
         source_language: SourceLanguage,
@@ -78,6 +88,7 @@ impl Audio3ASRClient {
             return Err(Audio3ASRClientError::MissingAPIKey);
         }
         Ok(Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
                 sink: Mutex::new(None),
                 task_started: AtomicBool::new(false),
@@ -150,19 +161,26 @@ impl Audio3ASRClient {
             .headers_mut()
             .insert("User-Agent", HeaderValue::from_static("mimi-tauri"));
 
-        let (socket, _response) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
-            .await
-            .map_err(|_| Audio3ASRClientError::ConnectionTimedOut)?
-            .map_err(|error| match error {
-                tokio_tungstenite::tungstenite::Error::Http(response)
-                    if matches!(response.status().as_u16(), 401 | 403) =>
-                {
-                    Audio3ASRClientError::Task(
-                        "audio3_error.connection.authentication.HTTP_AUTH".into(),
-                    )
-                }
-                _ => Audio3ASRClientError::TransportFailure,
-            })?;
+        let (socket, _response) = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            super::provider_network::websocket_with_message_limit(
+                request,
+                &self.network,
+                crate::core::protocols::audio3::MAX_AUDIO3_MESSAGE_BYTES,
+            ),
+        )
+        .await
+        .map_err(|_| Audio3ASRClientError::ConnectionTimedOut)?
+        .map_err(|error| match error {
+            tokio_tungstenite::tungstenite::Error::Http(response)
+                if matches!(response.status().as_u16(), 401 | 403) =>
+            {
+                Audio3ASRClientError::Task(
+                    "audio3_error.connection.authentication.HTTP_AUTH".into(),
+                )
+            }
+            _ => Audio3ASRClientError::TransportFailure,
+        })?;
         let (sink, mut stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.task_started.store(false, Ordering::SeqCst);

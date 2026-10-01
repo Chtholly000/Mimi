@@ -119,7 +119,27 @@ pub enum LiveTranslateServerEvent {
         text: String,
         language: Option<String>,
     },
+    /// Audio3's real positive sentence ID, scoped to its recognizer task.
+    SourceUtteranceFinal {
+        utterance_id: u64,
+        text: String,
+        language: Option<String>,
+    },
     TranslationStarted,
+    /// Local, replaceable HTTP preview lifecycle. Never a final boundary.
+    PreviewTranslationStarted {
+        request_id: u64,
+    },
+    PreviewTranslationFinished {
+        request_id: u64,
+    },
+    SubtitlePreviewPair {
+        source: String,
+        language: Option<String>,
+        translation: String,
+    },
+    /// Locally generated MT backoff; the system-audio/ASR session stays alive.
+    TranslationDeferred(crate::core::diagnostics::TranslationRecovery),
     TranslationDraft(String),
     TranslationFinal(String),
     /// Text stamped with the provider utterance it belongs to. `utterance_id` is
@@ -134,6 +154,14 @@ pub enum LiveTranslateServerEvent {
         language: Option<String>,
     },
     SubtitleFinalPair {
+        source: String,
+        language: Option<String>,
+        translation: String,
+    },
+    /// Locally accepted HQ utterance identity, scoped to one connection.
+    /// Reliable final delivery preserves repeated text even without drafts.
+    SubtitleConfirmedPair {
+        utterance_id: u64,
         source: String,
         language: Option<String>,
         translation: String,
@@ -163,6 +191,41 @@ pub struct LiveTranslateEventIdentity {
 }
 
 impl LiveTranslateServerEvent {
+    pub fn text_within_limit(&self) -> bool {
+        use crate::core::models::subtitle_text_within_limit;
+        match self {
+            Self::SourceDraft { text, .. }
+            | Self::SourceFinal { text, .. }
+            | Self::SourceUtteranceFinal { text, .. }
+            | Self::UtteranceText { text, .. }
+            | Self::TranslationDraft(text)
+            | Self::TranslationFinal(text) => subtitle_text_within_limit(text),
+            Self::SubtitlePreviewPair {
+                source,
+                translation,
+                ..
+            }
+            | Self::SubtitleFinalPair {
+                source,
+                translation,
+                ..
+            }
+            | Self::SubtitleConfirmedPair {
+                source,
+                translation,
+                ..
+            } => subtitle_text_within_limit(source) && subtitle_text_within_limit(translation),
+            _ => true,
+        }
+    }
+
+    pub fn text_limit_error() -> Self {
+        Self::Error {
+            code: "subtitle_text_too_large".into(),
+            message: "The subtitle service returned too much text.".into(),
+        }
+    }
+
     /// Decodes one server frame together with the identity it carries.
     pub fn decode_with_identity(
         text: &str,
@@ -182,7 +245,11 @@ impl LiveTranslateServerEvent {
                 .and_then(Value::as_str)
                 .map(String::from),
         };
-        Ok((Self::decode_normalized(json)?, identity))
+        let event = Self::decode_normalized(json)?;
+        if !event.text_within_limit() {
+            return Err(LiveTranslateProtocolError::InvalidJSON);
+        }
+        Ok((event, identity))
     }
 
     fn decode_normalized(json: &Value) -> Result<Self, LiveTranslateProtocolError> {
