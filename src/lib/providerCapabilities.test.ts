@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
-import type { SettingsSnapshot } from "./types";
+import { AUDIO3_RECOGNITION_LANGUAGE_CODES, QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES, type SettingsSnapshot } from "./types";
 import {
   SERVICE_PROVIDERS,
   effectiveProviderForProfile,
   textTranslationForProfile,
   activeServiceProfile,
+  capabilitiesForProfile,
   effectiveTranslationModeForSettings,
   sourceLanguagesForSettings,
+  quickSourceLanguagesForSettings,
   subtitlePreferencesChanged,
   targetLanguageAfterSourceSwitch,
   targetLanguagesForSettings,
@@ -53,19 +55,10 @@ const BASE_SETTINGS: SettingsSnapshot = {
 describe("provider capabilities", () => {
   it("keeps language controls and only Turbo for manual Alibaba input", () => {
     const settings = { ...BASE_SETTINGS, sourceLanguage: "ja" as const };
-    expect(sourceLanguagesForSettings(settings)).toEqual([
-      "auto",
-      "ja",
-      "en",
-      "ko",
-      "zh",
-    ]);
-    expect(targetLanguagesForSettings(settings)).toEqual([
-      "original",
-      "zh",
-      "en",
-      "ja",
-    ]);
+    expect(sourceLanguagesForSettings(settings)).toHaveLength(25);
+    expect(sourceLanguagesForSettings(settings)).toContain("fr");
+    expect(sourceLanguagesForSettings(settings)).not.toContain("no");
+    expect(targetLanguagesForSettings(settings)).toEqual(["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES]);
     expect(translationModesForSettings(settings)).toEqual(["turbo"]);
   });
 
@@ -94,12 +87,7 @@ describe("provider capabilities", () => {
   });
 
   it("keeps the full target set for Alibaba and OpenAI automatic input", () => {
-    expect(targetLanguagesForSettings(BASE_SETTINGS)).toEqual([
-      "original",
-      "zh",
-      "en",
-      "ja",
-    ]);
+    expect(targetLanguagesForSettings(BASE_SETTINGS)).toEqual(["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES]);
     expect(
       targetLanguagesForSettings({
         ...BASE_SETTINGS,
@@ -263,6 +251,91 @@ it("keeps Alibaba recognition and Original mode when using official DeepL", () =
   const settings: SettingsSnapshot = { ...BASE_SETTINGS, profiles: [profile] };
   expect(textTranslationForProfile(profile)).toBe("deepL");
   expect(effectiveProviderForProfile(profile)).toBe("alibabaCloud");
-  expect(sourceLanguagesForSettings(settings)).toEqual(sourceLanguagesForSettings(BASE_SETTINGS));
+  expect(sourceLanguagesForSettings(settings)).toEqual(["auto", "ja", "en", "ko", "zh"]);
+  expect(targetLanguagesForSettings(settings)).toEqual(["original", "zh", "en", "ja"]);
   expect(targetLanguagesForSettings(settings)).toContain("original");
+});
+
+it("offers all recognition hints only for Original and validates the translated intersection separately", () => {
+  const original = { ...BASE_SETTINGS, targetLanguage: "original" as const };
+  expect(sourceLanguagesForSettings(original)).toEqual(["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES]);
+  for (const code of ["no", "el", "ro", "bg", "hr", "sk"] as const) {
+    expect(sourceLanguagesForSettings(original)).toContain(code);
+    expect(sourceLanguagesForSettings(BASE_SETTINGS)).not.toContain(code);
+  }
+  for (const code of ["zh_tw", "he", "ur", "bn", "tr", "km", "fa"] as const) {
+    expect(targetLanguagesForSettings(BASE_SETTINGS)).toContain(code);
+    expect(sourceLanguagesForSettings(original)).not.toContain(code);
+  }
+});
+
+it("allows explicit Chinese to English and keeps the full Alibaba target set", () => {
+  const settings = { ...BASE_SETTINGS, sourceLanguage: "zh" as const, targetLanguage: "en" as const };
+  expect(targetLanguagesForSettings(settings)).toEqual(["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES]);
+  expect(targetLanguagesForSettings(settings)).toContain("en");
+  expect(targetLanguagesForSettings(settings)).toContain("zh_tw");
+});
+
+it("keeps inactive profile routes isolated, including migrated legacy DeepLX profiles", () => {
+  for (const provider of ["alibabaCloud", "deepLX"] as const) {
+    const profile = { ...BASE_SETTINGS.profiles[0], provider };
+    expect(capabilitiesForProfile({ ...profile, textTranslation: "deepL" }).sourceLanguages).toEqual(["auto", "ja", "en", "ko", "zh"]);
+    expect(capabilitiesForProfile({ ...profile, textTranslation: "deepL" }).targetLanguages).toEqual(["original", "zh", "en", "ja"]);
+    expect(capabilitiesForProfile({ ...profile, textTranslation: "deepLX" }).targetLanguages).toEqual(["zh", "en", "ja"]);
+    expect(capabilitiesForProfile({ ...profile, textTranslation: "followService" }).targetLanguages).toHaveLength(32);
+  }
+});
+
+const NATIVE_CAPABILITIES = {
+  profileId: "ali", provider: "alibabaCloud", textTranslation: "followService", targetLanguage: "zh",
+  sourceLanguages: ["auto", "fr"], targetLanguages: ["original", "zh", "fr"],
+} as const;
+
+it("uses actual stamped native options instead of an older local fallback", () => {
+  const settings = { ...BASE_SETTINGS, languageCapabilities: NATIVE_CAPABILITIES };
+  expect(sourceLanguagesForSettings(settings)).toEqual(["auto", "fr"]);
+  expect(targetLanguagesForSettings(settings)).toEqual(["original", "zh", "fr"]);
+  expect(quickSourceLanguagesForSettings({ ...settings, sourceLanguage: "fr" })).toEqual(["auto", "fr"]);
+  expect(translationModesForSettings(settings)).toEqual(["turbo"]);
+});
+
+it.each([
+  { profileId: "old-profile" },
+  { provider: "deepLX" as const },
+  { textTranslation: "deepL" as const },
+  { targetLanguage: "original" as const },
+])("rejects native options with an expired %j stamp", (changedStamp) => {
+  const settings = { ...BASE_SETTINGS, languageCapabilities: { ...NATIVE_CAPABILITIES, ...changedStamp } };
+  expect(sourceLanguagesForSettings(settings)).toEqual(sourceLanguagesForSettings(BASE_SETTINGS));
+  expect(targetLanguagesForSettings(settings)).toEqual(targetLanguagesForSettings(BASE_SETTINGS));
+});
+
+it("does not retain a matching-target snapshot across a saved route change", () => {
+  const settings = { ...BASE_SETTINGS,
+    profiles: [{ ...BASE_SETTINGS.profiles[0], textTranslation: "deepLX" as const }],
+    languageCapabilities: NATIVE_CAPABILITIES,
+  };
+  expect(sourceLanguagesForSettings(settings)).toEqual(["auto", "ja", "en", "ko", "zh"]);
+  expect(targetLanguagesForSettings(settings)).toEqual(["zh", "en", "ja"]);
+});
+
+it("falls back atomically for malformed native options and deduplicates valid lists", () => {
+  for (const broken of [
+    { sourceLanguages: [] }, { targetLanguages: [] },
+    { sourceLanguages: ["unverified"] }, { targetLanguages: ["unverified"] },
+  ]) {
+    const settings = { ...BASE_SETTINGS, languageCapabilities: { ...NATIVE_CAPABILITIES, ...broken } } as SettingsSnapshot;
+    expect(sourceLanguagesForSettings(settings)).toEqual(sourceLanguagesForSettings(BASE_SETTINGS));
+    expect(targetLanguagesForSettings(settings)).toEqual(targetLanguagesForSettings(BASE_SETTINGS));
+  }
+  const settings = { ...BASE_SETTINGS, languageCapabilities: { ...NATIVE_CAPABILITIES, sourceLanguages: ["auto", "fr", "fr"] as const } };
+  expect(sourceLanguagesForSettings(settings)).toEqual(["auto", "fr"]);
+});
+
+it("keeps quick controls compact and preserves supported selected languages", () => {
+  expect(quickSourceLanguagesForSettings(BASE_SETTINGS)).toEqual(["auto", "ja", "en", "ko", "zh"]);
+  expect(quickSourceLanguagesForSettings({ ...BASE_SETTINGS, sourceLanguage: "fr" })).toEqual(["auto", "ja", "en", "ko", "zh", "fr"]);
+  expect(quickSourceLanguagesForSettings({ ...BASE_SETTINGS, sourceLanguage: "no", targetLanguage: "original" })).toContain("no");
+  expect(quickSourceLanguagesForSettings({ ...BASE_SETTINGS, sourceLanguage: "no" })).not.toContain("no");
+  expect(quickSourceLanguagesForSettings({ ...BASE_SETTINGS, activeProfileId: "openai" })).toEqual(["auto"]);
 });

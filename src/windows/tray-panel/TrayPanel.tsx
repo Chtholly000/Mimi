@@ -7,7 +7,7 @@ import { I18N, providerDisplayName } from "../../lib/i18n";
 import { isTauri } from "../../lib/ipc";
 import {
   activeServiceProfile,
-  sourceLanguagesForSettings,
+  quickSourceLanguagesForSettings,
   targetLanguagesForSettings,
 } from "../../lib/providerCapabilities";
 import {
@@ -80,7 +80,7 @@ export function TrayPanel() {
   const panelRef = useRef<HTMLElement>(null);
 
   const activeProfile = activeServiceProfile(settings);
-  const sourceLanguages = sourceLanguagesForSettings(settings);
+  const sourceLanguages = quickSourceLanguagesForSettings(settings);
   const chineseIsOriginalOnly =
     targetLanguagesForSettings(settings).includes("original");
   const presentation = deriveTrayPresentation({

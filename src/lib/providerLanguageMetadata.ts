@@ -1,5 +1,11 @@
-import { capabilitiesForProvider, effectiveProviderForProfile, textTranslationForProfile } from "./providerCapabilities";
-import type { ServiceProfile, SourceLanguage, TargetLanguage } from "./types";
+import { capabilitiesForProfile, textTranslationForProfile } from "./providerCapabilities";
+import {
+  AUDIO3_RECOGNITION_LANGUAGE_CODES,
+  QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES,
+  type ServiceProfile, type SourceLanguage, type TargetLanguage,
+} from "./types";
+
+export { AUDIO3_RECOGNITION_LANGUAGE_CODES, QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES } from "./types";
 
 export type AutomaticDetection = "supported" | "unsupported" | "unverified";
 export type LanguageMetadataLimitation = "liteIntersection" | "resourceQueryRequired" | "customUnknown" | "unverified";
@@ -36,20 +42,9 @@ const AUDIO3_DOCUMENTATION = "https://help.aliyun.com/en/model-studio/qwen-audio
 const QWEN_MT_DOCUMENTATION = "https://help.aliyun.com/en/model-studio/machine-translation";
 const DEEPL_DOCUMENTATION = "https://developers.deepl.com/docs/languages/using-the-languages-api";
 
-/** Exact Audio 3.0 language_hints list. Omitting the hints enables detection. */
-export const AUDIO3_RECOGNITION_LANGUAGE_CODES = Object.freeze([
-  "zh", "en", "ja", "ko", "vi", "th", "id", "ms", "tl", "hi", "ar", "fr", "de", "es", "pt",
-  "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk",
-]);
-
-/** Lite's upstream target codes, including the separate Traditional Chinese target. */
-export const QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES = Object.freeze([
-  "en", "zh", "zh_tw", "ru", "ja", "ko", "es", "fr", "pt", "de", "it", "th", "vi", "id", "ms",
-  "ar", "hi", "he", "ur", "bn", "pl", "nl", "tr", "km", "cs", "sv", "hu", "da", "fi", "tl", "fa",
-]);
-
+const LITE_LANGUAGE_CODES = new Set<string>(QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES);
 export const AUDIO3_LITE_PIPELINE_SOURCE_CODES = Object.freeze(
-  AUDIO3_RECOGNITION_LANGUAGE_CODES.filter((code) => QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES.includes(code)),
+  AUDIO3_RECOGNITION_LANGUAGE_CODES.filter((code) => LITE_LANGUAGE_CODES.has(code)),
 );
 
 const AUDIO3_RECOGNITION: RecognitionAvailability = Object.freeze({
@@ -69,8 +64,8 @@ const LITE_AVAILABILITY: ProfileLanguageMetadata["providerAvailable"] = Object.f
 /** Display-only evidence. It must never be used to validate or expand wire selections.
  * Detection in the ASR model does not make every detected language translatable by Lite.
  * The Rust-default parity fixture makes a future model change update this static catalog. */
-export function languageMetadataForProfile(profile: ServiceProfile): ProfileLanguageMetadata {
-  const capabilities = capabilitiesForProvider(effectiveProviderForProfile(profile));
+export function languageMetadataForProfile(profile: ServiceProfile, targetLanguage: TargetLanguage = "zh"): ProfileLanguageMetadata {
+  const capabilities = capabilitiesForProfile(profile, targetLanguage);
   const appSelectable = { sourceCodes: capabilities.sourceLanguages, targetCodes: capabilities.targetLanguages };
   if (profile.provider === "alibabaCloud" || profile.provider === "deepLX") {
     const route = textTranslationForProfile(profile);

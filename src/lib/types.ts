@@ -79,6 +79,8 @@ export interface SettingsSnapshot {
   activeProfileId: string;
   sourceLanguage: SourceLanguage;
   targetLanguage: TargetLanguage;
+  /** Native options for this exact active profile and selected target. Older snapshots omit this. */
+  languageCapabilities?: LanguageCapabilitiesSnapshot;
   translationMode: TranslationMode;
   /** 14..20 */
   fontSize: number;
@@ -193,15 +195,36 @@ export interface ProviderCapabilities {
   translationModes: readonly TranslationMode[];
 }
 
+export interface LanguageCapabilitiesSnapshot {
+  profileId: string;
+  provider: ServiceProvider;
+  textTranslation: TextTranslation;
+  targetLanguage: TargetLanguage;
+  sourceLanguages: readonly SourceLanguage[];
+  targetLanguages: readonly TargetLanguage[];
+}
+
 // ---------------------------------------------------------------------------
 // Languages
 // ---------------------------------------------------------------------------
 
-export type SourceLanguage = "auto" | "zh" | "en" | "ja" | "ko";
-export type TargetLanguage = "original" | "zh" | "en" | "ja";
+/** Verified Audio 3.0 language_hints codes; Automatic omits the hint. */
+export const AUDIO3_RECOGNITION_LANGUAGE_CODES = Object.freeze([
+  "zh", "en", "ja", "ko", "vi", "th", "id", "ms", "tl", "hi", "ar", "fr", "de", "es", "pt",
+  "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk",
+] as const);
+
+/** The current Qwen-MT Lite table, not another model's larger language range. */
+export const QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES = Object.freeze([
+  "en", "zh", "zh_tw", "ru", "ja", "ko", "es", "fr", "pt", "de", "it", "th", "vi", "id", "ms",
+  "ar", "hi", "he", "ur", "bn", "pl", "nl", "tr", "km", "cs", "sv", "hu", "da", "fi", "tl", "fa",
+] as const);
+
+export type SourceLanguage = "auto" | typeof AUDIO3_RECOGNITION_LANGUAGE_CODES[number];
+export type TargetLanguage = "original" | typeof QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES[number];
 export type TranslationMode = "lowLatency" | "highQuality" | "turbo";
 
-/** Picker order including provider-specific automatic language detection. */
+/** Compact legacy shortcuts; the full settings selector uses route capabilities. */
 export const SOURCE_LANGUAGE_QUICK_CASES: readonly SourceLanguage[] = [
   "auto",
   "ja",
@@ -214,54 +237,85 @@ export const TRANSLATION_MODE_CASES: readonly TranslationMode[] = [
   "turbo",
 ];
 
-/** Localized source-language labels for the active UI language. */
-export const SOURCE_LANGUAGE_DISPLAY_NAMES: Record<SourceLanguage, string> = localizedRecord(() =>
-  effectiveUiLanguage() === "ja"
-    ? {
-        auto: "自動認識",
-        zh: "中国語",
-        en: "英語",
-        ja: "日本語",
-        ko: "韓国語",
-      }
-    : isChineseSystem()
-      ? {
-          auto: "自动识别",
-          zh: "中文",
-          en: "英语",
-          ja: "日语",
-          ko: "韩语",
-        }
-      : {
-          auto: "Auto Detect",
-          zh: "Chinese",
-          en: "English",
-          ja: "Japanese",
-          ko: "Korean",
-        });
+type LanguageDisplayCode = Exclude<SourceLanguage, "auto"> | Exclude<TargetLanguage, "original">;
+type LanguageDisplayLocale = "zh" | "en" | "ja";
 
-/** Localized target-language labels for the active UI language. */
-export const TARGET_LANGUAGE_DISPLAY_NAMES: Record<TargetLanguage, string> = localizedRecord(() =>
-  effectiveUiLanguage() === "ja"
-    ? {
-        original: "原文（翻訳しない）",
-        zh: "簡体中国語",
-        en: "英語",
-        ja: "日本語",
-      }
-    : isChineseSystem()
-      ? {
-          original: "原文（不翻译）",
-          zh: "简体中文",
-          en: "英语",
-          ja: "日语",
-        }
-      : {
-          original: "Original (no translation)",
-          zh: "Simplified Chinese",
-          en: "English",
-          ja: "Japanese",
-        });
+const LANGUAGE_DISPLAY_NAMES: Record<LanguageDisplayLocale, Record<LanguageDisplayCode, string>> = {
+  zh: {
+    zh: "中文", zh_tw: "繁体中文", en: "英语", ja: "日语", ko: "韩语", vi: "越南语",
+    th: "泰语", id: "印尼语", ms: "马来语", tl: "菲律宾语", hi: "印地语", ar: "阿拉伯语",
+    fr: "法语", de: "德语", es: "西班牙语", pt: "葡萄牙语", ru: "俄语", it: "意大利语",
+    nl: "荷兰语", sv: "瑞典语", da: "丹麦语", fi: "芬兰语", no: "挪威语", el: "希腊语",
+    pl: "波兰语", cs: "捷克语", hu: "匈牙利语", ro: "罗马尼亚语", bg: "保加利亚语",
+    hr: "克罗地亚语", sk: "斯洛伐克语", he: "希伯来语", ur: "乌尔都语", bn: "孟加拉语",
+    tr: "土耳其语", km: "高棉语", fa: "波斯语",
+  },
+  en: {
+    zh: "Chinese", zh_tw: "Traditional Chinese", en: "English", ja: "Japanese", ko: "Korean",
+    vi: "Vietnamese", th: "Thai", id: "Indonesian", ms: "Malay", tl: "Filipino", hi: "Hindi",
+    ar: "Arabic", fr: "French", de: "German", es: "Spanish", pt: "Portuguese", ru: "Russian",
+    it: "Italian", nl: "Dutch", sv: "Swedish", da: "Danish", fi: "Finnish", no: "Norwegian",
+    el: "Greek", pl: "Polish", cs: "Czech", hu: "Hungarian", ro: "Romanian", bg: "Bulgarian",
+    hr: "Croatian", sk: "Slovak", he: "Hebrew", ur: "Urdu", bn: "Bengali", tr: "Turkish",
+    km: "Khmer", fa: "Persian",
+  },
+  ja: {
+    zh: "中国語", zh_tw: "繁体中国語", en: "英語", ja: "日本語", ko: "韓国語",
+    vi: "ベトナム語", th: "タイ語", id: "インドネシア語", ms: "マレー語", tl: "フィリピン語",
+    hi: "ヒンディー語", ar: "アラビア語", fr: "フランス語", de: "ドイツ語", es: "スペイン語",
+    pt: "ポルトガル語", ru: "ロシア語", it: "イタリア語", nl: "オランダ語", sv: "スウェーデン語",
+    da: "デンマーク語", fi: "フィンランド語", no: "ノルウェー語", el: "ギリシャ語", pl: "ポーランド語",
+    cs: "チェコ語", hu: "ハンガリー語", ro: "ルーマニア語", bg: "ブルガリア語", hr: "クロアチア語",
+    sk: "スロバキア語", he: "ヘブライ語", ur: "ウルドゥー語", bn: "ベンガル語", tr: "トルコ語",
+    km: "クメール語", fa: "ペルシア語",
+  },
+};
+
+function languageDisplayLocale(): LanguageDisplayLocale {
+  return effectiveUiLanguage() === "ja" ? "ja" : isChineseSystem() ? "zh" : "en";
+}
+
+function languageNamesForCodes<Code extends LanguageDisplayCode>(
+  codes: readonly Code[],
+  names: Record<LanguageDisplayCode, string>,
+): Record<Code, string> {
+  return Object.fromEntries(codes.map((code) => [code, names[code]])) as Record<Code, string>;
+}
+
+export function sourceLanguageDisplayName(language: SourceLanguage, locale = languageDisplayLocale()): string {
+  return language === "auto"
+    ? { zh: "自动识别", en: "Auto Detect", ja: "自動認識" }[locale]
+    : LANGUAGE_DISPLAY_NAMES[locale][language];
+}
+
+export function targetLanguageDisplayName(language: TargetLanguage, locale = languageDisplayLocale()): string {
+  if (language === "original") {
+    return { zh: "原文（不翻译）", en: "Original (no translation)", ja: "原文（翻訳しない）" }[locale];
+  }
+  if (language === "zh") return { zh: "简体中文", en: "Simplified Chinese", ja: "簡体中国語" }[locale];
+  if (language === "tl") return { zh: "塔加洛语", en: "Tagalog", ja: "タガログ語" }[locale];
+  return LANGUAGE_DISPLAY_NAMES[locale][language];
+}
+
+/** Localized source-language labels for the active UI language. */
+export const SOURCE_LANGUAGE_DISPLAY_NAMES: Record<SourceLanguage, string> = localizedRecord(() => {
+  const locale = languageDisplayLocale();
+  return {
+    auto: sourceLanguageDisplayName("auto", locale),
+    ...languageNamesForCodes(AUDIO3_RECOGNITION_LANGUAGE_CODES, LANGUAGE_DISPLAY_NAMES[locale]),
+  };
+});
+
+/** Wire codes and scripts stay unchanged when display labels switch languages. */
+export const TARGET_LANGUAGE_DISPLAY_NAMES: Record<TargetLanguage, string> = localizedRecord(() => {
+  const locale = languageDisplayLocale();
+  return {
+    original: targetLanguageDisplayName("original", locale),
+    ...languageNamesForCodes(QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES, LANGUAGE_DISPLAY_NAMES[locale]),
+    zh: targetLanguageDisplayName("zh", locale),
+    tl: targetLanguageDisplayName("tl", locale),
+  };
+});
 
 /** Localized translation-mode labels for the active UI language. */
 export const TRANSLATION_MODE_DISPLAY_NAMES: Record<TranslationMode, string> = localizedRecord(() =>
@@ -320,6 +374,18 @@ const DETECTED_LANGUAGE_DISPLAY_NAMES: Record<string, string> = {
   nb: "Norsk",
   pl: "Polski",
   sv: "Svenska",
+  hu: "Magyar",
+  el: "Ελληνικά",
+  ro: "Română",
+  bg: "Български",
+  hr: "Hrvatski",
+  sk: "Slovenčina",
+  zh_tw: "繁體中文",
+  he: "עברית",
+  ur: "اردو",
+  bn: "বাংলা",
+  km: "ខ្មែរ",
+  fa: "فارسی",
 };
 
 function detectedLanguageDisplayName(code: string): string {

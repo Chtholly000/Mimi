@@ -15,3 +15,12 @@ it("preserves original-only meaning and full phase labels in every UI language",
     expect(capsuleLabels(settings, "paused", language)).not.toHaveProperty("mode");
   }
 });
+
+it.each([
+  ["zh", "法语", "繁体中文"],
+  ["en", "French", "Traditional Chinese"],
+  ["ja", "フランス語", "繁体中国語"],
+] as const)("localizes extended languages with a script-aware %s fallback", (locale, source, target) => {
+  expect(capsuleLabels({ sourceLanguage: "fr", targetLanguage: "zh_tw" }, null, locale))
+    .toEqual({ source, target, phase: null });
+});

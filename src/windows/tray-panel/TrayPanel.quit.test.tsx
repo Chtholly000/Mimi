@@ -5,10 +5,12 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import { useStore } from "../../lib/store";
 import { TrayPanel } from "./TrayPanel";
+import { SOURCE_LANGUAGE_DISPLAY_NAMES } from "../../lib/types";
 
 let host: HTMLDivElement;
 let root: Root;
 const initial = useStore.getState();
+const scrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -16,6 +18,7 @@ beforeEach(() => {
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
 });
 
 afterEach(async () => {
@@ -24,6 +27,8 @@ afterEach(async () => {
   useStore.setState(initial, true);
   setStoredUiLanguage("system");
   vi.unstubAllGlobals();
+  if (scrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", scrollIntoView);
+  else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
 });
 
 it.each(["zh", "en", "ja"] as const)("keeps the %s exit action available in idle, working, paused, transition and error states", async (language) => {
@@ -65,4 +70,19 @@ it("uses the normal quit action once, shows pending feedback and supports retry 
   await act(async () => button.click());
   expect(quit).toHaveBeenCalledTimes(2);
   await act(async () => reject(new Error("synthetic retry failure")));
+});
+
+it.each(["zh", "en", "ja"] as const)("keeps the selected extended source visible and the tray's %s picker compact", async (locale) => {
+  setStoredUiLanguage(locale);
+  useStore.setState({ ...initial, settings: { ...initial.settings, sourceLanguage: "fr", targetLanguage: "zh" } }, true);
+  await act(async () => root.render(<TrayPanel />));
+  const language = host.querySelector<HTMLButtonElement>('.tray-setting-row--language [role="combobox"]')!;
+  expect(language.textContent).toContain(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+  expect(language.textContent).not.toContain("fr");
+  await act(async () => language.click());
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(options).toHaveLength(6);
+  expect(options.map((option) => option.textContent)).toContain(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+  expect(options.find((option) => option.getAttribute("aria-selected") === "true")?.textContent)
+    .toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
 });
