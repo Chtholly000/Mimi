@@ -41,6 +41,9 @@ interface TimelineProps {
   blendsWithBackground?: boolean;
   /** Resolved motion setting: gates the roll-up glide. */
   motionEnabled?: boolean;
+  /** A new request explicitly returns a history reader to the live tail. */
+  followTailRequest?: number;
+  onReadingHistoryChange?: (reading: boolean) => void;
 }
 
 /** Scrolling sentence blocks; auto-scrolls to the newest block. Memoized:
@@ -57,6 +60,8 @@ export const Timeline = memo(function Timeline({
   motionEnabled = true,
   showTimestamps = false,
   showSubtitleDividers = false,
+  followTailRequest = 0,
+  onReadingHistoryChange,
 }: TimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Keep the newest content pinned to the bottom: the block count changes when
@@ -70,7 +75,12 @@ export const Timeline = memo(function Timeline({
   const previousModeRef = useRef(displayMode);
   const modeChangedRef = useRef(false);
   const [scroll] = useState(() => new TimelineScroll());
-  const [readingHistory, setReadingHistory] = useState(false);
+  const [reading, setReading] = useState({ active: false, request: followTailRequest });
+  const readingHistory = reading.active && reading.request === followTailRequest;
+  const previousFollowRequest = useRef(followTailRequest);
+  const setReadingHistory = (active: boolean) => setReading(previous =>
+    previous.active === active && previous.request === followTailRequest
+      ? previous : { active, request: followTailRequest });
   const [viewportHeight, setViewportHeight] = useState<number | null>(null);
   const [laneMeasurements, setLaneMeasurements] = useState({ blockId: "", source: 0, translation: 0 });
   const touchStartYRef = useRef<number | null>(null);
@@ -78,6 +88,18 @@ export const Timeline = memo(function Timeline({
   const laneGap = tight ? 1 : LANE_GAP;
   const paddingTop = tight ? 0 : blendsWithBackground ? IMMERSIVE_BLOCK_GAP : BLOCK_PADDING_Y;
   const paddingBottom = tight ? 1 : LAST_BLOCK_PADDING_Y;
+
+  useLayoutEffect(() => {
+    if (previousFollowRequest.current === followTailRequest) return;
+    previousFollowRequest.current = followTailRequest;
+    if (containerRef.current) {
+      scroll.followTail(containerRef.current);
+      containerRef.current.focus({ preventScroll: true });
+    }
+  }, [followTailRequest, scroll]);
+
+  useEffect(() => { onReadingHistoryChange?.(readingHistory); }, [onReadingHistoryChange, readingHistory]);
+  useEffect(() => () => onReadingHistoryChange?.(false), [onReadingHistoryChange]);
 
   useLayoutEffect(() => {
     if (containerRef.current) scroll.reflow(containerRef.current);

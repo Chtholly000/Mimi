@@ -22,8 +22,9 @@ beforeEach(() => {
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); HTMLElement.prototype.scrollTo = originalScrollTo; vi.unstubAllGlobals(); });
-async function render(mode: "translation" | "bilingual", list = blocks) {
-  await act(async () => root.render(<Timeline blocks={list.map(b => mode === "translation" ? { ...b, source: null } : b)} displayMode={mode} fontSize={18} alignment="center" color="white" motionEnabled={true} />));
+async function render(mode: "translation" | "bilingual", list = blocks, followTailRequest = 0, onReadingHistoryChange?: (reading: boolean) => void) {
+  await act(async () => root.render(<Timeline blocks={list.map(b => mode === "translation" ? { ...b, source: null } : b)} displayMode={mode} fontSize={18} alignment="center" color="white" motionEnabled={true}
+    followTailRequest={followTailRequest} onReadingHistoryChange={onReadingHistoryChange} />));
 }
 async function mount() {
   await render("translation"); timeline = host.firstElementChild as HTMLDivElement;
@@ -52,4 +53,33 @@ it("does not pull a user reading history to the tail on a mode change or incomin
   await act(async () => { timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 })); scrollTop = 30; timeline.dispatchEvent(new Event("scroll", { bubbles: true })); });
   scrollHeight = 320; await render("bilingual"); expect(scrollTop).toBe(30);
   scrollHeight = 350; await render("bilingual", [blocks[0], { ...blocks[1], translation: "新译文" }]); expect(scrollTop).toBe(30);
+});
+
+it("returns to the live tail only on a new explicit request and reports subsequent reading intent", async () => {
+  await mount();
+  const reading = vi.fn();
+  await render("translation", blocks, 0, reading);
+  expect(reading).toHaveBeenLastCalledWith(false);
+  await act(async () => {
+    timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -100 }));
+    scrollTop = 30; timeline.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  expect(reading).toHaveBeenLastCalledWith(true);
+  scrollHeight = 320;
+  await render("bilingual", blocks, 0, reading);
+  expect(scrollTop).toBe(30);
+  expect(reading).toHaveBeenLastCalledWith(true);
+
+  await render("bilingual", blocks, 1, reading);
+  expect(scrollTop).toBe(240);
+  expect(reading).toHaveBeenLastCalledWith(false);
+  expect(timeline.querySelector("[aria-label]")).not.toBeNull();
+  scrollHeight = 350;
+  await render("bilingual", [blocks[0], { ...blocks[1], translation: "新的译文继续流入" }], 1, reading);
+  expect(scrollTop).toBe(270);
+
+  await act(async () => timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Home" })));
+  expect(reading).toHaveBeenLastCalledWith(true);
+  await render("bilingual", blocks, 1, reading);
+  expect(reading).toHaveBeenLastCalledWith(true); // Re-rendering the request is not another command.
 });
