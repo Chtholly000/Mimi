@@ -93,6 +93,7 @@ pub enum SystemAudioCaptureError {
     SelectedPlaybackDeviceUnavailable,
     #[error("No default microphone is available.")]
     NoMicrophoneDevice,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[error("Microphone capture permission was denied.")]
     MicrophonePermissionDenied,
     #[error("Microphone capture could not be started.")]
