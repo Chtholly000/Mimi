@@ -528,6 +528,16 @@ describe("bilingual preview rows", () => {
       .toEqual([{ text: "Latest raw source C.", isFinal: false, kind: "source", utteranceId: "synthetic-owner-C" }]);
   });
 
+  it.each(["Synthetic paired text.", "  Synthetic paired text.\n"])("keeps one atomic bilingual lane when the translation is %j", translation => {
+    const pair = { source: "Synthetic paired text.", translation, utteranceId: "synthetic-pair-owner" };
+    const snapshot = { ...subtitles({ text: "Newer raw recognition.", isFinal: false, utteranceId: "synthetic-raw-owner" }),
+      previewPair: pair };
+    expect(visibleLiveSubtitles(snapshot, { ...settings, subtitleDisplayMode: "bilingual" }, "en", true, false, true))
+      .toEqual([{ text: pair.source, isFinal: false, kind: "source", isStable: true, utteranceId: pair.utteranceId }]);
+    expect(visibleLiveSubtitles(snapshot, { ...settings, subtitleDisplayMode: "translation" }, "en", true, false, true))
+      .toEqual([{ text: pair.translation, isFinal: false, kind: "translation", isStable: true, utteranceId: pair.utteranceId }]);
+  });
+
   it("previews the original and its streaming translation together", () => {
     expect(visibleLiveSubtitles(
       subtitles(

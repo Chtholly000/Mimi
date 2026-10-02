@@ -182,6 +182,28 @@ it("keeps a completed preview pair together during raw ASR corrections and repla
   expect(useStore.getState().session.subtitles.history).toEqual([]);
 });
 
+it("shows identical atomic bilingual lanes once while preserving repeated utterances and translation mode", async () => {
+  const text = "Synthetic repeated line.";
+  const first = { source: text, translation: text, createdAt: 10 };
+  const second = { ...first, createdAt: 11 };
+  const subtitles: SubtitleSnapshot = { ...empty,
+    source: { text: text, isFinal: false, utteranceId: "synthetic-owner-B" },
+    previewPair: { source: text, translation: text, utteranceId: "synthetic-owner-B" }, history: [first] };
+  await mount(subtitles);
+  expect(visibleLanes()).toEqual([text, text]);
+  expect(host.querySelectorAll("[data-utterance-id]")).toHaveLength(2);
+  expect(host.querySelector('[data-utterance-id="live-utterance-synthetic-owner-B"]')).not.toBeNull();
+  await mode("translation");
+  expect(visibleLanes()).toEqual([text, text]);
+  await mode("bilingual");
+  await publish({ ...empty, source: { text, isFinal: true }, translation: { text, isFinal: true },
+    history: [first, second] }, { isTranslationPending: false });
+  expect(visibleLanes()).toEqual([text, text]);
+  expect(host.querySelector('[data-utterance-id^="live"]')).toBeNull();
+  expect(host.querySelectorAll('[data-utterance-id^="history"]')).toHaveLength(2);
+  expect(useStore.getState().session.subtitles.history).toEqual([first, second]);
+});
+
 it.each(modes)("retains the actual projected %s owner when an earlier final arrives while raw ASR is ahead", async displayMode => {
   const subtitles: SubtitleSnapshot = { ...empty,
     source: { text: "Latest synthetic raw source C.", isFinal: false, utteranceId: "synthetic-owner-C" },

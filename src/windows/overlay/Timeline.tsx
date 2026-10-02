@@ -5,6 +5,7 @@ import type { SettingsSnapshot, SubtitleAlignment, SubtitleColor } from "../../l
 import { observeTimelineResize } from "./timelineResize";
 import { TimelineScroll } from "./timelineScroll";
 import { rowHorizontalPadding } from "./alignment";
+import { compactRepetition } from "./compactRepetition";
 import {
   subtitleLaneBudget,
   subtitleSourceScale,
@@ -455,6 +456,9 @@ function CompactLane({
   hidden = false,
   onMeasure,
 }: CompactLaneProps) {
+  // Compact presentation can abbreviate extreme exact repetition. Keep the
+  // original text for accessibility and the unabridged reading-mode lane.
+  const displayText = useMemo(() => compactRepetition(text), [text]);
   const viewportRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLSpanElement>(null);
   const { overflowed, innerHeight } = useLaneOverflow(viewportRef, onMeasure);
@@ -492,7 +496,7 @@ function CompactLane({
           ...textStyle,
         }}
       >
-        {text}
+        {displayText}
       </span>
     </div>
   );

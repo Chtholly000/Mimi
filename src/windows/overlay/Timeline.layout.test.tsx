@@ -51,8 +51,9 @@ const confirmed: SubtitleBlock = {
   id: "confirmed",
   createdAt: 1,
   presentation: "latestCommitted",
-  source: "完整原文。".repeat(30),
-  translation: "完整译文。".repeat(30),
+  // Exercise long-sentence layout rather than the extreme-repeat projection.
+  source: Array.from({ length: 30 }, (_, index) => `完整原文${index}。`).join(""),
+  translation: Array.from({ length: 30 }, (_, index) => `完整译文${index}。`).join(""),
 };
 const live: SubtitleBlock = {
   id: "live", createdAt: null, presentation: "live",

@@ -411,7 +411,9 @@ export function visibleLiveSubtitles(
       const owner = pair.utteranceId == null ? {} : { utteranceId: pair.utteranceId };
       const source: LiveSubtitlePreview = { kind: "source", text: pair.source, isFinal: false, isStable: true, ...owner };
       const translation: LiveSubtitlePreview = { kind: "translation", text: pair.translation, isFinal: false, isStable: true, ...owner };
-      return settings.subtitleDisplayMode === "bilingual" ? [source, translation] : [translation];
+      if (settings.subtitleDisplayMode !== "bilingual") return [translation];
+      // Match confirmed pairs: identical lanes read once within this utterance.
+      return pair.source.trim() === pair.translation.trim() ? [source] : [source, translation];
     }
     // The first recognition may appear before a complete preview exists.
     // A new request's tiny SSE prefixes must not repeatedly erase and rebuild
