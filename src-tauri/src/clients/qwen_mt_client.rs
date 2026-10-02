@@ -32,6 +32,17 @@ pub struct QwenMTClient {
 }
 
 impl QwenMTClient {
+    #[cfg(test)]
+    pub(super) fn use_synthetic_endpoint(&mut self, endpoint: url::Url) {
+        assert_eq!(endpoint.scheme(), "http");
+        assert!(matches!(
+            endpoint.host_str(),
+            Some("127.0.0.1" | "[::1]" | "localhost")
+        ));
+        self.endpoint.url = endpoint;
+        self.client = http_client_builder().no_proxy().build().unwrap();
+    }
+
     /// Rebuild only this fixed endpoint's connection pool before requests start.
     pub fn set_network(
         &mut self,

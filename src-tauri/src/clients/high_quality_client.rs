@@ -15,11 +15,9 @@ use crate::core::diagnostics::{
     TranslationLatency, TranslationLatencyKind, TranslationRecovery, TranslationRecoveryReason,
 };
 use crate::core::models::{SourceLanguage, TargetLanguage};
-use crate::core::preview_pacing::{
-    estimated_token_units, MTRequestBudget, PreviewCandidate, PreviewRequestPacer,
-};
+use crate::core::preview_pacing::{MTRequestBudget, PreviewCandidate, PreviewRequestPacer};
 use crate::core::protocols::live_translate::LiveTranslateServerEvent;
-use crate::core::protocols::qwen_mt::{QwenMTClientError, QwenMTMemoryPair, QwenMTModel};
+use crate::core::protocols::qwen_mt::{QwenMTClientError, QwenMTModel};
 use crate::core::subtitle_reducer::trim;
 use crate::pipeline_log;
 use std::collections::VecDeque;
@@ -169,7 +167,6 @@ struct Inner {
     last_source_utterance_id: Option<u64>,
     final_queue: VecDeque<TranslationRequest>,
     active_final: Option<FinalRequestKey>,
-    translation_memory: Vec<QwenMTMemoryPair>,
     draft_stability_task: Option<TaskSlot>,
     draft_maximum_wait_task: Option<TaskSlot>,
     preview_task: Option<TaskSlot>,
@@ -231,10 +228,9 @@ impl TextTranslationClient {
         &self,
         text: &str,
         source: Option<SourceLanguage>,
-        memory: &[QwenMTMemoryPair],
     ) -> Result<String, QwenMTClientError> {
         match self {
-            Self::Qwen(client, _) => client.translate(text, source, memory).await,
+            Self::Qwen(client, _) => client.translate(text, source, &[]).await,
             Self::DeepL(client) => client
                 .translate(text, source)
                 .await
@@ -249,13 +245,12 @@ impl TextTranslationClient {
         &self,
         text: &str,
         source: Option<SourceLanguage>,
-        memory: &[QwenMTMemoryPair],
         on_partial: impl Fn(String) + Send + Sync,
     ) -> Result<String, QwenMTClientError> {
         match self {
             Self::Qwen(client, _) => {
                 client
-                    .translate_streaming(text, source, memory, on_partial)
+                    .translate_streaming(text, source, &[], on_partial)
                     .await
             }
             Self::DeepLX(client) => client
@@ -343,7 +338,6 @@ impl HighQualityTranslationClient {
                 last_source_utterance_id: None,
                 final_queue: VecDeque::new(),
                 active_final: None,
-                translation_memory: Vec::new(),
                 draft_stability_task: None,
                 draft_maximum_wait_task: None,
                 preview_task: None,
@@ -999,6 +993,7 @@ impl HighQualityTranslationClient {
                     ) && !translation.text.trim().is_empty()
                     {
                         completed = true;
+                        let translation_length = translation.text.chars().count();
                         *self.translation_latency.lock().unwrap() =
                             translation
                                 .request_ms
@@ -1019,8 +1014,10 @@ impl HighQualityTranslationClient {
                             },
                         );
                         pipeline_log!(
-                            "mt preview completed requestMs={}",
-                            translation.request_ms.unwrap_or_default()
+                            "mt preview completed requestMs={} sourceLength={} translationLength={}",
+                            translation.request_ms.unwrap_or_default(),
+                            text.chars().count(),
+                            translation_length
                         );
                     }
                 }
@@ -1412,12 +1409,13 @@ impl HighQualityTranslationClient {
                         );
                     } else {
                         pipeline_log!(
-                            "mt final completed boundary={} requestMs={} remaining={}",
+                            "mt final completed boundary={} requestMs={} remaining={} sourceLength={} translationLength={}",
                             request.boundary.label(),
                             translation.request_ms.unwrap_or_default(),
-                            self.inner.lock().await.final_queue.len()
+                            self.inner.lock().await.final_queue.len(),
+                            request.text.chars().count(),
+                            translation.text.chars().count()
                         );
-                        self.remember(&request.text, &translation.text).await;
                     }
                 }
                 Err(error) => {
@@ -1660,16 +1658,11 @@ impl HighQualityTranslationClient {
         if !self.mt.supports_reported_source(language) {
             return Err(QwenMTClientError::UnsupportedSource);
         }
-        let memory = {
-            let inner = self.inner.lock().await;
-            translation_memory_for_owner(&inner.translation_memory, owner)
-        };
-        let context_units = memory.iter().fold(0usize, |units, pair| {
-            units
-                .saturating_add(estimated_token_units(&pair.source))
-                .saturating_add(estimated_token_units(&pair.target))
-        });
-        let candidate = PreviewCandidate::new(text, language, context_units);
+        // tm_list is a set of translation style examples, not conversation
+        // history. Feeding a previous full document to a new cumulative
+        // prefix can bias the model toward that example's old full output.
+        // The live path has no explicitly curated translation memory.
+        let candidate = PreviewCandidate::new(text, language, 0);
         let source_override = if self.source_language == SourceLanguage::Automatic {
             language.and_then(|value| SourceLanguage::from_detected(Some(value)))
         } else {
@@ -1696,22 +1689,23 @@ impl HighQualityTranslationClient {
             let handler = Arc::clone(&on_partial);
             let first_request_at = *first_request_at.get_or_insert_with(tokio::time::Instant::now);
             pipeline_log!(
-                "mt request started lane={} attempt={}",
+                "mt request started lane={} attempt={} sourceLength={} memoryEntries=0",
                 match owner {
                     TranslationWorkOwner::Preview(_) => "preview",
                     TranslationWorkOwner::Final(_) => "final",
                 },
-                attempt
+                attempt,
+                text.chars().count()
             );
             let result = tokio::time::timeout(remaining, async {
                 if self.streams_finals {
                     self.mt
-                        .translate_streaming(text, source_override, &memory, move |partial| {
+                        .translate_streaming(text, source_override, move |partial| {
                             (handler)(partial)
                         })
                         .await
                 } else {
-                    self.mt.translate(text, source_override, &memory).await
+                    self.mt.translate(text, source_override).await
                 }
             })
             .await
@@ -1803,21 +1797,6 @@ impl HighQualityTranslationClient {
         }
     }
 
-    async fn remember(&self, source: &str, translation: &str) {
-        let mut inner = self.inner.lock().await;
-        inner
-            .translation_memory
-            .retain(|pair| pair.source != source);
-        inner.translation_memory.push(QwenMTMemoryPair {
-            source: source.to_string(),
-            target: translation.to_string(),
-        });
-        if inner.translation_memory.len() > 12 {
-            let overflow = inner.translation_memory.len() - 12;
-            inner.translation_memory.drain(0..overflow);
-        }
-    }
-
     // MARK: Lifecycle helpers
 
     async fn flush_pending_draft(&self) {
@@ -1873,7 +1852,6 @@ impl HighQualityTranslationClient {
         *self.translation_latency.lock().unwrap() = None;
         inner.final_queue.clear();
         inner.active_final = None;
-        inner.translation_memory.clear();
         inner.mt_cooldown = None;
         inner.mt_failure_streak = 0;
         inner.preview_request_pacer.reset();
@@ -1948,23 +1926,6 @@ fn next_nonzero(counter: &mut u64) -> u64 {
     *counter
 }
 
-fn translation_memory_for_owner(
-    memory: &[QwenMTMemoryPair],
-    owner: TranslationWorkOwner,
-) -> Vec<QwenMTMemoryPair> {
-    let pair_limit = match owner {
-        TranslationWorkOwner::Preview(_) => 2,
-        TranslationWorkOwner::Final(_) => 6,
-    };
-    memory
-        .iter()
-        .rev()
-        .take(pair_limit)
-        .rev()
-        .cloned()
-        .collect()
-}
-
 fn abort_task(slot: &mut Option<TaskSlot>) {
     if let Some(task) = slot.take() {
         task.handle.abort();
@@ -1981,21 +1942,6 @@ fn clear_task_if_id(slot: &mut Option<TaskSlot>, task_id: u64) {
 mod tests {
     use super::*;
     use crate::clients::provider_events::ProviderEventReceiver;
-
-    #[test]
-    fn previews_use_two_recent_context_pairs_while_finals_keep_six_in_order() {
-        let memory = (0..8)
-            .map(|index| QwenMTMemoryPair {
-                source: format!("Synthetic source {index}"),
-                target: format!("Synthetic target {index}"),
-            })
-            .collect::<Vec<_>>();
-        let preview = translation_memory_for_owner(&memory, TranslationWorkOwner::Preview(1));
-        let final_memory = translation_memory_for_owner(&memory, TranslationWorkOwner::Final(2));
-        assert_eq!(preview, memory[6..]);
-        assert_eq!(final_memory, memory[2..]);
-        assert_eq!(memory.len(), 8);
-    }
 
     #[tokio::test]
     async fn lite_rejects_known_unsupported_source_before_http_or_request_accounting() {
@@ -2189,6 +2135,159 @@ mod tests {
             body.len()
         );
         socket.write_all(response.as_bytes()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn repeated_document_preview_and_finals_do_not_send_session_history_as_tm_list() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/translate", listener.local_addr().unwrap());
+        let document = "Synthetic document with an earlier sentence and a later tail.";
+        let prefix = "Synthetic document with an earlier sentence";
+        let server = tokio::spawn(async move {
+            for (input, output) in [
+                (document, "Synthetic first complete document translation"),
+                (prefix, "Synthetic shorter prefix translation"),
+                (document, "Synthetic repeated complete document translation"),
+            ] {
+                let (mut socket, _) =
+                    tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                let request = read_synthetic_request(&mut socket).await;
+                let body_start = request
+                    .windows(4)
+                    .position(|bytes| bytes == b"\r\n\r\n")
+                    .unwrap()
+                    + 4;
+                let json: serde_json::Value =
+                    serde_json::from_slice(&request[body_start..]).unwrap();
+                assert_eq!(json["messages"].as_array().unwrap().len(), 1);
+                assert_eq!(json["messages"][0]["content"], input);
+                assert_eq!(json["model"], "qwen-mt-lite");
+                assert_eq!(json["stream"], true);
+                assert!(json["translation_options"].get("tm_list").is_none(),
+                    "confirmed history must not be presented as a style example for a new prefix or final");
+                assert!(json["translation_options"].get("domains").is_none());
+                let event = serde_json::json!({"choices":[{"delta":{"content":output}}]});
+                let response = format!("data: {event}\n\ndata: [DONE]\n\n");
+                write_synthetic_response(&mut socket, 200, &response).await;
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let (sender, mut events) = provider_event_channel();
+        let mut client = HighQualityTranslationClient::new(
+            "synthetic-key",
+            SourceLanguage::English,
+            TargetLanguage::Japanese,
+            QwenMTModel::Lite,
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            12,
+            sender,
+        )
+        .unwrap();
+        let TextTranslationClient::Qwen(mt, _) = Arc::make_mut(&mut client.mt) else {
+            panic!("fixture uses Qwen")
+        };
+        mt.use_synthetic_endpoint(endpoint.parse().unwrap());
+        let mut controller = crate::core::session::TranslationSessionController::default();
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceFinal {
+                text: document.into(),
+                language: Some("en".into()),
+            })
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                let confirmed = matches!(
+                    event,
+                    LiveTranslateServerEvent::SubtitleConfirmedPair { .. }
+                );
+                controller.handle(event);
+                if confirmed {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        client
+            .wait_for_final_translations(Duration::from_secs(1))
+            .await;
+        assert_eq!(
+            controller.state.subtitles.translation.text,
+            "Synthetic first complete document translation"
+        );
+        controller.clear_subtitles();
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceDraft {
+                text: prefix.into(),
+                language: Some("en".into()),
+            })
+            .await;
+        let revision = client.inner.lock().await.draft_revision;
+        client
+            .start_preview(prefix.into(), Some("en".into()), revision)
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                let completed =
+                    matches!(event, LiveTranslateServerEvent::SubtitlePreviewPair { .. });
+                controller.handle(event);
+                if completed {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(controller.state.subtitles.history.is_empty());
+        assert_eq!(
+            controller.state.subtitles.preview_pair,
+            Some(crate::core::models::PreviewSubtitlePair {
+                source: prefix.into(),
+                translation: "Synthetic shorter prefix translation".into(),
+            })
+        );
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceFinal {
+                text: document.into(),
+                language: Some("en".into()),
+            })
+            .await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                let confirmed = matches!(
+                    event,
+                    LiveTranslateServerEvent::SubtitleConfirmedPair { .. }
+                );
+                controller.handle(event);
+                if confirmed {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(controller.state.subtitles.preview_pair.is_none());
+        assert_eq!(controller.state.subtitles.source.text, document);
+        assert_eq!(
+            controller.state.subtitles.translation.text,
+            "Synthetic repeated complete document translation"
+        );
+        client
+            .wait_for_final_translations(Duration::from_secs(1))
+            .await;
+        server.await.unwrap();
+        client.disconnect().await;
     }
 
     #[tokio::test]
@@ -3329,7 +3428,6 @@ mod tests {
             latency.milliseconds < 1_000,
             "initial shared cooldown is excluded from HTTP request timing"
         );
-        assert_eq!(client.inner.lock().await.translation_memory.len(), 2);
         assert!(
             !client
                 .inner
@@ -3458,7 +3556,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(client.translation_latency(), None);
-        assert!(client.inner.lock().await.translation_memory.is_empty());
         client.disconnect().await;
         server.await.unwrap();
     }
@@ -3540,15 +3637,6 @@ mod tests {
                 milliseconds: 123,
                 kind: TranslationLatencyKind::Request,
             });
-            client
-                .inner
-                .lock()
-                .await
-                .translation_memory
-                .push(QwenMTMemoryPair {
-                    source: "earlier synthetic source".into(),
-                    target: "earlier synthetic translation".into(),
-                });
             for text in ["Synthetic", "Synthetic unchanged line."] {
                 client
                     .handle_asr_event(LiveTranslateServerEvent::SourceDraft {
@@ -3600,13 +3688,6 @@ mod tests {
                 .await;
             assert!(events.try_recv().is_err());
             assert_eq!(client.translation_latency(), None);
-            let inner = client.inner.lock().await;
-            assert_eq!(inner.translation_memory.len(), 1);
-            assert_eq!(
-                inner.translation_memory[0].source,
-                "earlier synthetic source"
-            );
-            drop(inner);
             client.disconnect().await;
         }
         assert!(
@@ -3781,13 +3862,6 @@ mod tests {
         client
             .wait_for_final_translations(Duration::from_secs(1))
             .await;
-        let inner = client.inner.lock().await;
-        assert_eq!(inner.translation_memory.len(), 2);
-        assert!(inner
-            .translation_memory
-            .iter()
-            .all(|pair| pair.source != "日本語はそのまま。"));
-        drop(inner);
         assert_eq!(
             client.translation_latency().unwrap().kind,
             TranslationLatencyKind::Request
