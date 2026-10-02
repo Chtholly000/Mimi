@@ -21,7 +21,7 @@
   </p>
 </div>
 
-Mimi shows live subtitles in a floating window for films, live streams, lessons, and games playing on your computer. Your chosen cloud service transcribes the system audio or translates it into Simplified Chinese, English, or Japanese; available languages and modes depend on the service. The name `mimi` means “ear” in Japanese.
+Mimi shows live subtitles in a floating window for films, live streams, lessons, and games playing on your computer. Your chosen cloud service transcribes the system audio or translates it into the languages supported by your selected service. The name `mimi` means “ear” in Japanese.
 
 <!-- project-demo-v1 -->
 ## Demo
@@ -34,7 +34,7 @@ https://github.com/user-attachments/assets/5acd46bb-e6b5-4bb5-b280-d70d4e0cdbb4
 
 ## Features
 
-- **Live subtitles and translation** — captures system output audio; source languages, targets, and quality modes vary by provider.
+- **Live subtitles and translation** — captures system output audio; recognition and translation languages vary by provider.
 - **Service configurations** — save and switch between services without repeatedly entering credentials.
 - **Subtitle overlay** — move, resize, collapse, pause, enable click-through, or use Immersive Mode.
 - **Updates** — check and install updates in Settings on macOS, Windows installers, and Linux AppImage. Windows ZIP and Linux .deb builds link to Releases for manual updates.

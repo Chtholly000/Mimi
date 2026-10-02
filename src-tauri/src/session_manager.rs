@@ -1777,21 +1777,29 @@ impl SessionManager {
         ) {
             return;
         }
-        let provider = self
-            .settings
-            .active_profile()
-            .map(|profile| profile.effective_provider())
-            .unwrap_or(ProviderKind::AlibabaCloud);
-        if !provider.capabilities().source_languages.contains(&language) {
+        let profile = match self.settings.active_profile() {
+            Ok(profile) => profile,
+            Err(_) => return,
+        };
+        let provider = profile.effective_provider();
+        let prefs = self.settings.preferences();
+        let capabilities = profile.capabilities(prefs.target_language);
+        if !capabilities.source_languages.contains(&language) {
             return;
         }
         let (target_language, next_mode, needs_reconnect) = {
-            let prefs = self.settings.preferences();
-            let target = provider.capabilities().target_language_after_source_switch(
+            let target = capabilities.target_language_after_source_switch(
                 language,
                 prefs.source_language,
                 prefs.target_language,
             );
+            if !profile
+                .capabilities(target)
+                .source_languages
+                .contains(&language)
+            {
+                return;
+            }
             let mode =
                 translation_mode_after_source_switch(provider, language, prefs.translation_mode);
             let needs_reconnect = source_switch_requires_reconnect(

@@ -25,12 +25,13 @@ requests reject unsupported explicit source/target codes. A reported-source
 helper distinguishes known unsupported languages from absent detection, preserves
 Chinese scripts, and maps documented Filipino and Norwegian aliases. The client
 checks that helper before MT requests, so a known unsupported detected language
-is rejected locally. The current four-language model enum does not expose the
-broader choices yet.
+is rejected locally. The subsequent [language-control implementation](2026-10-02-provider-language-controls.md)
+extends the typed enums and actual route-aware settings choices.
 
-The settings display catalog in `providerLanguageMetadata.ts` records Audio 3.0's
+The provider metadata catalog in `providerLanguageMetadata.ts` records Audio 3.0's
 30 inputs, Lite's 31 targets, and their 24-language source intersection separately
-from `appSelectable`. It does not expand a selector or change the wire. A parity
+from `appSelectable`. The separate route-aware selector and wire implementation now use those
+verified boundaries; metadata alone never widens a route. A parity
 fixture checks the Rust realtime default and Lite table. DeepL's available text
 languages remain unknown until its translate-text resource metadata is queried;
 custom endpoints and unverified model catalogs do not inherit the Lite list.

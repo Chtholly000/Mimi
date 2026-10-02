@@ -262,9 +262,6 @@ pub enum Audio3ASRContext {}
 impl Audio3ASRContext {
     pub fn audiovisual_dialogue(language: SourceLanguage) -> &'static str {
         match language {
-            SourceLanguage::Automatic => {
-                "Natural audiovisual dialogue, including interjections, breaths, gasps, moans, cries, laughter, and other vocalizations."
-            }
             SourceLanguage::Chinese => {
                 "中文影视口语对白，包括语气词、停顿、喘息、呻吟、哭声、笑声和其他发声。"
             }
@@ -277,6 +274,9 @@ impl Audio3ASRContext {
             SourceLanguage::Korean => {
                 "한국어 영상 작품의 자연스러운 구어 대화. 감탄사, 머뭇거림, 숨소리, 신음, 울음, 웃음 등 발성을 포함함."
             }
+            _ => {
+                "Natural audiovisual dialogue, including interjections, breaths, gasps, moans, cries, laughter, and other vocalizations."
+            }
         }
     }
 }
@@ -284,6 +284,40 @@ impl Audio3ASRContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_thirty_audio3_hints_encode_exact_codes_and_auto_omits_them() {
+        let expected = [
+            "zh", "en", "ja", "ko", "vi", "th", "id", "ms", "tl", "hi", "ar", "fr", "de", "es",
+            "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg",
+            "hr", "sk",
+        ];
+        assert_eq!(
+            SourceLanguage::ALL[1..]
+                .iter()
+                .map(|source| source.raw_value())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        for source in SourceLanguage::ALL {
+            let payload = Audio3ASRRequestEncoder::run_task(
+                "synthetic-task",
+                source,
+                Some(Audio3ASRContext::audiovisual_dialogue(source)),
+            )
+            .unwrap();
+            let hints = &payload["payload"]["parameters"]["language_hints"];
+            if source == SourceLanguage::Automatic {
+                assert!(hints.is_null());
+            } else {
+                assert_eq!(hints, &serde_json::json!([source.raw_value()]));
+            }
+            assert_eq!(
+                payload["payload"]["model"],
+                "qwen-audio-3.0-asr-flash-streaming"
+            );
+        }
+    }
 
     #[test]
     fn audio3_endpoint_uses_the_unified_inference_websocket() {

@@ -76,12 +76,13 @@ pub fn request(
         SourceLanguage::English => "EN",
         SourceLanguage::Japanese => "JA",
         SourceLanguage::Korean => "KO",
+        _ => return Err(DeepLXError::Response),
     };
     let target = match target {
         TargetLanguage::SimplifiedChinese => "ZH",
         TargetLanguage::English => "EN",
         TargetLanguage::Japanese => "JA",
-        TargetLanguage::Original => return Err(DeepLXError::Response),
+        _ => return Err(DeepLXError::Response),
     };
     if text.trim().is_empty() {
         return Err(DeepLXError::Response);
@@ -117,6 +118,39 @@ pub fn decode(bytes: &[u8]) -> Result<String, DeepLXError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_app_languages_do_not_expand_the_independent_text_route() {
+        for source in SourceLanguage::ALL.into_iter().filter(|source| {
+            !matches!(
+                source,
+                SourceLanguage::Automatic
+                    | SourceLanguage::Chinese
+                    | SourceLanguage::English
+                    | SourceLanguage::Japanese
+                    | SourceLanguage::Korean
+            )
+        }) {
+            assert_eq!(
+                request("Synthetic.", source, TargetLanguage::English).unwrap_err(),
+                DeepLXError::Response
+            );
+        }
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                request("Synthetic.", SourceLanguage::Automatic, target).unwrap_err(),
+                DeepLXError::Response
+            );
+        }
+    }
+
     #[test]
     fn endpoints_preserve_prefix_without_double_translate() {
         for (input, expected) in [

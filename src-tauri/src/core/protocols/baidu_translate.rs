@@ -103,11 +103,11 @@ fn source_language_code(
 ) -> Result<&'static str, BaiduTranslateProtocolError> {
     match source_language {
         // Baidu's official 45-language table has no automatic-source code.
-        SourceLanguage::Automatic => Err(BaiduTranslateProtocolError::InvalidSourceLanguage),
         SourceLanguage::Chinese => Ok("zh"),
         SourceLanguage::English => Ok("en"),
         SourceLanguage::Japanese => Ok("jp"),
         SourceLanguage::Korean => Ok("kor"),
+        _ => Err(BaiduTranslateProtocolError::InvalidSourceLanguage),
     }
 }
 
@@ -115,10 +115,10 @@ fn target_language_code(
     target_language: TargetLanguage,
 ) -> Result<&'static str, BaiduTranslateProtocolError> {
     match target_language {
-        TargetLanguage::Original => Err(BaiduTranslateProtocolError::InvalidTargetLanguage),
         TargetLanguage::SimplifiedChinese => Ok("zh"),
         TargetLanguage::English => Ok("en"),
         TargetLanguage::Japanese => Ok("jp"),
+        _ => Err(BaiduTranslateProtocolError::InvalidTargetLanguage),
     }
 }
 
@@ -239,6 +239,42 @@ fn sanitize_label(value: &str, maximum_length: usize, fallback: &str) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_app_sources_do_not_expand_this_wire_contract() {
+        for source in SourceLanguage::ALL.into_iter().filter(|source| {
+            !matches!(
+                source,
+                SourceLanguage::Automatic
+                    | SourceLanguage::Chinese
+                    | SourceLanguage::English
+                    | SourceLanguage::Japanese
+                    | SourceLanguage::Korean
+            )
+        }) {
+            assert_eq!(
+                source_language_code(source).unwrap_err(),
+                BaiduTranslateProtocolError::InvalidSourceLanguage
+            );
+        }
+    }
+
+    #[test]
+    fn expanded_app_targets_do_not_expand_this_wire_contract() {
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                target_language_code(target).unwrap_err(),
+                BaiduTranslateProtocolError::InvalidTargetLanguage
+            );
+        }
+    }
 
     #[test]
     fn endpoint_start_and_audio_contract_match_the_official_protocol() {

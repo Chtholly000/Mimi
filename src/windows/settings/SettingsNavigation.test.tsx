@@ -6,7 +6,7 @@ import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import { useStore } from "../../lib/store";
 import type { SettingsDraft } from "../../lib/types";
 import { SOURCE_LANGUAGE_DISPLAY_NAMES, TARGET_LANGUAGE_DISPLAY_NAMES } from "../../lib/types";
-import { capabilitiesForProvider, targetLanguagesForSettings } from "../../lib/providerCapabilities";
+import { sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import { profileRevealCredential } from "../../lib/ipc";
 import { SettingsView } from "./SettingsView";
 
@@ -63,9 +63,8 @@ it.each(["zh", "en", "ja"] as const)("offers five categories in the expected ord
   ]);
   expect(host.querySelector("#subtitle-settings .source-language-grid")).toBeNull();
   expect(host.querySelector("#subtitle-settings [aria-label=\"" + I18N.settings.translateTo + "\"]")).toBeNull();
-  expect(host.querySelector("#service-profiles-panel .source-language-grid")).not.toBeNull();
-  expect(host.querySelector("#translation-languages [role=\"combobox\"]")).toBeNull();
-  expect(host.querySelector("#translation-languages .target-language-grid")).not.toBeNull();
+  expect(host.querySelector("#translation-languages")).toBeNull();
+  expect(host.querySelector("#service-profiles-panel #network-proxy")).not.toBeNull();
   expect(host.querySelector(".settings-sidebar .settings-support-diagnostics")).toBeNull();
   for (const category of ["subtitles", "service", "export", "general", "diagnostics"]) {
     await select(category);
@@ -80,33 +79,39 @@ it.each(["zh", "en", "ja"] as const)("offers five categories in the expected ord
   expect(saveProfileCredentials).not.toHaveBeenCalled();
 });
 
-it.each(["alibabaCloud", "openAIRealtime", "volcanoEngine", "tencentCloud", "baiduTranslate"] as const)("offers only the supported %s source/target languages as inline choices", async (provider) => {
-  const capability = capabilitiesForProvider(provider);
-  const settings = { ...useStore.getState().settings, sourceLanguage: capability.sourceLanguages[0], profiles: useStore.getState().settings.profiles.map((profile) => ({ ...profile, provider })) };
+it.each(["openAIRealtime", "volcanoEngine", "tencentCloud", "baiduTranslate"] as const)("groups selectable %s languages inside service details", async (provider) => {
+  const settings = { ...useStore.getState().settings, sourceLanguage: "auto" as const, profiles: useStore.getState().settings.profiles.map(profile => ({ ...profile, provider })) };
   useStore.setState({ settings });
   await mount(); await select("service");
-  const choices = [...host.querySelectorAll("#translation-languages .source-language-grid:not(.target-language-grid) button span")].map((node) => node.textContent);
-  expect(choices).toHaveLength(capability.sourceLanguages.length);
-  capability.sourceLanguages.forEach((language, index) => expect(choices[index]).toContain(SOURCE_LANGUAGE_DISPLAY_NAMES[language]));
-  expect([...host.querySelectorAll("#translation-languages .target-language-grid button span")].map((node) => node.textContent)).toEqual(targetLanguagesForSettings(settings).map((language) => TARGET_LANGUAGE_DISPLAY_NAMES[language]));
-  expect(host.querySelector("#translation-languages [role=\"combobox\"]")).toBeNull();
-  expect(host.querySelector(".language-profile-caption")?.textContent).toBe(I18N.settings.activeProfileLanguages(settings.profiles[0].name));
+  expect(host.querySelector("#translation-languages")).toBeNull();
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  const groups = [...host.querySelectorAll(".service-detail #translation-languages [role=group]")];
+  expect(groups.map(group => [...group.querySelectorAll("button span")].map(node => node.textContent))).toEqual([
+    sourceLanguagesForSettings(settings).map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]),
+    targetLanguagesForSettings(settings).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]),
+  ]);
   expect(saveSettings).not.toHaveBeenCalled();
 });
 
-it("saves inline target choices and disables them while a subtitle session is active", async () => {
+it("saves language choices and blocks them for active and paused subtitle sessions", async () => {
+  useStore.setState({ settings: { ...useStore.getState().settings, profiles: useStore.getState().settings.profiles.map(profile => ({ ...profile, provider: "openAIRealtime" })) } });
   await mount(); await select("service");
-  const target = [...host.querySelectorAll<HTMLButtonElement>(".target-language-grid button")].find((button) => button.textContent === TARGET_LANGUAGE_DISPLAY_NAMES.ja)!;
-  await act(() => { target.focus(); target.click(); });
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  const target = [...host.querySelectorAll<HTMLButtonElement>("#translation-languages [role=group]")[1].querySelectorAll("button")].find(button => button.textContent === TARGET_LANGUAGE_DISPLAY_NAMES.ja)!;
+  await act(async () => { target.focus(); target.click(); });
   expect(saveSettings).toHaveBeenCalledExactlyOnceWith({ targetLanguage: "ja" });
   expect(document.activeElement).toBe(target);
-  await act(() => useStore.setState({ session: { ...initial.session, status: { kind: "listening" }, isActive: true } }));
-  expect([...host.querySelectorAll<HTMLButtonElement>(".target-language-grid button")].every((button) => button.disabled)).toBe(true);
+  for (const state of [{ isActive: true, isPaused: false }, { isActive: false, isPaused: true }]) {
+    await act(() => useStore.setState({ session: { ...initial.session, status: { kind: "listening" }, ...state } }));
+    expect([...host.querySelectorAll<HTMLButtonElement>("#translation-languages button")].every(button => button.disabled)).toBe(true);
+    expect(host.querySelector("#translation-languages")?.textContent).toContain(I18N.settings.languageChangeRequiresStop);
+  }
 });
 
-it("places proxies in General and blocks changing them while subtitles are paused", async () => {
-  await mount(); await select("general");
-  expect(host.querySelector("#application-settings-panel #network-proxy")).not.toBeNull();
+it("places global proxy controls with services and blocks changes while subtitles are paused", async () => {
+  await mount(); await select("service");
+  expect(host.querySelector("#application-settings-panel #network-proxy")).toBeNull();
+  expect(host.querySelector("#service-profiles-panel #network-proxy")?.textContent).toContain(I18N.settings.networkProxyScope);
   const selector = host.querySelector<HTMLButtonElement>('#network-proxy [role="combobox"]')!;
   expect(selector.disabled).toBe(false);
   await act(() => selector.click());

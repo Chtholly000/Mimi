@@ -7,10 +7,11 @@ import type { ServiceProfile } from "./types";
 
 const profile: ServiceProfile = { id: "synthetic", name: "Alibaba", provider: "alibabaCloud", credentialState: "missing" };
 
-it("separates application choices from exact Audio3/Lite upstream capabilities", () => {
+it("distinguishes translated intersection choices from complete Audio3/Lite model catalogs", () => {
   const metadata = languageMetadataForProfile(profile);
-  expect(metadata.appSelectable.sourceCodes).toEqual(["auto", "ja", "en", "ko", "zh"]);
-  expect(metadata.appSelectable.targetCodes).toEqual(["original", "zh", "en", "ja"]);
+  expect(metadata.appSelectable.sourceCodes).toEqual(["auto", ...AUDIO3_LITE_PIPELINE_SOURCE_CODES]);
+  expect(metadata.appSelectable.targetCodes).toEqual(["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES]);
+  expect(languageMetadataForProfile(profile, "original").appSelectable.sourceCodes).toEqual(["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES]);
   expect(metadata.providerAvailable.recognition.languageCodes).toHaveLength(30);
   expect(metadata.providerAvailable.translation.languageCodes).toHaveLength(31);
   expect(new Set(AUDIO3_RECOGNITION_LANGUAGE_CODES).size).toBe(30);
@@ -48,6 +49,8 @@ it("never borrows Lite's target list for independent official or custom destinat
     expect(metadata.providerAvailable.translation.languageCodes).toBeNull();
     expect(metadata.providerAvailable.explicitPipelineSourceCodes).toBeNull();
     expect(metadata.providerAvailable.limitation).toBe(limitation);
+    expect(metadata.appSelectable.sourceCodes).toEqual(["auto", "ja", "en", "ko", "zh"]);
+    expect(metadata.appSelectable.targetCodes).not.toContain("fr");
   }
   const legacy = languageMetadataForProfile({ ...profile, provider: "deepLX" });
   expect(legacy.providerAvailable.limitation).toBe("customUnknown");

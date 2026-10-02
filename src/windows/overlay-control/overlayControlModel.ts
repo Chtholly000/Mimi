@@ -1,6 +1,6 @@
 import {
   effectiveTranslationModeForSettings,
-  sourceLanguagesForSettings,
+  quickSourceLanguagesForSettings,
   translationModesForSettings,
 } from "../../lib/providerCapabilities";
 import {
@@ -26,7 +26,7 @@ export interface OverlayControlPanelModel {
 export function overlayControlPanelModel(
   settings: SettingsSnapshot,
 ): OverlayControlPanelModel {
-  const sourceLanguages = sourceLanguagesForSettings(settings);
+  const sourceLanguages = quickSourceLanguagesForSettings(settings);
   const translationModes = translationModesForSettings(settings);
   return {
     sourceOptions: sourceLanguages.length > 1 ? sourceLanguages : [],

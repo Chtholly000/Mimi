@@ -20,7 +20,7 @@
   </p>
 </div>
 
-Mimi shows live subtitles in a floating window for films, live streams, lessons, and games playing on your computer. Your chosen cloud service transcribes the system audio or translates it into Simplified Chinese, English, or Japanese; available languages and modes depend on the service. The name `mimi` means “ear” in Japanese.
+Mimi shows live subtitles in a floating window for films, live streams, lessons, and games playing on your computer. Your chosen cloud service transcribes the system audio or translates it into the languages supported by your selected service. The name `mimi` means “ear” in Japanese.
 
 <!-- project-demo-v1 -->
 ## Demo
@@ -33,13 +33,13 @@ https://github.com/user-attachments/assets/5acd46bb-e6b5-4bb5-b280-d70d4e0cdbb4
 
 ## Features
 
-- **Live subtitles and translation** — captures system output audio; source languages, targets, and quality modes vary by provider.
+- **Live subtitles and translation** — captures system output audio; recognition and translation languages vary by provider.
 - **Service configurations** — save and switch between services without repeatedly entering credentials.
 - **Subtitle overlay** — move, resize, collapse, pause, enable click-through, or use Immersive Mode.
 - **Updates** — check and install updates in Settings on macOS, Windows installers, and Linux AppImage. Windows ZIP and Linux .deb builds link to Releases for manual updates.
 - **Session export** — opt in under Settings → Session export to retain timestamped transcripts or record system audio, then stop and export TXT / WAV. Both switches are off by default.
 - **Settings appearance** — light, dark, or follow the system.
-- **Privacy** — no mimi account, microphone, or screen capture; audio goes only to the active provider. Session content stays in memory until you explicitly export it. Turning an option off clears its buffer; starting a new session or quitting clears both. Export before doing so.
+- **Privacy** — no mimi account, microphone, or screen capture; audio goes only to the active provider. History retention and audio recording are off by default. When enabled, confirmed subtitles or audio are saved incrementally to private, bounded local session files. Turning an option off clears its current-session content; saved sessions can be explicitly exported or deleted.
 
 Transcript retention is limited to 10,000 confirmed pairs / 2 MiB of text and audio to 64 MiB; reaching a limit stops retention and shows a notice. Transcript timestamps mark final confirmation time, not media playback time. Pauses and reconnect gaps are omitted from WAV audio, so it is not synchronized to transcript timestamps.
 

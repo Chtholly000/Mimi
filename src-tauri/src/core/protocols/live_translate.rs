@@ -17,6 +17,8 @@ pub enum LiveTranslateProtocolError {
     InvalidJSON,
     #[error("The live translation event is missing its type.")]
     MissingEventType,
+    #[error("The live translation service does not support this language selection.")]
+    UnsupportedLanguage,
 }
 
 /// DashScope unified realtime WebSocket endpoint. The old MaaS host put the
@@ -61,6 +63,22 @@ impl LiveTranslateRequestEncoder {
         hotwords: &BTreeMap<String, String>,
         event_id: Option<&str>,
     ) -> Result<Value, LiveTranslateProtocolError> {
+        if !matches!(
+            source_language,
+            SourceLanguage::Automatic
+                | SourceLanguage::Chinese
+                | SourceLanguage::English
+                | SourceLanguage::Japanese
+                | SourceLanguage::Korean
+        ) || !matches!(
+            target_language,
+            TargetLanguage::Original
+                | TargetLanguage::SimplifiedChinese
+                | TargetLanguage::English
+                | TargetLanguage::Japanese
+        ) {
+            return Err(LiveTranslateProtocolError::UnsupportedLanguage);
+        }
         let mut translation = json!({ "language": target_language.raw_value() });
         if !hotwords.is_empty() {
             translation["corpus"] = json!({ "phrases": hotwords });
@@ -351,6 +369,51 @@ fn item_id_of(json: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_app_languages_do_not_expand_the_legacy_realtime_wire_contract() {
+        for source in SourceLanguage::ALL.into_iter().filter(|source| {
+            !matches!(
+                source,
+                SourceLanguage::Automatic
+                    | SourceLanguage::Chinese
+                    | SourceLanguage::English
+                    | SourceLanguage::Japanese
+                    | SourceLanguage::Korean
+            )
+        }) {
+            assert_eq!(
+                LiveTranslateRequestEncoder::session_update(
+                    source,
+                    TargetLanguage::English,
+                    &BTreeMap::new(),
+                    None
+                )
+                .unwrap_err(),
+                LiveTranslateProtocolError::UnsupportedLanguage
+            );
+        }
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::Original
+                    | TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                LiveTranslateRequestEncoder::session_update(
+                    SourceLanguage::Automatic,
+                    target,
+                    &BTreeMap::new(),
+                    None
+                )
+                .unwrap_err(),
+                LiveTranslateProtocolError::UnsupportedLanguage
+            );
+        }
+    }
 
     fn decode(text: &str) -> LiveTranslateServerEvent {
         LiveTranslateServerEvent::decode_with_identity(text)

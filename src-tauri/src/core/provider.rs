@@ -36,6 +36,18 @@ pub enum ProviderKind {
 }
 
 impl ProviderKind {
+    pub fn capabilities_for_route(
+        self,
+        route: TextTranslation,
+        target: TargetLanguage,
+    ) -> ProviderCapabilities {
+        if self == Self::AlibabaCloud {
+            alibaba_capabilities(route, target)
+        } else {
+            self.capabilities()
+        }
+    }
+
     pub const fn wire_value(self) -> &'static str {
         match self {
             Self::AlibabaCloud => "alibabaCloud",
@@ -66,23 +78,10 @@ impl ProviderKind {
 
     pub fn capabilities(self) -> ProviderCapabilities {
         match self {
-            Self::AlibabaCloud => ProviderCapabilities {
-                source_languages: vec![
-                    SourceLanguage::Automatic,
-                    SourceLanguage::Chinese,
-                    SourceLanguage::English,
-                    SourceLanguage::Japanese,
-                    SourceLanguage::Korean,
-                ],
-                target_languages: vec![
-                    TargetLanguage::Original,
-                    TargetLanguage::SimplifiedChinese,
-                    TargetLanguage::English,
-                    TargetLanguage::Japanese,
-                ],
-                translation_modes: vec![TranslationMode::Turbo],
-                input_sample_rate_hz: 16_000,
-            },
+            Self::AlibabaCloud => alibaba_capabilities(
+                TextTranslation::FollowService,
+                TargetLanguage::SimplifiedChinese,
+            ),
             Self::OpenAIRealtime | Self::AzureOpenAIRealtime | Self::XAIRealtime => {
                 realtime_capabilities(vec![SourceLanguage::Automatic], 24_000)
             }
@@ -128,6 +127,61 @@ impl ProviderKind {
                 | Self::VolcanoEngine
                 | Self::XAIRealtime
         )
+    }
+}
+
+/// Route-aware language capabilities. A representable code is not permission
+/// to send it to a different service. Original broadens only the default
+/// Audio3 route; independent text destinations retain their verified subset.
+fn alibaba_capabilities(route: TextTranslation, target: TargetLanguage) -> ProviderCapabilities {
+    if route == TextTranslation::DeepLX {
+        return ProviderKind::DeepLX.capabilities();
+    }
+    if route == TextTranslation::DeepL {
+        return ProviderCapabilities {
+            source_languages: vec![
+                SourceLanguage::Automatic,
+                SourceLanguage::Chinese,
+                SourceLanguage::English,
+                SourceLanguage::Japanese,
+                SourceLanguage::Korean,
+            ],
+            target_languages: vec![
+                TargetLanguage::Original,
+                TargetLanguage::SimplifiedChinese,
+                TargetLanguage::English,
+                TargetLanguage::Japanese,
+            ],
+            translation_modes: vec![TranslationMode::Turbo],
+            input_sample_rate_hz: 16_000,
+        };
+    }
+    let source_languages = SourceLanguage::ALL
+        .into_iter()
+        .filter(|source| {
+            target == TargetLanguage::Original
+                || *source == SourceLanguage::Automatic
+                || crate::core::protocols::qwen_mt::REALTIME_MT_MODEL
+                    .supported_language_codes()
+                    .contains(&source.raw_value())
+        })
+        .collect();
+    let mut target_languages = vec![TargetLanguage::Original];
+    target_languages.extend(
+        crate::core::protocols::qwen_mt::REALTIME_MT_MODEL
+            .supported_language_codes()
+            .iter()
+            .filter_map(|code| {
+                TargetLanguage::ALL
+                    .into_iter()
+                    .find(|target| target.raw_value() == *code)
+            }),
+    );
+    ProviderCapabilities {
+        source_languages,
+        target_languages,
+        translation_modes: vec![TranslationMode::Turbo],
+        input_sample_rate_hz: 16_000,
     }
 }
 
@@ -238,12 +292,9 @@ impl ProviderCapabilities {
 }
 
 fn source_matches_target(source: SourceLanguage, target: TargetLanguage) -> bool {
-    matches!(
-        (source, target),
-        (SourceLanguage::Chinese, TargetLanguage::SimplifiedChinese)
-            | (SourceLanguage::English, TargetLanguage::English)
-            | (SourceLanguage::Japanese, TargetLanguage::Japanese)
-    )
+    source != SourceLanguage::Automatic
+        && target.translates_audio()
+        && source.raw_value() == target.raw_value()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,6 +405,22 @@ impl ServiceProfile {
             })
     }
 
+    pub fn capabilities(&self, target: TargetLanguage) -> ProviderCapabilities {
+        if self.effective_provider() == ProviderKind::AlibabaCloud {
+            alibaba_capabilities(self.text_translation(), target)
+        } else {
+            self.effective_provider().capabilities()
+        }
+    }
+
+    /// Normalize the target first, then resolve its source catalog. Switching
+    /// away from Original must not keep an Audio3-only hint on the Lite route.
+    pub fn normalize_preferences(&self, prefs: ProviderPreferences) -> ProviderPreferences {
+        let normalized = self.capabilities(prefs.target_language).normalize(prefs);
+        self.capabilities(normalized.target_language)
+            .normalize(normalized)
+    }
+
     pub fn effective_provider(&self) -> ProviderKind {
         match (self.provider, self.text_translation()) {
             (ProviderKind::AlibabaCloud | ProviderKind::DeepLX, TextTranslation::DeepLX) => {
@@ -376,6 +443,80 @@ impl Default for ServiceProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alibaba_route_catalogs_match_audio3_lite_intersection_and_original() {
+        let profile = ServiceProfile::alibaba_default();
+        let translated = profile.capabilities(TargetLanguage::French);
+        assert_eq!(
+            translated
+                .source_languages
+                .iter()
+                .map(|source| source.raw_value())
+                .collect::<Vec<_>>(),
+            [
+                "auto", "zh", "en", "ja", "ko", "vi", "th", "id", "ms", "tl", "hi", "ar", "fr",
+                "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "pl", "cs", "hu"
+            ]
+        );
+        assert_eq!(translated.target_languages[0], TargetLanguage::Original);
+        assert_eq!(
+            translated.target_languages[1..]
+                .iter()
+                .map(|target| target.raw_value())
+                .collect::<Vec<_>>(),
+            crate::core::protocols::qwen_mt::QWEN_MT_LITE_LANGUAGE_CODES
+        );
+        assert_eq!(
+            profile
+                .capabilities(TargetLanguage::Original)
+                .source_languages,
+            SourceLanguage::ALL
+        );
+        let normalized = profile.normalize_preferences(ProviderPreferences {
+            source_language: SourceLanguage::Greek,
+            target_language: TargetLanguage::French,
+            translation_mode: TranslationMode::Turbo,
+        });
+        assert_eq!(normalized.source_language, SourceLanguage::Automatic);
+        assert_eq!(normalized.target_language, TargetLanguage::French);
+    }
+
+    #[test]
+    fn independent_text_routes_and_other_providers_do_not_inherit_lite() {
+        let mut profile = ServiceProfile::alibaba_default();
+        profile.text_translation = Some(TextTranslation::DeepL);
+        let deepl = profile.capabilities(TargetLanguage::Original);
+        assert_eq!(deepl.source_languages.len(), 5);
+        assert_eq!(deepl.target_languages.len(), 4);
+        assert!(!deepl.source_languages.contains(&SourceLanguage::French));
+        assert!(!deepl
+            .target_languages
+            .contains(&TargetLanguage::TraditionalChinese));
+        profile.text_translation = Some(TextTranslation::DeepLX);
+        assert_eq!(
+            profile
+                .capabilities(TargetLanguage::French)
+                .target_languages
+                .len(),
+            3
+        );
+        for provider in [
+            ProviderKind::OpenAIRealtime,
+            ProviderKind::AzureOpenAIRealtime,
+            ProviderKind::GoogleGeminiLive,
+            ProviderKind::XAIRealtime,
+            ProviderKind::VolcanoEngine,
+            ProviderKind::TencentCloud,
+            ProviderKind::BaiduTranslate,
+            ProviderKind::DeepLX,
+        ] {
+            let caps = provider.capabilities();
+            assert!(!caps.source_languages.contains(&SourceLanguage::French));
+            assert!(!caps.target_languages.contains(&TargetLanguage::French));
+        }
+    }
+
     use serde_json::json;
 
     #[test]
@@ -431,8 +572,8 @@ mod tests {
     #[test]
     fn provider_capabilities_match_transport_constraints() {
         let alibaba = ProviderKind::AlibabaCloud.capabilities();
-        assert_eq!(alibaba.source_languages.len(), 5);
-        assert_eq!(alibaba.target_languages.len(), 4);
+        assert_eq!(alibaba.source_languages.len(), 25);
+        assert_eq!(alibaba.target_languages.len(), 32);
         assert_eq!(alibaba.translation_modes, vec![TranslationMode::Turbo]);
         assert_eq!(alibaba.input_sample_rate_hz, 16_000);
 

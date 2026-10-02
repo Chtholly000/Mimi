@@ -484,7 +484,7 @@
 .settings-button,
 .settings-link,
 .provider-option,
-.source-language-button,
+.profile-language-choice,
 .settings-category-nav__item {
   border: 0;
   cursor: pointer;
@@ -498,14 +498,14 @@
 
 .settings-button:hover:not(:disabled),
 .provider-option:hover:not(:disabled),
-.source-language-button:hover:not(:disabled),
+.profile-language-choice:hover:not(:disabled),
 .settings-category-nav__item:hover:not(:disabled) {
   filter: brightness(1.08);
 }
 
 .settings-button:active:not(:disabled),
 .provider-option:active:not(:disabled),
-.source-language-button:active:not(:disabled),
+.profile-language-choice:active:not(:disabled),
 .settings-category-nav__item:active:not(:disabled) {
   transform: scale(0.985);
 }
@@ -606,44 +606,6 @@
   font-weight: 650;
   letter-spacing: 0.035em;
   text-transform: uppercase;
-}
-
-.source-language-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(78px, 1fr));
-  gap: 7px;
-}
-
-.source-language-grid[data-count="1"] {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.source-language-button {
-  display: inline-flex;
-  min-width: 0;
-  min-height: 36px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 5px 9px;
-  border: 1px solid var(--settings-border);
-  border-radius: 9px;
-  color: var(--settings-text-muted);
-  background: var(--settings-control);
-  font-size: 12px;
-  font-weight: 560;
-  line-height: 1.3;
-  white-space: normal;
-}
-
-.source-language-button.is-selected {
-  border-color: var(--settings-text);
-  color: var(--settings-canvas);
-  background: var(--settings-text);
-}
-
-.source-language-button svg {
-  font-size: 11px;
 }
 
 .settings-help,
@@ -1276,7 +1238,7 @@
   }
 
   .settings-category-nav__item.is-selected,
-  .source-language-button.is-selected {
+  .profile-language-choice[aria-pressed="true"] {
     forced-color-adjust: none;
     border-color: Highlight;
     color: HighlightText;
@@ -1394,9 +1356,6 @@
   }
   .settings-select-wrap {
     width: 100%;
-  }
-  .source-language-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .credential-panel__saved-actions {
     flex-wrap: wrap;
@@ -1978,7 +1937,7 @@
   line-height: 1.5;
 }
 .service-detail__configuration {
-  margin: 18px 0 0 44px;
+  margin: 22px 0 0;
 }
 .service-detail__connection {
   display: grid;
@@ -1989,19 +1948,6 @@
   gap: 8px 12px;
   flex-wrap: wrap;
   justify-content: flex-start;
-}
-.service-detail .settings-button--quiet {
-  min-height: 28px;
-  padding: 3px 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  font-size: 11.5px;
-}
-.service-detail .settings-button--quiet:hover:not(:disabled) {
-  filter: none;
-  text-decoration: underline;
-  text-underline-offset: 3px;
 }
 .service-detail .credential-form__actions {
   flex-wrap: wrap;
@@ -2028,74 +1974,78 @@
   align-items: center;
 }
 .service-detail__name input {
-  height: 30px;
-  padding: 3px 0;
-  border: 0;
-  border-bottom: 1px solid var(--settings-border);
-  border-radius: 0;
-  background: transparent;
+  min-height: 34px;
   font-size: 12px;
-}
-.service-detail__name input:focus {
-  border-bottom-color: var(--settings-text);
 }
 .service-detail__save-name {
   padding: 3px 0;
   font-size: 11.5px;
 }
-.service-language-support {
-  margin-top: 10px;
+.profile-language-settings {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--settings-border);
 }
-.service-language-support__label {
+.profile-language-settings h3 {
+  margin: 0 0 14px;
+  font-size: 12px;
+  font-weight: 650;
+}
+.profile-language-settings .settings-row {
+  grid-template-columns: minmax(82px, 112px) minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+  padding: 8px 0;
+}
+.profile-language-settings .settings-row__copy {
+  padding-top: 8px;
+}
+.profile-language-settings .settings-row__control {
+  justify-content: flex-start;
+  min-width: 0;
+}
+.profile-language-settings .mimi-select {
+  width: 100%;
+}
+.profile-language-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.profile-language-choice {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--settings-border-strong);
+  border-radius: 8px;
+  background: var(--settings-control);
   color: var(--settings-text-muted);
-  font-size: 11.5px;
-  font-weight: 500;
-}
-.service-language-support dl {
-  display: grid;
-  gap: 3px;
-  margin: 5px 0 0;
-  font-size: 11.5px;
-  line-height: 1.5;
-}
-.service-language-support dl > div {
-  display: grid;
-  grid-template-columns: 76px minmax(0, 1fr);
-  gap: 12px;
-}
-.service-language-support dt {
-  color: var(--settings-text-muted);
-}
-.service-language-support dd {
-  margin: 0;
-  color: var(--settings-text-muted);
-}
-.service-language-more {
-  margin-top: 6px;
-  font-size: 11.5px;
-}
-.service-language-more > summary {
-  width: fit-content;
-  color: var(--settings-text-muted);
+  font-size: 12px;
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
-.service-language-more > summary:hover {
-  color: var(--settings-text);
+.profile-language-choice[aria-pressed="true"] {
+  background: var(--settings-text);
+  border-color: var(--settings-text);
+  color: var(--settings-canvas);
 }
-.service-language-more > summary:focus-visible {
-  border-radius: 3px;
-  outline: 2px solid var(--settings-text-muted);
-  outline-offset: 3px;
+.profile-language-choice:focus-visible {
+  outline: 2px solid var(--settings-text);
+  outline-offset: 2px;
 }
-.service-language-more > .settings-caption {
-  margin: 8px 0 0;
-  font-size: 11.5px;
+.profile-language-choice:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
-.language-profile-caption {
-  margin: 0 0 14px;
+.service-detail__language-note {
+  margin-top: 18px;
 }
-.target-language-grid {
-  margin-top: 0;
+.network-proxy-scope {
+  margin-bottom: 10px;
 }
 .stored-credential-reveal {
   display: flex;
@@ -2152,10 +2102,6 @@
 }
 .subtitle-preview[data-immersive="true"] .subtitle-preview__text {
   background: transparent;
-}
-.source-language-button {
-  white-space: normal;
-  overflow-wrap: anywhere;
 }
 @media (max-width: 900px) {
   .service-row__main {
@@ -2648,4 +2594,21 @@
   border: 0;
   border-radius: 0;
   background: transparent;
+}
+
+@media (max-width: 680px) {
+  .profile-language-settings .settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .profile-language-settings .settings-row__copy { padding-top: 0; }
+}
+
+@media (forced-colors: active) {
+  .profile-language-choice[aria-pressed="true"] {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    color: HighlightText;
+    background: Highlight;
+  }
 }

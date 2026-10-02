@@ -9,6 +9,14 @@ const options = [
   { value: "bilingual", label: "双语" },
   { value: "original", label: "仅原文" },
 ];
+const languages = [
+  { value: "zh", label: "中文" },
+  { value: "en", label: "英语" },
+  { value: "ja", label: "日语" },
+  { value: "de", label: "德语" },
+  { value: "fr", label: "法语" },
+  { value: "pt", label: "葡萄牙语" },
+];
 let host: HTMLDivElement;
 let root: Root;
 const onChange = vi.fn();
@@ -24,6 +32,7 @@ afterEach(async () => {
   host.remove();
   onChange.mockReset();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 async function render(value: string) {
   await act(() => root.render(<Select label="字幕显示" value={value} options={options} onChange={onChange} />));
@@ -54,4 +63,170 @@ it("follows an external value while the menu is open, including its keyboard cho
   await act(() => trigger().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
   expect(onChange).toHaveBeenCalledExactlyOnceWith("original");
   expect(trigger().getAttribute("aria-expanded")).toBe("false");
+});
+
+async function renderSearch(value = "zh", list = languages, disabled = false) {
+  await act(() => root.render(<Select label="识别语言" value={value} options={list} disabled={disabled}
+    searchLabel="搜索语言" emptyMessage="没有匹配语言" onChange={onChange} />));
+}
+function input() { return document.querySelector<HTMLInputElement>(".mimi-select__search")!; }
+function visibleLabels() { return [...document.querySelectorAll('[role="option"]')].map(option => option.textContent); }
+async function typeQuery(text: string) {
+  await act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), text);
+    input().dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+async function key(key: string, extra: KeyboardEventInit = {}) {
+  const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...extra });
+  await act(() => input().dispatchEvent(event));
+  return event;
+}
+
+it("opens a named search input outside the listbox and filters localized names and wire codes", async () => {
+  await renderSearch();
+  await act(() => trigger().click());
+  expect(document.activeElement).toBe(input());
+  expect(input().getAttribute("aria-label")).toBe("搜索语言");
+  expect(input().closest('[role="listbox"]')).toBeNull();
+  expect(document.getElementById(input().getAttribute("aria-controls")!)?.getAttribute("role")).toBe("listbox");
+  await typeQuery("葡萄");
+  expect(visibleLabels()).toEqual(["葡萄牙语"]);
+  await typeQuery(" DE ");
+  expect(visibleLabels()).toEqual(["德语"]);
+  await key("Enter");
+  expect(onChange).toHaveBeenCalledExactlyOnceWith("de");
+  expect(trigger().getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(trigger());
+});
+
+it("navigates the filtered list and resets its cursor safely as the query changes", async () => {
+  await renderSearch();
+  await act(() => trigger().click());
+  await typeQuery("e");
+  expect(visibleLabels()).toEqual(["英语", "德语"]);
+  await key("End");
+  expect(document.querySelector('[data-active="true"]')?.textContent).toBe("德语");
+  await key("ArrowDown");
+  expect(document.querySelector('[data-active="true"]')?.textContent).toBe("英语");
+  await key("ArrowUp");
+  expect(document.querySelector('[data-active="true"]')?.textContent).toBe("德语");
+  await key("Home");
+  expect(document.querySelector('[data-active="true"]')?.textContent).toBe("英语");
+  await typeQuery("pt");
+  const option = document.querySelector('[role="option"]')!;
+  expect(document.getElementById(input().getAttribute("aria-activedescendant")!)).toBe(option);
+  expect(vi.mocked(Element.prototype.scrollIntoView).mock.contexts.at(-1)).toBe(option);
+  await key("Enter");
+  expect(onChange).toHaveBeenCalledExactlyOnceWith("pt");
+});
+
+it("shows caller-supplied no-match feedback without selecting or inventing an active option", async () => {
+  await renderSearch();
+  await act(() => trigger().click());
+  await typeQuery("unknown language");
+  expect(visibleLabels()).toEqual([]);
+  expect(document.querySelector('[role="status"]')?.textContent).toBe("没有匹配语言");
+  expect(input().hasAttribute("aria-activedescendant")).toBe(false);
+  expect(trigger().hasAttribute("aria-activedescendant")).toBe(false);
+  for (const command of ["ArrowUp", "ArrowDown", "Home", "End", "Enter"]) await key(command);
+  expect(document.querySelector('[role="listbox"]')).not.toBeNull();
+  expect(onChange).not.toHaveBeenCalled();
+  await typeQuery("日语");
+  await act(() => document.querySelector<HTMLElement>('[role="option"]')!.click());
+  expect(onChange).toHaveBeenCalledExactlyOnceWith("ja");
+});
+
+it("keeps external selections current while filtered, including a selected value outside the results", async () => {
+  await renderSearch();
+  await act(() => trigger().click());
+  await typeQuery("e");
+  await renderSearch("de");
+  const selected = document.querySelector('[role="option"][aria-selected="true"]')!;
+  expect(document.getElementById(input().getAttribute("aria-activedescendant")!)).toBe(selected);
+  expect(trigger().textContent).toBe("德语");
+  await renderSearch("ja");
+  expect(trigger().textContent).toBe("日语");
+  expect(document.querySelector('[role="option"][aria-selected="true"]')).toBeNull();
+  expect(document.querySelector('[data-active="true"]')?.textContent).toBe("英语");
+  await key("Enter");
+  expect(onChange).toHaveBeenCalledExactlyOnceWith("en");
+});
+
+it.each([
+  { command: "Escape", shiftKey: false },
+  { command: "Tab", shiftKey: false },
+  { command: "Tab", shiftKey: true },
+])("closes search with $command (shift=$shiftKey) and restores the form trigger without selecting", async ({ command, shiftKey }) => {
+  await renderSearch();
+  await act(() => trigger().click());
+  await typeQuery("de");
+  const event = await key(command, { shiftKey });
+  expect(document.querySelector('[role="listbox"]')).toBeNull();
+  expect(document.activeElement).toBe(trigger());
+  expect(event.defaultPrevented).toBe(command === "Escape");
+  expect(onChange).not.toHaveBeenCalled();
+  await act(() => trigger().click());
+  expect(input().value).toBe("");
+  expect(visibleLabels()).toHaveLength(languages.length);
+});
+
+it("leaves text editing and IME Enter alone, and dismisses on an outside pointer", async () => {
+  await renderSearch();
+  await act(() => trigger().click());
+  await typeQuery("de");
+  expect((await key(" ")).defaultPrevented).toBe(false);
+  expect((await key("Enter", { isComposing: true })).defaultPrevented).toBe(false);
+  expect(onChange).not.toHaveBeenCalled();
+  expect(document.querySelector('[role="listbox"]')).not.toBeNull();
+  await act(() => document.body.dispatchEvent(new Event("pointerdown", { bubbles: true })));
+  expect(document.querySelector('[role="listbox"]')).toBeNull();
+});
+
+it("starts an explicit query when typing on the closed trigger and keeps a searchable popup inside the viewport", async () => {
+  vi.stubGlobal("innerWidth", 240);
+  vi.stubGlobal("innerHeight", 120);
+  await renderSearch();
+  trigger().getBoundingClientRect = () => ({ left: 210, right: 240, top: 64, bottom: 100, width: 30, height: 36 } as DOMRect);
+  await act(() => trigger().dispatchEvent(new KeyboardEvent("keydown", { key: "d", bubbles: true, cancelable: true })));
+  expect(input().value).toBe("d");
+  expect(visibleLabels()).toEqual(["德语"]);
+  const popup = document.querySelector<HTMLElement>(".mimi-select__menu")!;
+  const height = Number.parseFloat(popup.style.maxHeight), width = Number.parseFloat(popup.style.width);
+  expect(height).toBeGreaterThanOrEqual(87); // Input, spacing and one usable result.
+  expect(Number.parseFloat(popup.style.left)).toBeGreaterThanOrEqual(8);
+  expect(Number.parseFloat(popup.style.left) + width).toBeLessThanOrEqual(232);
+  expect(Number.parseFloat(popup.style.bottom)).toBeGreaterThanOrEqual(8);
+  expect(Number.parseFloat(popup.style.bottom) + height).toBeLessThanOrEqual(112);
+});
+
+it("keeps non-searchable typeahead and empty/disabled controls unchanged", async () => {
+  await render("translation");
+  await act(() => trigger().dispatchEvent(new KeyboardEvent("keydown", { key: "双", bubbles: true })));
+  expect(document.querySelector(".mimi-select__search")).toBeNull();
+  await act(() => trigger().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+  expect(onChange).toHaveBeenCalledExactlyOnceWith("bilingual");
+  await renderSearch("zh", [], false);
+  expect(trigger().disabled).toBe(true);
+  await act(() => trigger().click());
+  expect(document.querySelector(".mimi-select__search")).toBeNull();
+  await renderSearch("zh", languages, true);
+  expect(trigger().disabled).toBe(true);
+});
+
+it("keeps the non-searchable typeahead timeout based on keyboard event timing", async () => {
+  await act(() => root.render(<Select label="Language" value="de" options={[
+    { value: "de", label: "German" }, { value: "en", label: "English" }, { value: "et", label: "Estonian" },
+  ]} onChange={onChange} />));
+  const press = async (character: string, at: number) => {
+    const event = new KeyboardEvent("keydown", { key: character, bubbles: true });
+    Object.defineProperty(event, "timeStamp", { value: at });
+    await act(() => trigger().dispatchEvent(event));
+  };
+  await press("E", 1000);
+  expect(document.querySelector('[data-active="true"]')?.textContent).toBe("English");
+  await press("s", 1200);
+  expect(document.querySelector('[data-active="true"]')?.textContent).toBe("Estonian");
+  await press("E", 2000);
+  expect(document.querySelector('[data-active="true"]')?.textContent).toBe("English");
 });

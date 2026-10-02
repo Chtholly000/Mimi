@@ -3,7 +3,7 @@
 use crate::core::credentials::{ProviderCredentials, ProviderCredentialsError};
 use crate::core::models::{SourceLanguage, TargetLanguage, TranslationMode};
 use crate::core::network_proxy::{ProxyConfig, ProxyConfigError};
-use crate::core::provider::ProviderKind;
+use crate::core::provider::{ProviderCapabilities, ProviderKind, TextTranslation};
 use std::fmt;
 use thiserror::Error;
 
@@ -93,12 +93,22 @@ impl LiveTranslationConfiguration {
         TranslationMode::Turbo
     }
 
+    pub fn capabilities(&self) -> ProviderCapabilities {
+        let route = match self.credentials {
+            ProviderCredentials::DeepL { .. } => TextTranslation::DeepL,
+            ProviderCredentials::DeepLX { .. } => TextTranslation::DeepLX,
+            _ => TextTranslation::FollowService,
+        };
+        self.provider
+            .capabilities_for_route(route, self.target_language)
+    }
+
     /// Returns a trimmed, validated copy of the configuration.
     pub fn validated(&self) -> Result<Self, LiveTranslationConfigurationError> {
         let network_proxy = self.network_proxy.validate()?;
         let credentials = self.credentials.validated_for(self.provider)?;
 
-        let capabilities = self.provider.capabilities();
+        let capabilities = self.capabilities();
         if !capabilities
             .source_languages
             .contains(&self.source_language)
@@ -130,6 +140,69 @@ impl LiveTranslationConfiguration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_alibaba_validates_every_lite_target_and_the_full_original_catalog() {
+        for source in SourceLanguage::ALL {
+            let mut configuration = config("synthetic", source);
+            configuration.target_language = TargetLanguage::Original;
+            assert_eq!(configuration.validated().unwrap().source_language, source);
+            for target in TargetLanguage::ALL
+                .into_iter()
+                .filter(|target| target.translates_audio())
+            {
+                configuration.target_language = target;
+                if configuration
+                    .capabilities()
+                    .source_languages
+                    .contains(&source)
+                {
+                    assert_eq!(configuration.validated().unwrap().target_language, target);
+                } else {
+                    assert_eq!(
+                        configuration.validated().unwrap_err(),
+                        LiveTranslationConfigurationError::UnsupportedSourceLanguage
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn independent_text_credentials_keep_their_language_contract() {
+        let mut configuration = LiveTranslationConfiguration::with_credentials(
+            ProviderKind::AlibabaCloud,
+            ProviderCredentials::DeepL {
+                asr_api_key: "synthetic".into(),
+                api_key: "synthetic:fx".into(),
+            },
+            SourceLanguage::Automatic,
+            TargetLanguage::French,
+            TranslationMode::Turbo,
+        );
+        assert_eq!(
+            configuration.validated().unwrap_err(),
+            LiveTranslationConfigurationError::UnsupportedTargetLanguage
+        );
+        configuration.target_language = TargetLanguage::English;
+        configuration.source_language = SourceLanguage::French;
+        assert_eq!(
+            configuration.validated().unwrap_err(),
+            LiveTranslationConfigurationError::UnsupportedSourceLanguage
+        );
+        configuration.provider = ProviderKind::DeepLX;
+        configuration.credentials = ProviderCredentials::DeepLX {
+            asr_api_key: "synthetic".into(),
+            endpoint: "https://example.com/translate".into(),
+            token: String::new(),
+        };
+        configuration.source_language = SourceLanguage::Automatic;
+        configuration.target_language = TargetLanguage::French;
+        assert_eq!(
+            configuration.validated().unwrap_err(),
+            LiveTranslationConfigurationError::UnsupportedTargetLanguage
+        );
+    }
 
     fn config(api_key: &str, source_language: SourceLanguage) -> LiveTranslationConfiguration {
         LiveTranslationConfiguration::for_provider(

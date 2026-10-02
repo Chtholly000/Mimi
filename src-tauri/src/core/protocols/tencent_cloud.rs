@@ -25,6 +25,8 @@ pub enum TencentCloudProtocolError {
     MissingSecretKey,
     #[error("Tencent Cloud realtime translation requires a translated output language.")]
     InvalidTargetLanguage,
+    #[error("Tencent Cloud realtime translation does not support this source language.")]
+    InvalidSourceLanguage,
     #[error("The Tencent Cloud realtime translation session identity is invalid.")]
     InvalidSessionIdentity,
     #[error("The Tencent Cloud realtime translation signature lifetime is invalid.")]
@@ -199,6 +201,7 @@ fn source_language_code(
         SourceLanguage::English => Ok("en"),
         SourceLanguage::Japanese => Ok("ja"),
         SourceLanguage::Korean => Ok("ko"),
+        _ => Err(TencentCloudProtocolError::InvalidSourceLanguage),
     }
 }
 
@@ -206,10 +209,10 @@ fn target_language_code(
     target_language: TargetLanguage,
 ) -> Result<&'static str, TencentCloudProtocolError> {
     match target_language {
-        TargetLanguage::Original => Err(TencentCloudProtocolError::InvalidTargetLanguage),
         TargetLanguage::SimplifiedChinese => Ok("zh"),
         TargetLanguage::English => Ok("en"),
         TargetLanguage::Japanese => Ok("ja"),
+        _ => Err(TencentCloudProtocolError::InvalidTargetLanguage),
     }
 }
 
@@ -427,6 +430,42 @@ fn sha1(input: &[u8]) -> [u8; 20] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_app_sources_do_not_expand_this_wire_contract() {
+        for source in SourceLanguage::ALL.into_iter().filter(|source| {
+            !matches!(
+                source,
+                SourceLanguage::Automatic
+                    | SourceLanguage::Chinese
+                    | SourceLanguage::English
+                    | SourceLanguage::Japanese
+                    | SourceLanguage::Korean
+            )
+        }) {
+            assert_eq!(
+                source_language_code(source).unwrap_err(),
+                TencentCloudProtocolError::InvalidSourceLanguage
+            );
+        }
+    }
+
+    #[test]
+    fn expanded_app_targets_do_not_expand_this_wire_contract() {
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                target_language_code(target).unwrap_err(),
+                TencentCloudProtocolError::InvalidTargetLanguage
+            );
+        }
+    }
 
     fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()

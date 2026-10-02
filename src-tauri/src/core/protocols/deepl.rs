@@ -69,7 +69,7 @@ pub fn request(
         TargetLanguage::SimplifiedChinese => "ZH",
         TargetLanguage::English => "EN",
         TargetLanguage::Japanese => "JA",
-        TargetLanguage::Original => return Err(DeepLError::Response),
+        _ => return Err(DeepLError::Response),
     };
     let mut body = json!({ "text": [text], "target_lang": target });
     let source = match source {
@@ -78,6 +78,7 @@ pub fn request(
         SourceLanguage::English => Some("EN"),
         SourceLanguage::Japanese => Some("JA"),
         SourceLanguage::Korean => Some("KO"),
+        _ => return Err(DeepLError::Response),
     };
     if let Some(source) = source {
         body["source_lang"] = json!(source);
@@ -110,6 +111,38 @@ pub fn decode(bytes: &[u8]) -> Result<String, DeepLError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_app_languages_do_not_expand_the_independent_text_route() {
+        for source in SourceLanguage::ALL.into_iter().filter(|source| {
+            !matches!(
+                source,
+                SourceLanguage::Automatic
+                    | SourceLanguage::Chinese
+                    | SourceLanguage::English
+                    | SourceLanguage::Japanese
+                    | SourceLanguage::Korean
+            )
+        }) {
+            assert_eq!(
+                request("Synthetic.", source, TargetLanguage::English).unwrap_err(),
+                DeepLError::Response
+            );
+        }
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                request("Synthetic.", SourceLanguage::Automatic, target).unwrap_err(),
+                DeepLError::Response
+            );
+        }
+    }
 
     #[test]
     fn keys_choose_only_official_free_or_pro_origins() {

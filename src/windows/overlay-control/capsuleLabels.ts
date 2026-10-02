@@ -1,5 +1,5 @@
 import { effectiveUiLanguage } from "../../lib/i18n";
-import type { SettingsSnapshot } from "../../lib/types";
+import { sourceLanguageDisplayName, targetLanguageDisplayName, type SettingsSnapshot } from "../../lib/types";
 
 const labels = {
   en: { auto: "Auto", zh: "Chinese", en: "English", ja: "Japanese", ko: "Korean", original: "Original", error: "Error", idle: "Idle", paused: "Paused", translating: "Translating" },
@@ -9,5 +9,13 @@ const labels = {
 
 export function capsuleLabels(settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage">, phase: "error" | "idle" | "paused" | "translating" | null, language = effectiveUiLanguage()) {
   const text = labels[language];
-  return { source: text[settings.sourceLanguage], target: text[settings.targetLanguage], phase: phase ? text[phase] : null };
+  return {
+    source: settings.sourceLanguage in text
+      ? text[settings.sourceLanguage as keyof typeof text]
+      : sourceLanguageDisplayName(settings.sourceLanguage, language),
+    target: settings.targetLanguage in text
+      ? text[settings.targetLanguage as keyof typeof text]
+      : targetLanguageDisplayName(settings.targetLanguage, language),
+    phase: phase ? text[phase] : null,
+  };
 }

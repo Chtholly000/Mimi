@@ -55,6 +55,13 @@ describe("overlay control panel model", () => {
     expect(model.translationModeOptions).toEqual([]);
   });
 
+  it("adds the current extended source to the five shortcuts without growing the full picker", () => {
+    expect(overlayControlPanelModel({ ...BASE_SETTINGS, sourceLanguage: "fr" }).sourceOptions)
+      .toEqual(["auto", "ja", "en", "ko", "zh", "fr"]);
+    expect(overlayControlPanelModel({ ...BASE_SETTINGS, sourceLanguage: "no", targetLanguage: "original" }).sourceOptions)
+      .toEqual(["auto", "ja", "en", "ko", "zh", "no"]);
+  });
+
   it("omits translation modes when only original subtitles are requested", () => {
     const model = overlayControlPanelModel({
       ...BASE_SETTINGS,

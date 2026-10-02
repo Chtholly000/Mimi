@@ -183,9 +183,7 @@ fn source_language_code(
         SourceLanguage::Chinese => Ok("zh"),
         SourceLanguage::English => Ok("en"),
         SourceLanguage::Japanese => Ok("ja"),
-        SourceLanguage::Automatic | SourceLanguage::Korean => {
-            Err(VolcanoEngineProtocolError::UnsupportedSourceLanguage)
-        }
+        _ => Err(VolcanoEngineProtocolError::UnsupportedSourceLanguage),
     }
 }
 
@@ -196,7 +194,7 @@ fn target_language_code(
         TargetLanguage::SimplifiedChinese => Ok("zh"),
         TargetLanguage::English => Ok("en"),
         TargetLanguage::Japanese => Ok("ja"),
-        TargetLanguage::Original => Err(VolcanoEngineProtocolError::UnsupportedTargetLanguage),
+        _ => Err(VolcanoEngineProtocolError::UnsupportedTargetLanguage),
     }
 }
 
@@ -482,6 +480,42 @@ impl<'a> ProtoReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_app_sources_do_not_expand_this_wire_contract() {
+        for source in SourceLanguage::ALL.into_iter().filter(|source| {
+            !matches!(
+                source,
+                SourceLanguage::Automatic
+                    | SourceLanguage::Chinese
+                    | SourceLanguage::English
+                    | SourceLanguage::Japanese
+                    | SourceLanguage::Korean
+            )
+        }) {
+            assert_eq!(
+                source_language_code(source).unwrap_err(),
+                VolcanoEngineProtocolError::UnsupportedSourceLanguage
+            );
+        }
+    }
+
+    #[test]
+    fn expanded_app_targets_do_not_expand_this_wire_contract() {
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                target_language_code(target).unwrap_err(),
+                VolcanoEngineProtocolError::UnsupportedTargetLanguage
+            );
+        }
+    }
 
     fn field_bytes(message: &[u8], wanted_field: u32) -> Option<&[u8]> {
         let mut reader = ProtoReader::new(message);
