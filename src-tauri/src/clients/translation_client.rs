@@ -37,6 +37,13 @@ pub enum TranslationClient {
 }
 
 impl TranslationClient {
+    /// Only Audio3 synthesizes idle PCM; other provider transports are unchanged.
+    pub fn set_audio_pending_gate(&self, gate: crate::core::pending_pcm::PendingPcmGate) {
+        if let Self::HighQuality(client) = self {
+            client.set_audio_pending_gate(gate);
+        }
+    }
+
     pub fn new(
         configuration: &LiveTranslationConfiguration,
         events: ProviderEventSender,

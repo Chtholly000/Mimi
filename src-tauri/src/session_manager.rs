@@ -1540,6 +1540,7 @@ impl SessionManager {
                 .ok_or_else(|| "The bounded audio pipeline is unavailable.".to_string())?;
             self.ensure_generation_current(generation)?;
             self.install_pipeline(generation, Arc::clone(&pipeline))?;
+            client.set_audio_pending_gate(pipeline.pending_pcm_gate());
 
             let audio_failure_tx = self.capture_failure_channel(generation);
             self.ensure_generation_current(generation)?;

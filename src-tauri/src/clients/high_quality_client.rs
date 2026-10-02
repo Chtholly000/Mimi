@@ -293,6 +293,10 @@ pub struct HighQualityTranslationClient {
 }
 
 impl HighQualityTranslationClient {
+    pub fn set_audio_pending_gate(&self, gate: crate::core::pending_pcm::PendingPcmGate) {
+        self.asr_client.set_audio_pending_gate(gate);
+    }
+
     /// One immutable route is shared by ASR and the independent MT endpoint.
     /// Applied only before the facade connects or installs this client.
     pub fn set_network(&mut self, network: ProviderNetwork) -> Result<(), ProviderNetworkError> {

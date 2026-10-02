@@ -14,6 +14,7 @@ pub mod openai_transcript_committer;
 pub mod overlay_pointer;
 #[cfg(any(target_os = "macos", target_os = "windows", test))]
 pub mod pcm16;
+pub mod pending_pcm;
 pub mod preview_pacing;
 pub mod protocols;
 pub mod provider;

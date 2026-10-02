@@ -2,6 +2,7 @@
 //! drain, throttled level diagnostics, and a single fell-behind error signal.
 
 use crate::core::diagnostics::milliseconds;
+use crate::core::pending_pcm::{PendingPcmGate, PendingPcmGuard};
 use crate::pipeline_log;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -38,10 +39,19 @@ pub enum AudioIngressError {
 /// buffer and permanently closes this generation's ingress.
 #[derive(Clone)]
 pub struct AudioIngress {
-    tx: mpsc::Sender<Vec<u8>>,
+    tx: mpsc::Sender<PendingAudio>,
     failed: Arc<AtomicBool>,
     accepting: Arc<AtomicBool>,
     progress: Arc<SendProgress>,
+    pending_pcm: PendingPcmGate,
+}
+
+// The guard travels with the buffer, including while it has left the bounded
+// queue and waits inside the send future. Queue rejection/drop and task
+// cancellation release it without a separate decrement or reset path.
+struct PendingAudio {
+    data: Vec<u8>,
+    pending: Option<PendingPcmGuard>,
 }
 
 impl AudioIngress {
@@ -50,8 +60,9 @@ impl AudioIngress {
             return Err(AudioIngressError::Closed);
         }
         let has_data = !data.is_empty();
+        let pending = has_data.then(|| self.pending_pcm.acquire());
         let has_sound = peak_pcm16_sample(&data) > 32;
-        match self.tx.try_send(data) {
+        match self.tx.try_send(PendingAudio { data, pending }) {
             Ok(()) => {
                 if has_data {
                     self.progress.captured(has_sound, Instant::now());
@@ -83,10 +94,11 @@ impl AudioIngress {
 }
 
 pub struct AudioSendPipeline {
-    tx: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
+    tx: Mutex<Option<mpsc::Sender<PendingAudio>>>,
     failed: Arc<AtomicBool>,
     accepting: Arc<AtomicBool>,
     progress: Arc<SendProgress>,
+    pending_pcm: PendingPcmGate,
     finish_tx: Mutex<Option<oneshot::Sender<()>>>,
     worker: Mutex<Option<AbortOnDropTask>>,
     abort_worker: tokio::task::AbortHandle,
@@ -165,7 +177,7 @@ impl AudioSendPipeline {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: Send + 'static,
     {
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(QUEUE_CAPACITY);
+        let (tx, mut rx) = mpsc::channel::<PendingAudio>(QUEUE_CAPACITY);
         let (finish_tx, mut finish_rx) = oneshot::channel();
         let failed = Arc::new(AtomicBool::new(false));
         let failed_worker = failed.clone();
@@ -173,6 +185,7 @@ impl AudioSendPipeline {
         let accepting_worker = Arc::clone(&accepting);
         let progress = Arc::new(SendProgress::new(Instant::now()));
         let progress_worker = Arc::clone(&progress);
+        let pending_pcm = PendingPcmGate::default();
         let on_error = Arc::new(on_error);
         let on_error_worker = on_error.clone();
 
@@ -197,6 +210,7 @@ impl AudioSendPipeline {
                         None => return true,
                     },
                 };
+                let PendingAudio { data, pending } = data;
                 let bytes = data.len();
                 peak_audio_sample = peak_audio_sample.max(peak_pcm16_sample(&data));
                 let started_at = Instant::now();
@@ -204,6 +218,7 @@ impl AudioSendPipeline {
                 // Freeze the measurement before level/counter diagnostics:
                 // a slow log writer is not part of the send operation.
                 let finished_at = Instant::now();
+                drop(pending);
                 let send_ms = milliseconds(started_at, finished_at);
                 match result {
                     Ok(()) => {
@@ -241,6 +256,7 @@ impl AudioSendPipeline {
             failed,
             accepting,
             progress,
+            pending_pcm,
             finish_tx: Mutex::new(Some(finish_tx)),
             worker: Mutex::new(Some(AbortOnDropTask(worker))),
             abort_worker,
@@ -251,12 +267,17 @@ impl AudioSendPipeline {
         self.progress.input_activity(Instant::now())
     }
 
+    pub fn pending_pcm_gate(&self) -> PendingPcmGate {
+        self.pending_pcm.clone()
+    }
+
     pub fn ingress(&self) -> Option<AudioIngress> {
         self.tx.lock().unwrap().as_ref().map(|tx| AudioIngress {
             tx: tx.clone(),
             failed: Arc::clone(&self.failed),
             accepting: Arc::clone(&self.accepting),
             progress: Arc::clone(&self.progress),
+            pending_pcm: self.pending_pcm.clone(),
         })
     }
 
@@ -356,11 +377,13 @@ mod tests {
             |_| {},
         );
         let ingress = pipeline.ingress().unwrap();
+        let pending = pipeline.pending_pcm_gate();
         ingress.try_send(vec![1, 0]).unwrap();
         ingress.try_send(vec![2, 0]).unwrap();
         // Native teardown can retain the callback and its ingress even after
         // capture has stopped; that must not keep the receiver open.
         assert!(pipeline.finish(Duration::from_millis(200)).await);
+        assert_eq!(pending.pending_count(), 0);
         assert_eq!(sent.load(Ordering::SeqCst), 2);
         assert!(ingress.progress.completed_ago_ms(Instant::now()).is_some());
         assert_eq!(ingress.try_send(vec![3, 0]), Err(AudioIngressError::Closed));
@@ -369,10 +392,23 @@ mod tests {
     #[tokio::test]
     async fn graceful_finish_reports_transport_failure() {
         let pipeline = AudioSendPipeline::spawn(|_data| async { Err::<(), ()>(()) }, |_| {});
+        let pending = pipeline.pending_pcm_gate();
         pipeline.ingress().unwrap().try_send(vec![0, 0]).unwrap();
+        pipeline.ingress().unwrap().try_send(vec![1, 0]).unwrap();
 
         assert!(!pipeline.finish(Duration::from_millis(200)).await);
+        assert_eq!(pending.pending_count(), 0);
         assert_eq!(pipeline.progress.completed_ago_ms(Instant::now()), None);
+    }
+
+    #[tokio::test]
+    async fn empty_buffers_do_not_claim_pending_pcm() {
+        let pipeline = AudioSendPipeline::spawn(|_data| async { Ok::<(), ()>(()) }, |_| {});
+        let pending = pipeline.pending_pcm_gate();
+        pipeline.ingress().unwrap().try_send(Vec::new()).unwrap();
+        assert_eq!(pending.pending_count(), 0);
+        assert!(pipeline.finish(Duration::from_millis(200)).await);
+        assert_eq!(pending.pending_count(), 0);
     }
 
     struct ReleaseSignal(Option<oneshot::Sender<()>>);
@@ -404,18 +440,25 @@ mod tests {
     async fn dropping_pipeline_releases_a_stalled_worker() {
         let (pipeline, released) = stalled_pipeline();
         let ingress = pipeline.ingress().unwrap();
+        let pending = pipeline.pending_pcm_gate();
+        ingress.try_send(vec![1, 0]).unwrap();
+        ingress.try_send(vec![2, 0]).unwrap();
+        assert_eq!(pending.pending_count(), 3);
         drop(pipeline);
 
         tokio::time::timeout(Duration::from_secs(1), released)
             .await
             .unwrap()
             .unwrap();
+        wait_for_no_pending_pcm(&pending).await;
         assert_eq!(ingress.try_send(vec![0, 0]), Err(AudioIngressError::Closed));
     }
 
     #[tokio::test]
     async fn cancelling_finish_releases_a_stalled_worker() {
         let (pipeline, released) = stalled_pipeline();
+        let pending = pipeline.pending_pcm_gate();
+        pipeline.ingress().unwrap().try_send(vec![1, 0]).unwrap();
         // Timing out the caller drops finish after it has taken ownership of
         // the worker handle, before the pipeline's own drain deadline.
         assert!(tokio::time::timeout(
@@ -429,6 +472,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        wait_for_no_pending_pcm(&pending).await;
     }
 
     #[tokio::test]
@@ -481,6 +525,7 @@ mod tests {
             |_| {},
         );
         let ingress = pipeline.ingress().unwrap();
+        let pending = pipeline.pending_pcm_gate();
         assert_eq!(ingress.try_send(vec![0, 0]), Ok(()));
 
         let mut accepted = 1;
@@ -490,9 +535,22 @@ mod tests {
         }
 
         assert!(accepted <= QUEUE_CAPACITY + 1);
+        assert_eq!(pending.pending_count(), accepted);
         assert_eq!(ingress.progress.completed_ago_ms(Instant::now()), None);
         assert_eq!(ingress.try_send(vec![0, 0]), Err(AudioIngressError::Closed));
+        assert_eq!(pending.pending_count(), accepted);
         pipeline.stop();
+        wait_for_no_pending_pcm(&pending).await;
+    }
+
+    async fn wait_for_no_pending_pcm(pending: &PendingPcmGate) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while pending.has_pending() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
