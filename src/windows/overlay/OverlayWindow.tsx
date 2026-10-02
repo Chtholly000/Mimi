@@ -152,13 +152,13 @@ export function OverlayWindow() {
     sourcePreview?.text ?? "",
     sourcePreview === undefined || sourcePreview.isFinal || sourcePreview.isStable ? 0 : 180,
     750,
-    subtitleStreamKey(settings.subtitleDisplayMode, "source", session.subtitles.source.utteranceId, latestCommittedAt),
+    subtitleStreamKey(settings.subtitleDisplayMode, "source", sourcePreview?.utteranceId, latestCommittedAt),
   );
   const translationDraftText = useStableText(
     translationPreview?.text ?? "",
     translationPreview === undefined || translationPreview.isFinal || translationPreview.isStable ? 0 : 400,
     1_500,
-    subtitleStreamKey(settings.subtitleDisplayMode, "translation", session.subtitles.translation.utteranceId, latestCommittedAt),
+    subtitleStreamKey(settings.subtitleDisplayMode, "translation", translationPreview?.utteranceId, latestCommittedAt),
   );
   // Sentence blocks: committed utterances plus the live tail, original above
   // translation. The block carries the timestamp, the age fade and the live
@@ -172,6 +172,9 @@ export function OverlayWindow() {
       buildSubtitleBlocks(session.subtitles.history, settings.subtitleDisplayMode, {
         source: sourceDraftText === "" ? null : sourceDraftText,
         translation: translationDraftText === "" ? null : translationDraftText,
+        // A completed B pair can lag behind raw ASR C. Its own opaque owner
+        // keeps the read anchor on B when a delayed final A inserts above it.
+        utteranceId: sourcePreview?.utteranceId ?? translationPreview?.utteranceId,
         // Text only counts as still arriving while the session is actually
         // working: a paused session keeps its frozen draft, but nothing is
         // coming, so the typing wave must stop with it.
@@ -183,6 +186,8 @@ export function OverlayWindow() {
       liveIsStreaming,
       sourceDraftText,
       translationDraftText,
+      sourcePreview?.utteranceId,
+      translationPreview?.utteranceId,
     ],
   );
   const hasContent = hasSubtitleContent(session.subtitles);

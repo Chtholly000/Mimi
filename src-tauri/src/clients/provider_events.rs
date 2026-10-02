@@ -86,6 +86,7 @@ pub struct ProviderEventReceiver {
     source_pending: Option<SequencedEvent>,
     translation_pending: Option<SequencedEvent>,
     last_delivered_sequence: u64,
+    last_source_final: Option<(u64, u64)>,
     content_revision: Arc<AtomicU64>,
 }
 
@@ -128,6 +129,7 @@ fn provider_event_channel_with_capacity(
             source_pending: None,
             translation_pending: None,
             last_delivered_sequence: 0,
+            last_source_final: None,
             content_revision,
         },
     )
@@ -205,7 +207,8 @@ impl ProviderEventSender {
             event,
         };
         let result = match &event.event {
-            LiveTranslateServerEvent::SourceDraft { .. } => {
+            LiveTranslateServerEvent::SourceDraft { .. }
+            | LiveTranslateServerEvent::SourceUtteranceDraft { .. } => {
                 if self.inner.source_draft.receiver_count() == 0 {
                     return Err(ProviderEventSendError::Closed);
                 }
@@ -411,6 +414,16 @@ impl ProviderEventReceiver {
     }
 
     fn take_reliable_event(&mut self, event: SequencedEvent) -> ProviderEvent {
+        match &event.event {
+            LiveTranslateServerEvent::SourceUtteranceFinal { utterance_id, .. }
+            | LiveTranslateServerEvent::SubtitleConfirmedPair {
+                source_utterance_id: Some(utterance_id),
+                ..
+            } => {
+                self.last_source_final = Some((event.sequence, *utterance_id));
+            }
+            _ => {}
+        }
         // Preview activity and completed pairs are FIFO reliable signals,
         // but do not supersede the independently latest ASR/draft lanes.
         // In particular, a Finished immediately after a TranslationDraft
@@ -420,6 +433,9 @@ impl ProviderEventReceiver {
             LiveTranslateServerEvent::PreviewTranslationStarted { .. }
                 | LiveTranslateServerEvent::PreviewTranslationFinished { .. }
                 | LiveTranslateServerEvent::SubtitlePreviewPair { .. }
+                | LiveTranslateServerEvent::SubtitlePreviewCleared
+                | LiveTranslateServerEvent::TranslationStarted
+                | LiveTranslateServerEvent::TranslationDeferred(_)
         ) {
             self.last_delivered_sequence = self.last_delivered_sequence.max(event.sequence);
         }
@@ -430,8 +446,13 @@ impl ProviderEventReceiver {
     }
 
     fn take_next_draft(&mut self) -> Option<ProviderEvent> {
-        self.source_pending
-            .take_if(|event| event.sequence <= self.last_delivered_sequence);
+        if self
+            .source_pending
+            .as_ref()
+            .is_some_and(|event| self.source_draft_is_obsolete(event))
+        {
+            self.source_pending = None;
+        }
         self.translation_pending
             .take_if(|event| event.sequence <= self.last_delivered_sequence);
 
@@ -446,11 +467,25 @@ impl ProviderEventReceiver {
         } else {
             self.translation_pending.take().unwrap()
         };
-        self.last_delivered_sequence = event.sequence;
+        self.last_delivered_sequence = self.last_delivered_sequence.max(event.sequence);
         Some(ProviderEvent {
             content_revision: event.content_revision,
             event: event.event,
         })
+    }
+
+    fn source_draft_is_obsolete(&self, event: &SequencedEvent) -> bool {
+        if event.sequence > self.last_delivered_sequence {
+            return false;
+        }
+        // A previous sentence's final can arrive after the next real begin.
+        // Preserve that newer identity even though its draft sequence is lower;
+        // all other reliable content/lifecycle barriers retain their old rules.
+        !matches!(
+            (&event.event, self.last_source_final),
+            (LiveTranslateServerEvent::SourceUtteranceDraft { utterance_id, .. }, Some((sequence, final_id)))
+                if sequence == self.last_delivered_sequence && *utterance_id > final_id
+        )
     }
 }
 
@@ -481,6 +516,74 @@ fn overflow_event() -> LiveTranslateServerEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_previous_identified_final_keeps_the_newer_sentence_draft_but_not_its_own() {
+        for draft_id in [7, 8] {
+            let (sender, mut receiver) = provider_event_channel();
+            let draft = LiveTranslateServerEvent::SourceUtteranceDraft {
+                utterance_id: draft_id,
+                text: "Synthetic repeated lyric".into(),
+                language: None,
+            };
+            sender.send(draft.clone()).unwrap();
+            let final_event = LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 7,
+                text: "Synthetic repeated lyric".into(),
+                language: None,
+            };
+            sender.send(final_event.clone()).unwrap();
+            assert_eq!(receiver.try_recv().unwrap(), final_event);
+            if draft_id == 8 {
+                assert_eq!(receiver.try_recv().unwrap(), draft);
+            }
+            assert!(receiver.try_recv().is_err());
+            sender
+                .send(LiveTranslateServerEvent::SourceUtteranceDraft {
+                    utterance_id: 9,
+                    text: "Synthetic cleared draft".into(),
+                    language: None,
+                })
+                .unwrap();
+            sender.advance_content_revision();
+            sender
+                .send(LiveTranslateServerEvent::SessionFinished)
+                .unwrap();
+            assert_eq!(
+                receiver.try_recv().unwrap(),
+                LiveTranslateServerEvent::SessionFinished
+            );
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_older_hq_confirmation_and_activity_keep_a_queued_newer_source() {
+        let (sender, mut receiver) = provider_event_channel();
+        let draft = LiveTranslateServerEvent::SourceUtteranceDraft {
+            utterance_id: 8,
+            text: "Synthetic newer source".into(),
+            language: None,
+        };
+        sender.send(draft.clone()).unwrap();
+        let confirmed = LiveTranslateServerEvent::SubtitleConfirmedPair {
+            utterance_id: 1,
+            source_utterance_id: Some(7),
+            source: "Synthetic previous source".into(),
+            translation: "Synthetic previous translation".into(),
+            language: None,
+        };
+        for event in [
+            confirmed.clone(),
+            LiveTranslateServerEvent::TranslationStarted,
+            LiveTranslateServerEvent::SubtitlePreviewCleared,
+        ] {
+            sender.send(event.clone()).unwrap();
+            assert_eq!(receiver.try_recv().unwrap(), event);
+        }
+        assert_eq!(receiver.try_recv().unwrap(), draft);
+        assert!(receiver.try_recv().is_err());
+    }
 
     #[tokio::test]
     async fn clear_revision_drops_queued_content_but_keeps_lifecycle_and_popped_stamp() {
@@ -561,6 +664,7 @@ mod tests {
             },
             LiveTranslateServerEvent::TranslationDraft(oversized.clone()),
             LiveTranslateServerEvent::SubtitleConfirmedPair {
+                source_utterance_id: None,
                 utterance_id: 1,
                 source: oversized,
                 language: None,
@@ -736,6 +840,7 @@ mod tests {
             let translation =
                 LiveTranslateServerEvent::TranslationDraft("synthetic translation".into());
             let pair = LiveTranslateServerEvent::SubtitlePreviewPair {
+                source_utterance_id: None,
                 source: "synthetic source".into(),
                 language: Some("en".into()),
                 translation: "synthetic translation".into(),
@@ -769,6 +874,7 @@ mod tests {
     fn final_barrier_remains_ordered_after_preview_signals_and_discards_older_drafts() {
         let (sender, mut receiver) = provider_event_channel();
         let pair = LiveTranslateServerEvent::SubtitlePreviewPair {
+            source_utterance_id: None,
             source: "synthetic source".into(),
             language: Some("en".into()),
             translation: "synthetic preview".into(),

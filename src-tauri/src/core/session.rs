@@ -153,6 +153,16 @@ impl TranslationSessionController {
                 self.subtitle_reducer
                     .apply(crate::core::models::SubtitleEvent::SourceDraft(text));
             }
+            LiveTranslateServerEvent::SourceUtteranceDraft {
+                utterance_id,
+                text,
+                language,
+            } => {
+                self.update_detected_language(language.as_deref());
+                self.subtitle_reducer.apply(
+                    crate::core::models::SubtitleEvent::SourceUtteranceDraft { utterance_id, text },
+                );
+            }
             LiveTranslateServerEvent::SourceFinal { text, language }
             | LiveTranslateServerEvent::SourceUtteranceFinal { text, language, .. } => {
                 self.update_detected_language(language.as_deref());
@@ -189,6 +199,7 @@ impl TranslationSessionController {
                     .apply(crate::core::models::SubtitleEvent::TranslationDraft(text));
             }
             LiveTranslateServerEvent::SubtitlePreviewPair {
+                source_utterance_id,
                 source,
                 language,
                 translation,
@@ -197,9 +208,15 @@ impl TranslationSessionController {
                 self.state.translation_recovery = None;
                 self.subtitle_reducer
                     .apply(crate::core::models::SubtitleEvent::PreviewPair {
+                        source_utterance_id,
                         source,
                         translation,
                     });
+            }
+            LiveTranslateServerEvent::SubtitlePreviewCleared => {
+                self.clear_preview_pending();
+                self.subtitle_reducer
+                    .apply(crate::core::models::SubtitleEvent::ClearPreview);
             }
             LiveTranslateServerEvent::UtteranceText {
                 utterance_id,
@@ -245,6 +262,7 @@ impl TranslationSessionController {
             }
             LiveTranslateServerEvent::SubtitleConfirmedPair {
                 utterance_id,
+                source_utterance_id,
                 source,
                 language,
                 translation,
@@ -260,6 +278,7 @@ impl TranslationSessionController {
                 self.subtitle_reducer
                     .apply(crate::core::models::SubtitleEvent::ConfirmedPair {
                         utterance_id,
+                        source_utterance_id,
                         source,
                         translation,
                     });
@@ -287,6 +306,7 @@ mod tests {
     fn replayed_confirmation_cannot_clear_pending_work_or_rewind_a_live_pair() {
         let mut controller = TranslationSessionController::default();
         let replay = LiveTranslateServerEvent::SubtitleConfirmedPair {
+            source_utterance_id: None,
             utterance_id: 1,
             source: "Synthetic final".into(),
             language: Some("en".into()),
@@ -294,6 +314,7 @@ mod tests {
         };
         controller.handle(replay.clone());
         controller.handle(LiveTranslateServerEvent::SubtitlePreviewPair {
+            source_utterance_id: None,
             source: "New synthetic source".into(),
             language: Some("ja".into()),
             translation: "New synthetic translation".into(),
@@ -303,6 +324,7 @@ mod tests {
         controller.handle(replay);
         assert_eq!(controller.state, expected);
         controller.handle(LiveTranslateServerEvent::SubtitleConfirmedPair {
+            source_utterance_id: None,
             utterance_id: 2,
             source: " ".into(),
             language: Some("en".into()),
@@ -315,6 +337,7 @@ mod tests {
     fn oversized_events_cannot_clear_pending_recovery_or_claim_a_confirmation() {
         let mut controller = TranslationSessionController::default();
         controller.handle(LiveTranslateServerEvent::SubtitlePreviewPair {
+            source_utterance_id: None,
             source: "Synthetic complete source".into(),
             language: Some("ja".into()),
             translation: "Synthetic complete translation".into(),
@@ -337,6 +360,7 @@ mod tests {
             },
             LiveTranslateServerEvent::TranslationDraft(oversized.clone()),
             LiveTranslateServerEvent::SubtitleConfirmedPair {
+                source_utterance_id: None,
                 utterance_id: 1,
                 source: "valid".into(),
                 language: Some("en".into()),
@@ -347,6 +371,7 @@ mod tests {
             assert_eq!(controller.state, expected);
         }
         controller.handle(LiveTranslateServerEvent::SubtitleConfirmedPair {
+            source_utterance_id: None,
             utterance_id: 1,
             source: "Synthetic valid final".into(),
             language: Some("en".into()),

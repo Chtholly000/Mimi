@@ -16,7 +16,7 @@ it.each(["original", "translation", "bilingual"] as const)("keeps a single recog
   const settings = { sourceLanguage: "fr", targetLanguage: "fr", subtitleDisplayMode: mode } as const;
   expect(isWaitingForFinalTranslation(settings, null, true)).toBe(false);
   expect(visibleLiveSubtitles(subtitles, settings, null, true, false, true))
-    .toEqual([{ text: subtitles.source.text, isFinal: false, kind: mode === "translation" ? "translation" : "source" }]);
+    .toEqual([{ text: subtitles.source.text, isFinal: false, kind: mode === "translation" ? "translation" : "source", utteranceId: "current" }]);
 });
 
 it("keeps Simplified-to-Traditional Chinese as MT instead of treating Chinese scripts as identical", () => {

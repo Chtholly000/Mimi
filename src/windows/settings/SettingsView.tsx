@@ -63,8 +63,8 @@ export function SettingsView() {
   const initializationError = useStore((state) => state.initializationError);
   const initialize = useStore((state) => state.init);
   const initializationReady = initializationStatus === "ready";
-  // A switch shows what the overlay actually does: an untouched switch follows
-  // the system's reduce-motion preference.
+  // Show the actual on/off state, including compatible legacy preferences.
+  // User changes persist an explicit boolean through saveSettings.
   const pulseOn = useResolvedMotion(settings.pulseAnimation);
   const motionOn = useResolvedMotion(settings.subtitleAnimation);
   const start = useStore((state) => state.start);
@@ -405,8 +405,6 @@ export function SettingsView() {
                       </SettingsRow>
                       <SettingsRow
                         label={I18N.settings.pulseAnimation}
-                        description={I18N.settings.pulseAnimationHelp}
-                        align="start"
                       >
                         <Switch
                           checked={pulseOn}

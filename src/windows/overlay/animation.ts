@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { SettingsSnapshot } from "../../lib/types";
 
-/** Keep the stabilizer's cached text inside its own utterance. Providers
- * without stamps still get a new preview identity after a confirmed pair. */
+/** Keep the stabilizer's cached text inside the actually projected utterance.
+ * A completed B pair must use its own owner even when raw ASR is already C.
+ * Providers without stamps get a new identity after a confirmed pair. */
 export function subtitleStreamKey(
   displayMode: SettingsSnapshot["subtitleDisplayMode"],
   lane: "source" | "translation",

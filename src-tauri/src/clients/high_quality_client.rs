@@ -59,6 +59,7 @@ struct TranslationRequest {
     language: Option<String>,
     boundary: FinalBoundary,
     utterance_revision: u64,
+    source_utterance_id: Option<u64>,
     content_revision: u64,
     enqueued_at: tokio::time::Instant,
 }
@@ -109,6 +110,7 @@ enum DraftTimerKind {
 #[derive(Clone, Copy)]
 enum PreviewCancellationReason {
     SameLanguage,
+    SourceBoundary,
     SourceFinal,
     RevertedWaiter,
     ReplacedWaiter,
@@ -122,6 +124,7 @@ impl PreviewCancellationReason {
     fn label(self) -> &'static str {
         match self {
             Self::SameLanguage => "same-language",
+            Self::SourceBoundary => "source-boundary",
             Self::SourceFinal => "source-final",
             Self::RevertedWaiter => "reverted-waiter",
             Self::ReplacedWaiter => "replaced-waiter",
@@ -160,12 +163,16 @@ struct Inner {
     committer: ASRDraftCommitter,
     latest_draft_language: Option<String>,
     draft_revision: u64,
+    next_confirmation_id: u64,
     /// `(text, revision_after_final)`. An identical final with no intervening
     /// draft is a duplicate; the same spoken line after a new draft is not.
     last_server_final: Option<(String, u64)>,
     /// Positive Audio3 sentence IDs belong to the current recognizer task.
     /// One watermark rejects replays without depending on draft delivery.
     last_source_utterance_id: Option<u64>,
+    /// Identity of the newest observed cumulative draft, independently of
+    /// the final watermark: a previous final can arrive after the next begin.
+    current_source_utterance_id: Option<u64>,
     final_queue: VecDeque<TranslationRequest>,
     active_final: Option<FinalRequestKey>,
     draft_stability_task: Option<TaskSlot>,
@@ -336,8 +343,10 @@ impl HighQualityTranslationClient {
                 committer: ASRDraftCommitter::new(long_incomplete_commit_threshold),
                 latest_draft_language: None,
                 draft_revision: 0,
+                next_confirmation_id: 0,
                 last_server_final: None,
                 last_source_utterance_id: None,
+                current_source_utterance_id: None,
                 final_queue: VecDeque::new(),
                 active_final: None,
                 draft_stability_task: None,
@@ -576,6 +585,7 @@ impl HighQualityTranslationClient {
             && matches!(
                 event,
                 LiveTranslateServerEvent::SourceDraft { .. }
+                    | LiveTranslateServerEvent::SourceUtteranceDraft { .. }
                     | LiveTranslateServerEvent::SourceFinal { .. }
                     | LiveTranslateServerEvent::SourceUtteranceFinal { .. }
             )
@@ -586,6 +596,22 @@ impl HighQualityTranslationClient {
             self.emit(LiveTranslateServerEvent::text_limit_error());
             return;
         }
+        let (event, draft_source_id) = match event {
+            LiveTranslateServerEvent::SourceUtteranceDraft {
+                utterance_id,
+                text,
+                language,
+            } => {
+                if !self.prepare_identified_draft(utterance_id).await {
+                    return;
+                }
+                (
+                    LiveTranslateServerEvent::SourceDraft { text, language },
+                    Some(utterance_id),
+                )
+            }
+            event => (event, None),
+        };
         match event {
             LiveTranslateServerEvent::SourceDraft { text, language } => {
                 let text = trim(&text);
@@ -599,6 +625,7 @@ impl HighQualityTranslationClient {
                 let (uncommitted_text, has_pending, revision, log_due, passed_through) = {
                     let mut inner = self.inner.lock().await;
                     let uncommitted = inner.committer.update_draft(&text);
+                    inner.current_source_utterance_id = draft_source_id;
                     inner.latest_draft_language = language.clone();
                     next_nonzero(&mut inner.draft_revision);
                     let has_pending = inner.committer.has_pending_text();
@@ -621,10 +648,11 @@ impl HighQualityTranslationClient {
                         self.cancel_preview(&mut inner, PreviewCancellationReason::SameLanguage);
                         self.advance_preview_epoch();
                         *self.translation_latency.lock().unwrap() = None;
-                        self.emit(LiveTranslateServerEvent::SourceDraft {
-                            text: uncommitted.clone(),
-                            language: language.clone(),
-                        });
+                        self.emit(source_draft_event(
+                            draft_source_id,
+                            uncommitted.clone(),
+                            language.clone(),
+                        ));
                         self.emit(LiveTranslateServerEvent::TranslationDraft(
                             uncommitted.clone(),
                         ));
@@ -643,10 +671,11 @@ impl HighQualityTranslationClient {
                         // The preview gate skips identical words and cosmetic
                         // ASR revisions. Preserve their completed translation
                         // instead of clearing it for work that will not run.
-                        self.emit(LiveTranslateServerEvent::SourceDraft {
-                            text: uncommitted.clone(),
-                            language: language.clone(),
-                        });
+                        self.emit(source_draft_event(
+                            draft_source_id,
+                            uncommitted.clone(),
+                            language.clone(),
+                        ));
                         if self.translates_audio {
                             self.emit(LiveTranslateServerEvent::TranslationDraft(String::new()));
                         }
@@ -693,6 +722,54 @@ impl HighQualityTranslationClient {
         }
     }
 
+    async fn prepare_identified_draft(&self, source_utterance_id: u64) -> bool {
+        if source_utterance_id == 0 {
+            return false;
+        }
+        let mut inner = self.inner.lock().await;
+        if inner
+            .last_source_utterance_id
+            .is_some_and(|id| source_utterance_id <= id)
+            || inner
+                .current_source_utterance_id
+                .is_some_and(|id| source_utterance_id < id)
+        {
+            pipeline_log!("audio3 asr draft rejected reason=obsolete_sentence");
+            return false;
+        }
+        if inner.current_source_utterance_id == Some(source_utterance_id) {
+            return true;
+        }
+        // Draft revisions within one real sentence may finish their HTTP
+        // request. A different server ID is a genuine boundary, including its
+        // documented empty sentence_begin; it cannot inherit that old request.
+        let had_previous_draft = inner.current_source_utterance_id.is_some()
+            || inner.committer.has_pending_text()
+            || inner.preview_task.is_some();
+        abort_task(&mut inner.draft_stability_task);
+        abort_task(&mut inner.draft_maximum_wait_task);
+        self.cancel_preview(&mut inner, PreviewCancellationReason::SourceBoundary);
+        self.advance_preview_epoch();
+        inner.committer.reset();
+        inner.latest_draft_language = None;
+        inner.current_source_utterance_id = Some(source_utterance_id);
+        next_nonzero(&mut inner.draft_revision);
+        // Forget only the old candidate identity, never its consumed starts,
+        // shared cooldown or 429 suppression. Durable final work is untouched.
+        inner.preview_request_pacer.finish_utterance();
+        if had_previous_draft {
+            self.emit(LiveTranslateServerEvent::SubtitlePreviewCleared);
+        }
+        // Preserve even an empty begin in the controller's ownership state.
+        // Its latest-value slot will be replaced by actual words when present.
+        self.emit(source_draft_event(
+            Some(source_utterance_id),
+            String::new(),
+            None,
+        ));
+        true
+    }
+
     async fn handle_server_final(
         &self,
         text: String,
@@ -721,6 +798,7 @@ impl HighQualityTranslationClient {
             language,
             FinalBoundary::ServerFinal,
             utterance_revision,
+            source_utterance_id,
         )
         .await;
     }
@@ -755,9 +833,17 @@ impl HighQualityTranslationClient {
                 .last_server_final
                 .as_ref()
                 .is_some_and(|(last, revision)| last == text && *revision == utterance_revision);
-        inner.committer.reset();
-        inner.latest_draft_language = None;
-        inner.preview_request_pacer.finish_utterance();
+        let retains_newer_draft = source_utterance_id.is_some_and(|final_id| {
+            inner
+                .current_source_utterance_id
+                .is_some_and(|draft_id| draft_id > final_id)
+        });
+        if !retains_newer_draft {
+            inner.committer.reset();
+            inner.latest_draft_language = None;
+            inner.current_source_utterance_id = None;
+            inner.preview_request_pacer.finish_utterance();
+        }
         if duplicate {
             return None;
         }
@@ -767,7 +853,7 @@ impl HighQualityTranslationClient {
         if let Some(id) = source_utterance_id {
             inner.last_source_utterance_id = Some(id);
         }
-        Some(utterance_revision)
+        Some(next_nonzero(&mut inner.next_confirmation_id))
     }
 
     // MARK: Replaceable preview lane
@@ -949,10 +1035,11 @@ impl HighQualityTranslationClient {
                 // but must still cancel B before it can claim a source.
                 self.cancel_preview(inner, PreviewCancellationReason::RevertedWaiter);
                 self.advance_preview_epoch();
-                self.emit(LiveTranslateServerEvent::SourceDraft {
-                    text: text.clone(),
-                    language: language.clone(),
-                });
+                self.emit(source_draft_event(
+                    inner.current_source_utterance_id,
+                    text.clone(),
+                    language.clone(),
+                ));
                 self.emit(LiveTranslateServerEvent::TranslationDraft(String::new()));
             }
             return;
@@ -975,6 +1062,7 @@ impl HighQualityTranslationClient {
         if !self.preview_is_current(preview_id) {
             return;
         }
+        let source_utterance_id = self.inner.lock().await.current_source_utterance_id;
         if self
             .target_language
             .matches_reported_asr(language.as_deref())
@@ -994,10 +1082,7 @@ impl HighQualityTranslationClient {
                 *self.translation_latency.lock().unwrap() = None;
                 self.emit_preview(
                     preview_id,
-                    LiveTranslateServerEvent::SourceDraft {
-                        text: text.clone(),
-                        language,
-                    },
+                    source_draft_event(source_utterance_id, text.clone(), language),
                 );
                 self.emit_preview(preview_id, LiveTranslateServerEvent::TranslationDraft(text));
             }
@@ -1042,6 +1127,7 @@ impl HighQualityTranslationClient {
                         self.emit_preview(
                             preview_id,
                             LiveTranslateServerEvent::SubtitlePreviewPair {
+                                source_utterance_id,
                                 source: text.clone(),
                                 language: language.clone(),
                                 translation: translation.text,
@@ -1206,6 +1292,7 @@ impl HighQualityTranslationClient {
         language: Option<String>,
         boundary: FinalBoundary,
         utterance_revision: u64,
+        source_utterance_id: Option<u64>,
     ) {
         if !crate::core::models::subtitle_text_within_limit(&text) {
             self.emit(LiveTranslateServerEvent::text_limit_error());
@@ -1214,6 +1301,7 @@ impl HighQualityTranslationClient {
         if !self.translates_audio {
             self.emit(LiveTranslateServerEvent::SubtitleConfirmedPair {
                 utterance_id: utterance_revision,
+                source_utterance_id,
                 source: text.clone(),
                 language,
                 translation: text,
@@ -1226,6 +1314,7 @@ impl HighQualityTranslationClient {
             language,
             boundary,
             utterance_revision,
+            source_utterance_id,
             content_revision: self.content_revision(),
             enqueued_at: tokio::time::Instant::now(),
         };
@@ -1359,13 +1448,27 @@ impl HighQualityTranslationClient {
                     LiveTranslateServerEvent::TranslationStarted,
                 );
             }
-            self.emit_content(
-                request.content_revision,
-                LiveTranslateServerEvent::SourceDraft {
-                    text: request.text.clone(),
-                    language: request.language.clone(),
-                },
-            );
+            {
+                let inner = self.inner.lock().await;
+                // The latest-value source slot may already contain B, even
+                // before its consumer observes it. Starting A's durable work
+                // cannot replace that queued newer identity with old A.
+                let newer_source = request.source_utterance_id.is_some_and(|id| {
+                    inner
+                        .current_source_utterance_id
+                        .is_some_and(|current| current > id)
+                });
+                if !newer_source {
+                    self.emit_content(
+                        request.content_revision,
+                        source_draft_event(
+                            request.source_utterance_id,
+                            request.text.clone(),
+                            request.language.clone(),
+                        ),
+                    );
+                }
+            }
             // A server final can revise the preview's source. Its prior
             // translation must not remain beside the new request's source
             // while the first streamed partial is still pending.
@@ -1438,6 +1541,7 @@ impl HighQualityTranslationClient {
                         request.content_revision,
                         LiveTranslateServerEvent::SubtitleConfirmedPair {
                             utterance_id: request.utterance_revision,
+                            source_utterance_id: request.source_utterance_id,
                             source: request.text.clone(),
                             language: request.language.clone(),
                             translation: translation.text.clone(),
@@ -1682,10 +1786,11 @@ impl HighQualityTranslationClient {
                         if first_request {
                             self.emit_preview(
                                 id,
-                                LiveTranslateServerEvent::SourceDraft {
-                                    text: text.to_owned(),
-                                    language: language.map(str::to_owned),
-                                },
+                                source_draft_event(
+                                    inner.current_source_utterance_id,
+                                    text.to_owned(),
+                                    language.map(str::to_owned),
+                                ),
                             );
                             self.emit_preview(
                                 id,
@@ -1879,17 +1984,28 @@ impl HighQualityTranslationClient {
             self.advance_preview_epoch();
             let text = inner.committer.preview_latest_draft(false);
             let language = inner.latest_draft_language.clone();
-            let revision = inner.draft_revision;
+            let source_utterance_id = inner.current_source_utterance_id;
+            let revision = text
+                .as_ref()
+                .map(|_| next_nonzero(&mut inner.next_confirmation_id));
             inner.committer.reset();
             inner.latest_draft_language = None;
+            inner.current_source_utterance_id = None;
             inner.preview_request_pacer.finish_utterance();
             next_nonzero(&mut inner.draft_revision);
-            text.map(|text| (text, language, revision))
+            text.zip(revision)
+                .map(|(text, revision)| (text, language, revision, source_utterance_id))
         };
-        if let Some((text, language, revision)) = pending {
+        if let Some((text, language, revision, source_utterance_id)) = pending {
             pipeline_log!("audio3 asr fallback final length={}", text.chars().count());
-            self.enqueue_final(text, language, FinalBoundary::SessionFinish, revision)
-                .await;
+            self.enqueue_final(
+                text,
+                language,
+                FinalBoundary::SessionFinish,
+                revision,
+                source_utterance_id,
+            )
+            .await;
         }
     }
 
@@ -1914,6 +2030,8 @@ impl HighQualityTranslationClient {
         next_nonzero(&mut inner.draft_revision);
         inner.last_server_final = None;
         inner.last_source_utterance_id = None;
+        inner.current_source_utterance_id = None;
+        inner.next_confirmation_id = 0;
         inner.last_draft_log_at = None;
     }
 
@@ -2006,6 +2124,21 @@ fn next_nonzero(counter: &mut u64) -> u64 {
         *counter = 1;
     }
     *counter
+}
+
+fn source_draft_event(
+    source_utterance_id: Option<u64>,
+    text: String,
+    language: Option<String>,
+) -> LiveTranslateServerEvent {
+    match source_utterance_id {
+        Some(utterance_id) => LiveTranslateServerEvent::SourceUtteranceDraft {
+            utterance_id,
+            text,
+            language,
+        },
+        None => LiveTranslateServerEvent::SourceDraft { text, language },
+    }
 }
 
 fn abort_task(slot: &mut Option<TaskSlot>) {
@@ -2129,6 +2262,7 @@ mod tests {
         client.emit_content(
             old_revision,
             LiveTranslateServerEvent::SubtitleConfirmedPair {
+                source_utterance_id: None,
                 utterance_id: 1,
                 source: "old".into(),
                 language: None,
@@ -2587,6 +2721,7 @@ mod tests {
         assert_eq!(
             controller.state.subtitles.preview_pair,
             Some(crate::core::models::PreviewSubtitlePair {
+                utterance_id: None,
                 source: prefix.into(),
                 translation: "Synthetic shorter prefix translation".into(),
             })
@@ -3387,6 +3522,7 @@ mod tests {
         assert_eq!(
             controller.state.subtitles.preview_pair,
             Some(crate::core::models::PreviewSubtitlePair {
+                utterance_id: None,
                 source: original.into(),
                 translation: "Synthetic translation".into(),
             })
@@ -4011,7 +4147,8 @@ mod tests {
                     .await
                     .unwrap(),
                 Some(LiveTranslateServerEvent::SubtitleConfirmedPair {
-                    utterance_id: 2,
+                    source_utterance_id: None,
+                    utterance_id: 1,
                     source: "Synthetic unchanged line.".into(),
                     language: Some(language.into()),
                     translation: "Synthetic unchanged line.".into(),
@@ -4262,6 +4399,7 @@ mod tests {
                 .await
                 .unwrap(),
             Some(LiveTranslateServerEvent::SubtitleConfirmedPair {
+                source_utterance_id: None,
                 utterance_id: 1,
                 source: "An unfinished synthetic line".into(),
                 language: Some("en".into()),
@@ -4602,6 +4740,7 @@ mod tests {
         assert_eq!(
             controller.state.subtitles.preview_pair,
             Some(crate::core::models::PreviewSubtitlePair {
+                utterance_id: None,
                 source: "Synthetic preview".into(),
                 translation: "Synthetic translation".into(),
             })
@@ -4736,11 +4875,13 @@ mod tests {
         client.stable_draft_delay = Duration::from_secs(60);
         client.maximum_wait_delay = Duration::from_secs(60);
         let previous = crate::core::models::PreviewSubtitlePair {
+            utterance_id: None,
             source: "Previous synthetic source".into(),
             translation: "Previous synthetic translation".into(),
         };
         let mut controller = crate::core::session::TranslationSessionController::default();
         controller.handle(LiveTranslateServerEvent::SubtitlePreviewPair {
+            source_utterance_id: None,
             source: previous.source.clone(),
             language: Some("en".into()),
             translation: previous.translation.clone(),
@@ -4794,6 +4935,7 @@ mod tests {
         assert_eq!(
             controller.state.subtitles.preview_pair,
             Some(crate::core::models::PreviewSubtitlePair {
+                utterance_id: None,
                 source: draft.into(),
                 translation: "Complete synthetic translation".into(),
             })
@@ -4916,7 +5058,8 @@ mod tests {
         assert_eq!(
             events.recv().await,
             Some(LiveTranslateServerEvent::SubtitleConfirmedPair {
-                utterance_id: 0,
+                source_utterance_id: None,
+                utterance_id: 1,
                 source: "今日は晴れです。".into(),
                 language: Some("ja".into()),
                 translation: "今日は晴れです。".into(),
@@ -4965,6 +5108,7 @@ mod tests {
             .await
             .is_some());
         let final_pair = LiveTranslateServerEvent::SubtitleConfirmedPair {
+            source_utterance_id: None,
             utterance_id: 0,
             source: "confirmed".into(),
             language: Some("en".into()),
@@ -4987,6 +5131,7 @@ mod tests {
         client.emit_preview(
             preview_id,
             LiveTranslateServerEvent::SubtitlePreviewPair {
+                source_utterance_id: None,
                 source: "obsolete source".into(),
                 language: Some("en".into()),
                 translation: "obsolete completion".into(),
@@ -5171,7 +5316,7 @@ mod tests {
                 replay = Some(event.clone());
                 controller.handle(event);
             }
-            assert_eq!(ids, [1, 3]);
+            assert_eq!(ids, [1, 2]);
             assert_eq!(controller.state.subtitles.history.len(), 2);
             assert_eq!(controller.archive().count(), 2);
             assert!(
@@ -5236,7 +5381,7 @@ mod tests {
                 received_confirmation_ids.push(*utterance_id);
                 controller.handle(event);
             }
-            assert_eq!(received_confirmation_ids, [0, 1]);
+            assert_eq!(received_confirmation_ids, [1, 2]);
             assert_eq!(controller.state.subtitles.history.len(), 2);
             assert_eq!(controller.archive().count(), 2);
             client.disconnect().await;
@@ -5250,7 +5395,7 @@ mod tests {
             client
                 .prepare_server_final("Synthetic final", Some(7))
                 .await,
-            Some(0)
+            Some(1)
         );
         let epoch = client.advance_preview_epoch();
         {
@@ -5279,7 +5424,277 @@ mod tests {
             client
                 .prepare_server_final("Synthetic final", Some(1))
                 .await,
-            Some(2)
+            Some(1)
+        );
+        client.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn identified_drafts_cannot_resurrect_a_confirmed_sentence_or_replace_a_newer_one() {
+        use crate::core::protocols::audio3::Audio3ASRServerEventDecoder;
+
+        let draft = |id, text| {
+            let frame = serde_json::json!({
+                "header": {"event": "result-generated"},
+                "payload": {"output": {"sentence": {
+                    "sentence_id": id, "text": text, "sentence_end": false
+                }}}
+            });
+            Audio3ASRServerEventDecoder::decode(&frame.to_string())
+                .unwrap()
+                .subtitle_event(SourceLanguage::English)
+        };
+        let (client, _events) = test_client(TargetLanguage::Original, 20);
+        client
+            .prepare_server_final("Synthetic repeated lyric", Some(7))
+            .await;
+        client
+            .handle_asr_event(draft(7, "Synthetic repeated lyric"))
+            .await;
+        assert!(!client.inner.lock().await.committer.has_pending_text());
+
+        client
+            .handle_asr_event(draft(8, "Synthetic repeated lyric"))
+            .await;
+        assert_eq!(
+            client
+                .inner
+                .lock()
+                .await
+                .committer
+                .preview_latest_draft(false)
+                .as_deref(),
+            Some("Synthetic repeated lyric")
+        );
+        client
+            .handle_asr_event(draft(7, "Synthetic stale revision"))
+            .await;
+        assert_eq!(
+            client
+                .inner
+                .lock()
+                .await
+                .committer
+                .preview_latest_draft(false)
+                .as_deref(),
+            Some("Synthetic repeated lyric")
+        );
+        client.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn an_older_final_keeps_an_already_received_new_sentence_candidate() {
+        use crate::core::protocols::audio3::Audio3ASRServerEventDecoder;
+
+        let (client, _events) = test_client(TargetLanguage::Original, 20);
+        let frame = serde_json::json!({
+            "header": {"event": "result-generated"},
+            "payload": {"output": {"sentence": {
+                "sentence_id": 8, "text": "Synthetic next sentence", "sentence_end": false
+            }}}
+        });
+        client
+            .handle_asr_event(
+                Audio3ASRServerEventDecoder::decode(&frame.to_string())
+                    .unwrap()
+                    .subtitle_event(SourceLanguage::English),
+            )
+            .await;
+        assert!(client
+            .prepare_server_final("Synthetic previous sentence", Some(7))
+            .await
+            .is_some());
+        assert_eq!(
+            client
+                .inner
+                .lock()
+                .await
+                .committer
+                .preview_latest_draft(false)
+                .as_deref(),
+            Some("Synthetic next sentence")
+        );
+        client.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn a_real_new_begin_cancels_only_the_old_preview_and_keeps_quota_and_final_order() {
+        use crate::core::protocols::audio3::Audio3ASRServerEventDecoder;
+
+        let (client, mut events) = test_client(TargetLanguage::Japanese, 20);
+        client.prepare_identified_draft(7).await;
+        while events.try_recv().is_ok() {}
+        let preview_id = client.advance_preview_epoch();
+        let late_partial = client.preview_partial_handler(preview_id);
+        let now = std::time::Instant::now();
+        let cooldown_until = tokio::time::Instant::now() + Duration::from_secs(8);
+        let (shared_at, preview_at) = {
+            let mut inner = client.inner.lock().await;
+            inner.committer.update_draft("Synthetic old draft");
+            inner.preview_task = Some(TaskSlot {
+                id: preview_id,
+                handle: tokio::spawn(std::future::pending()),
+            });
+            inner.preview_http_pending = Some(preview_id);
+            inner.pending_preview_revision = Some(inner.draft_revision);
+            inner.mt_failure_streak = 2;
+            inner.mt_cooldown = Some(MTCooldown {
+                until: cooldown_until,
+                reason: TranslationRecoveryReason::RateLimited,
+            });
+            inner.preview_request_pacer.record_start(now);
+            inner.preview_request_pacer.suppress_after_rate_limit(now);
+            for id in [5, 6] {
+                inner.final_queue.push_back(TranslationRequest {
+                    text: "Synthetic durable source".into(),
+                    language: Some("en".into()),
+                    boundary: FinalBoundary::ServerFinal,
+                    utterance_revision: id,
+                    source_utterance_id: Some(id),
+                    content_revision: client.content_revision(),
+                    enqueued_at: tokio::time::Instant::now(),
+                });
+            }
+            (
+                inner.preview_request_pacer.next_shared_start_at(now),
+                inner.preview_request_pacer.next_start_at(now),
+            )
+        };
+        let frame = serde_json::json!({
+            "header": {"event": "result-generated"},
+            "payload": {"output": {"sentence": {
+                "sentence_id": 8, "text": "", "sentence_begin": true, "sentence_end": false
+            }}}
+        });
+        client
+            .handle_asr_event(
+                Audio3ASRServerEventDecoder::decode(&frame.to_string())
+                    .unwrap()
+                    .subtitle_event(SourceLanguage::English),
+            )
+            .await;
+        late_partial("Synthetic obsolete callback".into());
+        assert_eq!(
+            events.try_recv().unwrap(),
+            LiveTranslateServerEvent::PreviewTranslationFinished {
+                request_id: preview_id
+            }
+        );
+        assert_eq!(
+            events.try_recv().unwrap(),
+            LiveTranslateServerEvent::SubtitlePreviewCleared
+        );
+        assert!(
+            matches!(events.try_recv().unwrap(), LiveTranslateServerEvent::SourceUtteranceDraft { utterance_id: 8, text, .. } if text.is_empty())
+        );
+        assert!(events.try_recv().is_err());
+        let inner = client.inner.lock().await;
+        assert_eq!(inner.current_source_utterance_id, Some(8));
+        assert!(inner.preview_task.is_none());
+        assert!(inner.pending_preview_revision.is_none());
+        assert!(!inner.committer.has_pending_text());
+        assert_eq!(inner.mt_failure_streak, 2);
+        assert_eq!(inner.mt_cooldown.unwrap().until, cooldown_until);
+        assert_eq!(
+            inner.preview_request_pacer.next_shared_start_at(now),
+            shared_at
+        );
+        assert_eq!(inner.preview_request_pacer.next_start_at(now), preview_at);
+        assert_eq!(
+            inner
+                .final_queue
+                .iter()
+                .map(|request| request.source_utterance_id)
+                .collect::<Vec<_>>(),
+            [Some(5), Some(6)]
+        );
+        drop(inner);
+        client.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn same_identified_sentence_revisions_keep_the_active_preview_owner() {
+        let (client, mut events) = test_client(TargetLanguage::SimplifiedChinese, 20);
+        client.prepare_identified_draft(8).await;
+        while events.try_recv().is_ok() {}
+        let preview_id = client.advance_preview_epoch();
+        {
+            let mut inner = client.inner.lock().await;
+            inner.preview_task = Some(TaskSlot {
+                id: preview_id,
+                handle: tokio::spawn(std::future::pending()),
+            });
+            inner.preview_http_pending = Some(preview_id);
+        }
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceUtteranceDraft {
+                utterance_id: 8,
+                text: "Synthetic revised sentence".into(),
+                language: Some("en".into()),
+            })
+            .await;
+        assert_eq!(client.preview_epoch.load(Ordering::SeqCst), preview_id);
+        assert_eq!(
+            client.inner.lock().await.preview_task.as_ref().unwrap().id,
+            preview_id
+        );
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(
+                event,
+                LiveTranslateServerEvent::SubtitlePreviewCleared
+            ));
+        }
+        client.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn starting_an_older_final_does_not_replace_a_newer_source_still_queued_in_the_outer_lane(
+    ) {
+        let (client, mut events) = test_client(TargetLanguage::Japanese, 20);
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceUtteranceDraft {
+                utterance_id: 8,
+                text: "Synthetic next source".into(),
+                language: Some("ja".into()),
+            })
+            .await;
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 7,
+                text: "Synthetic previous source".into(),
+                language: Some("ja".into()),
+            })
+            .await;
+        client
+            .wait_for_final_translations(Duration::from_secs(1))
+            .await;
+        let mut controller = crate::core::session::TranslationSessionController::default();
+        while let Ok(event) = events.try_recv() {
+            controller.handle(event);
+        }
+        assert_eq!(controller.state.subtitles.history.len(), 1);
+        assert_eq!(
+            controller.state.subtitles.history[0].source,
+            "Synthetic previous source"
+        );
+        assert_eq!(
+            controller.state.subtitles.source.text,
+            "Synthetic next source"
+        );
+        assert!(!controller.state.subtitles.source.is_final);
+        assert_eq!(
+            client.inner.lock().await.current_source_utterance_id,
+            Some(8)
+        );
+        assert_eq!(
+            client
+                .inner
+                .lock()
+                .await
+                .committer
+                .preview_latest_draft(false)
+                .as_deref(),
+            Some("Synthetic next source")
         );
         client.disconnect().await;
     }
@@ -5325,6 +5740,7 @@ mod tests {
                     Some("ja".into()),
                     FinalBoundary::ServerFinal,
                     5,
+                    None,
                 )
                 .await;
             assert_eq!(
@@ -5369,6 +5785,7 @@ mod tests {
                     Some("ja".into()),
                     FinalBoundary::ServerFinal,
                     revision,
+                    None,
                 )
                 .await;
         }
@@ -5378,6 +5795,7 @@ mod tests {
                 Some("ja".into()),
                 FinalBoundary::ServerFinal,
                 99,
+                None,
             )
             .await;
         client
@@ -5386,6 +5804,7 @@ mod tests {
                 Some("ja".into()),
                 FinalBoundary::ServerFinal,
                 100,
+                None,
             )
             .await;
 
@@ -5438,7 +5857,8 @@ mod tests {
         assert_eq!(
             events.recv().await,
             Some(LiveTranslateServerEvent::SubtitleConfirmedPair {
-                utterance_id: 0,
+                source_utterance_id: None,
+                utterance_id: 1,
                 source: "最後の字幕。".into(),
                 language: Some("ja".into()),
                 translation: "最後の字幕。".into(),

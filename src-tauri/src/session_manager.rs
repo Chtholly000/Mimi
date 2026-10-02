@@ -861,7 +861,10 @@ impl SessionManager {
         }
         let mut journal = self.diagnostic_journal.lock().unwrap();
         let text_kind = match event {
-            LiveTranslateServerEvent::SourceDraft { .. } => Some(TextEventKind::SourceDraft),
+            LiveTranslateServerEvent::SourceDraft { .. }
+            | LiveTranslateServerEvent::SourceUtteranceDraft { .. } => {
+                Some(TextEventKind::SourceDraft)
+            }
             LiveTranslateServerEvent::SourceFinal { .. }
             | LiveTranslateServerEvent::SourceUtteranceFinal { .. } => {
                 Some(TextEventKind::SourceFinal)
@@ -3887,6 +3890,7 @@ mod lifecycle_tests {
         ));
         let identified_pair = LiveTranslateServerEvent::SubtitleConfirmedPair {
             utterance_id: 1,
+            source_utterance_id: None,
             source: "Synthetic tail".into(),
             language: Some("en".into()),
             translation: "Synthetic translation".into(),

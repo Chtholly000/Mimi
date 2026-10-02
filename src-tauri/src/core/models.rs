@@ -617,6 +617,12 @@ impl Eq for SubtitlePair {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreviewSubtitlePair {
+    #[serde(
+        default,
+        rename = "utteranceId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub utterance_id: Option<String>,
     pub source: String,
     pub translation: String,
 }
@@ -650,14 +656,20 @@ impl Default for SubtitleSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubtitleEvent {
     SourceDraft(String),
+    SourceUtteranceDraft {
+        utterance_id: u64,
+        text: String,
+    },
     SourceFinal(String),
     TranslationDraft(String),
     TranslationFinal(String),
     /// Atomically replaces a completed preview without confirming history.
     PreviewPair {
+        source_utterance_id: Option<u64>,
         source: String,
         translation: String,
     },
+    ClearPreview,
     /// Text from a provider that identifies its utterances. `role` selects the
     /// preview line and `utterance_id` is always the *source* utterance id, so
     /// both lines of one utterance carry the same identity.
@@ -677,6 +689,7 @@ pub enum SubtitleEvent {
     /// A reliable final boundary identified within the current generation.
     ConfirmedPair {
         utterance_id: u64,
+        source_utterance_id: Option<u64>,
         source: String,
         translation: String,
     },
@@ -687,6 +700,7 @@ impl SubtitleEvent {
     pub fn text_within_limit(&self) -> bool {
         match self {
             Self::SourceDraft(text)
+            | Self::SourceUtteranceDraft { text, .. }
             | Self::SourceFinal(text)
             | Self::TranslationDraft(text)
             | Self::TranslationFinal(text)
@@ -694,6 +708,7 @@ impl SubtitleEvent {
             Self::PreviewPair {
                 source,
                 translation,
+                ..
             }
             | Self::FinalPair {
                 source,
@@ -704,7 +719,7 @@ impl SubtitleEvent {
                 translation,
                 ..
             } => subtitle_text_within_limit(source) && subtitle_text_within_limit(translation),
-            Self::Clear => true,
+            Self::Clear | Self::ClearPreview => true,
         }
     }
 }

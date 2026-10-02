@@ -29,8 +29,11 @@ content, and therefore survives clear.
 
 ## Real speech boundaries
 
-Audio3 exposes a cumulative sentence ID, not word timings that establish the
-exact instant of a click. If clear happens during a known sentence, suppress its
+Audio3 exposes cumulative sentence IDs and optional word timestamps in its
+[server events](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-server-events).
+The current pipeline does not map those timestamps to the UI click or audio
+capture clock, so they do not establish the exact clear instant. If clear happens
+during a known sentence, suppress its
 remaining drafts/final and resume at the next real sentence. Do not subtract
 text prefixes or guess which rewritten words were spoken after the click.
 Other protocols use existing item/turn boundaries where available. Services

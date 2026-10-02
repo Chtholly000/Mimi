@@ -352,9 +352,8 @@ const SETTINGS_ZH = {
   pulseStyleSyllable: "A · 音节",
   pulseStyleRibbon: "B · 声带",
   pulseAnimation: "状态灯动效",
-  pulseAnimationHelp: "未设置时跟随系统。",
   textAnimation: "字幕动效",
-  textAnimationHelp: "新句平滑接续，滚动时缓和位置变化。未设置时跟随系统。",
+  textAnimationHelp: "新句平滑接续，滚动时缓和位置变化。",
   subtitleDividers: "分句线",
   subtitleDividersHelp: "在句子之间显示淡细线；沉浸模式不显示。",
 
@@ -682,9 +681,8 @@ const SETTINGS_EN = {
   pulseStyleSyllable: "A · Syllable",
   pulseStyleRibbon: "B · Ribbon",
   pulseAnimation: "Status light motion",
-  pulseAnimationHelp: "Follows the system setting until you choose.",
   textAnimation: "Subtitle motion",
-  textAnimationHelp: "New sentences settle smoothly and scrolling softens position changes. Follows the system until you choose.",
+  textAnimationHelp: "New sentences settle smoothly and scrolling softens position changes.",
   subtitleDividers: "Sentence dividers",
   subtitleDividersHelp: "Faint lines between sentences, hidden in Immersive Mode.",
 
@@ -1010,9 +1008,8 @@ const SETTINGS_JA = {
   pulseStyleSyllable: "A · 音節",
   pulseStyleRibbon: "B · 波形",
   pulseAnimation: "状態ライトの動き",
-  pulseAnimationHelp: "未設定ならシステム設定に従います。",
   textAnimation: "字幕の動き",
-  textAnimationHelp: "新しい文とスクロール時の位置変化を滑らかにつなぎます。未設定ならシステム設定に従います。",
+  textAnimationHelp: "新しい文とスクロール時の位置変化を滑らかにつなぎます。",
   subtitleDividers: "文の区切り線",
   subtitleDividersHelp: "文の間に薄い細線を表示します。イマーシブモードでは非表示です。",
 

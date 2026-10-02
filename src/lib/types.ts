@@ -35,7 +35,12 @@ interface SubtitleHistoryItem {
 
 export interface SubtitleSnapshot {
   /** One replaceable completed preview; never confirmed history. */
-  previewPair?: { source: string; translation: string } | null;
+  previewPair?: {
+    source: string;
+    translation: string;
+    /** Opaque owner of this completed pair, independent of newer raw ASR. */
+    utteranceId?: string | null;
+  } | null;
   source: SubtitleLineSnapshot;
   translation: SubtitleLineSnapshot;
   history: SubtitleHistoryItem[];

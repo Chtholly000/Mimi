@@ -714,14 +714,25 @@ mod streaming_tests {
             .connect_for_probe("synthetic-clear-task")
             .await
             .unwrap();
-        loop {
-            if matches!(
-                receiver.recv().await,
-                Some(LiveTranslateServerEvent::SourceDraft { .. })
-            ) {
-                break;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let event = receiver
+                    .recv()
+                    .await
+                    .expect("synthetic stream closed before its identified draft");
+                if matches!(
+                    event,
+                    LiveTranslateServerEvent::SourceUtteranceDraft {
+                        utterance_id: 7,
+                        ..
+                    }
+                ) {
+                    break;
+                }
             }
-        }
+        })
+        .await
+        .expect("synthetic identified draft was not delivered");
         assert_eq!(client.clear_content().await, 1);
         client.send_audio(&[1, 2, 3, 4]).await.unwrap();
         release_tx.send(()).unwrap();
@@ -739,7 +750,10 @@ mod streaming_tests {
         ));
         assert!(receiver.try_recv().is_err());
         client.disconnect().await;
-        server.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test]

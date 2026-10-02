@@ -234,6 +234,44 @@ it.each(["original", "translation", "bilingual"] as const)("retains a %s reader'
   expect(scrollTop).toBe(620);
 });
 
+it.each(["original", "translation", "bilingual"] as const)("keeps reading the unchanged live %s sentence when an earlier final inserts above it", async mode => {
+  const previous = { source: "Older synthetic original.", translation: "较早合成译文。", createdAt: 1 };
+  const previewB = { source: "Current synthetic original B. ".repeat(20), translation: "当前合成译文 B。".repeat(20), isStreaming: true,
+    utteranceId: "synthetic-epoch:1:B" };
+  const before = buildSubtitleBlocks([previous], mode, previewB);
+  const earlierA = { source: "Earlier synthetic original A.", translation: "较早合成译文 A。", createdAt: 2 };
+  const after = buildSubtitleBlocks([previous, earlierA], mode, previewB);
+  await mount(before);
+  const liveRow = timeline.lastElementChild!;
+  let insertedA = false;
+  scrollHeight = 700;
+  timeline.firstElementChild!.getBoundingClientRect = () => ({ top: -scrollTop, bottom: 100 - scrollTop } as DOMRect);
+  liveRow.getBoundingClientRect = () => ({ top: (insertedA ? 400 : 100) - scrollTop,
+    bottom: (insertedA ? 1000 : 700) - scrollTop } as DOMRect);
+  const reading = vi.fn();
+  await render(mode, before, 0, reading);
+  scrollTop = 130;
+  await act(async () => timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -30 })));
+
+  // Supply the new final/live row geometry before their layout effects. B's
+  // source and translation do not change; only the earlier A is inserted.
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    if (this.dataset.utteranceId === "history-2") return { top: 100 - scrollTop, bottom: 400 - scrollTop } as DOMRect;
+    if (this.dataset.utteranceId?.startsWith("live")) return { top: 400 - scrollTop, bottom: 1000 - scrollTop } as DOMRect;
+    return originalRect.call(this);
+  };
+  try {
+    insertedA = true; scrollHeight = 1000;
+    await render(mode, after, 0, reading);
+    expect(scrollTop).toBe(430); // Still 30px into B, rather than 30px into A.
+    expect(timeline.lastElementChild).toBe(liveRow);
+    expect(reading).toHaveBeenLastCalledWith(true);
+  } finally {
+    HTMLElement.prototype.getBoundingClientRect = originalRect;
+  }
+});
+
 it("keeps return-to-live intent through later compact row growth, shrink and replacement while preserving a reader on resize", async () => {
   await mount();
   await act(async () => {

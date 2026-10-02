@@ -10,6 +10,15 @@
 use crate::core::models::{
     PreviewSubtitlePair, SubtitleEvent, SubtitleLine, SubtitlePair, SubtitleSnapshot, UtteranceRole,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_LAYOUT_EPOCH: AtomicU64 = AtomicU64::new(0);
+
+fn fresh_layout_epoch() -> u64 {
+    NEXT_LAYOUT_EPOCH
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1)
+}
 
 // Keep one complete pair rather than truncating a sentence for presentation.
 // This matches the MT clients' translated-text bound and also bounds its ASR
@@ -23,6 +32,10 @@ pub struct SubtitleReducer {
     max_history_count: usize,
     source_draft_since_confirmation: bool,
     last_confirmed_id: Option<u64>,
+    latest_source_utterance_id: Option<u64>,
+    last_confirmed_source_id: Option<u64>,
+    preview_source_utterance_id: Option<u64>,
+    layout_epoch: u64,
 }
 
 impl SubtitleReducer {
@@ -33,6 +46,10 @@ impl SubtitleReducer {
             max_history_count,
             source_draft_since_confirmation: false,
             last_confirmed_id: None,
+            latest_source_utterance_id: None,
+            last_confirmed_source_id: None,
+            preview_source_utterance_id: None,
+            layout_epoch: fresh_layout_epoch(),
         }
     }
 
@@ -56,6 +73,27 @@ impl SubtitleReducer {
                 self.source_draft_since_confirmation |= !text.is_empty();
                 self.snapshot.source = SubtitleLine::new(text, false);
             }
+            SubtitleEvent::SourceUtteranceDraft { utterance_id, text } => {
+                if self
+                    .last_confirmed_source_id
+                    .is_some_and(|id| utterance_id <= id)
+                    || self
+                        .latest_source_utterance_id
+                        .is_some_and(|id| utterance_id < id)
+                    || self
+                        .preview_source_utterance_id
+                        .is_some_and(|id| utterance_id < id)
+                {
+                    return;
+                }
+                self.latest_source_utterance_id = Some(utterance_id);
+                self.source_draft_since_confirmation |= !text.trim().is_empty();
+                self.snapshot.source = SubtitleLine::for_utterance(
+                    trim(&text),
+                    false,
+                    self.source_layout_identity(utterance_id),
+                );
+            }
             SubtitleEvent::SourceFinal(text) => {
                 self.snapshot.source = SubtitleLine::new(trim(&text), true);
             }
@@ -68,6 +106,7 @@ impl SubtitleReducer {
                 self.snapshot.translation = SubtitleLine::new(trimmed, false);
             }
             SubtitleEvent::PreviewPair {
+                source_utterance_id,
                 source,
                 translation,
             } => {
@@ -76,14 +115,35 @@ impl SubtitleReducer {
                 if source.is_empty() || translation.is_empty() {
                     return;
                 }
+                if source_utterance_id.is_some_and(|preview_id| {
+                    self.last_confirmed_source_id
+                        .is_some_and(|id| preview_id <= id)
+                        || self
+                            .latest_source_utterance_id
+                            .is_some_and(|id| preview_id < id)
+                }) {
+                    return;
+                }
                 // This is a replaceable display pair, never a confirmation.
                 // Raw ASR can continue independently while a later request
                 // waits; retaining its last complete pair avoids a blank and
                 // a new short SSE prefix on every request.
                 self.snapshot.preview_pair = Some(PreviewSubtitlePair {
+                    utterance_id: source_utterance_id.map(|id| self.source_layout_identity(id)),
                     source,
                     translation,
                 });
+                self.preview_source_utterance_id = source_utterance_id;
+                if let Some(id) = source_utterance_id {
+                    self.latest_source_utterance_id = Some(
+                        self.latest_source_utterance_id
+                            .map_or(id, |last| last.max(id)),
+                    );
+                }
+            }
+            SubtitleEvent::ClearPreview => {
+                self.snapshot.preview_pair = None;
+                self.preview_source_utterance_id = None;
             }
             SubtitleEvent::UtteranceText {
                 utterance_id,
@@ -140,6 +200,7 @@ impl SubtitleReducer {
             }
             SubtitleEvent::ConfirmedPair {
                 utterance_id,
+                source_utterance_id,
                 source,
                 translation,
             } => {
@@ -153,14 +214,35 @@ impl SubtitleReducer {
                 }
                 self.last_confirmed_id = Some(utterance_id);
                 self.source_draft_since_confirmation = false;
-                self.snapshot.source = SubtitleLine::new(source.clone(), true);
-                self.snapshot.translation = SubtitleLine::new(translation.clone(), true);
-                self.snapshot.preview_pair = None;
+                let newer_source_visible = source_utterance_id.is_some_and(|final_id| {
+                    self.latest_source_utterance_id
+                        .is_some_and(|id| id > final_id)
+                        || self
+                            .preview_source_utterance_id
+                            .is_some_and(|id| id > final_id)
+                });
+                if let Some(id) = source_utterance_id {
+                    self.last_confirmed_source_id = Some(
+                        self.last_confirmed_source_id
+                            .map_or(id, |last| last.max(id)),
+                    );
+                }
+                // A previous sentence's HTTP final remains durable, but is
+                // not the owner of a newer real sentence already on screen.
+                if !newer_source_visible {
+                    self.snapshot.source = SubtitleLine::new(source.clone(), true);
+                    self.snapshot.translation = SubtitleLine::new(translation.clone(), true);
+                    self.snapshot.preview_pair = None;
+                    self.preview_source_utterance_id = None;
+                }
                 self.append_confirmed_history(source, translation, true);
             }
             SubtitleEvent::Clear => {
                 self.archive.clear();
                 self.snapshot = SubtitleSnapshot::empty();
+                self.latest_source_utterance_id = None;
+                self.preview_source_utterance_id = None;
+                self.layout_epoch = fresh_layout_epoch();
                 self.source_draft_since_confirmation = false;
                 // Clearing the display is not a new generation. Keep its
                 // watermark so a replay cannot restore explicitly cleared text.
@@ -173,6 +255,10 @@ impl SubtitleReducer {
     /// connection that produced it.
     pub fn reset_transient(&mut self) {
         self.last_confirmed_id = None;
+        self.latest_source_utterance_id = None;
+        self.last_confirmed_source_id = None;
+        self.preview_source_utterance_id = None;
+        self.layout_epoch = fresh_layout_epoch();
         self.snapshot.preview_pair = None;
         self.source_draft_since_confirmation = false;
         if !self.snapshot.source.is_final {
@@ -181,6 +267,12 @@ impl SubtitleReducer {
         if !self.snapshot.translation.is_final {
             self.snapshot.translation = SubtitleLine::new("", false);
         }
+    }
+
+    fn source_layout_identity(&self, source_id: u64) -> String {
+        // This is a local presentation owner, not a new provider identity.
+        // The epoch isolates reducer creation, Clear and connection resets.
+        format!("audio3:{}:{source_id}", self.layout_epoch)
     }
 
     fn append_history_if_possible(&mut self, source: String, translation: String) {
@@ -248,10 +340,149 @@ mod tests {
 
     fn confirmed(utterance_id: u64, text: &str) -> SubtitleEvent {
         SubtitleEvent::ConfirmedPair {
+            source_utterance_id: None,
             utterance_id,
             source: text.into(),
             translation: text.into(),
         }
+    }
+
+    #[test]
+    fn an_older_confirmation_appends_history_without_replacing_a_newer_complete_pair() {
+        let mut reducer = SubtitleReducer::default();
+        reducer.archive.begin(true, 0);
+        reducer.apply(SubtitleEvent::SourceUtteranceDraft {
+            utterance_id: 8,
+            text: "Synthetic next source".into(),
+        });
+        reducer.apply(SubtitleEvent::PreviewPair {
+            source_utterance_id: Some(8),
+            source: "Synthetic next source".into(),
+            translation: "Synthetic next translation".into(),
+        });
+        let source = reducer.snapshot.source.clone();
+        let preview = reducer.snapshot.preview_pair.clone();
+        assert_eq!(preview.as_ref().unwrap().utterance_id, source.utterance_id);
+        reducer.apply(SubtitleEvent::ConfirmedPair {
+            utterance_id: 1,
+            source_utterance_id: Some(7),
+            source: "Synthetic previous source".into(),
+            translation: "Synthetic previous translation".into(),
+        });
+        assert_eq!(reducer.snapshot.source, source);
+        assert_eq!(reducer.snapshot.preview_pair, preview);
+        assert_eq!(reducer.snapshot.history.len(), 1);
+        assert_eq!(
+            reducer.snapshot.history[0].source,
+            "Synthetic previous source"
+        );
+        assert_eq!(reducer.archive.count(), 1);
+        for obsolete in [
+            SubtitleEvent::SourceUtteranceDraft {
+                utterance_id: 7,
+                text: "Synthetic stale draft".into(),
+            },
+            SubtitleEvent::PreviewPair {
+                source_utterance_id: Some(7),
+                source: "Synthetic stale source".into(),
+                translation: "Synthetic stale translation".into(),
+            },
+        ] {
+            reducer.apply(obsolete);
+            assert_eq!(reducer.snapshot.source, source);
+            assert_eq!(reducer.snapshot.preview_pair, preview);
+        }
+        reducer.apply(SubtitleEvent::ConfirmedPair {
+            utterance_id: 2,
+            source_utterance_id: Some(8),
+            source: "Synthetic next source".into(),
+            translation: "Synthetic next translation".into(),
+        });
+        assert!(reducer.snapshot.preview_pair.is_none());
+        assert!(reducer.snapshot.source.is_final);
+        assert_eq!(reducer.snapshot.source.text, "Synthetic next source");
+        assert!(reducer.snapshot.source.utterance_id.is_none());
+        assert_eq!(reducer.snapshot.history.len(), 2);
+        reducer.apply(SubtitleEvent::Clear);
+        reducer.apply(SubtitleEvent::SourceUtteranceDraft {
+            utterance_id: 8,
+            text: "Synthetic cleared replay".into(),
+        });
+        assert!(reducer.snapshot.source.text.is_empty());
+        reducer.apply(SubtitleEvent::SourceUtteranceDraft {
+            utterance_id: 9,
+            text: "Synthetic repeated lyric".into(),
+        });
+        assert_eq!(reducer.snapshot.source.text, "Synthetic repeated lyric");
+        let before_reset = reducer.snapshot.source.utterance_id.clone();
+        reducer.reset_transient();
+        reducer.apply(SubtitleEvent::SourceUtteranceDraft {
+            utterance_id: 1,
+            text: "Synthetic new task".into(),
+        });
+        assert_eq!(reducer.snapshot.source.text, "Synthetic new task");
+        assert_ne!(reducer.snapshot.source.utterance_id, before_reset);
+    }
+
+    #[test]
+    fn completed_pair_ownership_is_stable_on_revisions_and_changes_after_clear_or_reset() {
+        let mut reducer = SubtitleReducer::default();
+        let draft = || SubtitleEvent::SourceUtteranceDraft {
+            utterance_id: 8,
+            text: "Synthetic source".into(),
+        };
+        let preview = || SubtitleEvent::PreviewPair {
+            source_utterance_id: Some(8),
+            source: "Synthetic source".into(),
+            translation: "Synthetic translation".into(),
+        };
+        reducer.apply(draft());
+        reducer.apply(preview());
+        let first = reducer
+            .snapshot
+            .preview_pair
+            .as_ref()
+            .unwrap()
+            .utterance_id
+            .clone();
+        assert_eq!(first, reducer.snapshot.source.utterance_id);
+        reducer.apply(SubtitleEvent::PreviewPair {
+            source_utterance_id: Some(8),
+            source: "Synthetic revised source".into(),
+            translation: "Synthetic revised translation".into(),
+        });
+        assert_eq!(
+            reducer.snapshot.preview_pair.as_ref().unwrap().utterance_id,
+            first
+        );
+        reducer.apply(SubtitleEvent::Clear);
+        reducer.apply(draft());
+        reducer.apply(preview());
+        let second = reducer
+            .snapshot
+            .preview_pair
+            .as_ref()
+            .unwrap()
+            .utterance_id
+            .clone();
+        assert_ne!(second, first);
+        assert_eq!(second, reducer.snapshot.source.utterance_id);
+        reducer.reset_transient();
+        reducer.apply(draft());
+        reducer.apply(preview());
+        assert_ne!(
+            reducer.snapshot.preview_pair.as_ref().unwrap().utterance_id,
+            second
+        );
+        let json = serde_json::to_value(&reducer.snapshot.preview_pair).unwrap();
+        assert!(json["utteranceId"].is_string());
+        reducer.apply(SubtitleEvent::PreviewPair {
+            source_utterance_id: None,
+            source: "Synthetic legacy source".into(),
+            translation: "Synthetic legacy translation".into(),
+        });
+        let json = serde_json::to_value(&reducer.snapshot.preview_pair).unwrap();
+        assert!(json.get("utteranceId").is_none());
     }
 
     #[test]
@@ -260,6 +491,7 @@ mod tests {
         reducer.archive.begin(true, 0);
         reducer.apply(confirmed(1, "Synthetic final"));
         reducer.apply(SubtitleEvent::PreviewPair {
+            source_utterance_id: None,
             source: "Synthetic complete preview".into(),
             translation: "Synthetic complete translation".into(),
         });
@@ -283,6 +515,7 @@ mod tests {
                 is_final: true,
             },
             SubtitleEvent::PreviewPair {
+                source_utterance_id: None,
                 source: oversized.clone(),
                 translation: "valid".into(),
             },
@@ -291,11 +524,13 @@ mod tests {
                 translation: oversized.clone(),
             },
             SubtitleEvent::ConfirmedPair {
+                source_utterance_id: None,
                 utterance_id: 2,
                 source: oversized.clone(),
                 translation: "valid".into(),
             },
             SubtitleEvent::ConfirmedPair {
+                source_utterance_id: None,
                 utterance_id: 2,
                 source: "valid".into(),
                 translation: oversized,
@@ -426,10 +661,12 @@ mod tests {
             "Old raw translation".into(),
         ));
         let stable = PreviewSubtitlePair {
+            utterance_id: None,
             source: "Old recognized source".into(),
             translation: "Complete translated preview".into(),
         };
         reducer.apply(SubtitleEvent::PreviewPair {
+            source_utterance_id: None,
             source: stable.source.clone(),
             translation: stable.translation.clone(),
         });
@@ -456,6 +693,7 @@ mod tests {
         reducer.apply(SubtitleEvent::TranslationDraft("Latest raw draft".into()));
         for index in 0..2_000 {
             reducer.apply(SubtitleEvent::PreviewPair {
+                source_utterance_id: None,
                 source: format!("Earlier candidate {index}"),
                 translation: format!("Completed preview {index}"),
             });
@@ -463,6 +701,7 @@ mod tests {
         assert_eq!(
             reducer.snapshot.preview_pair,
             Some(PreviewSubtitlePair {
+                utterance_id: None,
                 source: "Earlier candidate 1999".into(),
                 translation: "Completed preview 1999".into(),
             })
@@ -477,10 +716,12 @@ mod tests {
     fn empty_or_oversized_preview_pairs_keep_the_last_complete_pair() {
         let mut reducer = SubtitleReducer::default();
         let stable = PreviewSubtitlePair {
+            utterance_id: None,
             source: "Stable source".into(),
             translation: "Stable translation".into(),
         };
         reducer.apply(SubtitleEvent::PreviewPair {
+            source_utterance_id: None,
             source: stable.source.clone(),
             translation: stable.translation.clone(),
         });
@@ -491,6 +732,7 @@ mod tests {
             ("Source".into(), "字".repeat(MAX_PREVIEW_TEXT_BYTES / 3 + 1)),
         ] {
             reducer.apply(SubtitleEvent::PreviewPair {
+                source_utterance_id: None,
                 source,
                 translation,
             });
@@ -507,12 +749,14 @@ mod tests {
         assert_eq!(source.len(), MAX_PREVIEW_TEXT_BYTES);
         assert_eq!(translation.len(), MAX_PREVIEW_TEXT_BYTES);
         reducer.apply(SubtitleEvent::PreviewPair {
+            source_utterance_id: None,
             source: source.clone(),
             translation: translation.clone(),
         });
         assert_eq!(
             reducer.snapshot.preview_pair,
             Some(PreviewSubtitlePair {
+                utterance_id: None,
                 source,
                 translation
             })
@@ -537,6 +781,7 @@ mod tests {
             let mut reducer = SubtitleReducer::default();
             reducer.apply(SubtitleEvent::SourceFinal("Corrected source.".into()));
             reducer.apply(SubtitleEvent::PreviewPair {
+                source_utterance_id: None,
                 source: "Provisional source".into(),
                 translation: "Provisional translation".into(),
             });
@@ -555,10 +800,12 @@ mod tests {
     fn an_empty_final_cannot_erase_a_complete_preview_without_replacing_it() {
         let mut reducer = SubtitleReducer::default();
         let stable = PreviewSubtitlePair {
+            utterance_id: None,
             source: "Stable source".into(),
             translation: "Stable translation".into(),
         };
         reducer.apply(SubtitleEvent::PreviewPair {
+            source_utterance_id: None,
             source: stable.source.clone(),
             translation: stable.translation.clone(),
         });
@@ -579,6 +826,7 @@ mod tests {
             translation: "Confirmed translation".into(),
         });
         reducer.apply(SubtitleEvent::PreviewPair {
+            source_utterance_id: None,
             source: "Current source".into(),
             translation: "Current preview".into(),
         });
@@ -588,6 +836,7 @@ mod tests {
         assert_eq!(reducer.archive.count(), 1);
         assert!(reducer.snapshot.source.is_final);
         reducer.apply(SubtitleEvent::PreviewPair {
+            source_utterance_id: None,
             source: "Current source".into(),
             translation: "Current preview".into(),
         });
