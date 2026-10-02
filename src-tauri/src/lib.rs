@@ -2,6 +2,8 @@
 //! Tauri v2 shell wiring: plugins, tray, global shortcut, windows, and state.
 
 mod audio;
+#[cfg(test)]
+mod audio3_benchmark;
 mod clients;
 mod commands;
 mod core;
