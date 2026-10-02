@@ -11,7 +11,6 @@ import { DEFAULT_NETWORK_PROXY, validateNetworkProxy } from "./networkProxy";
  */
 
 import { create } from "zustand";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   appQuit,
   appShowSettings,
@@ -49,7 +48,7 @@ import {
   translationModesForSettings,
 } from "./providerCapabilities";
 import {
-  initializeSnapshotStreams,
+  SnapshotStreamBootstrap,
   mergeSettingsSnapshot,
   SettingsSaveCoordinator,
   SnapshotBootstrapTimeoutError,
@@ -178,11 +177,25 @@ export function selectHasRecognizingSourceDraft(state: SessionStoreSlice) {
   return source.text !== "" && !source.isFinal;
 }
 
-const unlisteners: UnlistenFn[] = [];
 const settingsSaveCoordinator = new SettingsSaveCoordinator();
 const settingsResponseGate = new SnapshotResponseGate();
+let snapshotBootstrap: SnapshotStreamBootstrap<SettingsSnapshot, SessionStateEvent> | null = null;
 let initializationAttempt: Promise<void> | null = null;
 let initializationGeneration = 0;
+
+/** A timeout is recoverable; only an actual WebView teardown expires streams. */
+export function disposeStoreSnapshotStreams(): void {
+  initializationGeneration += 1;
+  snapshotBootstrap?.dispose();
+  snapshotBootstrap = null;
+  initializationAttempt = null;
+}
+
+if (isTauri && typeof window !== "undefined") {
+  window.addEventListener("pagehide", (event) => {
+    if (!event.persisted) disposeStoreSnapshotStreams();
+  });
+}
 
 export const useStore = create<StoreState>()((set, get) => ({
   session: INITIAL_SESSION,
@@ -201,42 +214,45 @@ export const useStore = create<StoreState>()((set, get) => ({
       set({ initialized: true, initializationStatus: "ready", hasSettingsSnapshot: true });
       return Promise.resolve();
     }
-    const generation = ++initializationGeneration;
     set({ initializationStatus: "loading", initializationError: null });
-    const attempt = initializeSnapshotStreams(
-      {
-        listenSettings: listenSettingsChanged,
-        listenSession: listenSessionState,
-        getSettings: settingsGet,
-        getSession: sessionGetState,
-      },
-      {
-        applySettings: (settings) => {
-          if (generation !== initializationGeneration) return;
-          settingsResponseGate.advance();
-          settingsSaveCoordinator.invalidate();
-          set({ settings, hasSettingsSnapshot: true });
-          // Language switches initiated from any window reach every other
-          // window through this event without reloading the WebView.
-          syncUiLanguageFromSettings(settings);
+    if (snapshotBootstrap === null) {
+      const generation = ++initializationGeneration;
+      snapshotBootstrap = new SnapshotStreamBootstrap(
+        {
+          listenSettings: listenSettingsChanged,
+          listenSession: listenSessionState,
+          getSettings: settingsGet,
+          getSession: sessionGetState,
         },
-        applySession: (session) => {
-          if (generation !== initializationGeneration) return;
-          set((state) => ({ session: shareUnchangedSubtitleHistory(state.session, session) }));
+        {
+          applySettings: (settings) => {
+            if (generation !== initializationGeneration) return;
+            settingsResponseGate.advance();
+            settingsSaveCoordinator.invalidate();
+            set({ settings, hasSettingsSnapshot: true });
+            // Language switches initiated from any window reach every other
+            // window through this event without reloading the WebView.
+            syncUiLanguageFromSettings(settings);
+          },
+          applySession: (session) => {
+            if (generation !== initializationGeneration) return;
+            set((state) => ({ session: shareUnchangedSubtitleHistory(state.session, session) }));
+          },
+          onReady: () => {
+            if (generation !== initializationGeneration) return;
+            set({ initialized: true, initializationStatus: "ready", initializationError: null });
+          },
         },
-      },
-    ).then((listeners) => {
-      if (generation !== initializationGeneration) {
-        for (const unlisten of listeners) unlisten();
-        return;
-      }
-      unlisteners.push(...listeners);
+      );
+    }
+    const bootstrap = snapshotBootstrap;
+    const attempt = bootstrap.initialize().then(() => {
+      if (bootstrap !== snapshotBootstrap || !bootstrap.ready) return;
       set({ initialized: true, initializationStatus: "ready", initializationError: null });
     }).catch((error: unknown) => {
-      if (generation !== initializationGeneration) return;
-      // Expire this attempt. Retry is explicit so a blocked OS credential
-      // read cannot accumulate more native reads in the background.
-      initializationGeneration += 1;
+      if (bootstrap !== snapshotBootstrap || bootstrap.ready) return;
+      // Preserve listeners and their generation. Retrying reuses any pending
+      // OS read; later settings events/late success can recover every window.
       set({ initialized: false, initializationStatus: "error", initializationError: error instanceof SnapshotBootstrapTimeoutError ? "timeout" : "unavailable" });
     }).finally(() => {
       if (initializationAttempt === attempt) initializationAttempt = null;

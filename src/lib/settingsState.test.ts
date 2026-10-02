@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsSnapshot } from "./types";
 import {
-  initializeSnapshotStreams,
+  SnapshotStreamBootstrap,
   mergeSettingsSnapshot,
   SettingsSaveCoordinator,
   SnapshotResponseGate,
@@ -256,219 +256,207 @@ describe("SettingsSaveCoordinator", () => {
   });
 });
 
-describe("initializeSnapshotStreams", () => {
-  it("publishes session independently while settings is pending, then expires a hung settings snapshot", async () => {
-    vi.useFakeTimers();
-    const applySettings = vi.fn();
-    const applySession = vi.fn();
+describe("SnapshotStreamBootstrap", () => {
+  function deferred<Value>() {
+    let resolve!: (value: Value) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<Value>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  }
+
+  function fixture() {
+    let settingsHandler!: (value: string) => void;
+    let sessionHandler!: (value: string) => void;
     const unlistenSettings = vi.fn();
     const unlistenSession = vi.fn();
-    let lateSettings!: (settings: string) => void;
-    let settingsHandler!: (settings: string) => void;
-    const initialization = initializeSnapshotStreams({
-      listenSettings: async (handler) => { settingsHandler = handler; return unlistenSettings; },
-      listenSession: async () => unlistenSession,
-      getSettings: () => new Promise<string>((resolve) => { lateSettings = resolve; }),
-      getSession: async () => "current-session",
-    }, { applySettings, applySession });
-    const rejected = expect(initialization).rejects.toThrow("snapshot-step-timeout");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(applySession).toHaveBeenCalledExactlyOnceWith("current-session");
-    expect(applySettings).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS);
-    await rejected;
-    expect(unlistenSettings).toHaveBeenCalledOnce();
-    expect(unlistenSession).toHaveBeenCalledOnce();
-    settingsHandler("late-event"); lateSettings("late-snapshot");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(applySettings).not.toHaveBeenCalled();
-  });
+    const sources = {
+      listenSettings: vi.fn(async (handler: (value: string) => void): Promise<() => void> => { settingsHandler = handler; return unlistenSettings; }),
+      listenSession: vi.fn(async (handler: (value: string) => void): Promise<() => void> => { sessionHandler = handler; return unlistenSession; }),
+      getSettings: vi.fn(async () => "boot-settings"),
+      getSession: vi.fn(async () => "idle"),
+    };
+    const consumers = { applySettings: vi.fn(), applySession: vi.fn(), onReady: vi.fn() };
+    const bootstrap = new SnapshotStreamBootstrap(sources, consumers);
+    return { sources, consumers, bootstrap, unlistenSettings, unlistenSession,
+      settings: (value: string) => settingsHandler(value), session: (value: string) => sessionHandler(value) };
+  }
 
-  it("expires a hung listener, cleans it when it arrives, and keeps a retry generation independent", async () => {
+  it("keeps backend listening events alive after an overnight Keychain timeout and hydrates the late original read", async () => {
     vi.useFakeTimers();
-    let oldHandler!: (settings: string) => void;
-    let completeListener!: (unlisten: () => void) => void;
-    const lateUnlisten = vi.fn();
-    const partialUnlisten = vi.fn();
-    const applySettings = vi.fn();
-    const applySession = vi.fn();
-    const getSettings = vi.fn(async () => "unused-old-settings");
-    const initialization = initializeSnapshotStreams({
-      listenSettings: (handler) => { oldHandler = handler; return new Promise((resolve) => { completeListener = resolve; }); },
-      listenSession: async () => partialUnlisten,
-      getSettings,
-      getSession: async () => "first-session",
-    }, { applySettings, applySession });
-    const rejected = expect(initialization).rejects.toThrow("snapshot-step-timeout");
-    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS);
-    await rejected;
-    const retryCleanups = await initializeSnapshotStreams({
-      listenSettings: async () => () => {}, listenSession: async () => () => {},
-      getSettings: async () => "retry-settings", getSession: async () => "retry-session",
-    }, { applySettings, applySession });
-    oldHandler("expired-event"); completeListener(lateUnlisten);
+    const f = fixture();
+    const read = deferred<string>();
+    f.sources.getSettings.mockReturnValue(read.promise);
+    const initialization = f.bootstrap.initialize();
+    const expired = expect(initialization).rejects.toThrow("snapshot-step-timeout");
     await vi.advanceTimersByTimeAsync(0);
-    expect(lateUnlisten).toHaveBeenCalledOnce();
-    expect(partialUnlisten).toHaveBeenCalledOnce();
-    expect(getSettings).not.toHaveBeenCalled();
-    expect(applySettings).toHaveBeenCalledExactlyOnceWith("retry-settings");
-    expect(applySession.mock.calls.map(([session]) => session)).toEqual(["first-session", "retry-session"]);
-    retryCleanups.forEach((unlisten) => unlisten());
+    expect(f.consumers.applySession).toHaveBeenCalledExactlyOnceWith("idle");
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS);
+    await expired;
+    expect(f.unlistenSession).not.toHaveBeenCalled();
+    expect(f.unlistenSettings).not.toHaveBeenCalled();
+    f.session("listening"); f.session("confirmed-subtitle-snapshot");
+    expect(f.consumers.applySession.mock.calls.flat()).toEqual(["idle", "listening", "confirmed-subtitle-snapshot"]);
+    await vi.advanceTimersByTimeAsync(8 * 60 * 60 * 1000);
+    expect(f.sources.getSettings).toHaveBeenCalledOnce();
+    read.resolve("persisted-display-and-proxy-preferences");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.consumers.applySettings).toHaveBeenCalledExactlyOnceWith("persisted-display-and-proxy-preferences");
+    expect(f.bootstrap.ready).toBe(true);
+    expect(f.consumers.onReady).toHaveBeenCalledOnce();
+    f.bootstrap.dispose();
+    expect(f.unlistenSession).toHaveBeenCalledOnce();
+    expect(f.unlistenSettings).toHaveBeenCalledOnce();
   });
 
-  it("keeps a session event received before its snapshot when the settings listener remains pending", async () => {
+  it("reuses a pending native read on explicit retry and lets a newer event beat its late response", async () => {
     vi.useFakeTimers();
-    let sessionHandler!: (session: string) => void;
-    let completeSession!: (session: string) => void;
-    const applySession = vi.fn();
-    const initialization = initializeSnapshotStreams({
-      listenSettings: () => new Promise<() => void>(() => {}),
-      listenSession: async (handler) => { sessionHandler = handler; return () => {}; },
-      getSettings: async () => "unused-settings",
-      getSession: () => new Promise<string>((resolve) => { completeSession = resolve; }),
-    }, { applySettings: vi.fn(), applySession });
-    const rejected = expect(initialization).rejects.toThrow("snapshot-step-timeout");
+    const f = fixture();
+    const read = deferred<string>();
+    f.sources.getSettings.mockReturnValue(read.promise);
+    const expired = expect(f.bootstrap.initialize()).rejects.toThrow("snapshot-step-timeout");
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS); await expired;
+    const retry = f.bootstrap.initialize();
     await vi.advanceTimersByTimeAsync(0);
-    sessionHandler("new-event"); completeSession("older-snapshot");
-    await vi.advanceTimersByTimeAsync(0);
-    expect(applySession).toHaveBeenCalledExactlyOnceWith("new-event");
-    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS);
-    await rejected;
+    f.settings("new-settings-event");
+    expect(f.bootstrap.ready).toBe(true);
+    read.resolve("old-settings-response");
+    await retry;
+    expect(f.consumers.applySettings).toHaveBeenCalledExactlyOnceWith("new-settings-event");
+    expect(f.sources.getSettings).toHaveBeenCalledOnce();
+    expect(f.sources.getSession).toHaveBeenCalledOnce();
+    expect(f.sources.listenSettings).toHaveBeenCalledOnce();
+    expect(f.sources.listenSession).toHaveBeenCalledOnce();
+    expect(f.consumers.onReady).toHaveBeenCalledOnce();
+    f.bootstrap.dispose();
   });
 
-  it("cleans a partial failure so initialization can be retried", async () => {
-    let cleanupCount = 0;
-    const appliedSettings: string[] = [];
-    const appliedSessions: string[] = [];
-
-    await expect(
-      initializeSnapshotStreams(
-        {
-          listenSettings: async () => () => {
-            cleanupCount += 1;
-          },
-          listenSession: async () => {
-            throw new Error("listener unavailable");
-          },
-          getSettings: async () => "unused-settings",
-          getSession: async () => "unused-session",
-        },
-        {
-          applySettings: (settings) => appliedSettings.push(settings),
-          applySession: (session) => appliedSessions.push(session),
-        },
-      ),
-    ).rejects.toThrow("snapshot-listener-unavailable");
-
-    expect(cleanupCount).toBe(1);
-    expect(appliedSettings).toEqual([]);
-    expect(appliedSessions).toEqual([]);
-
-    await initializeSnapshotStreams(
-      {
-        listenSettings: async () => () => {},
-        listenSession: async () => () => {},
-        getSettings: async () => "retry-settings",
-        getSession: async () => "retry-session",
-      },
-      {
-        applySettings: (settings) => appliedSettings.push(settings),
-        applySession: (session) => appliedSessions.push(session),
-      },
-    );
-
-    expect(appliedSettings).toEqual(["retry-settings"]);
-    expect(appliedSessions).toEqual(["retry-session"]);
+  it("retries a rejected settings read without removing or duplicating the healthy session stream", async () => {
+    const f = fixture();
+    f.sources.getSettings.mockRejectedValueOnce("synthetic-native-error");
+    await expect(f.bootstrap.initialize()).rejects.toThrow("boot-snapshot-unavailable");
+    f.session("listening");
+    expect(f.consumers.applySession).toHaveBeenLastCalledWith("listening");
+    await f.bootstrap.initialize();
+    expect(f.bootstrap.ready).toBe(true);
+    expect(f.sources.getSettings).toHaveBeenCalledTimes(2);
+    expect(f.sources.getSession).toHaveBeenCalledOnce();
+    expect(f.sources.listenSettings).toHaveBeenCalledOnce();
+    expect(f.sources.listenSession).toHaveBeenCalledOnce();
+    expect(f.unlistenSession).not.toHaveBeenCalled();
+    f.bootstrap.dispose();
   });
 
-  it("keeps events received while stale boot snapshots are in flight", async () => {
-    let settingsHandler: ((settings: string) => void) | undefined;
-    let sessionHandler: ((session: string) => void) | undefined;
-    let finishSettingsListener: (() => void) | undefined;
-    let finishSessionListener: (() => void) | undefined;
-    let resolveSettingsSnapshot: ((settings: string) => void) | undefined;
-    let resolveSessionSnapshot: ((session: string) => void) | undefined;
-    const appliedSettings: string[] = [];
-    const appliedSessions: string[] = [];
-    const settingsSnapshot = new Promise<string>((resolve) => {
-      resolveSettingsSnapshot = resolve;
+  it("retries only a failed listener and retains the other hydrated stream", async () => {
+    const f = fixture();
+    f.sources.listenSession.mockRejectedValueOnce(new Error("synthetic-listener-error"));
+    await expect(f.bootstrap.initialize()).rejects.toThrow("snapshot-listener-unavailable");
+    expect(f.sources.getSession).not.toHaveBeenCalled();
+    expect(f.unlistenSettings).not.toHaveBeenCalled();
+    await f.bootstrap.initialize();
+    expect(f.bootstrap.ready).toBe(true);
+    expect(f.sources.listenSettings).toHaveBeenCalledOnce();
+    expect(f.sources.getSettings).toHaveBeenCalledOnce();
+    expect(f.sources.listenSession).toHaveBeenCalledTimes(2);
+    f.bootstrap.dispose();
+  });
+
+  it("reuses a listener pending past its deadline and accepts its later completion", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const listener = deferred<() => void>();
+    f.sources.listenSettings.mockReturnValue(listener.promise);
+    const expired = expect(f.bootstrap.initialize()).rejects.toThrow("snapshot-step-timeout");
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS); await expired;
+    const retry = f.bootstrap.initialize();
+    await vi.advanceTimersByTimeAsync(0);
+    listener.resolve(f.unlistenSettings);
+    await retry;
+    expect(f.bootstrap.ready).toBe(true);
+    expect(f.sources.listenSettings).toHaveBeenCalledOnce();
+    expect(f.sources.getSettings).toHaveBeenCalledOnce();
+    expect(f.unlistenSettings).not.toHaveBeenCalled();
+    f.bootstrap.dispose();
+  });
+
+  it("hydrates after a listener acknowledges past its deadline without requiring a retry or event", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const listener = deferred<() => void>();
+    f.sources.listenSettings.mockReturnValue(listener.promise);
+    const expired = expect(f.bootstrap.initialize()).rejects.toThrow("snapshot-step-timeout");
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS); await expired;
+    expect(f.sources.getSettings).not.toHaveBeenCalled();
+    listener.resolve(f.unlistenSettings); await vi.advanceTimersByTimeAsync(0);
+    expect(f.sources.getSettings).toHaveBeenCalledOnce();
+    expect(f.bootstrap.ready).toBe(true);
+    expect(f.consumers.onReady).toHaveBeenCalledOnce();
+    expect(f.consumers.applySettings).toHaveBeenCalledExactlyOnceWith("boot-settings");
+    f.bootstrap.dispose();
+  });
+
+  it("publishes events immediately and ignores stale boot snapshots for each stream", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const settings = deferred<string>(); const session = deferred<string>();
+    f.sources.getSettings.mockReturnValue(settings.promise);
+    f.sources.getSession.mockReturnValue(session.promise);
+    const initialization = f.bootstrap.initialize();
+    await vi.advanceTimersByTimeAsync(0);
+    f.settings("new-settings"); f.session("connecting"); f.session("listening");
+    expect(f.consumers.applySession.mock.calls.flat()).toEqual(["connecting", "listening"]);
+    settings.resolve("stale-settings"); session.resolve("idle"); await initialization;
+    expect(f.consumers.applySettings.mock.calls.flat()).toEqual(["new-settings"]);
+    expect(f.consumers.applySession.mock.calls.flat()).toEqual(["connecting", "listening"]);
+    f.bootstrap.dispose();
+  });
+
+  it("accepts an event before the listener acknowledgement without a redundant snapshot read", async () => {
+    const f = fixture();
+    f.sources.listenSettings.mockImplementationOnce(async (handler) => {
+      handler("new-settings-before-ack"); return f.unlistenSettings;
     });
-    const sessionSnapshot = new Promise<string>((resolve) => {
-      resolveSessionSnapshot = resolve;
-    });
+    await f.bootstrap.initialize();
+    expect(f.sources.getSettings).not.toHaveBeenCalled();
+    expect(f.consumers.applySettings).toHaveBeenCalledExactlyOnceWith("new-settings-before-ack");
+    expect(f.bootstrap.ready).toBe(true);
+    f.bootstrap.dispose();
+  });
 
-    const initialization = initializeSnapshotStreams(
-      {
-        listenSettings: (handler) => {
-          settingsHandler = handler;
-          return new Promise((resolve) => {
-            finishSettingsListener = () => resolve(() => {});
-          });
-        },
-        listenSession: (handler) => {
-          sessionHandler = handler;
-          return new Promise((resolve) => {
-            finishSessionListener = () => resolve(() => {});
-          });
-        },
-        getSettings: () => settingsSnapshot,
-        getSession: () => sessionSnapshot,
-      },
-      {
-        applySettings: (settings) => appliedSettings.push(settings),
-        applySession: (session) => appliedSessions.push(session),
-      },
-    );
-
-    // Both listeners are requested concurrently. An event can arrive while
-    // native listener setup is still completing and must survive the later
-    // snapshot response.
-    expect(settingsHandler).toBeDefined();
-    expect(sessionHandler).toBeDefined();
-    settingsHandler?.("new-settings");
-    sessionHandler?.("new-session");
-    finishSettingsListener?.();
-    finishSessionListener?.();
-    await Promise.resolve();
-
-    resolveSettingsSnapshot?.("old-settings");
-    resolveSessionSnapshot?.("old-session");
+  it("disposes pending listeners and reads safely without leaking late results into a replacement", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const listener = deferred<() => void>(); const session = deferred<string>();
+    f.sources.listenSettings.mockReturnValue(listener.promise);
+    f.sources.getSession.mockReturnValue(session.promise);
+    const initialization = f.bootstrap.initialize();
+    await vi.advanceTimersByTimeAsync(0);
+    f.bootstrap.dispose(); f.bootstrap.dispose();
     await initialization;
-
-    expect(appliedSettings).toEqual(["new-settings"]);
-    expect(appliedSessions).toEqual(["new-session"]);
+    expect(vi.getTimerCount()).toBe(0);
+    f.session("stale-event"); session.resolve("stale-snapshot"); listener.resolve(f.unlistenSettings);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.unlistenSettings).toHaveBeenCalledOnce();
+    expect(f.unlistenSession).toHaveBeenCalledOnce();
+    expect(f.sources.getSettings).not.toHaveBeenCalled();
+    expect(f.consumers.applySession).not.toHaveBeenCalled();
+    expect(f.consumers.onReady).not.toHaveBeenCalled();
+    const replacement = fixture(); await replacement.bootstrap.initialize();
+    expect(replacement.bootstrap.ready).toBe(true); replacement.bootstrap.dispose();
   });
 
-  it("continues live updates after boot reconciliation", async () => {
-    let settingsHandler: ((settings: string) => void) | undefined;
-    let sessionHandler: ((session: string) => void) | undefined;
-    const appliedSettings: string[] = [];
-    const appliedSessions: string[] = [];
-
-    await initializeSnapshotStreams(
-      {
-        listenSettings: async (handler) => {
-          settingsHandler = handler;
-          return () => {};
-        },
-        listenSession: async (handler) => {
-          sessionHandler = handler;
-          return () => {};
-        },
-        getSettings: async () => "boot-settings",
-        getSession: async () => "boot-session",
-      },
-      {
-        applySettings: (settings) => appliedSettings.push(settings),
-        applySession: (session) => appliedSessions.push(session),
-      },
-    );
-
-    settingsHandler?.("live-settings");
-    sessionHandler?.("live-session");
-
-    expect(appliedSettings).toEqual(["boot-settings", "live-settings"]);
-    expect(appliedSessions).toEqual(["boot-session", "live-session"]);
+  it("disposes before native calls begin and cleans both streams even if one unlisten throws", async () => {
+    const early = fixture();
+    const initialization = early.bootstrap.initialize(); early.bootstrap.dispose(); await initialization;
+    expect(early.sources.listenSettings).not.toHaveBeenCalled();
+    expect(early.sources.listenSession).not.toHaveBeenCalled();
+    const f = fixture(); await f.bootstrap.initialize();
+    f.unlistenSettings.mockImplementation(() => { throw new Error("synthetic-cleanup-error"); });
+    f.bootstrap.dispose(); f.bootstrap.dispose();
+    f.settings("stale-settings"); f.session("stale-session");
+    expect(f.unlistenSession).toHaveBeenCalledOnce();
+    expect(f.unlistenSettings).toHaveBeenCalledOnce();
+    expect(f.consumers.applySettings).toHaveBeenCalledExactlyOnceWith("boot-settings");
+    expect(f.consumers.applySession).toHaveBeenCalledExactlyOnceWith("idle");
   });
 });
 
