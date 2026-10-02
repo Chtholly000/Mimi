@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type
 import { Icon } from "../../components/Icon";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
-import { SERVICE_PROVIDERS, subtitlePreferencesChanged, textTranslationForProfile } from "../../lib/providerCapabilities";
+import { SERVICE_PROVIDERS, credentialStateForTarget, isCustomSpeechProvider, subtitlePreferencesChanged, textTranslationForProfile } from "../../lib/providerCapabilities";
 import { DEFAULT_NETWORK_PROXY, networkProxyConfigKey } from "../../lib/networkProxy";
 import {
   buildProviderCredentials,
@@ -28,6 +28,7 @@ import { InlineFeedback, SettingsSection } from "./SettingsPrimitives";
 
 import { DestructiveConfirmation } from "./DestructiveConfirmation";
 import { AlibabaCredentialEditor } from "./AlibabaCredentialEditor";
+import { CustomSpeechCredentialEditor } from "./CustomSpeechCredentialEditor";
 
 import { SettingsHelp } from "./SettingsHelp";
 import { ConnectionCheck } from "./ConnectionCheck";
@@ -152,7 +153,7 @@ export function ServiceProfiles({
     setPendingConfirmation(null);
   }
 
-  const SelectedCredentialEditor = selectedProfile && ["alibabaCloud", "deepLX"].includes(selectedProfile.provider) ? AlibabaCredentialEditor : CredentialEditor;
+  const SelectedCredentialEditor = selectedProfile && isCustomSpeechProvider(selectedProfile.provider) ? CustomSpeechCredentialEditor : selectedProfile && ["alibabaCloud", "deepLX"].includes(selectedProfile.provider) ? AlibabaCredentialEditor : CredentialEditor;
 
   const requiresStop = sessionIsActive || sessionIsPaused || sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
   const mutationsDisabled = requiresStop || pendingAction !== null;
@@ -376,7 +377,7 @@ export function ServiceProfiles({
                 <div className="service-detail__title">
                   <h2>{profileTitle(selectedProfile)}</h2>
                   <div className="service-detail__status">
-                    <CredentialBadge state={selectedProfile.credentialState} />
+                    <CredentialBadge state={credentialStateForTarget(selectedProfile, settings.targetLanguage)} />
                     {selectedProfile.id === settings.activeProfileId && (
                       <span className="profile-active-badge">
                         <Icon name="checkmark" />
@@ -427,7 +428,7 @@ export function ServiceProfiles({
             ? <ProfileLanguageSettings key={selectedProfile.id} settings={settings} disabled={mutationsDisabled} requiresStop={requiresStop} />
             : <p className="settings-caption service-detail__language-note">{I18N.settings.useProfileForLanguages}</p>}
           <div className="service-detail__actions">
-            {selectedProfile.credentialState === "present" &&
+            {credentialStateForTarget(selectedProfile, settings.targetLanguage) === "present" &&
               selectedProfile.id !== settings.activeProfileId && (
                 <button
                   type="button"
@@ -487,13 +488,13 @@ export function ServiceProfiles({
                   disabled={mutationsDisabled}
                   onClick={() => {
                     if (
-                      profile.credentialState === "present" &&
+                      credentialStateForTarget(profile, settings.targetLanguage) === "present" &&
                       profile.id !== settings.activeProfileId
                     )
                       void handleSelect(profile.id);
                     else openEditor(profile.id);
                   }}
-                  aria-label={`${profile.name}: ${profile.credentialState === "present" && profile.id !== settings.activeProfileId ? I18N.settings.useProfile : I18N.settings.editProfile}`}
+                  aria-label={`${profile.name}${textTranslationForProfile(profile) !== "followService" ? `, ${I18N.settings.textTranslationLabel}: ${translationName(profile)}` : ""}: ${credentialStateForTarget(profile, settings.targetLanguage) === "present" && profile.id !== settings.activeProfileId ? I18N.settings.useProfile : I18N.settings.editProfile}`}
                 >
                   <ProviderIcon provider={profile.provider === "deepLX" ? "alibabaCloud" : profile.provider} />
                   <span className="service-row__copy">
@@ -502,7 +503,7 @@ export function ServiceProfiles({
                     {textTranslationForProfile(profile) !== "followService" && <span className="service-row__translation"><ProviderIcon provider={textTranslationForProfile(profile) as "deepL" | "deepLX" | "openAICompatible"} size={32} /><span>{I18N.settings.textTranslationLabel} · {translationName(profile)}</span></span>}
                   </span>
                   <span className="service-row__state">
-                    <CredentialBadge state={profile.credentialState} />
+                    <CredentialBadge state={credentialStateForTarget(profile, settings.targetLanguage)} />
                     {profile.id === settings.activeProfileId && (
                       <span className="profile-active-badge">
                         <Icon name="checkmark" />
@@ -762,6 +763,7 @@ function profileTitle(profile: ServiceProfile): string {
 }
 
 function profileDescription(profile: ServiceProfile): string {
+  if (isCustomSpeechProvider(profile.provider)) return [I18N.settings.customSpeechDescription, I18N.settings.customSpeechLanguages].join("\n");
   const translation = textTranslationForProfile(profile);
   return translation === "deepL" ? I18N.settings.deepLChain : translation === "deepLX" ? I18N.settings.deepLXChain : translation === "openAICompatible" ? I18N.settings.openAICompatibleChain : providerDescription(profile.provider);
 }
@@ -783,6 +785,8 @@ function credentialFieldCopy(field: CredentialFieldName, provider: ServiceProvid
   secret: boolean;
 } {
   switch (field) {
+    case "model":
+      return { label: I18N.settings.customSpeechModel, placeholder: "recognition-model", secret: false };
     case "asrApiKey":
       return { label: I18N.settings.asrApiKey, placeholder: I18N.settings.apiKeyPlaceholder, secret: true };
     case "token":
@@ -891,6 +895,9 @@ function CredentialBadge({ state }: { state: CredentialState }) {
 
 function providerDescription(provider: ServiceProvider): string {
   switch (provider) {
+    case "customDashScopeASR":
+    case "customOpenAIASR":
+      return I18N.settings.customSpeechDescription;
     case "alibabaCloud":
       return I18N.settings.providerAlibabaDescription;
     case "openAIRealtime":

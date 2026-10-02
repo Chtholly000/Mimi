@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
+import { credentialStateForTarget } from "../../lib/providerCapabilities";
 import { Switch } from "../../components/Switch";
 import { I18N, setStoredUiLanguage, type UiLanguage } from "../../lib/i18n";
 import { announceSettingsNavigationReady, isTauri, listenSettingsNavigation } from "../../lib/ipc";
@@ -113,7 +114,7 @@ export function SettingsView() {
     statusKind: sessionStatusKind,
     isActive: sessionIsActive,
     isPaused: sessionIsPaused,
-    credentialState: activeProfile?.credentialState ?? "unavailable",
+    credentialState: credentialStateForTarget(activeProfile, settings.targetLanguage),
     pendingAction: sessionPendingAction,
   });
 

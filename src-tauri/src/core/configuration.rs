@@ -1,6 +1,8 @@
 //! Immutable, provider-resolved live-translation configuration.
 
-use crate::core::credentials::{ProviderCredentials, ProviderCredentialsError};
+use crate::core::credentials::{
+    ProviderCredentials, ProviderCredentialsError, TextTranslationCredentials,
+};
 use crate::core::models::{SourceLanguage, TargetLanguage, TranslationMode};
 use crate::core::network_proxy::{ProxyConfig, ProxyConfigError};
 use crate::core::provider::{ProviderCapabilities, ProviderKind, TextTranslation};
@@ -25,6 +27,7 @@ pub enum LiveTranslationConfigurationError {
 pub struct LiveTranslationConfiguration {
     pub provider: ProviderKind,
     pub credentials: ProviderCredentials,
+    pub text_credentials: Option<TextTranslationCredentials>,
     pub source_language: SourceLanguage,
     pub target_language: TargetLanguage,
     pub translation_mode: TranslationMode,
@@ -37,6 +40,7 @@ impl fmt::Debug for LiveTranslationConfiguration {
             .debug_struct("LiveTranslationConfiguration")
             .field("provider", &self.provider)
             .field("credentials", &"[REDACTED]")
+            .field("text_credentials", &"[REDACTED]")
             .field("source_language", &self.source_language)
             .field("target_language", &self.target_language)
             .field("translation_mode", &self.translation_mode)
@@ -57,6 +61,7 @@ impl LiveTranslationConfiguration {
         Self {
             provider,
             credentials: ProviderCredentials::api_key(api_key),
+            text_credentials: None,
             source_language,
             target_language,
             translation_mode,
@@ -74,6 +79,7 @@ impl LiveTranslationConfiguration {
         Self {
             provider,
             credentials,
+            text_credentials: None,
             source_language,
             target_language,
             translation_mode,
@@ -86,6 +92,11 @@ impl LiveTranslationConfiguration {
         self
     }
 
+    pub fn with_text_credentials(mut self, credentials: TextTranslationCredentials) -> Self {
+        self.text_credentials = Some(credentials);
+        self
+    }
+
     /// Legacy mode values remain readable, but every new session uses Turbo.
     /// Provider-specific transports and independent text destinations remain
     /// resolved by the provider facade.
@@ -94,12 +105,15 @@ impl LiveTranslationConfiguration {
     }
 
     pub fn capabilities(&self) -> ProviderCapabilities {
-        let route = match self.credentials {
-            ProviderCredentials::DeepL { .. } => TextTranslation::DeepL,
-            ProviderCredentials::DeepLX { .. } => TextTranslation::DeepLX,
-            ProviderCredentials::OpenAICompatible { .. } => TextTranslation::OpenAICompatible,
-            _ => TextTranslation::FollowService,
-        };
+        let route = self.text_credentials.as_ref().map_or_else(
+            || match self.credentials {
+                ProviderCredentials::DeepL { .. } => TextTranslation::DeepL,
+                ProviderCredentials::DeepLX { .. } => TextTranslation::DeepLX,
+                ProviderCredentials::OpenAICompatible { .. } => TextTranslation::OpenAICompatible,
+                _ => TextTranslation::FollowService,
+            },
+            TextTranslationCredentials::translation,
+        );
         self.provider
             .capabilities_for_route(route, self.target_language)
     }
@@ -108,6 +122,20 @@ impl LiveTranslationConfiguration {
     pub fn validated(&self) -> Result<Self, LiveTranslationConfigurationError> {
         let network_proxy = self.network_proxy.validate()?;
         let credentials = self.credentials.validated_for(self.provider)?;
+
+        let text_credentials =
+            if self.provider.is_custom_speech() && self.target_language.translates_audio() {
+                Some(
+                    self.text_credentials
+                        .as_ref()
+                        .ok_or(ProviderCredentialsError::MissingTextTranslation)?
+                        .validated()?,
+                )
+            } else if self.provider.is_custom_speech() {
+                None
+            } else {
+                self.text_credentials.clone()
+            };
 
         let capabilities = self.capabilities();
         if !capabilities
@@ -130,6 +158,7 @@ impl LiveTranslationConfiguration {
         Ok(Self {
             provider: self.provider,
             credentials,
+            text_credentials,
             source_language: self.source_language,
             target_language: self.target_language,
             translation_mode,
@@ -141,6 +170,62 @@ impl LiveTranslationConfiguration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_speech_configuration_requires_mt_only_for_translated_targets() {
+        for (provider, rate) in [
+            (ProviderKind::CustomDashScopeASR, 16_000),
+            (ProviderKind::CustomOpenAIASR, 24_000),
+        ] {
+            let mut configuration = LiveTranslationConfiguration::with_credentials(
+                provider,
+                ProviderCredentials::CustomSpeech {
+                    endpoint: "wss://speech.example/recognition".into(),
+                    model: "synthetic-speech-model".into(),
+                    api_key: "synthetic-speech-key".into(),
+                },
+                SourceLanguage::Automatic,
+                TargetLanguage::Original,
+                TranslationMode::Turbo,
+            );
+            assert_eq!(
+                configuration
+                    .validated()
+                    .unwrap()
+                    .capabilities()
+                    .input_sample_rate_hz,
+                rate
+            );
+            configuration.target_language = TargetLanguage::English;
+            assert_eq!(
+                configuration.validated(),
+                Err(LiveTranslationConfigurationError::Credentials(
+                    ProviderCredentialsError::MissingTextTranslation
+                ))
+            );
+            configuration.text_credentials = Some(TextTranslationCredentials::DeepL {
+                api_key: "synthetic-mt-key".into(),
+            });
+            let validated = configuration.validated().unwrap();
+            assert_eq!(
+                validated.credentials.direct_api_key(),
+                Some("synthetic-speech-key")
+            );
+            assert!(
+                matches!(validated.text_credentials, Some(TextTranslationCredentials::DeepL { api_key }) if api_key == "synthetic-mt-key")
+            );
+            configuration.target_language = TargetLanguage::Original;
+            configuration.text_credentials =
+                Some(TextTranslationCredentials::DeepL { api_key: "".into() });
+            assert_eq!(configuration.validated().unwrap().text_credentials, None);
+            assert!(!format!("{configuration:?}").contains("synthetic-speech"));
+            configuration.source_language = SourceLanguage::French;
+            assert_eq!(
+                configuration.validated(),
+                Err(LiveTranslationConfigurationError::UnsupportedSourceLanguage)
+            );
+        }
+    }
 
     #[test]
     fn default_alibaba_validates_every_lite_target_and_the_full_original_catalog() {

@@ -2626,7 +2626,8 @@
   width: 20px !important;
   height: 20px !important;
 }
-.service-stage__provider .provider-icon__image {
+.service-stage__provider .provider-icon__image,
+.service-stage__provider .provider-icon__generic {
   width: 20px;
   height: 20px;
 }

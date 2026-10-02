@@ -45,18 +45,28 @@ pub struct ServiceProfilePayload {
     pub name: String,
     pub provider: ProviderKind,
     pub credential_state: CredentialState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_credential_state: Option<CredentialState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_credential_state: Option<CredentialState>,
     pub text_translation: crate::core::provider::TextTranslation,
 }
 
 impl ServiceProfilePayload {
     fn from_profile(store: &SettingsStore, profile: ServiceProfile) -> Self {
-        let credential_state = store.credential_state(&profile);
+        let states = store.custom_credential_states(&profile);
+        let credential_state = states.map_or_else(
+            || store.credential_state(&profile),
+            |(speech, text)| speech.combined(text),
+        );
         let text_translation = profile.text_translation();
         Self {
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
             credential_state,
+            speech_credential_state: states.map(|(speech, _)| speech),
+            text_credential_state: states.map(|(_, text)| text),
             text_translation,
         }
     }
@@ -68,6 +78,14 @@ impl ServiceProfilePayload {
             name: profile.name,
             provider: profile.provider,
             credential_state: CredentialState::Unavailable,
+            speech_credential_state: profile
+                .provider
+                .is_custom_speech()
+                .then_some(CredentialState::Unavailable),
+            text_credential_state: profile
+                .provider
+                .is_custom_speech()
+                .then_some(CredentialState::Unavailable),
             text_translation,
         }
     }
@@ -428,6 +446,8 @@ mod tests {
                 name: "Alibaba Cloud".into(),
                 provider: ProviderKind::AlibabaCloud,
                 credential_state: CredentialState::Present,
+                speech_credential_state: None,
+                text_credential_state: None,
                 text_translation: crate::core::provider::TextTranslation::FollowService,
             }],
             active_profile_id: "alibaba-default".into(),

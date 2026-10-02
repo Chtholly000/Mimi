@@ -184,6 +184,17 @@ const openAICompatibleErrors = {
 /** Match only sanitized backend labels; never interpolate arbitrary native errors. */
 export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlatform): string | null {
   if (typeof error !== "string") return null;
+  if (error === "custom_speech_endpoint_invalid") return I18N.settings.customSpeechEndpointInvalid;
+  if (error === "custom_speech_model_invalid") return I18N.settings.customSpeechModelInvalid;
+  if (error === "custom_speech_session_rejected") return I18N.settings.customSpeechRejected;
+  if (error === "custom_speech_unreachable") return I18N.settings.customSpeechUnreachable;
+  if (error === "custom_speech_protocol_invalid") return I18N.settings.customSpeechProtocolInvalid;
+  if (error === "custom_speech_credentials_missing") return diagnosticCopy().missing;
+  if (error === "custom_speech_authentication_failed") return diagnosticCopy().auth;
+  if (error === "custom_speech_setup_timeout" || error === "custom_speech_health_timeout") return diagnosticCopy().timeout;
+  if (error === "custom_speech_not_connected") return I18N.settings.customSpeechUnreachable;
+  if (error === "custom_speech_audio_invalid") return I18N.settings.customSpeechProtocolInvalid;
+  if (error === "text_translation_credentials_missing") return diagnosticCopy().missing;
   if (error === "translation_rate_limited") return diagnosticCopy().translationLimited;
   if (error === "translation_temporarily_unavailable") return diagnosticCopy().translationTemporary;
   if (error === "translation_source_unsupported") return diagnosticCopy().translationSourceUnsupported;

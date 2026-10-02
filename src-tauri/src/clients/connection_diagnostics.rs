@@ -7,9 +7,10 @@ use crate::clients::openai_compatible_client::OpenAICompatibleClient;
 use crate::clients::provider_events::provider_event_channel;
 use crate::clients::provider_network::ProviderNetwork;
 use crate::clients::qwen_mt_client::QwenMTClient;
+use crate::clients::recognition_client::{RecognitionClient, RecognitionClientError};
 use crate::clients::translation_client::{ConnectError, TranslationClient};
 use crate::core::configuration::LiveTranslationConfiguration;
-use crate::core::credentials::ProviderCredentials;
+use crate::core::credentials::{ProviderCredentials, TextTranslationCredentials};
 use crate::core::models::{SourceLanguage, TargetLanguage};
 use crate::core::protocols::deepl::DeepLError;
 use crate::core::protocols::deeplx::DeepLXError;
@@ -89,6 +90,9 @@ pub async fn check_service(configuration: &LiveTranslationConfiguration) -> Conn
     initialize_probe_tls();
     let result = match configuration.provider {
         ProviderKind::AlibabaCloud | ProviderKind::DeepLX => probe_alibaba(configuration).await,
+        ProviderKind::CustomDashScopeASR | ProviderKind::CustomOpenAIASR => {
+            probe_custom_speech(configuration).await
+        }
         _ => {
             let (events, _receiver) = provider_event_channel();
             match TranslationClient::new(configuration, events) {
@@ -160,6 +164,13 @@ async fn probe_text_translation(
     configuration: &LiveTranslationConfiguration,
     network: &ProviderNetwork,
 ) -> Result<(), ConnectionCheckReason> {
+    if configuration.provider.is_custom_speech() && configuration.text_credentials.is_none() {
+        return if configuration.target_language == TargetLanguage::Original {
+            Ok(())
+        } else {
+            Err(ConnectionCheckReason::InvalidConfiguration)
+        };
+    }
     // Check both saved credentials even when the current display uses source
     // text only. The fixed test does not change the listening configuration.
     let target = match configuration.target_language {
@@ -239,6 +250,19 @@ async fn probe_text_translation(
                 .await
                 .map_err(|error| openai_compatible_reason(&error))?
         }
+        ProviderCredentials::CustomSpeech { .. } => {
+            probe_independent_text_translation(
+                configuration
+                    .text_credentials
+                    .as_ref()
+                    .ok_or(ConnectionCheckReason::InvalidConfiguration)?,
+                network,
+                source,
+                target,
+                phrase,
+            )
+            .await?
+        }
         _ => return Err(ConnectionCheckReason::InvalidConfiguration),
     };
     if translation.trim().is_empty() {
@@ -248,9 +272,115 @@ async fn probe_text_translation(
     }
 }
 
+async fn probe_custom_speech(
+    configuration: &LiveTranslationConfiguration,
+) -> Result<(), ConnectionCheckReason> {
+    let ProviderCredentials::CustomSpeech {
+        endpoint,
+        model,
+        api_key,
+    } = &configuration.credentials
+    else {
+        return Err(ConnectionCheckReason::InvalidConfiguration);
+    };
+    let network = ProviderNetwork::resolve(&configuration.network_proxy)
+        .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+    let mut asr = RecognitionClient::custom(
+        configuration.provider,
+        endpoint,
+        model,
+        api_key,
+        configuration.source_language,
+    )
+    .map_err(|error| recognition_reason(&error))?;
+    asr.set_network(network.clone())
+        .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+    let (events, _receiver) = provider_event_channel();
+    asr.set_event_sender(events).await;
+    let task_id = uuid::Uuid::new_v4().simple().to_string();
+    let result = tokio::time::timeout(PROBE_TIMEOUT, async {
+        asr.connect_for_probe(&task_id)
+            .await
+            .map_err(|error| recognition_reason(&error))?;
+        probe_text_translation(configuration, &network).await
+    })
+    .await
+    .map_err(|_| ConnectionCheckReason::Timeout)
+    .and_then(|result| result);
+    asr.disconnect().await;
+    result
+}
+
+async fn probe_independent_text_translation(
+    credentials: &TextTranslationCredentials,
+    network: &ProviderNetwork,
+    source: SourceLanguage,
+    target: TargetLanguage,
+    phrase: &str,
+) -> Result<String, ConnectionCheckReason> {
+    match credentials {
+        TextTranslationCredentials::DeepL { api_key } => {
+            let mut client = DeepLClient::new(api_key, source, target)
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .set_network(network.clone())
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .translate(phrase, Some(source))
+                .await
+                .map_err(|error| deepl_reason(&error))
+        }
+        TextTranslationCredentials::DeepLX { endpoint, token } => {
+            let mut client = DeepLXClient::new(endpoint, token, source, target)
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .set_network(network.clone())
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .translate(phrase, Some(source))
+                .await
+                .map_err(|error| deeplx_reason(&error))
+        }
+        TextTranslationCredentials::OpenAICompatible {
+            endpoint,
+            model,
+            api_key,
+        } => {
+            let mut client = OpenAICompatibleClient::new(endpoint, api_key, model, source, target)
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .set_network(network.clone())
+                .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+            client
+                .translate(phrase, Some(source))
+                .await
+                .map_err(|error| openai_compatible_reason(&error))
+        }
+    }
+}
+
+fn recognition_reason(error: &RecognitionClientError) -> ConnectionCheckReason {
+    if error.is_missing_credentials() {
+        ConnectionCheckReason::CredentialsMissing
+    } else if error.is_invalid_configuration() {
+        ConnectionCheckReason::InvalidConfiguration
+    } else if error.is_authentication_failure() {
+        ConnectionCheckReason::AuthenticationRejected
+    } else if error.is_timeout() {
+        ConnectionCheckReason::Timeout
+    } else if error.is_unreachable() {
+        ConnectionCheckReason::Unreachable
+    } else {
+        ConnectionCheckReason::ServiceRejected
+    }
+}
+
 fn audio3_reason(error: &Audio3ASRClientError) -> ConnectionCheckReason {
     match error {
         Audio3ASRClientError::MissingAPIKey => ConnectionCheckReason::CredentialsMissing,
+        Audio3ASRClientError::InvalidCustomEndpoint | Audio3ASRClientError::InvalidCustomModel => {
+            ConnectionCheckReason::InvalidConfiguration
+        }
         Audio3ASRClientError::Task(token) if token.starts_with("audio3_error.") => {
             match token.split('.').nth(2) {
                 Some("authentication") => ConnectionCheckReason::AuthenticationRejected,
@@ -375,6 +505,145 @@ mod tests {
     use futures_util::{SinkExt, StreamExt};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_tungstenite::tungstenite::Message;
+
+    fn custom_probe_configuration(
+        provider: ProviderKind,
+        endpoint: String,
+    ) -> LiveTranslationConfiguration {
+        LiveTranslationConfiguration::with_credentials(
+            provider,
+            ProviderCredentials::CustomSpeech {
+                endpoint,
+                model: "synthetic-recognition-model".into(),
+                api_key: "synthetic-recognition-key".into(),
+            },
+            SourceLanguage::Automatic,
+            TargetLanguage::Original,
+            TranslationMode::Turbo,
+        )
+        .with_network_proxy(crate::core::network_proxy::ProxyConfig {
+            mode: crate::core::network_proxy::ProxyMode::Direct,
+            url: None,
+        })
+    }
+
+    async fn serve_custom_probe_setup(listener: tokio::net::TcpListener, provider: ProviderKind) {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        let update = socket.next().await.unwrap().unwrap();
+        let update: serde_json::Value = serde_json::from_str(update.to_text().unwrap()).unwrap();
+        let ack = if provider == ProviderKind::CustomDashScopeASR {
+            assert_eq!(update["payload"]["model"], "synthetic-recognition-model");
+            serde_json::json!({"header":{"event":"task-started","task_id":update["header"]["task_id"]}})
+        } else {
+            assert_eq!(update["type"], "session.update");
+            assert_eq!(
+                update["session"]["audio"]["input"]["transcription"]["model"],
+                "synthetic-recognition-model"
+            );
+            serde_json::json!({"type":"session.updated","session":update["session"]})
+        };
+        socket
+            .send(Message::Text(ack.to_string().into()))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match socket.next().await {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(_))) => {}
+                    Some(Err(_)) => break,
+                    other => {
+                        panic!("connection probe sent audio or an unexpected message: {other:?}")
+                    }
+                }
+            }
+        })
+        .await
+        .expect("probe must close the recognizer");
+    }
+
+    #[tokio::test]
+    async fn custom_recognition_original_probe_accepts_actual_setup_and_closes_without_pcm_or_mt() {
+        for provider in [
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let configuration = custom_probe_configuration(
+                provider,
+                format!("ws://{}/recognition", listener.local_addr().unwrap()),
+            );
+            let server = tokio::spawn(serve_custom_probe_setup(listener, provider));
+            let diagnostic = check_service(&configuration).await;
+            assert_eq!(diagnostic.service, ServiceAvailability::Available);
+            assert_eq!(diagnostic.reason, None);
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_recognition_probe_checks_independent_mt_even_in_original_mode_and_closes_on_rejection(
+    ) {
+        let provider = ProviderKind::CustomDashScopeASR;
+        let asr_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mt_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let configuration = custom_probe_configuration(
+            provider,
+            format!("ws://{}/recognition", asr_listener.local_addr().unwrap()),
+        )
+        .with_text_credentials(TextTranslationCredentials::OpenAICompatible {
+            endpoint: format!("http://{}/v1", mt_listener.local_addr().unwrap()),
+            model: "synthetic-text-model".into(),
+            api_key: "synthetic-text-key".into(),
+        });
+        let asr_server = tokio::spawn(serve_custom_probe_setup(asr_listener, provider));
+        let mt_server = tokio::spawn(async move {
+            let (mut socket, _) = mt_listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            loop {
+                let mut buffer = [0; 2048];
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&buffer[..count]);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let length: usize = String::from_utf8_lossy(&bytes[..end])
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|n| n.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if bytes.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let request = String::from_utf8(bytes).unwrap();
+            assert!(request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer synthetic-text-key"));
+            assert!(!request.contains("synthetic-recognition-key"));
+            let body_start = request.find("\r\n\r\n").unwrap() + 4;
+            let body: serde_json::Value = serde_json::from_str(&request[body_start..]).unwrap();
+            assert_eq!(body["model"], "synthetic-text-model");
+            assert_eq!(body["messages"][1]["content"], "Hello.");
+            let private_response = "arbitrary private provider response";
+            socket.write_all(format!("HTTP/1.1 401 Rejected\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{private_response}", private_response.len()).as_bytes()).await.unwrap();
+        });
+        let diagnostic = check_service(&configuration).await;
+        assert_eq!(diagnostic.service, ServiceAvailability::Unavailable);
+        assert_eq!(
+            diagnostic.reason,
+            Some(ConnectionCheckReason::AuthenticationRejected)
+        );
+        assert!(!serde_json::to_string(&diagnostic)
+            .unwrap()
+            .contains("private"));
+        mt_server.await.unwrap();
+        asr_server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn custom_chat_probe_checks_the_configured_model_and_rejects_invalid_responses() {

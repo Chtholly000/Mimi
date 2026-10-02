@@ -1,16 +1,18 @@
-//! High-quality translation pipeline: Audio 3.0 recognition + Qwen-MT.
+//! Bounded recognition + independently configured text-translation pipeline.
 //!
 //! Replaceable ASR drafts use a latest-only preview lane. Only authoritative
 //! server finals (plus a bounded session-finish fallback) enter the durable,
 //! serial final-translation queue.
 
-use crate::clients::audio3_client::Audio3ASRClient;
 use crate::clients::provider_events::{
     provider_event_channel, ProviderEventReceiver, ProviderEventSender,
 };
 use crate::clients::provider_network::{ProviderNetwork, ProviderNetworkError};
 use crate::clients::qwen_mt_client::QwenMTClient;
+use crate::clients::recognition_client::{RecognitionClient, RecognitionClientError};
 use crate::core::committer::ASRDraftCommitter;
+use crate::core::configuration::LiveTranslationConfiguration;
+use crate::core::credentials::{ProviderCredentials, TextTranslationCredentials};
 use crate::core::diagnostics::{
     TranslationLatency, TranslationLatencyKind, TranslationRecovery, TranslationRecoveryReason,
 };
@@ -37,6 +39,13 @@ const OVERLOAD_ERROR_CODE: &str = "translation_backlog_overflow";
 const OVERLOAD_ERROR_MESSAGE: &str = "Translation fell behind live audio. mimi is reconnecting.";
 
 type PartialHandler = Arc<dyn Fn(String) + Send + Sync>;
+
+fn recognition_error(error: RecognitionClientError) -> QwenMTClientError {
+    QwenMTClientError::RequestFailed {
+        status_code: 0,
+        message: error.to_string(),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinalBoundary {
@@ -214,6 +223,7 @@ impl Inner {
 
 #[derive(Clone)]
 enum TextTranslationClient {
+    Disabled,
     Qwen(QwenMTClient, QwenMTModel),
     DeepLX(crate::clients::deeplx_client::DeepLXClient),
     DeepL(crate::clients::deepl_client::DeepLClient),
@@ -222,6 +232,7 @@ enum TextTranslationClient {
 impl TextTranslationClient {
     fn set_network(&mut self, network: ProviderNetwork) -> Result<(), ProviderNetworkError> {
         match self {
+            Self::Disabled => Ok(()),
             Self::Qwen(client, _) => client.set_network(network),
             Self::DeepL(client) => client.set_network(network),
             Self::DeepLX(client) => client.set_network(network),
@@ -230,6 +241,7 @@ impl TextTranslationClient {
     }
     fn supports_reported_source(&self, language: Option<&str>) -> bool {
         match self {
+            Self::Disabled => true,
             Self::Qwen(_, model) => model.supports_reported_source(language),
             Self::DeepLX(_) | Self::DeepL(_) | Self::OpenAICompatible(_) => true,
         }
@@ -240,6 +252,7 @@ impl TextTranslationClient {
         source: Option<SourceLanguage>,
     ) -> Result<String, QwenMTClientError> {
         match self {
+            Self::Disabled => Err(QwenMTClientError::MissingTextTranslation),
             Self::Qwen(client, _) => client.translate(text, source, &[]).await,
             Self::DeepL(client) => client
                 .translate(text, source)
@@ -262,6 +275,7 @@ impl TextTranslationClient {
         on_partial: impl Fn(String) + Send + Sync,
     ) -> Result<String, QwenMTClientError> {
         match self {
+            Self::Disabled => Err(QwenMTClientError::MissingTextTranslation),
             Self::Qwen(client, _) => {
                 client
                     .translate_streaming(text, source, &[], on_partial)
@@ -285,7 +299,7 @@ impl TextTranslationClient {
 
 #[derive(Clone)]
 pub struct HighQualityTranslationClient {
-    asr_client: Audio3ASRClient,
+    asr_client: RecognitionClient,
     mt: Arc<TextTranslationClient>,
     source_language: SourceLanguage,
     target_language: TargetLanguage,
@@ -324,7 +338,7 @@ impl HighQualityTranslationClient {
         long_incomplete_commit_threshold: usize,
         events: ProviderEventSender,
     ) -> Result<Self, QwenMTClientError> {
-        let asr_client = Audio3ASRClient::new(api_key, source_language)
+        let asr_client = RecognitionClient::alibaba(api_key, source_language)
             .map_err(|_| QwenMTClientError::MissingAPIKey)?;
         let streams_finals = final_model != QwenMTModel::Plus;
         let domain_hint = Some(
@@ -346,9 +360,34 @@ impl HighQualityTranslationClient {
             filler_terms,
             Duration::from_secs(8),
         )?;
-        Ok(Self {
+        Ok(Self::from_components(
             asr_client,
-            mt: Arc::new(TextTranslationClient::Qwen(mt, final_model)),
+            TextTranslationClient::Qwen(mt, final_model),
+            source_language,
+            target_language,
+            stable_draft_delay,
+            maximum_wait_delay,
+            long_incomplete_commit_threshold,
+            streams_finals,
+            events,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_components(
+        asr_client: RecognitionClient,
+        mt: TextTranslationClient,
+        source_language: SourceLanguage,
+        target_language: TargetLanguage,
+        stable_draft_delay: Duration,
+        maximum_wait_delay: Duration,
+        long_incomplete_commit_threshold: usize,
+        streams_finals: bool,
+        events: ProviderEventSender,
+    ) -> Self {
+        Self {
+            asr_client,
+            mt: Arc::new(mt),
             source_language,
             target_language,
             translates_audio: target_language.translates_audio(),
@@ -387,7 +426,7 @@ impl HighQualityTranslationClient {
             stable_draft_delay,
             maximum_wait_delay,
             streams_finals,
-        })
+        }
     }
 
     pub fn new_deeplx(
@@ -398,23 +437,23 @@ impl HighQualityTranslationClient {
         target: TargetLanguage,
         events: ProviderEventSender,
     ) -> Result<Self, QwenMTClientError> {
-        // Reuse bounded workers, generation checks, cancellation and final order.
-        let mut pipeline = Self::new(
-            asr_key,
+        let asr = RecognitionClient::alibaba(asr_key, source)
+            .map_err(|_| QwenMTClientError::MissingAPIKey)?;
+        let mt = TextTranslationClient::DeepLX(
+            crate::clients::deeplx_client::DeepLXClient::new(endpoint, token, source, target)
+                .map_err(QwenMTClientError::DeepLX)?,
+        );
+        Ok(Self::from_components(
+            asr,
+            mt,
             source,
             target,
-            QwenMTModel::Plus,
             Duration::from_millis(250),
             Duration::from_millis(1_000),
             12,
+            false,
             events,
-        )?;
-        pipeline.mt = Arc::new(TextTranslationClient::DeepLX(
-            crate::clients::deeplx_client::DeepLXClient::new(endpoint, token, source, target)
-                .map_err(QwenMTClientError::DeepLX)?,
-        ));
-        pipeline.streams_finals = false;
-        Ok(pipeline)
+        ))
     }
 
     pub fn new_deepl(
@@ -424,22 +463,23 @@ impl HighQualityTranslationClient {
         target: TargetLanguage,
         events: ProviderEventSender,
     ) -> Result<Self, QwenMTClientError> {
-        let mut pipeline = Self::new(
-            asr_key,
+        let asr = RecognitionClient::alibaba(asr_key, source)
+            .map_err(|_| QwenMTClientError::MissingAPIKey)?;
+        let mt = TextTranslationClient::DeepL(
+            crate::clients::deepl_client::DeepLClient::new(api_key, source, target)
+                .map_err(QwenMTClientError::DeepL)?,
+        );
+        Ok(Self::from_components(
+            asr,
+            mt,
             source,
             target,
-            QwenMTModel::Plus,
             Duration::from_millis(250),
             Duration::from_millis(1_000),
             12,
+            false,
             events,
-        )?;
-        pipeline.mt = Arc::new(TextTranslationClient::DeepL(
-            crate::clients::deepl_client::DeepLClient::new(api_key, source, target)
-                .map_err(QwenMTClientError::DeepL)?,
-        ));
-        pipeline.streams_finals = false;
-        Ok(pipeline)
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -452,24 +492,91 @@ impl HighQualityTranslationClient {
         target: TargetLanguage,
         events: ProviderEventSender,
     ) -> Result<Self, QwenMTClientError> {
-        let mut pipeline = Self::new(
-            asr_key,
-            source,
-            target,
-            QwenMTModel::Plus,
-            Duration::from_millis(250),
-            Duration::from_millis(1_000),
-            12,
-            events,
-        )?;
-        pipeline.mt = Arc::new(TextTranslationClient::OpenAICompatible(
+        let asr = RecognitionClient::alibaba(asr_key, source)
+            .map_err(|_| QwenMTClientError::MissingAPIKey)?;
+        let mt = TextTranslationClient::OpenAICompatible(
             crate::clients::openai_compatible_client::OpenAICompatibleClient::new(
                 endpoint, api_key, model, source, target,
             )
             .map_err(QwenMTClientError::OpenAICompatible)?,
-        ));
-        pipeline.streams_finals = false;
-        Ok(pipeline)
+        );
+        Ok(Self::from_components(
+            asr,
+            mt,
+            source,
+            target,
+            Duration::from_millis(250),
+            Duration::from_millis(1_000),
+            12,
+            false,
+            events,
+        ))
+    }
+
+    /// Custom recognition never supplies a key to a built-in translation service.
+    pub fn new_custom(
+        configuration: &LiveTranslationConfiguration,
+        events: ProviderEventSender,
+    ) -> Result<Self, QwenMTClientError> {
+        let ProviderCredentials::CustomSpeech {
+            endpoint,
+            model,
+            api_key,
+        } = &configuration.credentials
+        else {
+            return Err(QwenMTClientError::RequestFailed {
+                status_code: 0,
+                message: "Invalid speech recognition configuration.".into(),
+            });
+        };
+        let source = configuration.source_language;
+        let target = configuration.target_language;
+        let asr =
+            RecognitionClient::custom(configuration.provider, endpoint, model, api_key, source)
+                .map_err(recognition_error)?;
+        let mt = if !target.translates_audio() {
+            TextTranslationClient::Disabled
+        } else {
+            match configuration
+                .text_credentials
+                .as_ref()
+                .ok_or(QwenMTClientError::MissingTextTranslation)?
+            {
+                TextTranslationCredentials::DeepL { api_key } => TextTranslationClient::DeepL(
+                    crate::clients::deepl_client::DeepLClient::new(api_key, source, target)
+                        .map_err(QwenMTClientError::DeepL)?,
+                ),
+                TextTranslationCredentials::DeepLX { endpoint, token } => {
+                    TextTranslationClient::DeepLX(
+                        crate::clients::deeplx_client::DeepLXClient::new(
+                            endpoint, token, source, target,
+                        )
+                        .map_err(QwenMTClientError::DeepLX)?,
+                    )
+                }
+                TextTranslationCredentials::OpenAICompatible {
+                    endpoint,
+                    model,
+                    api_key,
+                } => TextTranslationClient::OpenAICompatible(
+                    crate::clients::openai_compatible_client::OpenAICompatibleClient::new(
+                        endpoint, api_key, model, source, target,
+                    )
+                    .map_err(QwenMTClientError::OpenAICompatible)?,
+                ),
+            }
+        };
+        Ok(Self::from_components(
+            asr,
+            mt,
+            source,
+            target,
+            Duration::from_millis(250),
+            Duration::from_millis(1_000),
+            12,
+            false,
+            events,
+        ))
     }
 
     /// Connects the recognizer and resets all draft/final workers.
@@ -489,12 +596,10 @@ impl HighQualityTranslationClient {
         let task_id = Uuid::new_v4().simple().to_string();
         let (asr_tx, asr_rx) = provider_event_channel();
         self.asr_client.set_event_sender(asr_tx).await;
-        self.asr_client.connect(&task_id).await.map_err(|error| {
-            QwenMTClientError::RequestFailed {
-                status_code: 0,
-                message: error.to_string(),
-            }
-        })?;
+        self.asr_client
+            .connect(&task_id)
+            .await
+            .map_err(recognition_error)?;
 
         self.mt_work_allowed.store(true, Ordering::SeqCst);
         self.install_asr_bridge(asr_rx).await;
@@ -502,22 +607,17 @@ impl HighQualityTranslationClient {
     }
 
     pub async fn send_audio(&self, pcm_data: &[u8]) -> Result<(), QwenMTClientError> {
-        self.asr_client.send_audio(pcm_data).await.map_err(|error| {
-            QwenMTClientError::RequestFailed {
-                status_code: 0,
-                message: error.to_string(),
-            }
-        })
+        self.asr_client
+            .send_audio(pcm_data)
+            .await
+            .map_err(recognition_error)
     }
 
     pub async fn ping(&self, timeout: Duration) -> Result<(), QwenMTClientError> {
         self.asr_client
             .ping(timeout)
             .await
-            .map_err(|error| QwenMTClientError::RequestFailed {
-                status_code: 0,
-                message: error.to_string(),
-            })
+            .map_err(recognition_error)
     }
 
     /// Latest current successful preview/final request, including retries but
@@ -2203,6 +2303,175 @@ fn clear_task_if_id(slot: &mut Option<TaskSlot>, task_id: u64) {
 mod tests {
     use super::*;
     use crate::clients::provider_events::ProviderEventReceiver;
+    use crate::core::models::TranslationMode;
+    use crate::core::provider::ProviderKind;
+
+    fn custom_configuration(
+        provider: ProviderKind,
+        target: TargetLanguage,
+    ) -> LiveTranslationConfiguration {
+        LiveTranslationConfiguration::with_credentials(
+            provider,
+            ProviderCredentials::CustomSpeech {
+                endpoint: "wss://example.com/recognition".into(),
+                model: "synthetic-recognition-model".into(),
+                api_key: "synthetic-recognition-key".into(),
+            },
+            SourceLanguage::Automatic,
+            target,
+            TranslationMode::Turbo,
+        )
+    }
+
+    #[tokio::test]
+    async fn custom_recognition_original_mode_commits_without_constructing_or_accounting_for_mt() {
+        for provider in [
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let configuration = custom_configuration(provider, TargetLanguage::Original);
+            let (sender, mut events) = provider_event_channel();
+            let client = HighQualityTranslationClient::new_custom(&configuration, sender).unwrap();
+            assert!(matches!(
+                client.mt.as_ref(),
+                TextTranslationClient::Disabled
+            ));
+            client
+                .handle_asr_event(LiveTranslateServerEvent::SourceUtteranceFinal {
+                    utterance_id: 1,
+                    text: "Synthetic original sentence".into(),
+                    language: Some("en".into()),
+                })
+                .await;
+            assert!(
+                matches!(events.recv().await, Some(LiveTranslateServerEvent::SubtitleConfirmedPair {
+                source_utterance_id: Some(1), source, translation, ..
+            }) if source == "Synthetic original sentence" && translation == source)
+            );
+            assert!(client.inner.lock().await.final_worker.is_none());
+            assert!(client.inner.lock().await.preview_task.is_none());
+            assert_eq!(client.translation_latency(), None);
+            let now = std::time::Instant::now();
+            assert_eq!(
+                client
+                    .inner
+                    .lock()
+                    .await
+                    .preview_request_pacer
+                    .next_shared_start_at(now),
+                now
+            );
+            assert_eq!(
+                client
+                    .suspend_request_budget()
+                    .await
+                    .shared_cooldown_until(),
+                None
+            );
+            client.disconnect().await;
+        }
+    }
+
+    #[test]
+    fn custom_recognition_translation_cannot_reuse_the_recognition_key_as_a_qwen_key() {
+        let configuration =
+            custom_configuration(ProviderKind::CustomDashScopeASR, TargetLanguage::Japanese);
+        let (sender, _events) = provider_event_channel();
+        assert!(matches!(
+            HighQualityTranslationClient::new_custom(&configuration, sender),
+            Err(QwenMTClientError::MissingTextTranslation)
+        ));
+    }
+
+    #[tokio::test]
+    async fn custom_recognition_uses_its_independent_chat_key_and_preserves_final_order() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut configuration =
+            custom_configuration(ProviderKind::CustomDashScopeASR, TargetLanguage::Japanese);
+        configuration.text_credentials = Some(TextTranslationCredentials::OpenAICompatible {
+            endpoint: format!("http://{}/v1", listener.local_addr().unwrap()),
+            model: "synthetic-translation-model".into(),
+            api_key: "synthetic-translation-key".into(),
+        });
+        let server = tokio::spawn(async move {
+            for index in 1..=2 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let request = String::from_utf8(read_synthetic_request(&mut socket).await).unwrap();
+                assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1"));
+                assert!(request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer synthetic-translation-key"));
+                assert!(!request.contains("synthetic-recognition-key"));
+                let body_start = request.find("\r\n\r\n").unwrap() + 4;
+                let json: serde_json::Value = serde_json::from_str(&request[body_start..]).unwrap();
+                assert_eq!(json["model"], "synthetic-translation-model");
+                assert_eq!(json["stream"], false);
+                assert_eq!(
+                    json["messages"][1]["content"],
+                    format!("Synthetic sentence {index}")
+                );
+                let body = format!(
+                    r#"{{"choices":[{{"message":{{"content":"Synthetic translation {index}"}}}}]}}"#
+                );
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        let (sender, mut events) = provider_event_channel();
+        let mut client = HighQualityTranslationClient::new_custom(&configuration, sender).unwrap();
+        client
+            .set_network(
+                ProviderNetwork::resolve(&crate::core::network_proxy::ProxyConfig {
+                    mode: crate::core::network_proxy::ProxyMode::Direct,
+                    url: None,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        for utterance_id in 1..=2 {
+            client
+                .handle_asr_event(LiveTranslateServerEvent::SourceUtteranceFinal {
+                    utterance_id,
+                    text: format!("Synthetic sentence {utterance_id}"),
+                    language: Some("en".into()),
+                })
+                .await;
+        }
+        let pairs = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut pairs = Vec::new();
+            while pairs.len() < 2 {
+                if let Some(LiveTranslateServerEvent::SubtitleConfirmedPair {
+                    source_utterance_id,
+                    source,
+                    translation,
+                    ..
+                }) = events.recv().await
+                {
+                    pairs.push((source_utterance_id, source, translation));
+                }
+            }
+            pairs
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            pairs,
+            vec![
+                (
+                    Some(1),
+                    "Synthetic sentence 1".into(),
+                    "Synthetic translation 1".into()
+                ),
+                (
+                    Some(2),
+                    "Synthetic sentence 2".into(),
+                    "Synthetic translation 2".into()
+                ),
+            ]
+        );
+        server.await.unwrap();
+        client.disconnect().await;
+    }
 
     #[tokio::test]
     async fn clear_after_a_real_sse_partial_does_not_restore_late_stream_content() {

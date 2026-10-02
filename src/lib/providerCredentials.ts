@@ -4,12 +4,14 @@ import type {
   TextTranslation,
   ServiceProvider,
 } from "./types";
+import { isCustomSpeechProvider } from "./providerCapabilities";
 
 export type CredentialFieldName =
   | "asrApiKey"
   | "token"
   | "apiKey"
   | "endpoint"
+  | "model"
   | "deployment"
   | "transcriptionDeployment"
   | "appId"
@@ -56,6 +58,9 @@ export function credentialFieldsForProvider(
   provider: ServiceProvider,
 ): readonly CredentialFieldName[] {
   switch (provider) {
+    case "customDashScopeASR":
+    case "customOpenAIASR":
+      return ["endpoint", "model", "apiKey"];
     case "deepLX":
       return ["asrApiKey", "endpoint", "token"];
     case "azureOpenAIRealtime":
@@ -88,6 +93,9 @@ export function buildProviderCredentials(
   }
 
   switch (provider) {
+    case "customDashScopeASR":
+    case "customOpenAIASR":
+      return { kind: "customSpeech", endpoint: values.endpoint, model: values.model, apiKey: values.apiKey };
     case "deepLX":
       return { kind: "deepLX", asrApiKey: values.asrApiKey, endpoint: values.endpoint, token: values.token };
     case "azureOpenAIRealtime":
@@ -118,22 +126,43 @@ export function buildProviderCredentials(
 
 /** Alibaba retains its profile-scoped key; an empty replacement reuses it natively. */
 export function buildAlibabaTranslationCredentials(profile: ServiceProfile, draft: CredentialDraft, translation: TextTranslation): ProviderCredentialsInput | null {
-  if (profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") return null;
-  if (!draft.apiKey.trim() && profile.credentialState !== "present") return null;
+  const custom = isCustomSpeechProvider(profile.provider);
+  if (!custom && profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") return null;
+  if (!custom && !draft.apiKey.trim() && profile.credentialState !== "present") return null;
   const savedTranslation = profile.textTranslation ?? (profile.provider === "deepLX" ? "deepLX" : "followService");
-  const keepsSavedDestination = profile.credentialState === "present" && translation === savedTranslation;
+  const keepsSavedDestination = (custom ? profile.textCredentialState : profile.credentialState) === "present" && translation === savedTranslation;
   if (translation === "deepLX" && !draft.endpoint.trim() && !keepsSavedDestination) return null;
   if (translation === "deepL" && !draft.token.trim() && !keepsSavedDestination) return null;
   if (translation === "openAICompatible" && !keepsSavedDestination && (!draft.endpoint.trim() || !draft.token.trim() || !draft.model.trim())) return null;
   if (translation === "openAICompatible" && draft.endpoint.trim() && !draft.token.trim()) return null;
   return {
     kind: "alibabaTranslation",
-    apiKey: draft.apiKey.trim(),
+    apiKey: custom ? "" : draft.apiKey.trim(),
     textTranslation: translation,
     endpoint: translation === "deepLX" || translation === "openAICompatible" ? draft.endpoint.trim() : "",
     token: translation === "followService" ? "" : draft.token.trim(),
     model: translation === "openAICompatible" ? draft.model.trim() : "",
   };
+}
+
+export function buildCustomSpeechCredentials(profile: ServiceProfile, draft: Pick<CredentialDraft, "endpoint" | "model" | "apiKey">): ProviderCredentialsInput | null {
+  if (!isCustomSpeechProvider(profile.provider)) return null;
+  const endpoint = draft.endpoint.trim(), model = draft.model.trim(), apiKey = draft.apiKey.trim();
+  const saved = profile.speechCredentialState === "present";
+  if ((!saved && (!endpoint || !model || !apiKey)) || (endpoint && (!apiKey || !model))) return null;
+  if (saved && !endpoint && !model && !apiKey) return null;
+  return { kind: "customSpeech", endpoint, model, apiKey };
+}
+
+/** A full credential-free WebSocket URL; plaintext is restricted to loopback. */
+export function customSpeechEndpointIsValid(value: string): boolean {
+  if (new TextEncoder().encode(value).length > 2048 || Array.from(value).some(char => { const code = char.codePointAt(0)!; return code < 32 || (code >= 127 && code <= 159); })) return false;
+  try {
+    const url = new URL(value.trim());
+    const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+    return (url.protocol === "wss:" || (url.protocol === "ws:" && local)) && !!url.hostname &&
+      !url.username && !url.password && !value.includes("?") && !value.includes("#");
+  } catch { return false; }
 }
 
 /** Mirrors native text translation endpoint safety checks before credential I/O. */

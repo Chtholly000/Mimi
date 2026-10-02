@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildProviderCredentials,
+  buildCustomSpeechCredentials,
+  customSpeechEndpointIsValid,
   buildAlibabaTranslationCredentials,
   deepLXEndpointIsValid,
   credentialEditorStateAfterDeleteRequest,
@@ -8,6 +10,23 @@ import {
   emptyCredentialDraft,
   openAICompatibleModelIsValid,
 } from "./providerCredentials";
+
+it("restricts custom speech to secure full WebSocket addresses or loopback", () => {
+  for (const endpoint of ["https://example.com", "ws://example.com/asr", "wss://user:password@example.com", "wss://example.com?intent=transcription", "wss://example.com#", "wss://example.com\n"]) expect(customSpeechEndpointIsValid(endpoint), endpoint).toBe(false);
+  for (const endpoint of ["wss://example.com/asr", "ws://localhost:1888/asr", "ws://127.0.0.1:1888", "ws://[::1]:1888"]) expect(customSpeechEndpointIsValid(endpoint), endpoint).toBe(true);
+});
+it("never reuses a saved recognition key at a different address", () => {
+  const profile = { id: "asr", name: "ASR", provider: "customOpenAIASR", credentialState: "missing", speechCredentialState: "present" } as const;
+  expect(buildCustomSpeechCredentials(profile, { endpoint: "wss://new.example", model: "", apiKey: "" })).toBeNull();
+  expect(buildCustomSpeechCredentials(profile, { endpoint: "", model: "new-model", apiKey: "" })).toEqual({ kind: "customSpeech", endpoint: "", model: "new-model", apiKey: "" });
+  expect(buildCustomSpeechCredentials({ ...profile, speechCredentialState: "missing" }, { endpoint: "", model: "new-model", apiKey: "synthetic-key" })).toBeNull();
+});
+it("uses the independent text state and never sends a custom ASR key in text-only saves", () => {
+  const profile = { id: "asr", name: "ASR", provider: "customDashScopeASR", credentialState: "missing", speechCredentialState: "present", textCredentialState: "missing", textTranslation: "deepL" } as const;
+  expect(buildAlibabaTranslationCredentials(profile, emptyCredentialDraft(), "deepL")).toBeNull();
+  expect(buildAlibabaTranslationCredentials(profile, { ...emptyCredentialDraft(), apiKey: "synthetic-asr-must-not-send", token: "synthetic-text-key" }, "deepL")).toMatchObject({ apiKey: "", token: "synthetic-text-key" });
+  expect(buildAlibabaTranslationCredentials({ ...profile, speechCredentialState: "missing" }, { ...emptyCredentialDraft(), apiKey: "synthetic-asr", token: "synthetic-text-key" }, "deepL")).toMatchObject({ apiKey: "", token: "synthetic-text-key" });
+});
 
 describe("provider credential payloads", () => {
   it("keeps one-key providers on the compact credential shape", () => {

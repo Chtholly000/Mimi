@@ -37,6 +37,17 @@ impl Audio3ASRRequestEncoder {
         source_language: SourceLanguage,
         context: Option<&str>,
     ) -> Result<Value, LiveTranslateProtocolError> {
+        Self::run_task_for_model(task_id, source_language, context, Audio3ASREndpoint::MODEL)
+    }
+
+    /// Custom addresses opt into this exact Audio3 contract, including its
+    /// parameters and authoritative sentence events.
+    pub fn run_task_for_model(
+        task_id: &str,
+        source_language: SourceLanguage,
+        context: Option<&str>,
+        model: &str,
+    ) -> Result<Value, LiveTranslateProtocolError> {
         let trimmed_context = context.map(str::trim).filter(|t| !t.is_empty());
 
         let mut parameters = json!({
@@ -67,7 +78,7 @@ impl Audio3ASRRequestEncoder {
                 "task_group": "audio",
                 "task": "asr",
                 "function": "recognition",
-                "model": Audio3ASREndpoint::MODEL,
+                "model": model,
                 "parameters": parameters,
                 "input": input
             }
@@ -164,6 +175,22 @@ pub enum Audio3ASRServerEventDecoder {}
 pub const MAX_AUDIO3_MESSAGE_BYTES: usize = 1024 * 1024;
 
 impl Audio3ASRServerEventDecoder {
+    /// A custom gateway must echo the task identity accepted by its run-task.
+    pub fn decode_for_task(
+        text: &str,
+        task_id: &str,
+    ) -> Result<Audio3ASRServerEvent, LiveTranslateProtocolError> {
+        if text.len() > MAX_AUDIO3_MESSAGE_BYTES {
+            return Err(LiveTranslateProtocolError::InvalidJSON);
+        }
+        let json: Value =
+            serde_json::from_str(text).map_err(|_| LiveTranslateProtocolError::InvalidJSON)?;
+        if json.pointer("/header/task_id").and_then(Value::as_str) != Some(task_id) {
+            return Err(LiveTranslateProtocolError::InvalidJSON);
+        }
+        Self::decode(text)
+    }
+
     pub fn decode(text: &str) -> Result<Audio3ASRServerEvent, LiveTranslateProtocolError> {
         if text.len() > MAX_AUDIO3_MESSAGE_BYTES {
             return Err(LiveTranslateProtocolError::InvalidJSON);
@@ -295,6 +322,38 @@ impl Audio3ASRContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_task_events_require_the_selected_task_identity_and_model() {
+        let custom = Audio3ASRRequestEncoder::run_task_for_model(
+            "custom-task",
+            SourceLanguage::English,
+            None,
+            "custom-asr-model",
+        )
+        .unwrap();
+        assert_eq!(custom["payload"]["model"], "custom-asr-model");
+        assert_eq!(custom["payload"]["parameters"]["format"], "pcm");
+        assert_eq!(custom["payload"]["parameters"]["sample_rate"], 16000);
+        assert!(Audio3ASRServerEventDecoder::decode_for_task(
+            r#"{"header":{"event":"task-started","task_id":"other-task"}}"#,
+            "custom-task"
+        )
+        .is_err());
+        assert!(Audio3ASRServerEventDecoder::decode_for_task(
+            r#"{"header":{"event":"task-started"}}"#,
+            "custom-task"
+        )
+        .is_err());
+        assert_eq!(
+            Audio3ASRServerEventDecoder::decode_for_task(
+                r#"{"header":{"event":"task-started","task_id":"custom-task"}}"#,
+                "custom-task"
+            )
+            .unwrap(),
+            Audio3ASRServerEvent::TaskStarted
+        );
+    }
 
     #[test]
     fn all_thirty_audio3_hints_encode_exact_codes_and_auto_omits_them() {

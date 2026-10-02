@@ -8,6 +8,7 @@ import { I18N, providerDisplayName } from "../../lib/i18n";
 import { isTauri } from "../../lib/ipc";
 import {
   activeServiceProfile,
+  credentialStateForTarget,
   sourceLanguagesForSettings,
 } from "../../lib/providerCapabilities";
 import {
@@ -85,7 +86,7 @@ export function TrayPanel() {
   const presentation = deriveTrayPresentation({
     statusKind: sessionStatusKind,
     isPaused,
-    credentialState: activeProfile?.credentialState,
+    credentialState: credentialStateForTarget(activeProfile, settings.targetLanguage),
     hasSubtitleContent: subtitleHasContent,
   });
   const anyActionPending = pendingAction !== null;

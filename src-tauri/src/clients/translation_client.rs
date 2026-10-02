@@ -76,6 +76,11 @@ impl TranslationClient {
             .credentials
             .validated_for(configuration.provider)?;
         match configuration.provider {
+            ProviderKind::CustomDashScopeASR | ProviderKind::CustomOpenAIASR => {
+                return HighQualityTranslationClient::new_custom(configuration, events)
+                    .map(Self::HighQuality)
+                    .map_err(TranslationClientError::MT);
+            }
             ProviderKind::OpenAIRealtime => {
                 return OpenAIRealtimeClient::new(
                     direct_api_key(&credentials)?,
@@ -568,6 +573,52 @@ mod tests {
             TranslationClient::new(&configuration, events).unwrap(),
             TranslationClient::HighQuality(_)
         ));
+    }
+
+    #[test]
+    fn custom_recognition_factory_requires_an_independent_translation_route() {
+        use crate::core::credentials::TextTranslationCredentials;
+        for provider in [
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let mut configuration = LiveTranslationConfiguration::with_credentials(
+                provider,
+                ProviderCredentials::CustomSpeech {
+                    endpoint: "wss://example.com/recognition".into(),
+                    model: "synthetic-recognition-model".into(),
+                    api_key: "synthetic-recognition-key".into(),
+                },
+                SourceLanguage::Automatic,
+                TargetLanguage::Original,
+                TranslationMode::Turbo,
+            )
+            .validated()
+            .unwrap();
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events).unwrap(),
+                TranslationClient::HighQuality(_)
+            ));
+            configuration.target_language = TargetLanguage::Japanese;
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events),
+                Err(TranslationClientError::MT(
+                    QwenMTClientError::MissingTextTranslation
+                ))
+            ));
+            configuration.text_credentials = Some(TextTranslationCredentials::DeepLX {
+                endpoint: "https://example.com/translate".into(),
+                token: "synthetic-text-token".into(),
+            });
+            configuration = configuration.validated().unwrap();
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events).unwrap(),
+                TranslationClient::HighQuality(_)
+            ));
+        }
     }
 
     #[test]

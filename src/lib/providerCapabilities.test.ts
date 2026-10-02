@@ -6,6 +6,7 @@ import {
   textTranslationForProfile,
   activeServiceProfile,
   capabilitiesForProfile,
+  credentialStateForTarget,
   effectiveTranslationModeForSettings,
   sourceLanguagesForSettings,
   subtitlePreferencesChanged,
@@ -13,6 +14,14 @@ import {
   targetLanguagesForSettings,
   translationModesForSettings,
 } from "./providerCapabilities";
+
+it("requires only custom speech credentials for Original while translated targets require both stages", () => {
+  const profile = { id: "custom", name: "Custom", provider: "customOpenAIASR", credentialState: "missing", speechCredentialState: "present", textCredentialState: "missing", textTranslation: "deepL" } as const;
+  expect(credentialStateForTarget(profile, "original")).toBe("present");
+  expect(credentialStateForTarget(profile, "zh")).toBe("missing");
+  expect(capabilitiesForProfile(profile).targetLanguages).toEqual(["original", "zh", "en", "ja"]);
+  expect(capabilitiesForProfile({ ...profile, textTranslation: "followService" }).targetLanguages).toEqual(["original"]);
+});
 
 const BASE_SETTINGS: SettingsSnapshot = {
   profiles: [
@@ -132,9 +141,11 @@ describe("provider capabilities", () => {
   });
 
   it("registers every built-in provider exactly once", () => {
-    expect(new Set(SERVICE_PROVIDERS).size).toBe(8);
+    expect(new Set(SERVICE_PROVIDERS).size).toBe(10);
     expect(SERVICE_PROVIDERS).toEqual([
       "alibabaCloud",
+      "customDashScopeASR",
+      "customOpenAIASR",
       "openAIRealtime",
       "googleGeminiLive",
       "azureOpenAIRealtime",

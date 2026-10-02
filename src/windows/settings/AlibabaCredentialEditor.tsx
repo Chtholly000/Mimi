@@ -12,9 +12,11 @@ import { InlineFeedback, SettingsSelect } from "./SettingsPrimitives";
 import { StoredCredentialReveal } from "./StoredCredentialReveal";
 
 /** Alibaba provides recognition; optional text destinations reuse its ASR key. */
-export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visible = true, feedback, onSave, onRequestDelete, onConfirmDelete, confirmingDelete, onCancelDelete, connectionCheck, readOnly = false }: {
+export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visible = true, feedback, onSave, onRequestDelete, onConfirmDelete, confirmingDelete, onCancelDelete, connectionCheck, readOnly = false, textOnly = false, storageNoteId }: {
   connectionCheck?: ReactNode;
   readOnly?: boolean;
+  textOnly?: boolean;
+  storageNoteId?: string;
   profile: ServiceProfile;
   inputId: string;
   disabled: boolean;
@@ -39,7 +41,7 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
   const endpointRef = useRef<HTMLInputElement>(null);
   const modelRef = useRef<HTMLInputElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
-  const saved = profile.credentialState === "present";
+  const saved = (textOnly ? profile.textCredentialState : profile.credentialState) === "present" || (textOnly && savedTranslation === "followService");
   // Replacement drafts and saved-value previews must never carry across
   // routes, including a destination changed by another window.
   if (draftTranslation !== translation) {
@@ -55,7 +57,7 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
   const destinationKeyLabel = translation === "deepL" ? I18N.settings.deepLApiKey : compatible ? I18N.settings.openAICompatibleApiKey : I18N.settings.deepLXToken;
   const endpointId = `${inputId}-endpoint`;
   const modelId = `${inputId}-model`;
-  const noteId = `${inputId}-storage-note`;
+  const noteId = storageNoteId ?? `${inputId}-storage-note`;
 
   useEffect(() => {
     if (endpointInvalid) {
@@ -101,18 +103,18 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
     void onSave(credentials).then((result) => { if (result) discard(); });
   };
 
-  const translationHelp = translation === "followService" ? I18N.settings.textTranslationDefault
+  const translationHelp = textOnly ? [I18N.settings.customSpeechTranslationHelp, ...(compatible ? [I18N.settings.openAICompatibleRequirements, I18N.settings.openAICompatibleLanguages] : [])].join("\n") : translation === "followService" ? I18N.settings.textTranslationDefault
     : compatible ? [I18N.settings.openAICompatibleChain, I18N.settings.openAICompatibleRequirements, I18N.settings.openAICompatibleLanguages].join("\n")
     : translation === "deepL" ? I18N.settings.deepLChain : I18N.settings.deepLXChain;
   const translationOptions = [
-    { value: "followService", label: I18N.settings.textTranslationFollow, icon: <ProviderIcon provider="alibabaCloud" size={32} /> },
+    { value: "followService", label: textOnly ? I18N.settings.customSpeechNoTranslation : I18N.settings.textTranslationFollow, icon: textOnly ? <Icon name="captions-bubble" /> : <ProviderIcon provider="alibabaCloud" size={32} /> },
     { value: "deepL", label: "DeepL", icon: <ProviderIcon provider="deepL" size={32} /> },
     { value: "deepLX", label: I18N.settings.textTranslationCustom, icon: <ProviderIcon provider="deepLX" size={32} /> },
     { value: "openAICompatible", label: I18N.settings.textTranslationOpenAICompatible, icon: <ProviderIcon provider="openAICompatible" size={32} /> },
   ];
 
   const stages = <>
-    <section className="service-stage" aria-labelledby={`${inputId}-recognition-title`}>
+    {!textOnly && <section className="service-stage" aria-labelledby={`${inputId}-recognition-title`}>
       <header className="service-stage__heading">
         <h3 id={`${inputId}-recognition-title`}>{I18N.settings.speechRecognition}</h3>
       </header>
@@ -125,7 +127,7 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
         <input id={`${inputId}-apiKey`} type="password" autoComplete="new-password" spellCheck={false} disabled={disabled} value={draft.apiKey} placeholder={I18N.settings.apiKeyPlaceholder} aria-describedby={noteId} onChange={(event) => { setEditingKey(true); setDraft((current) => ({ ...current, apiKey: event.target.value })); }} />
         {saved && visible && !busy && !confirmingDelete && <StoredCredentialReveal key={`${profile.id}:${revealEpoch}`} profileId={profile.id} field={profile.provider === "deepLX" ? "asrApiKey" : "apiKey"} label={I18N.settings.apiKey} disabled={disabled} />}
       </div>}
-    </section>
+    </section>}
     <section className="service-stage service-stage--translation" aria-labelledby={`${inputId}-translation-title`}>
       <header className="service-stage__heading">
         <h3 id={`${inputId}-translation-title`}>{I18N.settings.textTranslationLabel}</h3>
@@ -157,23 +159,23 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
   </>;
 
   return <div className="credential-panel" aria-busy={busy}>
-    <div className="service-credential-toolbar">
+    {!textOnly && <div className="service-credential-toolbar">
       {connectionCheck}
       {!readOnly && saved && !dirty && <span className="credential-panel__saved-actions">
         <button type="button" className="settings-button settings-button--quiet settings-button--compact" disabled={disabled} onClick={() => setEditingKey(true)}><Icon name="key" />{I18N.settings.replaceCredentials}</button>
         <button type="button" className="settings-button settings-button--quiet settings-button--compact" disabled={disabled || confirmingDelete} onClick={onRequestDelete}><Icon name="trash" />{I18N.settings.deleteCredentials}</button>
       </span>}
       <SettingsHelp id={noteId} text={readOnly ? profile.credentialState === "unavailable" ? diagnosticCopy().localDevUnavailable : diagnosticCopy().localDevReadOnly : I18N.settings.credentialNote} label={I18N.settings.helpLabel} icon="shield-check" />
-    </div>
-    {!readOnly && profile.credentialState === "unavailable" && (feedback?.tone !== "error" || feedback.message === I18N.settings.profileActionFailed) && <p role="status" className="credential-unavailable">{credentialUnavailableHelp()}</p>}
+    </div>}
+    {!textOnly && !readOnly && profile.credentialState === "unavailable" && (feedback?.tone !== "error" || feedback.message === I18N.settings.profileActionFailed) && <p role="status" className="credential-unavailable">{credentialUnavailableHelp()}</p>}
     {readOnly ? <div className="service-stages service-stages--readonly">{stages}</div> : <form className="credential-form service-stages" onSubmit={submit}>
       {stages}
       {feedback && <div ref={feedbackRef} tabIndex={-1}><InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback></div>}
       {dirty && <span className="credential-form__actions">
         {saved && <button type="button" className="settings-button settings-button--quiet settings-button--compact" disabled={disabled} onClick={discard}>{I18N.settings.cancel}</button>}
-        <button type="submit" className="settings-button settings-button--primary settings-button--compact" disabled={disabled || !credentials || (editingKey && !draft.apiKey.trim())}><Icon name="key" />{saved ? I18N.settings.replaceCredentials : I18N.settings.saveAndUse}</button>
+        <button type="submit" className="settings-button settings-button--primary settings-button--compact" disabled={disabled || !credentials || (!textOnly && editingKey && !draft.apiKey.trim())}><Icon name="key" />{textOnly ? I18N.settings.saveTranslationConfiguration : saved ? I18N.settings.replaceCredentials : I18N.settings.saveAndUse}</button>
       </span>}
     </form>}
-    {!readOnly && confirmingDelete && <DestructiveConfirmation message={I18N.settings.deleteCredentialsConfirm} disabled={disabled} onCancel={onCancelDelete} onConfirm={() => { discard(); void onConfirmDelete(); }} />}
+    {!textOnly && !readOnly && confirmingDelete && <DestructiveConfirmation message={I18N.settings.deleteCredentialsConfirm} disabled={disabled} onCancel={onCancelDelete} onConfirm={() => { discard(); void onConfirmDelete(); }} />}
   </div>;
 }

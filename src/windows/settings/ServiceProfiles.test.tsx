@@ -47,6 +47,15 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 async function render(snapshot = settings, sessionStatusKind: "idle" | "error" = "idle") { await act(() => root.render(<ServiceProfiles settings={snapshot} sessionIsActive={false} sessionStatusKind={sessionStatusKind} />)); }
+it("shows a custom speech profile as ready for Original even when its independent translation key is missing", async () => {
+  const custom: ServiceProfile = { ...profile, provider: "customDashScopeASR", credentialState: "missing", speechCredentialState: "present", textCredentialState: "missing", textTranslation: "deepL" };
+  await render({ ...settings, targetLanguage: "original", profiles: [custom] });
+  expect(host.querySelector(".credential-badge")?.textContent).toBe(I18N.settings.credentialPresent);
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  expect(host.querySelector(".service-detail__title .credential-badge")?.textContent).toBe(I18N.settings.credentialPresent);
+  expect(host.querySelector(".service-stage--translation")?.textContent).toContain("DeepL");
+  expect(host.querySelector('input[id$="-speech-key"]')).toBeNull();
+});
 it.each(["en", "zh", "ja"] as const)("keeps local dev file credentials out of editors and reveal in %s", async (language) => {
   setStoredUiLanguage(language);
   const snapshot: SettingsSnapshot = { ...settings, credentialStorage: "localDevFile", profiles: [{ ...profile, credentialState: "present" }] };

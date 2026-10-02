@@ -4,6 +4,7 @@ import {
   LEGACY_SOURCE_LANGUAGE_CASES,
   TRANSLATION_MODE_CASES,
   type ProviderCapabilities,
+  type CredentialState,
   type ServiceProfile,
   type ServiceProvider,
   type SettingsSnapshot,
@@ -32,6 +33,8 @@ const TARGET_CODES = new Set<string>(ALIBABA_TARGETS);
 
 export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
   "alibabaCloud",
+  "customDashScopeASR",
+  "customOpenAIASR",
   "openAIRealtime",
   "googleGeminiLive",
   "azureOpenAIRealtime",
@@ -44,6 +47,8 @@ export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
 const PROVIDER_CAPABILITIES: Readonly<
   Record<ServiceProvider, ProviderCapabilities>
 > = {
+  customDashScopeASR: { sourceLanguages: ["auto", "zh", "en", "ja", "ko"], targetLanguages: ["original"], translationModes: ["turbo"] },
+  customOpenAIASR: { sourceLanguages: ["auto", "zh", "en", "ja", "ko"], targetLanguages: ["original"], translationModes: ["turbo"] },
   deepLX: { sourceLanguages: LEGACY_SOURCE_LANGUAGE_CASES, targetLanguages: ["zh", "en", "ja"], translationModes: ["turbo"] },
   alibabaCloud: {
     sourceLanguages: ALIBABA_TRANSLATION_SOURCES,
@@ -105,6 +110,15 @@ export function textTranslationForProfile(profile: ServiceProfile): TextTranslat
   return profile.textTranslation ?? (profile.provider === "deepLX" ? "deepLX" : "followService");
 }
 
+export function isCustomSpeechProvider(provider: ServiceProvider): boolean {
+  return provider === "customDashScopeASR" || provider === "customOpenAIASR";
+}
+
+export function credentialStateForTarget(profile: ServiceProfile | undefined, target: TargetLanguage): CredentialState {
+  return profile && isCustomSpeechProvider(profile.provider) && target === "original"
+    ? profile.speechCredentialState ?? profile.credentialState : profile?.credentialState ?? "unavailable";
+}
+
 export function effectiveProviderForProfile(profile: ServiceProfile): ServiceProvider {
   if (profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") return profile.provider;
   return textTranslationForProfile(profile) === "deepLX" ? "deepLX" : "alibabaCloud";
@@ -115,6 +129,11 @@ export function capabilitiesForProfile(
   profile: ServiceProfile,
   targetLanguage: TargetLanguage = "zh",
 ): ProviderCapabilities {
+  if (isCustomSpeechProvider(profile.provider)) {
+    const capabilities = capabilitiesForProvider(profile.provider);
+    return textTranslationForProfile(profile) === "followService" ? capabilities
+      : { ...capabilities, targetLanguages: ["original", "zh", "en", "ja"] };
+  }
   if (profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") {
     return capabilitiesForProvider(profile.provider);
   }
