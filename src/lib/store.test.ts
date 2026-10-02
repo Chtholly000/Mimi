@@ -8,6 +8,18 @@ import {
 } from "./store";
 
 describe("local preview store", () => {
+  it("defaults to showing in the Dock and preserves an explicit hidden choice on unrelated saves", async () => {
+    const original = useStore.getState().settings;
+    expect(original.showInDock).toBe(true);
+    try {
+      await useStore.getState().saveSettings({ showInDock: false });
+      await useStore.getState().saveSettings({ fontSize: 19 });
+      expect(useStore.getState().settings.showInDock).toBe(false);
+    } finally {
+      useStore.setState({ settings: original });
+    }
+  });
+
   it("clears captions and pending translation without stopping the local preview", async () => {
     const original = useStore.getState();
     try {

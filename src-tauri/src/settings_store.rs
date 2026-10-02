@@ -166,7 +166,7 @@ pub struct Preferences {
     pub record_session_audio: bool,
     /// Empty means follow the Windows default output, including live changes.
     pub windows_audio_source: String,
-    /// macOS Dock/Cmd-Tab presence. Legacy installations remain accessory utilities.
+    /// macOS Dock/Cmd-Tab presence. Missing preferences show Mimi in the Dock.
     pub show_in_dock: bool,
     pub network_proxy: ProxyConfig,
 }
@@ -193,7 +193,7 @@ impl Default for Preferences {
             retain_session_history: false,
             record_session_audio: false,
             windows_audio_source: String::new(),
-            show_in_dock: false,
+            show_in_dock: true,
             network_proxy: ProxyConfig::default(),
         }
     }
@@ -969,28 +969,7 @@ impl SettingsStore {
 
     /// Content-free diagnostic distinguishes unreadable storage from malformed data.
     pub fn credential_diagnostic(&self, profile: &ServiceProfile) -> &'static str {
-        let account = credential_account(profile);
-        let retry_legacy = is_default_alibaba(profile) && self.migrate_legacy_alibaba;
-        self.secret_cache
-            .lock()
-            .unwrap()
-            .retain(|(service, slot), result| {
-                let selected = service == self.profile_keychain_service
-                    && (slot == &account
-                        || (profile.provider.supports_text_translation()
-                            && slot == &Self::destination_account(profile)));
-                let migration = retry_legacy
-                    && ((service == self.profile_keychain_service
-                        && slot == LEGACY_MIGRATION_TOMBSTONE_ACCOUNT)
-                        || (slot == LEGACY_KEYCHAIN_ACCOUNT
-                            && matches!(
-                                service.as_str(),
-                                LEGACY_KEYCHAIN_SERVICE_V3
-                                    | LEGACY_KEYCHAIN_SERVICE_V2
-                                    | LEGACY_KEYCHAIN_SERVICE
-                            )));
-                result.is_ok() || !(selected || migration)
-            });
+        self.retry_profile_credential_errors(profile, true, true);
         if let Some((speech, text)) = self.custom_credential_states(profile) {
             return match speech.combined(text) {
                 CredentialState::Present => "present",
@@ -1007,6 +986,32 @@ impl SettingsStore {
             Ok(None) => "missing",
             Ok(Some(_)) => "present",
         }
+    }
+
+    fn retry_profile_credential_errors(&self, profile: &ServiceProfile, speech: bool, text: bool) {
+        let account = credential_account(profile);
+        let retry_legacy = speech && is_default_alibaba(profile) && self.migrate_legacy_alibaba;
+        self.secret_cache
+            .lock()
+            .unwrap()
+            .retain(|(service, slot), result| {
+                let selected = service == self.profile_keychain_service
+                    && ((speech && slot == &account)
+                        || (text
+                            && profile.provider.supports_text_translation()
+                            && slot == &Self::destination_account(profile)));
+                let migration = retry_legacy
+                    && ((service == self.profile_keychain_service
+                        && slot == LEGACY_MIGRATION_TOMBSTONE_ACCOUNT)
+                        || (slot == LEGACY_KEYCHAIN_ACCOUNT
+                            && matches!(
+                                service.as_str(),
+                                LEGACY_KEYCHAIN_SERVICE_V3
+                                    | LEGACY_KEYCHAIN_SERVICE_V2
+                                    | LEGACY_KEYCHAIN_SERVICE
+                            )));
+                result.is_ok() || !(selected || migration)
+            });
     }
 
     pub fn credential_state(&self, profile: &ServiceProfile) -> CredentialState {
@@ -1874,6 +1879,127 @@ impl SettingsStore {
         self.configuration_for_profile_options(profile, true)
     }
 
+    /// Only the speech slot is read. Missing or inaccessible MT credentials
+    /// must not prevent an explicit recognition setup check.
+    pub fn configuration_for_speech_probe(
+        &self,
+        profile: &ServiceProfile,
+    ) -> Result<LiveTranslationConfiguration, String> {
+        self.retry_profile_credential_errors(profile, true, false);
+        if !profile.provider.supports_text_translation() {
+            return self.configuration_for_profile_probe(profile);
+        }
+        if self.secret.is_read_only() && profile.provider.is_custom_speech() {
+            return Err("custom_speech_credentials_missing".into());
+        }
+        let value = self
+            .load_api_key_for_profile(profile)
+            .map_err(SecretStoreError::public_error)?
+            .ok_or("custom_speech_credentials_missing")?;
+        let decoded = ProviderCredentials::decode_for_profile(profile, &value)
+            .map_err(|error| error.to_string())?;
+        let provider = if profile.provider.is_custom_speech() {
+            profile.provider
+        } else {
+            ProviderKind::AlibabaCloud
+        };
+        let credentials = if provider.is_custom_speech() {
+            decoded
+        } else {
+            ProviderCredentials::api_key(decoded.alibaba_key().unwrap_or_default())
+        };
+        let prefs = self.preferences();
+        let normalized = provider.capabilities().normalize(ProviderPreferences {
+            source_language: prefs.source_language,
+            target_language: TargetLanguage::Original,
+            translation_mode: prefs.translation_mode,
+        });
+        LiveTranslationConfiguration::with_credentials(
+            provider,
+            credentials,
+            normalized.source_language,
+            TargetLanguage::Original,
+            normalized.translation_mode,
+        )
+        .with_network_proxy(prefs.network_proxy)
+        .validated()
+        .map_err(|error| error.to_string())
+    }
+
+    /// Resolves just the saved translation destination. The recognizer may be
+    /// unconfigured; its slot is never read for an independent text check.
+    pub fn configuration_for_text_probe(
+        &self,
+        profile: &ServiceProfile,
+    ) -> Result<crate::core::configuration::TextTranslationProbeConfiguration, String> {
+        use crate::core::configuration::{
+            TextTranslationProbeConfiguration, TextTranslationProbeCredentials,
+        };
+        if !profile.provider.supports_text_translation()
+            || (profile.provider.is_custom_speech()
+                && profile.text_translation() == TextTranslation::FollowService)
+        {
+            return Err("text_translation_not_configured".into());
+        }
+        self.retry_profile_credential_errors(
+            profile,
+            profile.text_translation() == TextTranslation::FollowService,
+            true,
+        );
+        let credentials = if profile.text_translation() == TextTranslation::FollowService {
+            let value = self
+                .load_api_key_for_profile(profile)
+                .map_err(SecretStoreError::public_error)?
+                .ok_or("text_translation_credentials_missing")?;
+            let decoded = ProviderCredentials::decode_for_profile(profile, &value)
+                .map_err(|error| error.to_string())?;
+            TextTranslationProbeCredentials::Qwen {
+                api_key: decoded.alibaba_key().unwrap_or_default().into(),
+            }
+        } else {
+            let credentials = match self.text_credentials_for_profile(profile)? {
+                Some(credentials) => credentials,
+                None if profile.provider == ProviderKind::DeepLX && !self.secret.is_read_only() => {
+                    // Legacy DeepLX profiles may keep both slots in one item.
+                    // Do not use this path for any new/custom speech profile.
+                    self.retry_profile_credential_errors(profile, true, false);
+                    match self.credentials_for_profile(profile)? {
+                        Some(ProviderCredentials::DeepLX {
+                            endpoint, token, ..
+                        }) => TextTranslationCredentials::DeepLX { endpoint, token },
+                        Some(ProviderCredentials::DeepL { api_key, .. }) => {
+                            TextTranslationCredentials::DeepL { api_key }
+                        }
+                        _ => return Err("text_translation_credentials_missing".into()),
+                    }
+                }
+                None => return Err("text_translation_credentials_missing".into()),
+            };
+            TextTranslationProbeCredentials::Independent(credentials)
+        };
+        let prefs = self.preferences();
+        let target_language = if prefs.target_language == TargetLanguage::Original {
+            TargetLanguage::SimplifiedChinese
+        } else {
+            profile
+                .capabilities(prefs.target_language)
+                .normalize(ProviderPreferences {
+                    source_language: SourceLanguage::Automatic,
+                    target_language: prefs.target_language,
+                    translation_mode: TranslationMode::Turbo,
+                })
+                .target_language
+        };
+        Ok(TextTranslationProbeConfiguration {
+            credentials,
+            target_language,
+            network_proxy: prefs
+                .network_proxy
+                .validate()
+                .map_err(|error| error.to_string())?,
+        })
+    }
+
     fn configuration_for_profile_options(
         &self,
         profile: &ServiceProfile,
@@ -2518,26 +2644,30 @@ mod tests {
     }
 
     #[test]
-    fn dock_visibility_keeps_legacy_default_and_persists_without_credentials() {
+    fn dock_visibility_defaults_on_and_preserves_saved_choices_without_credentials() {
         let legacy: Preferences = serde_json::from_str(r#"{"ui_language":"ja"}"#).unwrap();
-        assert!(!legacy.show_in_dock);
+        assert!(legacy.show_in_dock);
+        let hidden: Preferences =
+            serde_json::from_str(r#"{"ui_language":"ja","show_in_dock":false}"#).unwrap();
+        assert!(!hidden.show_in_dock);
         let directory = tempfile::tempdir().unwrap();
         let fake = FakeSecretStore::default();
         let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        assert!(store.preferences().show_in_dock);
         store
-            .save_preferences_for_active_profile(|prefs| prefs.show_in_dock = true)
+            .save_preferences_for_active_profile(|prefs| prefs.show_in_dock = false)
             .unwrap();
         let profile = store
             .create_profile(ProviderKind::OpenAIRealtime, "Synthetic")
             .unwrap();
         store.select_profile(&profile.id).unwrap();
         let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
-        assert!(reloaded.preferences().show_in_dock);
+        assert!(!reloaded.preferences().show_in_dock);
         reloaded
-            .save_preferences(|prefs| prefs.show_in_dock = false)
+            .save_preferences(|prefs| prefs.show_in_dock = true)
             .unwrap();
         let final_store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
-        assert!(!final_store.preferences().show_in_dock);
+        assert!(final_store.preferences().show_in_dock);
         assert!(fake.state.lock().unwrap().loads.is_empty());
     }
 
@@ -3055,6 +3185,161 @@ mod tests {
             model: model.into(),
             api_key: key.into(),
         }
+    }
+
+    #[test]
+    fn stage_probes_read_only_their_saved_credentials_without_switching_or_persisting() {
+        use crate::core::configuration::TextTranslationProbeCredentials;
+        for provider in [
+            ProviderKind::AlibabaCloud,
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let fake = FakeSecretStore::default();
+            let store = settings(&fake);
+            let profile = store.create_profile(provider, "Stage probe").unwrap();
+            if provider.is_custom_speech() {
+                store
+                    .save_credentials(
+                        &profile.id,
+                        &custom_speech_request(
+                            "wss://speech.example/realtime",
+                            "synthetic-model",
+                            "synthetic-speech",
+                        ),
+                    )
+                    .unwrap();
+            } else {
+                store
+                    .save_credentials(
+                        &profile.id,
+                        &ProviderCredentials::api_key("synthetic-speech"),
+                    )
+                    .unwrap();
+            }
+            store
+                .save_credentials(
+                    &profile.id,
+                    &openai_compatible_request(
+                        "",
+                        "https://text.example/v1",
+                        "synthetic-text",
+                        "synthetic-text-model",
+                    ),
+                )
+                .unwrap();
+            let profile = store.profile(&profile.id).unwrap();
+            let speech_account = credential_account(&profile);
+            let text_account = SettingsStore::destination_account(&profile);
+            let before = store.preferences();
+            let before_active_id = store.active_profile().unwrap().id;
+            store.secret_cache.lock().unwrap().clear();
+            fake.state.lock().unwrap().loads.clear();
+            fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &text_account);
+            let speech = store.configuration_for_speech_probe(&profile).unwrap();
+            assert_eq!(speech.target_language, TargetLanguage::Original);
+            assert_eq!(speech.text_credentials, None);
+            assert_eq!(
+                fake.load_count(PROFILE_KEYCHAIN_SERVICE, &speech_account),
+                1
+            );
+            assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, &text_account), 0);
+            {
+                let mut state = fake.state.lock().unwrap();
+                state
+                    .unavailable
+                    .remove(&cache_key(PROFILE_KEYCHAIN_SERVICE, &text_account));
+                state
+                    .unavailable
+                    .insert(cache_key(PROFILE_KEYCHAIN_SERVICE, &speech_account));
+                state.loads.clear();
+            }
+            store.secret_cache.lock().unwrap().clear();
+            let text = store.configuration_for_text_probe(&profile).unwrap();
+            assert!(
+                matches!(text.credentials, TextTranslationProbeCredentials::Independent(TextTranslationCredentials::OpenAICompatible { api_key, .. }) if api_key == "synthetic-text")
+            );
+            assert_eq!(
+                fake.load_count(PROFILE_KEYCHAIN_SERVICE, &speech_account),
+                0
+            );
+            assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, &text_account), 1);
+            assert_eq!(store.preferences(), before);
+            assert_eq!(store.active_profile().unwrap().id, before_active_id);
+        }
+    }
+
+    #[test]
+    fn text_probe_can_precede_custom_speech_setup_and_retry_only_its_locked_slot() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::CustomOpenAIASR, "Text first")
+            .unwrap();
+        assert_eq!(
+            store.configuration_for_text_probe(&profile).unwrap_err(),
+            "text_translation_not_configured"
+        );
+        store
+            .save_credentials(
+                &profile.id,
+                &translation_request(TextTranslation::DeepL, "", "", "synthetic-text:fx"),
+            )
+            .unwrap();
+        let profile = store.profile(&profile.id).unwrap();
+        let speech_account = credential_account(&profile);
+        let text_account = SettingsStore::destination_account(&profile);
+        store.secret_cache.lock().unwrap().clear();
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &text_account);
+        assert!(store.configuration_for_text_probe(&profile).is_err());
+        fake.state
+            .lock()
+            .unwrap()
+            .unavailable
+            .remove(&cache_key(PROFILE_KEYCHAIN_SERVICE, &text_account));
+        fake.state.lock().unwrap().loads.clear();
+        assert!(store.configuration_for_text_probe(&profile).is_ok());
+        assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, &text_account), 1);
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &speech_account),
+            0
+        );
+    }
+
+    #[test]
+    fn legacy_combined_deeplx_text_probe_retries_its_item_after_unlocking() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::DeepLX, "Legacy combined")
+            .unwrap();
+        let account = credential_account(&profile);
+        let value = ProviderCredentials::DeepLX {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "https://translation.example/translate".into(),
+            token: "synthetic-text".into(),
+        }
+        .encode_for_keychain(ProviderKind::DeepLX)
+        .unwrap();
+        fake.put(PROFILE_KEYCHAIN_SERVICE, &account, &value);
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &account);
+        assert_eq!(
+            store.credential_state(&profile),
+            CredentialState::Unavailable
+        );
+        assert!(store.configuration_for_text_probe(&profile).is_err());
+        fake.state
+            .lock()
+            .unwrap()
+            .unavailable
+            .remove(&cache_key(PROFILE_KEYCHAIN_SERVICE, &account));
+        fake.state.lock().unwrap().loads.clear();
+        let configuration = store.configuration_for_text_probe(&profile).unwrap();
+        assert!(matches!(configuration.credentials,
+            crate::core::configuration::TextTranslationProbeCredentials::Independent(
+                TextTranslationCredentials::DeepLX { token, .. }
+            ) if token == "synthetic-text"));
+        assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, &account), 1);
     }
 
     #[test]
@@ -5548,6 +5833,7 @@ mod tests {
                     "translation_mode": mode,
                     "pulse_style": "classic",
                     "pulse_animation": false,
+                    "show_in_dock": false,
                     "font_size": 19
                 }))
                 .unwrap(),
@@ -5559,6 +5845,7 @@ mod tests {
             assert_eq!(prefs.pulse_style, PulseStyle::Ribbon);
             assert_eq!(prefs.pulse_animation, Some(false));
             assert_eq!(prefs.font_size, 19.0);
+            assert!(!prefs.show_in_dock);
             store
                 .save_preferences(|prefs| prefs.translation_mode = TranslationMode::HighQuality)
                 .unwrap();
@@ -5568,6 +5855,7 @@ mod tests {
             .unwrap();
             assert_eq!(persisted.translation_mode, TranslationMode::Turbo);
             assert_eq!(persisted.pulse_style, PulseStyle::Ribbon);
+            assert!(!persisted.show_in_dock);
             assert!(fake.state.lock().unwrap().loads.is_empty());
         }
     }

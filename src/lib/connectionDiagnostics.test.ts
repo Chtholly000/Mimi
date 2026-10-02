@@ -57,14 +57,14 @@ it("shows a short unavailable reason instead of a reachability disclaimer", () =
   expect(message).not.toContain("HTTP");
   expect(message).not.toContain("认证成功");
 });
-it("localizes every service failure reason and leaves untested availability neutral", () => {
-  const reasons = ["credentialsMissing", "credentialsUnavailable", "credentialsServiceUnavailable", "credentialsAccessDenied", "invalidConfiguration", "authenticationRejected", "serviceRejected", "timeout", "unreachable"] as const;
+it("localizes every service failure reason and explains skipped preview-mode checks", () => {
+  const reasons = ["credentialsMissing", "credentialsUnavailable", "credentialsServiceUnavailable", "credentialsAccessDenied", "textTranslationNotConfigured", "invalidConfiguration", "authenticationRejected", "serviceRejected", "timeout", "unreachable"] as const;
   for (const language of ["zh", "en", "ja"] as const) {
     setStoredUiLanguage(language);
     for (const reason of reasons) {
       expect(connectionDiagnosticMessage({ credential: "present", service: "unavailable", reason })).toBe(`${diagnosticCopy().unavailable}: ${diagnosticCopy().reasons[reason]}`);
     }
-    expect(connectionDiagnosticMessage({ credential: "present", service: "notTested", reason: null })).toBe(diagnosticCopy().notTested);
+    expect(connectionDiagnosticMessage({ credential: "present", service: "notTested", reason: null })).toBe(diagnosticCopy().checkSkipped);
     expect(connectionDiagnosticMessage({ credential: "present", service: "available", reason: null })).toBe(diagnosticCopy().available);
   }
 });
@@ -83,7 +83,7 @@ it("shows a short endpoint correction instead of the whole provider description"
 
 it("never upgrades the former network-only contract to available", () => {
   const legacy = { credential: "present", network: "reachable" } as unknown as ConnectionDiagnostic;
-  expect(connectionDiagnosticMessage(legacy)).toBe(diagnosticCopy().notTested);
+  expect(connectionDiagnosticMessage(legacy)).toBe(diagnosticCopy().checkFailed);
 });
 
 it("limits short storage recovery to the detected platform", () => {
@@ -145,4 +145,14 @@ it("shortens the known quota prefix without exposing trailing provider text or U
   }
   expect(credentialErrorMessage("Unknown quota response with synthetic-private-value")).toBeNull();
   expect(credentialErrorMessage("You exceeded your current quota; synthetic different response")).toBeNull();
+});
+
+it.each(["en", "zh", "ja"] as const)("keeps credential recovery actionable even when the provider check was skipped in %s", language => {
+  setStoredUiLanguage(language);
+  for (const reason of ["credentialsMissing", null] as const) {
+    const message = connectionDiagnosticMessage({ credential: "missing", service: "notTested", reason });
+    expect(message).toContain(diagnosticCopy().reasons.credentialsMissing);
+    expect(message).not.toBe(diagnosticCopy().checkSkipped);
+    expect(message).not.toContain(diagnosticCopy().notTested);
+  }
 });

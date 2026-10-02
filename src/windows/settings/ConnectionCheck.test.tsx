@@ -25,21 +25,66 @@ it("shows success only for verified service availability in all languages", asyn
     expect(host.querySelector('.settings-feedback[data-tone="success"]')?.textContent).toBe(diagnosticCopy().available);
     await render({ credential: "present", service: "notTested", reason: null });
     expect(host.querySelector('[data-tone="success"]')).toBeNull();
-    expect(host.querySelector('.settings-feedback[data-tone="info"]')?.textContent).toBe(diagnosticCopy().notTested);
+    expect(host.querySelector('.settings-feedback[data-tone="info"]')?.textContent).toBe(diagnosticCopy().checkSkipped);
   }
 });
 it("does not treat a legacy reachable response as an authenticated success", async () => {
   await render({ credential: "present", network: "reachable" } as unknown as ConnectionDiagnostic);
   expect(host.querySelector('[data-tone="success"]')).toBeNull();
-  expect(host.querySelector('.settings-feedback')?.textContent).toBe(diagnosticCopy().notTested);
+  expect(host.querySelector('.settings-feedback')?.textContent).toBe(diagnosticCopy().checkFailed);
 });
 it("checks only on explicit click and blocks repeat checks while pending", async () => {
   const onCheck = vi.fn();
   await act(() => root.render(<ConnectionCheck result={null} error={null} pending={false} disabled={false} onCheck={onCheck} />));
   expect(host.querySelector("details")).toBeNull(); expect(onCheck).not.toHaveBeenCalled();
+  expect(host.querySelector(".settings-feedback")).toBeNull();
+  expect(host.textContent).not.toContain(diagnosticCopy().notTested);
   await act(() => host.querySelector("button")!.click()); expect(onCheck).toHaveBeenCalledOnce();
   await act(() => root.render(<ConnectionCheck result={null} error={null} pending disabled={false} onCheck={onCheck} />));
+  expect(host.querySelector("button")?.getAttribute("aria-busy")).toBe("true");
+  expect(host.querySelector("button .settings-spinner")).not.toBeNull();
+  expect(host.querySelector("button")?.textContent).toBe(diagnosticCopy().testing);
+  expect(host.querySelector(".settings-feedback")).toBeNull();
   await act(() => host.querySelector("button")!.click()); expect(onCheck).toHaveBeenCalledOnce();
+});
+
+it.each(["zh", "en", "ja"] as const)("shows actionable credential recovery after an untested result in %s", async language => {
+  setStoredUiLanguage(language);
+  for (const reason of ["credentialsMissing", null] as const) {
+    await render({ credential: "missing", service: "notTested", reason });
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain(diagnosticCopy().reasons.credentialsMissing);
+    expect(host.textContent).not.toContain(diagnosticCopy().notTested);
+    expect(host.querySelector('[data-tone="success"], [data-tone="info"]')).toBeNull();
+  }
+});
+
+it("places one compact outcome before its check button and exposes an optional stage label", async () => {
+  await act(() => root.render(<ConnectionCheck result={{ credential: "present", service: "available", reason: null }} error={null} pending={false} disabled={false} onCheck={vi.fn()} label="Check speech recognition" />));
+  const check = host.querySelector<HTMLDivElement>(".connection-check")!;
+  expect(check.firstElementChild?.classList.contains("settings-feedback")).toBe(true);
+  expect(check.lastElementChild?.tagName).toBe("BUTTON");
+  expect(check.querySelector("button")?.textContent).toBe("Check speech recognition");
+  expect(host.querySelector("small, details, summary")).toBeNull();
+});
+
+it.each(["zh", "en", "ja"] as const)("shows measured check duration with its meaning in help instead of claiming live latency in %s", async language => {
+  setStoredUiLanguage(language);
+  await render({ credential: "present", service: "available", reason: null, elapsedMs: 123.4 });
+  expect(host.querySelector(".connection-check__elapsed")?.textContent).toBe(`${diagnosticCopy().elapsed}: 123 ms`);
+  expect(host.querySelector(".settings-help-control__description")?.textContent).toBe(diagnosticCopy().elapsedHelp);
+  expect(host.querySelector(".settings-feedback")?.textContent).toContain(diagnosticCopy().available);
+  expect(host.querySelector("small")).toBeNull();
+});
+
+it("omits absent, invalid and unmeasured preview-mode durations", async () => {
+  for (const elapsedMs of [undefined, null, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    await render({ credential: "present", service: "available", reason: null, elapsedMs });
+    expect(host.querySelector(".connection-check__elapsed")).toBeNull();
+    expect(host.querySelector(".settings-help-control")).toBeNull();
+  }
+  await render({ credential: "present", service: "notTested", reason: null, elapsedMs: 123 });
+  expect(host.querySelector(".connection-check__elapsed")).toBeNull();
+  expect(host.querySelector(".settings-help-control")).toBeNull();
 });
 
 it("shows distinct recovery for Linux service and access failures without reporting a saved key", async () => {

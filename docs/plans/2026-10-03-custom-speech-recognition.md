@@ -16,6 +16,12 @@ use help icons with hover/focus tooltips. Validation errors remain beside the
 field and receive focus. Actions share compact icons and right alignment.
 Recognition and translation have separate save actions. Changing an endpoint
 requires a replacement key rather than sending an existing key to another host.
+They also have independent connection checks. The recognition check measures
+actual session setup without PCM; the text check requests a fixed public short
+phrase and requires a nonempty response. Each check reads only its stage's saved
+credentials and reports request duration in milliseconds, not subtitle latency.
+Text checks remain available before recognition is configured. Missing settings
+and UI preview mode have explicit results and no invented timing measurement.
 
 ## Protocol and streaming
 

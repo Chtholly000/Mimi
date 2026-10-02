@@ -114,7 +114,7 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   retainSessionHistory: false,
   recordSessionAudio: false,
   windowsAudioSource: "",
-  showInDock: false,
+  showInDock: true,
   networkProxy: DEFAULT_NETWORK_PROXY,
 };
 

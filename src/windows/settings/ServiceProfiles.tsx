@@ -1,6 +1,7 @@
-import { testProfileConnection, type ConnectionDiagnostic, type StoredCredentialField } from "../../lib/ipc";
+import { testProfileConnection, type ConnectionCheckStage, type ConnectionDiagnostic, type StoredCredentialField } from "../../lib/ipc";
 import { profileErrorMessage, diagnosticCopy } from "../../lib/connectionDiagnostics";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Tooltip } from "../../components/Tooltip";
 import { Icon } from "../../components/Icon";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
@@ -26,7 +27,7 @@ import type {
 } from "../../lib/types";
 import { InlineFeedback, SettingsSection } from "./SettingsPrimitives";
 
-import { DestructiveConfirmation } from "./DestructiveConfirmation";
+import { DestructiveConfirmation, SettingsConfirmation } from "./DestructiveConfirmation";
 import { AlibabaCredentialEditor } from "./AlibabaCredentialEditor";
 import { CustomSpeechCredentialEditor } from "./CustomSpeechCredentialEditor";
 
@@ -41,6 +42,8 @@ const CONNECTION_CHECK_TIMEOUT_MS = 30_000;
 
 type Feedback = { tone: "success" | "error" | "info"; message: string };
 type PendingAction = "create" | "rename" | "select" | "delete" | "save-key" | "delete-key" | "test-connection" | null;
+type CheckStage = ConnectionCheckStage | "combined";
+type CheckOutcome = { profileId: string; result: ConnectionDiagnostic | null; error: string | null };
 type PendingConfirmation =
   | { kind: "profile"; profileId: string; name: string }
   | { kind: "credential"; profileId: string }
@@ -80,7 +83,10 @@ export function ServiceProfiles({
   const [nameDraft, setNameDraft] = useState(activeProfile?.name ?? "");
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
-  const [diagnostic, setDiagnostic] = useState<{ profileId: string; result: ConnectionDiagnostic | null; error: string | null } | null>(null);
+  const [diagnostics, setDiagnostics] = useState<Partial<Record<CheckStage, CheckOutcome>>>({});
+  const [pendingCheckStage, setPendingCheckStage] = useState<CheckStage | null>(null);
+  const creationInFlight = useRef(false);
+  const mutationInFlight = useRef(false);
   const proxyKey = networkProxyConfigKey(settings.networkProxy ?? DEFAULT_NETWORK_PROXY);
   const [renderedProxyKey, setRenderedProxyKey] = useState(proxyKey);
   const latestProxyKey = useRef(proxyKey);
@@ -104,10 +110,10 @@ export function ServiceProfiles({
     [activeProfile, selectedProfileId, settings.profiles],
   );
 
-  const invalidateProfileCheck = useCallback((profileId: string) => {
+  const invalidateProfileCheck = useCallback((profileId: string, stage?: ConnectionCheckStage) => {
     const epochs = profileCheckEpochs.current;
     epochs.set(profileId, (epochs.get(profileId) ?? 0) + 1);
-    setDiagnostic((current) => current?.profileId === profileId ? null : current);
+    setDiagnostics((current) => Object.fromEntries(Object.entries(current).filter(([key, outcome]) => outcome?.profileId !== profileId || (stage && key !== stage && key !== "combined"))));
   }, []);
 
   useEffect(() => {
@@ -124,7 +130,7 @@ export function ServiceProfiles({
 
   if (renderedProxyKey !== proxyKey) {
     setRenderedProxyKey(proxyKey);
-    setDiagnostic(null);
+    setDiagnostics({});
   }
 
   useEffect(() => {
@@ -136,7 +142,7 @@ export function ServiceProfiles({
   if (renderedSession.kind !== sessionStatusKind || renderedSession.profileId !== settings.activeProfileId) {
     setRenderedSession({ kind: sessionStatusKind, profileId: settings.activeProfileId });
     if (sessionStatusKind === "error") {
-      setDiagnostic((current) => current?.profileId === settings.activeProfileId ? null : current);
+      setDiagnostics((current) => Object.fromEntries(Object.entries(current).filter(([, outcome]) => outcome?.profileId !== settings.activeProfileId)));
     }
   }
 
@@ -164,7 +170,9 @@ export function ServiceProfiles({
     operation: () => Promise<SettingsSnapshot>,
     successFeedback: string | ((snapshot: SettingsSnapshot) => Feedback),
   ): Promise<SettingsSnapshot | null> => {
-    if (action === "save-key" || action === "delete-key") invalidateProfileCheck(selectedProfileId);
+    if (mutationInFlight.current) return null;
+    mutationInFlight.current = true;
+    if (action === "delete-key") invalidateProfileCheck(selectedProfileId);
     setPendingAction(action);
     setFeedback(null);
     try {
@@ -182,11 +190,15 @@ export function ServiceProfiles({
       });
       return null;
     } finally {
+      mutationInFlight.current = false;
       setPendingAction(null);
     }
   };
 
   const handleCreate = async (provider: ServiceProvider) => {
+    if (creationInFlight.current || mutationsDisabled || atProfileLimit) return;
+    creationInFlight.current = true;
+    try {
     const previousIds = new Set(settings.profiles.map((profile) => profile.id));
     const name = providerDisplayName(provider);
     const snapshot = await perform(
@@ -201,6 +213,7 @@ export function ServiceProfiles({
       setShowsEditor(true);
     }
     setShowsProviderPicker(false);
+    } finally { creationInFlight.current = false; }
   };
 
   const handleRename = async () => {
@@ -265,6 +278,8 @@ export function ServiceProfiles({
 
   const handleSaveCredential = async (profileId: string, credentials: ProviderCredentialsInput) => {
     setPendingConfirmation(null);
+    const stage = credentials.kind === "customSpeech" ? "speech" : credentials.kind === "alibabaTranslation" && (isCustomSpeechProvider(selectedProfile!.provider) || !credentials.apiKey.trim()) ? "text" : undefined;
+    invalidateProfileCheck(profileId, stage);
     return perform(
       "save-key",
       () => saveAndSelectProfile(profileId, credentials, saveProfileCredentials, selectProfile),
@@ -299,10 +314,12 @@ export function ServiceProfiles({
     setShowsEditor(true);
   };
 
-  const handleConnectionCheck = () => {
+  const handleConnectionCheck = (stage?: ConnectionCheckStage) => {
     if (!selectedProfile || pendingAction !== null || checkInFlight.current) return;
     checkInFlight.current = true;
     const profileId = selectedProfile.id;
+    const key = stage ?? "combined";
+    const publish = (result: ConnectionDiagnostic | null, error: string | null) => setDiagnostics(current => ({ ...current, [key]: { profileId, result, error } }));
     const request = ++checkRequest.current;
     const epoch = profileCheckEpochs.current.get(profileId) ?? 0;
     const checkedProxyKey = proxyKey;
@@ -311,31 +328,40 @@ export function ServiceProfiles({
       checkedProxyKey === latestProxyKey.current &&
       epoch === (profileCheckEpochs.current.get(profileId) ?? 0);
     setPendingAction("test-connection");
-    setDiagnostic(null);
+    setPendingCheckStage(key);
+    setDiagnostics(current => ({ ...current, [key]: undefined }));
     checkTimer.current = setTimeout(() => {
       if (!mounted.current || request !== checkRequest.current) return;
       const publishTimeout = canPublish();
       checkRequest.current += 1;
       checkInFlight.current = false;
       checkTimer.current = null;
-      if (publishTimeout) setDiagnostic({ profileId, result: null, error: I18N.settings.profileCheckTimedOut });
+      if (publishTimeout) publish(null, I18N.settings.profileCheckTimedOut);
+      setPendingCheckStage(null);
       setPendingAction(null);
     }, CONNECTION_CHECK_TIMEOUT_MS);
-    void testProfileConnection(profileId)
+    void (stage ? testProfileConnection(profileId, stage) : testProfileConnection(profileId))
       .then((result) => {
-        if (canPublish()) setDiagnostic({ profileId, result, error: null });
+        if (canPublish()) publish(result, null);
       })
       .catch(() => {
-        if (canPublish()) setDiagnostic({ profileId, result: null, error: `${diagnosticCopy().unavailable}: ${diagnosticCopy().checkFailed}` });
+        if (canPublish()) publish(null, `${diagnosticCopy().unavailable}: ${diagnosticCopy().checkFailed}`);
       })
       .finally(() => {
         if (mounted.current && request === checkRequest.current) {
           if (checkTimer.current !== null) clearTimeout(checkTimer.current);
           checkTimer.current = null;
           checkInFlight.current = false;
+          setPendingCheckStage(null);
           setPendingAction(null);
         }
       });
+  };
+
+  const renderConnectionCheck = (profile: ServiceProfile, stage?: ConnectionCheckStage, requiresSave = false) => {
+    const key = stage ?? "combined";
+    const outcome = diagnostics[key];
+    return <ConnectionCheck result={!requiresSave && outcome?.profileId === profile.id ? outcome.result : null} error={!requiresSave && outcome?.profileId === profile.id ? outcome.error : null} pending={pendingCheckStage === key} disabled={mutationsDisabled || requiresSave} requiresSave={requiresSave} onCheck={() => handleConnectionCheck(stage)} label={stage === "text" ? I18N.settings.checkTextTranslation : stage === "speech" ? I18N.settings.checkSpeechRecognition : undefined} />;
   };
 
   if (initializationStatus !== "ready") {
@@ -352,6 +378,7 @@ export function ServiceProfiles({
       {showsProviderPicker ? (
         <ProviderPicker
           disabled={mutationsDisabled}
+          feedback={feedback}
           onChoose={(provider) => void handleCreate(provider)}
           onCancel={() => setShowsProviderPicker(false)}
         />
@@ -405,7 +432,8 @@ export function ServiceProfiles({
           </form>
           <div className="service-detail__connection">
             <SelectedCredentialEditor
-              connectionCheck={<ConnectionCheck result={diagnostic?.profileId === selectedProfile.id ? diagnostic.result : null} error={diagnostic?.profileId === selectedProfile.id ? diagnostic.error : null} pending={pendingAction === "test-connection"} disabled={mutationsDisabled} onCheck={handleConnectionCheck} />}
+              connectionCheck={renderConnectionCheck(selectedProfile, isCustomSpeechProvider(selectedProfile.provider) || ["alibabaCloud", "deepLX"].includes(selectedProfile.provider) ? "speech" : undefined)}
+              textConnectionCheck={(requiresSave) => renderConnectionCheck(selectedProfile, "text", requiresSave)}
               readOnly={settings.credentialStorage === "localDevFile"}
               key={selectedProfile.id}
               profile={selectedProfile}
@@ -426,8 +454,9 @@ export function ServiceProfiles({
           </div>
           {selectedProfile.id === settings.activeProfileId
             ? <ProfileLanguageSettings key={selectedProfile.id} settings={settings} disabled={mutationsDisabled} requiresStop={requiresStop} />
-            : <p className="settings-caption service-detail__language-note">{I18N.settings.useProfileForLanguages}</p>}
+            : null}
           <div className="service-detail__actions">
+            {selectedProfile.id !== settings.activeProfileId && <SettingsHelp text={I18N.settings.useProfileForLanguages} label={I18N.settings.helpLabel} />}
             {credentialStateForTarget(selectedProfile, settings.targetLanguage) === "present" &&
               selectedProfile.id !== settings.activeProfileId && (
                 <button
@@ -442,7 +471,7 @@ export function ServiceProfiles({
               )}
             <button
               type="button"
-              className="settings-button settings-button--quiet settings-button--compact"
+              className="settings-button settings-button--danger settings-button--compact"
               disabled={mutationsDisabled || settings.profiles.length <= 1}
               onClick={requestProfileDelete}
             >
@@ -469,7 +498,7 @@ export function ServiceProfiles({
               type="button"
               className="settings-button settings-button--compact settings-button--quiet"
               disabled={mutationsDisabled || atProfileLimit}
-              onClick={() => setShowsProviderPicker(true)}
+              onClick={() => { setFeedback(null); setShowsProviderPicker(true); }}
             >
               <Icon name="plus" />
               {I18N.settings.addProfile}
@@ -494,12 +523,12 @@ export function ServiceProfiles({
                       void handleSelect(profile.id);
                     else openEditor(profile.id);
                   }}
-                  aria-label={`${profile.name}${textTranslationForProfile(profile) !== "followService" ? `, ${I18N.settings.textTranslationLabel}: ${translationName(profile)}` : ""}: ${credentialStateForTarget(profile, settings.targetLanguage) === "present" && profile.id !== settings.activeProfileId ? I18N.settings.useProfile : I18N.settings.editProfile}`}
+                  aria-label={`${profile.name}, ${credentialStateText(credentialStateForTarget(profile, settings.targetLanguage))}${textTranslationForProfile(profile) !== "followService" ? `, ${I18N.settings.textTranslationLabel}: ${translationName(profile)}` : ""}: ${credentialStateForTarget(profile, settings.targetLanguage) === "present" && profile.id !== settings.activeProfileId ? I18N.settings.useProfile : I18N.settings.editProfile}`}
                 >
                   <ProviderIcon provider={profile.provider === "deepLX" ? "alibabaCloud" : profile.provider} />
                   <span className="service-row__copy">
                     <strong>{profileTitle(profile)}</strong>
-                    {profileSecondaryLabel(profile) && <small>{profileSecondaryLabel(profile)}</small>}
+                    {profileSecondaryLabel(profile) && <span className="service-row__provider">{profileSecondaryLabel(profile)}</span>}
                     {textTranslationForProfile(profile) !== "followService" && <span className="service-row__translation"><ProviderIcon provider={textTranslationForProfile(profile) as "deepL" | "deepLX" | "openAICompatible"} size={32} /><span>{I18N.settings.textTranslationLabel} · {translationName(profile)}</span></span>}
                   </span>
                   <span className="service-row__state">
@@ -530,7 +559,7 @@ export function ServiceProfiles({
           )}
         </div>
       )}
-      {feedback && !(showsEditor && selectedProfile && !showsProviderPicker) && <InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback>}
+      {feedback && !showsProviderPicker && !(showsEditor && selectedProfile) && <InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback>}
     </SettingsSection>
   );
 }
@@ -551,6 +580,7 @@ function CredentialEditor({
   readOnly = false,
 }: {
   connectionCheck?: ReactNode;
+  textConnectionCheck?: (requiresSave: boolean) => ReactNode;
   readOnly?: boolean;
   profile: ServiceProfile;
   inputId: string;
@@ -844,60 +874,61 @@ function credentialFieldCopy(field: CredentialFieldName, provider: ServiceProvid
 
 function ProviderPicker({
   disabled,
+  feedback,
   onChoose,
   onCancel,
 }: {
   disabled: boolean;
+  feedback: Feedback | null;
   onChoose: (provider: ServiceProvider) => void;
   onCancel: () => void;
 }) {
+  const [selectedProvider, setSelectedProvider] = useState<ServiceProvider | null>(null);
   return (
     <div className="provider-picker settings-panel">
       <div className="provider-picker__heading">
         <span>
           <strong>{I18N.settings.chooseProvider}</strong>
-          <small>{I18N.settings.chooseProviderDescription}</small>
+          <SettingsHelp text={I18N.settings.chooseProviderDescription} label={I18N.settings.helpLabel} />
         </span>
-        <button type="button" className="settings-link" disabled={disabled} onClick={onCancel}>
-          {I18N.settings.cancel}
-        </button>
+        <button type="button" className="settings-link" disabled={disabled} onClick={onCancel}>{I18N.settings.cancel}</button>
       </div>
+      {!selectedProvider && feedback && <InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback>}
       <div className="provider-picker__options">
         {SERVICE_PROVIDERS.map((provider) => (
-          <button
-            key={provider}
-            type="button"
-            className="provider-option"
-            disabled={disabled}
-            onClick={() => onChoose(provider)}
-          >
-            <ProviderIcon provider={provider} />
-            <span>
-              <strong>{providerDisplayName(provider)}</strong>
-              <small>{providerDescription(provider)}</small>
-            </span>
-            <Icon name="chevron-right" />
-          </button>
+          <div className="provider-picker__option-row" key={provider}>
+            <button type="button" className="provider-option" data-provider={provider} disabled={disabled} onClick={() => setSelectedProvider(provider)}>
+              <ProviderIcon provider={provider} />
+              <span><strong>{providerDisplayName(provider)}</strong></span>
+              <Icon name="chevron-right" />
+            </button>
+            <SettingsHelp text={providerDescription(provider)} label={`${providerDisplayName(provider)}: ${I18N.settings.helpLabel}`} />
+          </div>
         ))}
       </div>
+      {selectedProvider && <SettingsConfirmation message={I18N.settings.confirmAddProfile} disabled={disabled} variant="default" confirmLabel={I18N.settings.confirmAddProfile} confirmIcon="plus" onCancel={() => { if (!disabled) setSelectedProvider(null); }} onConfirm={() => onChoose(selectedProvider)}>
+        <div className="provider-picker__preview">
+          <ProviderIcon provider={selectedProvider} />
+          <h3>{providerDisplayName(selectedProvider)}</h3>
+          <SettingsHelp text={providerDescription(selectedProvider)} label={I18N.settings.helpLabel} />
+        </div>
+        {feedback && <InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback>}
+      </SettingsConfirmation>}
     </div>
   );
 }
 
 function CredentialBadge({ state }: { state: CredentialState }) {
-  return (
-    <span className="credential-badge" data-state={state}>
-      <span className="credential-dot" data-state={state} />
-      {credentialStateText(state)}
-    </span>
-  );
+  const label = credentialStateText(state);
+  return <Tooltip label={label} popupClassName="settings-help-tooltip">{(descriptionId) => <span className="credential-badge" data-state={state} role="img" aria-label={label} aria-describedby={descriptionId} tabIndex={0}><Icon name={state === "present" ? "shield-check" : state === "missing" ? "key" : "exclamation-triangle"} /></span>}</Tooltip>;
 }
 
 function providerDescription(provider: ServiceProvider): string {
   switch (provider) {
     case "customDashScopeASR":
+      return [I18N.settings.customSpeechRequirementsDashScope, I18N.settings.customSpeechLanguages].join("\n");
     case "customOpenAIASR":
-      return I18N.settings.customSpeechDescription;
+      return [I18N.settings.customSpeechRequirementsOpenAI, I18N.settings.customSpeechLanguages].join("\n");
     case "alibabaCloud":
       return I18N.settings.providerAlibabaDescription;
     case "openAIRealtime":

@@ -93,6 +93,6 @@ it("keeps local file mode read-only without exposing any credential form", async
 });
 it("clears replacement speech and text drafts after confirmed deletion", async () => {
   await render(); await fillSpeech(); await render({ ...props, confirmingDelete: true });
-  await act(() => [...host.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === I18N.settings.confirmDelete)!.click());
+  await act(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === I18N.settings.confirmDelete)!.click());
   expect(props.onConfirmDelete).toHaveBeenCalledOnce(); expect(host.querySelector<HTMLInputElement>("#test-speech-key")?.value).toBe("");
 });

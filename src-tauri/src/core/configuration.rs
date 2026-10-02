@@ -9,6 +9,31 @@ use crate::core::provider::{ProviderCapabilities, ProviderKind, TextTranslation}
 use std::fmt;
 use thiserror::Error;
 
+/// A text-only readiness request never needs a speech key or opens an audio session.
+#[derive(Clone)]
+pub enum TextTranslationProbeCredentials {
+    Qwen { api_key: String },
+    Independent(TextTranslationCredentials),
+}
+
+#[derive(Clone)]
+pub struct TextTranslationProbeConfiguration {
+    pub credentials: TextTranslationProbeCredentials,
+    pub target_language: TargetLanguage,
+    pub network_proxy: ProxyConfig,
+}
+
+impl fmt::Debug for TextTranslationProbeConfiguration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TextTranslationProbeConfiguration")
+            .field("credentials", &"[REDACTED]")
+            .field("target_language", &self.target_language)
+            .field("network_proxy", &self.network_proxy)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum LiveTranslationConfigurationError {
     #[error("{0}")]

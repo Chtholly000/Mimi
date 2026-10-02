@@ -101,33 +101,23 @@ it.each(["zh", "en", "ja"] as const)("restores the guide deep link and labels in
   expect(saveSettings).not.toHaveBeenCalled();
 });
 
-it("retries a failed session directly from the compact service row and shows pending immediately", async () => {
-  let complete!: () => void;
-  start.mockImplementationOnce(() => new Promise<void>((resolve) => { complete = resolve; }));
+it("keeps the service settings header passive when the session has failed", async () => {
   window.history.replaceState(null, "", "#service-profiles");
   useStore.setState({
-    settings: { ...initial.settings, profiles: initial.settings.profiles.map((profile) => ({ ...profile, credentialState: "present" })) },
+    settings: { ...initial.settings, profiles: initial.settings.profiles.map(profile => ({ ...profile, credentialState: "present" })) },
     session: { ...initial.session, status: { kind: "error", message: "Synthetic error" }, isActive: false },
   });
   await mount();
-  expect(host.querySelector(".settings-session-card--compact")).not.toBeNull();
-  expect(host.querySelectorAll('.settings-session-card [role="switch"]')).toHaveLength(1);
-  const retry = host.querySelector<HTMLButtonElement>('.settings-session-control__actions .settings-button')!;
-  expect(retry.textContent).toBe(I18N.settings.sessionRetry);
-  await act(async () => retry.click());
-  expect(start).toHaveBeenCalledOnce();
-  expect(retry.textContent).toBe(I18N.settings.sessionConnecting);
-  expect(retry.disabled).toBe(true);
-  await act(async () => retry.click());
-  expect(start).toHaveBeenCalledOnce();
-  await act(async () => complete());
-  expect(retry.disabled).toBe(true);
-  await act(async () => useStore.setState({ session: { ...initial.session, status: { kind: "listening" }, isActive: true } }));
-  expect(host.querySelector('.settings-session-control__actions .settings-button')).toBeNull();
-  expect(host.querySelector<HTMLButtonElement>('.settings-session-card [role="switch"]')!.disabled).toBe(false);
+  expect(host.querySelector(".settings-session-card, #settings-session-status, .settings-session-control__actions")).toBeNull();
+  expect(host.querySelector(".service-row__edit")).not.toBeNull();
+  expect(start).not.toHaveBeenCalled();
+  await act(() => useStore.setState({ session: { ...initial.session, status: { kind: "listening" }, isActive: true } }));
+  expect(host.querySelector(".settings-session-card, #settings-session-status")).toBeNull();
+  expect(host.querySelector<HTMLButtonElement>(".service-row__edit")!.disabled).toBe(true);
+  expect(start).not.toHaveBeenCalled();
 });
 
-it.each(["zh", "en", "ja"] as const)("shows active translation recovery without claiming a normal session in %s", async (language) => {
+it.each(["zh", "en", "ja"] as const)("keeps session recovery out of the settings header in %s", async (language) => {
   setStoredUiLanguage(language);
   window.history.replaceState(null, "", "#service-profiles");
   useStore.setState({
@@ -135,12 +125,12 @@ it.each(["zh", "en", "ja"] as const)("shows active translation recovery without 
     session: { ...initial.session, status: { kind: "listening" }, isActive: true, translationRecovery: { reason: "rateLimited", retryAfterMs: 900 } },
   });
   await mount();
-  expect(host.querySelector("#settings-session-status")?.textContent).toBe(I18N.overlay.translationRateLimited);
+  expect(host.querySelector("#settings-session-status, .settings-session-card")).toBeNull();
   await act(async () => useStore.setState({ session: { ...useStore.getState().session, translationRecovery: { reason: "temporarilyUnavailable", retryAfterMs: 600 } } }));
-  expect(host.querySelector("#settings-session-status")?.textContent).toBe(I18N.overlay.translationRetrying);
+  expect(host.querySelector("#settings-session-status, .settings-session-card")).toBeNull();
   await act(async () => useStore.setState({ session: { ...useStore.getState().session, isPaused: true } }));
-  expect(host.querySelector("#settings-session-status")?.textContent).toBe(I18N.settings.sessionPaused);
+  expect(host.querySelector("#settings-session-status, .settings-session-card")).toBeNull();
   await act(async () => useStore.setState({ session: { ...useStore.getState().session, isPaused: false, translationRecovery: null } }));
-  expect(host.querySelector("#settings-session-status")?.textContent).toBe(I18N.settings.sessionListening);
+  expect(host.querySelector("#settings-session-status, .settings-session-card")).toBeNull();
   expect(start).not.toHaveBeenCalled();
 });

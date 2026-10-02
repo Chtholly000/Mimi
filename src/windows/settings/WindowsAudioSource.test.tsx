@@ -13,7 +13,7 @@ const fixture = vi.hoisted(() => ({
   saveSettings: vi.fn(),
 }));
 vi.mock("../../lib/store", () => ({ useStore: (select: (state: typeof fixture) => unknown) => select(fixture) }));
-vi.mock("../../lib/ipc", () => ({ isTauri: true }));
+vi.mock("../../lib/ipc", () => ({ isTauri: true, setOverlayPointerCursor: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 let host: HTMLDivElement, root: Root;

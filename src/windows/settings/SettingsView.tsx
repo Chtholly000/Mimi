@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
-import { credentialStateForTarget } from "../../lib/providerCapabilities";
 import { Switch } from "../../components/Switch";
 import { I18N, setStoredUiLanguage, type UiLanguage } from "../../lib/i18n";
 import { announceSettingsNavigationReady, isTauri, listenSettingsNavigation } from "../../lib/ipc";
-import { selectSessionErrorMessage, selectSessionStatusKind, useStore } from "../../lib/store";
+import { selectSessionStatusKind, useStore } from "../../lib/store";
 import type { SubtitleAlignment } from "../../lib/types";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import { subtitleColorHex } from "../../lib/subtitleColor";
@@ -20,18 +19,12 @@ import { AppearancePicker } from "./AppearancePicker";
 import { PulseRing } from "../overlay/PulseRing";
 import type { PulseStyle } from "../../lib/types";
 import { useResolvedMotion } from "../overlay/animation";
-import {
-  SettingsSessionActionCoordinator,
-  settingsSessionControlState,
-  type SettingsSessionPendingAction,
-  type SettingsSessionVisibleStatus,
-} from "./settingsSessionControlModel";
 import { SettingsRow, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
-import { SettingsSessionControls } from "./SettingsSessionControls";
 import { QuickStartGuide } from "./QuickStartGuide";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { SettingsQuitFooter } from "./SettingsQuitFooter";
-import { useSessionAction } from "../overlay/useSessionAction";
+import { SettingsHelp } from "./SettingsHelp";
+import { SettingsConfirmation } from "./DestructiveConfirmation";
 import { SettingsInitializationStatus } from "./SettingsInitializationStatus";
 import { NetworkProxySettings } from "./NetworkProxySettings";
 import "./settings.css";
@@ -49,16 +42,14 @@ const CATEGORY_SECTION_IDS: Record<SettingsCategory, string> = {
 
 /** Compact settings surface shared by the macOS and Windows shells. */
 export function SettingsView() {
-  const { commands: desktopShortcuts, nativeShortcuts } = useDesktopShortcuts();
+  const { nativeShortcuts, commands: desktopShortcutCommands } = useDesktopShortcuts();
+  const [showShortcutSetup, setShowShortcutSetup] = useState(false);
   const { theme, resolvedTheme, changeTheme } = useSettingsTheme();
   // Subscribe only to state rendered in this window. Subtitle text updates do
   // not re-render settings while a stream is active.
   const sessionStatusKind = useStore(selectSessionStatusKind);
-  const sessionErrorMessage = useStore(selectSessionErrorMessage);
   const sessionIsActive = useStore((state) => state.session.isActive);
   const sessionIsPaused = useStore((state) => state.session.isPaused);
-  const translationRecoveryReason = useStore((state) => state.session.translationRecovery?.reason);
-  const translationRecoveryRetryScheduled = useStore((state) => state.session.translationRecovery?.retryScheduled);
   const settings = useStore((state) => state.settings);
   const initializationStatus = useStore((state) => state.initializationStatus);
   const initializationError = useStore((state) => state.initializationError);
@@ -68,9 +59,6 @@ export function SettingsView() {
   // User changes persist an explicit boolean through saveSettings.
   const pulseOn = useResolvedMotion(settings.pulseAnimation);
   const motionOn = useResolvedMotion(settings.subtitleAnimation);
-  const start = useStore((state) => state.start);
-  const stop = useStore((state) => state.stop);
-  const togglePaused = useStore((state) => state.togglePaused);
   const saveSettings = useStore((state) => state.saveSettings);
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
   const quit = useStore((state) => state.quit);
@@ -84,12 +72,6 @@ export function SettingsView() {
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>(
     locationCategory ?? preferredCategory,
   );
-  const [sessionPendingAction, setSessionPendingAction] =
-    useState<SettingsSessionPendingAction>(null);
-  const [sessionActionError, setSessionActionError] = useState(false);
-  const [sessionActionCoordinator] = useState(() => new SettingsSessionActionCoordinator());
-  const resumeInFlight = useRef(false);
-  const { pending: sessionIsResuming, failed: sessionResumeFailed, run: runResume, clearFailure: clearResumeFailure } = useSessionAction();
   const locationSelectedCategory = useRef(locationCategory !== null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const initialCredentialState = useRef(activeProfile?.credentialState);
@@ -110,14 +92,6 @@ export function SettingsView() {
   }, [activeProfile?.credentialState]);
 
   const isChangingSession = sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
-  const sessionControl = settingsSessionControlState({
-    statusKind: sessionStatusKind,
-    isActive: sessionIsActive,
-    isPaused: sessionIsPaused,
-    credentialState: credentialStateForTarget(activeProfile, settings.targetLanguage),
-    pendingAction: sessionPendingAction,
-  });
-
   const categories: readonly {
     id: SettingsCategory;
     label: string;
@@ -166,67 +140,6 @@ export function SettingsView() {
     window.addEventListener("hashchange", navigateFromHash);
     return () => window.removeEventListener("hashchange", navigateFromHash);
   }, [selectCategory]);
-
-  const changeSession = useCallback(
-    (checked: boolean) => {
-      const pendingAction: Exclude<SettingsSessionPendingAction, null> = checked ? "start" : "stop";
-      if (resumeInFlight.current || !sessionActionCoordinator.begin(pendingAction)) {
-        return;
-      }
-      setSessionPendingAction(pendingAction);
-      setSessionActionError(false);
-      clearResumeFailure();
-      void (checked ? start() : stop()).catch(() => {
-        if (!sessionActionCoordinator.commandRejected(pendingAction)) return;
-        setSessionActionError(true);
-        setSessionPendingAction(null);
-      });
-    },
-    [sessionActionCoordinator, start, stop, clearResumeFailure],
-  );
-
-  const resumeSession = useCallback(() => {
-    const session = useStore.getState().session;
-    if (resumeInFlight.current || sessionActionCoordinator.pendingAction !== null ||
-      !session.isActive || !session.isPaused || session.status.kind === "connecting" || session.status.kind === "stopping") return;
-    resumeInFlight.current = true;
-    setSessionActionError(false);
-    // Resuming changes isPaused while statusKind can remain "listening".
-    // Release this action on IPC completion instead of waiting for a lifecycle
-    // transition required by the independent start/stop coordinator.
-    void runResume(async () => {
-      try {
-        await togglePaused();
-      } catch (error) {
-        const current = useStore.getState().session;
-        // A tray/shortcut resume or stop supersedes a late IPC rejection.
-        if (current.isActive && current.isPaused) throw error;
-      }
-    }).finally(() => { resumeInFlight.current = false; });
-  }, [sessionActionCoordinator, runResume, togglePaused]);
-
-  useEffect(() => {
-    return useStore.subscribe((state, previousState) => {
-      const statusKind = selectSessionStatusKind(state);
-      const previousStatusKind = selectSessionStatusKind(previousState);
-      const isActive = state.session.isActive;
-      const lifecycleChanged = statusKind !== previousStatusKind || isActive !== previousState.session.isActive;
-      if (!lifecycleChanged && state.session.isPaused === previousState.session.isPaused) {
-        return;
-      }
-      // A fresh native transition is authoritative even when it came from the
-      // tray or global shortcut. Do not leave an earlier settings IPC failure
-      // visible beside a subsequently successful session state.
-      setSessionActionError(false);
-      clearResumeFailure();
-      if (!lifecycleChanged) return;
-      const pendingAction = sessionActionCoordinator.observeNativeState({
-        statusKind,
-        isActive,
-      });
-      setSessionPendingAction((current) => (current === pendingAction ? current : pendingAction));
-    });
-  }, [sessionActionCoordinator, clearResumeFailure]);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -304,35 +217,10 @@ export function SettingsView() {
       </aside>
       <div className="settings-console__scroll" ref={contentScrollRef}>
         <div className="settings-console__frame">
-          <header className="settings-page-header">
+          <header className="settings-page-header settings-page-header--help">
             <h1>{activeCategory === "guide" ? I18N.settings.quickStartTitle : categories.find((category) => category.id === activeCategory)?.label}</h1>
-            <p>{pageDescriptions[activeCategory]}</p>
+            <SettingsHelp text={pageDescriptions[activeCategory]} label={I18N.settings.helpLabel} />
           </header>
-          {initializationReady && (activeCategory === "subtitles" || activeCategory === "service") && <SettingsSessionControls
-            compact={activeCategory === "service"}
-            retrying={sessionPendingAction === "start" && sessionStatusKind === "error"}
-            resuming={sessionIsResuming}
-            resumeFailed={sessionResumeFailed}
-            checked={sessionControl.checked}
-            disabled={sessionControl.disabled || sessionIsResuming}
-            status={sessionControl.visibleStatus}
-            statusText={sessionControl.visibleStatus === "listening" && translationRecoveryReason
-              ? translationRecoveryRetryScheduled === false
-                ? translationRecoveryReason === "rateLimited" ? I18N.overlay.translationLimited : I18N.overlay.translationUnavailable
-                : translationRecoveryReason === "rateLimited" ? I18N.overlay.translationRateLimited : I18N.overlay.translationRetrying
-              : settingsSessionStatusText(sessionControl.visibleStatus, sessionErrorMessage)}
-            isActive={sessionIsActive}
-            isChanging={isChangingSession || sessionPendingAction !== null || sessionIsResuming}
-            immersive={settings.subtitleBlendsWithBackground}
-            canConfigure={sessionControl.canConfigure}
-            actionFailed={sessionActionError}
-            nativeShortcuts={nativeShortcuts}
-            desktopShortcuts={desktopShortcuts}
-            onSessionChange={changeSession}
-            onResume={resumeSession}
-            onImmersiveChange={(subtitleBlendsWithBackground) => void saveSettings({ subtitleBlendsWithBackground })}
-            onConfigure={() => selectCategory("service")}
-          />}
           <div className="settings-layout">
             {!initializationReady ? <SettingsInitializationStatus status={initializationStatus} error={initializationError} onRetry={() => { void initialize(); }} /> : <>
             {activeCategory === "guide" && (
@@ -535,6 +423,24 @@ export function SettingsView() {
                   />
                 </SettingsRow>
 
+                {desktopShortcutCommands && <div className="settings-shortcut-setup">
+                  <button type="button" className="settings-button settings-button--quiet" onClick={() => setShowShortcutSetup(true)}>
+                    <Icon name="gear" />{I18N.settings.systemShortcutSetup}
+                  </button>
+                </div>}
+                {desktopShortcutCommands && showShortcutSetup && activeCategory === "general" && <SettingsConfirmation
+                  message={I18N.settings.systemShortcutSetup} variant="default" hideConfirm cancelLabel={I18N.settings.closeDialog}
+                  onCancel={() => setShowShortcutSetup(false)} onConfirm={() => setShowShortcutSetup(false)}>
+                  <div className="settings-desktop-shortcuts">
+                    <p>{I18N.settings.systemShortcutInstructions}</p>
+                    <dl>
+                      <dt>{I18N.settings.startStopShortcut}</dt><dd><code>{desktopShortcutCommands.toggleSession}</code></dd>
+                      <dt>{I18N.tray.blendBackground}</dt><dd><code>{desktopShortcutCommands.toggleImmersive}</code></dd>
+                      <dt>{I18N.settings.subtitleDisplay}</dt><dd><code>{desktopShortcutCommands.cycleSubtitleDisplay}</code></dd>
+                    </dl>
+                  </div>
+                </SettingsConfirmation>}
+
                 <div className="settings-divider" />
 
                 <DockPreference />
@@ -554,30 +460,6 @@ export function SettingsView() {
       </div>
     </main>
   );
-}
-
-function settingsSessionStatusText(
-  status: SettingsSessionVisibleStatus,
-  sessionErrorMessage: string | null,
-): string {
-  switch (status) {
-    case "idle":
-      return I18N.settings.sessionIdle;
-    case "connecting":
-      return I18N.settings.sessionConnecting;
-    case "listening":
-      return I18N.settings.sessionListening;
-    case "paused":
-      return I18N.settings.sessionPaused;
-    case "stopping":
-      return I18N.settings.sessionStopping;
-    case "error":
-      return sessionErrorMessage ?? I18N.settings.sessionError;
-    case "setupRequired":
-      return I18N.settings.sessionSetupRequired;
-    case "credentialUnavailable":
-      return I18N.settings.sessionCredentialUnavailable;
-  }
 }
 
 const SUBTITLE_ALIGNMENTS: readonly SubtitleAlignment[] = ["left", "center", "right"];

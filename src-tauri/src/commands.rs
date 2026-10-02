@@ -1639,22 +1639,44 @@ pub async fn profile_test_connection(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     profile_id: String,
+    stage: Option<crate::clients::connection_diagnostics::ConnectionCheckStage>,
 ) -> Result<crate::clients::connection_diagnostics::ConnectionDiagnostic, String> {
+    use crate::clients::connection_diagnostics::{
+        check_service, check_speech_service, check_text_service, preparation_failure,
+        ConnectionCheckReason, ConnectionCheckStage, ConnectionDiagnostic,
+    };
     let (_, profiles) = state.settings.profile_catalog()?;
     let profile = profiles
         .iter()
         .find(|p| p.id == profile_id)
         .ok_or("profile_not_found")?;
+    if let Some(stage) = stage {
+        // Stage checks deliberately avoid an aggregate credential snapshot: a
+        // text-only check must not prompt for or require the recognizer's key.
+        return Ok(match stage {
+            ConnectionCheckStage::Speech => {
+                match state.settings.configuration_for_speech_probe(profile) {
+                    Err(error) => preparation_failure(&error),
+                    Ok(_) if app_is_ui_test() => ConnectionDiagnostic::not_tested("present"),
+                    Ok(configuration) => check_speech_service(&configuration, false).await,
+                }
+            }
+            ConnectionCheckStage::Text => {
+                match state.settings.configuration_for_text_probe(profile) {
+                    Err(error) => preparation_failure(&error),
+                    Ok(_) if app_is_ui_test() => ConnectionDiagnostic::not_tested("present"),
+                    Ok(configuration) => check_text_service(&configuration).await,
+                }
+            }
+        });
+    }
     let storage = state.settings.credential_diagnostic(profile);
     emit_settings_snapshot(&app, &state.settings)?;
-    use crate::clients::connection_diagnostics::{
-        check_service, ConnectionCheckReason, ConnectionDiagnostic,
-    };
-    if app_is_ui_test() {
-        return Ok(ConnectionDiagnostic::not_tested(storage));
-    }
     if let Some(failure) = ConnectionDiagnostic::credential_failure(storage) {
         return Ok(failure);
+    }
+    if app_is_ui_test() {
+        return Ok(ConnectionDiagnostic::not_tested(storage));
     }
     let configuration = match state.settings.configuration_for_profile_probe(profile) {
         Ok(configuration) => configuration,

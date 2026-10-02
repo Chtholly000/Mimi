@@ -66,9 +66,16 @@ it.each(["zh", "en", "ja"] as const)("offers five categories in the expected ord
   expect(host.querySelector("#translation-languages")).toBeNull();
   expect(host.querySelector("#service-profiles-panel #network-proxy")).not.toBeNull();
   expect(host.querySelector(".settings-sidebar .settings-support-diagnostics")).toBeNull();
-  for (const category of ["subtitles", "service", "export", "general", "diagnostics"]) {
+  for (const [category, description] of [
+    ["subtitles", I18N.settings.subtitlePageDescription], ["service", I18N.settings.servicePageDescription],
+    ["export", I18N.settings.exportPageDescription], ["general", I18N.settings.generalPageDescription],
+    ["diagnostics", I18N.settings.diagnosticsPageDescription],
+  ] as const) {
     await select(category);
-    expect(Boolean(host.querySelector(".settings-session-card"))).toBe(category === "subtitles" || category === "service");
+    expect(host.querySelector(".settings-session-card, #settings-session-status")).toBeNull();
+    expect(host.querySelector(".settings-page-header [role=switch], .settings-page-header kbd")).toBeNull();
+    expect(host.querySelector(".settings-page-header .settings-help-control__description")?.textContent).toBe(description);
+    expect(host.querySelector(".settings-page-header p")).toBeNull();
   }
   expect(window.location.hash).toBe("#diagnostics");
   await act(async () => host.querySelector<HTMLButtonElement>(".settings-guide-entry")!.click());
@@ -103,7 +110,7 @@ it("saves language choices and blocks them for active and paused subtitle sessio
   expect(document.activeElement).toBe(target);
   for (const state of [{ isActive: true, isPaused: false }, { isActive: false, isPaused: true }]) {
     await act(() => useStore.setState({ session: { ...initial.session, status: { kind: "listening" }, ...state } }));
-    expect([...host.querySelectorAll<HTMLButtonElement>("#translation-languages button")].every(button => button.disabled)).toBe(true);
+    expect([...host.querySelectorAll<HTMLButtonElement>("#translation-languages [role=group] button")].every(button => button.disabled)).toBe(true);
     expect(host.querySelector("#translation-languages")?.textContent).toContain(I18N.settings.languageChangeRequiresStop);
   }
 });
@@ -158,7 +165,7 @@ it("restores diagnostics from a deep link and follows hash navigation without lo
     window.dispatchEvent(new HashChangeEvent("hashchange"));
   });
   expect(host.querySelector("#settings-category-service")?.getAttribute("aria-current")).toBe("page");
-  expect(host.querySelector(".settings-session-card--compact")).not.toBeNull();
+  expect(host.querySelector(".settings-session-card--compact")).toBeNull();
 });
 
 it("blocks placeholder session and credential controls while loading settings and offers an explicit retry after timeout", async () => {
@@ -176,7 +183,7 @@ it("blocks placeholder session and credential controls while loading settings an
   expect(initialize).toHaveBeenCalledOnce();
   expect(document.activeElement).toBe(retry);
   await act(async () => { useStore.setState({ initializationStatus: "ready", initializationError: null, hasSettingsSnapshot: true }); });
-  expect(host.querySelector(".settings-session-card")).not.toBeNull();
+  expect(host.querySelector(".settings-session-card")).toBeNull();
   expect(host.textContent).not.toContain(I18N.settings.settingsSnapshotTimeout);
   expect(saveProfileCredentials).not.toHaveBeenCalled();
 });

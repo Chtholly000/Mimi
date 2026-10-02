@@ -2,7 +2,7 @@
 
 ## Project
 
-Mimi is a Tauri v2 desktop app (Rust backend + React/TypeScript frontend) that listens to system audio playing on macOS, Windows, or Linux and shows live translated subtitles in a floating always-on-top overlay. It supports built-in Alibaba Cloud and OpenAI Realtime service profiles with optional, explicitly enabled session recording and export.
+Mimi is a Tauri v2 desktop app (Rust backend + React/TypeScript frontend) that listens to system audio playing on macOS, Windows, or Linux and shows live translated subtitles in a floating always-on-top overlay. It supports built-in service profiles and custom live speech recognition with independent text translation, plus optional, explicitly enabled session recording and export.
 
 Preserve these product constraints:
 
@@ -37,6 +37,8 @@ Preserve these product constraints:
 
 ## Working agreements
 
+- Keep explanatory copy out of persistent small-print paragraphs. Use compact help icons with hover/focus tooltips for non-essential descriptions, protocol requirements, and storage details. Keep field labels, essential choices, and actionable errors visible at the normal interface text size. Do not add small text merely to fill space or explain an otherwise clear control.
+- Keep related action buttons compact, consistent, and right-aligned. Use existing icons. Configuration deletion uses a red destructive action and a standard confirmation dialog, never an expanding inline strip. Choosing a service type must not create a profile until the user confirms adding it. Display connection-check progress and results with the triggering action, including actual request duration; recognition and text translation have independent checks.
 - Read the relevant source and tests before changing behavior. For non-trivial behavior changes, add or update a design note in `docs/plans/`.
 - Keep UI-independent logic in `src-tauri/src/core/`; keep Tauri, window, keyring, and OS-audio integration in the app-layer modules. Never import `tauri` types in `core/` or `clients/`.
 - Preserve Rust concurrency safety. Isolate mutable network or lifecycle state behind `Arc<Mutex<…>>` or actors; never hold a `std::sync::MutexGuard` across an `.await`.

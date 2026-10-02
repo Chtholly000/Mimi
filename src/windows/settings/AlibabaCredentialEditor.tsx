@@ -11,9 +11,10 @@ import { DestructiveConfirmation } from "./DestructiveConfirmation";
 import { InlineFeedback, SettingsSelect } from "./SettingsPrimitives";
 import { StoredCredentialReveal } from "./StoredCredentialReveal";
 
-/** Alibaba provides recognition; optional text destinations reuse its ASR key. */
-export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visible = true, feedback, onSave, onRequestDelete, onConfirmDelete, confirmingDelete, onCancelDelete, connectionCheck, readOnly = false, textOnly = false, storageNoteId }: {
+/** Alibaba provides recognition; independent text destinations use their own credentials. */
+export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visible = true, feedback, onSave, onRequestDelete, onConfirmDelete, confirmingDelete, onCancelDelete, connectionCheck, textConnectionCheck, readOnly = false, textOnly = false, storageNoteId }: {
   connectionCheck?: ReactNode;
+  textConnectionCheck?: (requiresSave: boolean) => ReactNode;
   readOnly?: boolean;
   textOnly?: boolean;
   storageNoteId?: string;
@@ -131,7 +132,10 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
     <section className="service-stage service-stage--translation" aria-labelledby={`${inputId}-translation-title`}>
       <header className="service-stage__heading">
         <h3 id={`${inputId}-translation-title`}>{I18N.settings.textTranslationLabel}</h3>
-        <SettingsHelp text={translationHelp} label={I18N.settings.helpLabel} />
+        <div className="service-stage__actions">
+          {textConnectionCheck?.(translation !== savedTranslation || !!draft.endpoint.trim() || !!draft.token.trim() || !!draft.model.trim() || (!textOnly && translation === "followService" && !!draft.apiKey.trim()))}
+          <SettingsHelp text={translationHelp} label={I18N.settings.helpLabel} />
+        </div>
       </header>
       <div className="settings-field service-stage__selector">
         <span>{I18N.settings.serviceProvider}</span>

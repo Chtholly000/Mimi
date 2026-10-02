@@ -33,8 +33,6 @@ const TARGET_CODES = new Set<string>(ALIBABA_TARGETS);
 
 export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
   "alibabaCloud",
-  "customDashScopeASR",
-  "customOpenAIASR",
   "openAIRealtime",
   "googleGeminiLive",
   "azureOpenAIRealtime",
@@ -42,6 +40,8 @@ export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
   "tencentCloud",
   "baiduTranslate",
   "xAIRealtime",
+  "customDashScopeASR",
+  "customOpenAIASR",
 ];
 
 const PROVIDER_CAPABILITIES: Readonly<

@@ -23,12 +23,16 @@ const copy = {
     unreachable: "Secure connection failed. Check your network, proxy and system clock.",
     test: "Check connection", testing: "Checking…",
     available: "Connection available", unavailable: "Unavailable", notTested: "Not checked",
+    checkSkipped: "UI preview mode does not check connections. Use normal mode to check.",
+    elapsed: "Check duration",
+    elapsedHelp: "Recognition measures session setup. Translation measures one short text request. This is not live subtitle latency.",
     checkFailed: "Check failed. Try again.",
     macosRecovery: "Unlock Keychain or allow access, then check again.",
     windowsRecovery: "Check access in Credential Manager, then try again.",
     linuxRecovery: "Unlock the password store or allow access, then check again.",
     reasons: {
       credentialsMissing: "Save your credentials first.",
+      textTranslationNotConfigured: "Choose and save a text translation service first.",
       credentialsUnavailable: "Unlock your system credential store.",
       credentialsServiceUnavailable: "Enable Secret Service (such as GNOME Keyring), then check again.",
       credentialsAccessDenied: "Unlock the credential store or allow access.",
@@ -59,12 +63,16 @@ const copy = {
     unreachable: "安全连接失败。请检查网络、代理和系统时间。",
     test: "检查连接", testing: "正在检查…",
     available: "连接可用", unavailable: "不可用", notTested: "尚未检查",
+    checkSkipped: "界面预览模式不检查连接，请在正常模式下检查。",
+    elapsed: "检查耗时",
+    elapsedHelp: "识别检查测量会话建立耗时；翻译检查测量固定短句请求耗时，不代表实时字幕延迟。",
     checkFailed: "检查失败，请重试。",
     macosRecovery: "解锁钥匙串或允许访问后重试。",
     windowsRecovery: "检查凭据管理器的访问权限后重试。",
     linuxRecovery: "解锁密码存储或允许访问后重试。",
     reasons: {
       credentialsMissing: "请先保存凭据。",
+      textTranslationNotConfigured: "请先选择并保存文字翻译服务。",
       credentialsUnavailable: "请先解锁系统凭据存储。",
       credentialsServiceUnavailable: "启用 Secret Service（如 GNOME Keyring）后重试。",
       credentialsAccessDenied: "解锁凭据存储或允许访问。",
@@ -95,12 +103,16 @@ const copy = {
     unreachable: "安全な接続に失敗しました。ネットワーク、プロキシ、システム時刻を確認してください。",
     test: "接続を確認", testing: "確認中…",
     available: "接続可能", unavailable: "利用不可", notTested: "未確認",
+    checkSkipped: "UI プレビューモードでは接続を確認できません。通常モードで確認してください。",
+    elapsed: "確認時間",
+    elapsedHelp: "音声認識はセッション開始、翻訳は短文リクエストの所要時間です。字幕のリアルタイム遅延ではありません。",
     checkFailed: "確認に失敗しました。もう一度お試しください。",
     macosRecovery: "キーチェーンのロック解除かアクセス許可後、再確認してください。",
     windowsRecovery: "資格情報マネージャーのアクセスを確認し、再試行してください。",
     linuxRecovery: "パスワードストアのロック解除かアクセス許可後、再確認してください。",
     reasons: {
       credentialsMissing: "認証情報を保存してください。",
+      textTranslationNotConfigured: "文字翻訳サービスを選択して保存してください。",
       credentialsUnavailable: "認証情報の保存先を解除してください。",
       credentialsServiceUnavailable: "GNOME Keyring などの Secret Service を有効にし、再確認してください。",
       credentialsAccessDenied: "認証情報ストアのロックを解除するかアクセスを許可してください。",
@@ -131,9 +143,15 @@ export function credentialUnavailableHelp(platform: DiagnosticPlatform = diagnos
 export function connectionDiagnosticMessage(result: ConnectionDiagnostic, platform?: DiagnosticPlatform): string {
   const labels = diagnosticCopy(platform);
   if (result.service === "available") return labels.available;
-  if (result.service !== "unavailable") return labels.notTested;
-  const reason = result.reason === null ? null : labels.reasons[result.reason];
-  return reason ? `${labels.unavailable}: ${reason}` : labels.unavailable;
+  const credentialReason = {
+    missing: "credentialsMissing", unavailable: "credentialsUnavailable", localDevUnavailable: "localDevCredentialsUnavailable",
+    serviceUnavailable: "credentialsServiceUnavailable", accessDenied: "credentialsAccessDenied", invalid: "invalidConfiguration",
+  } as const;
+  const reasonCode = result.reason ?? (result.credential === "present" ? null : credentialReason[result.credential]);
+  const reason = reasonCode ? labels.reasons[reasonCode] : null;
+  if (reason) return `${labels.unavailable}: ${reason}`;
+  if (result.service === "notTested") return labels.checkSkipped;
+  return result.service === "unavailable" ? labels.unavailable : labels.checkFailed;
 }
 const deepLXErrors = {
   zh: {

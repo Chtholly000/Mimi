@@ -140,12 +140,10 @@ describe("provider capabilities", () => {
     expect(effectiveTranslationModeForSettings(settings)).toBe("turbo");
   });
 
-  it("registers every built-in provider exactly once", () => {
+  it("lists every provider exactly once with custom recognition protocols after built-in services", () => {
     expect(new Set(SERVICE_PROVIDERS).size).toBe(10);
     expect(SERVICE_PROVIDERS).toEqual([
       "alibabaCloud",
-      "customDashScopeASR",
-      "customOpenAIASR",
       "openAIRealtime",
       "googleGeminiLive",
       "azureOpenAIRealtime",
@@ -153,7 +151,14 @@ describe("provider capabilities", () => {
       "tencentCloud",
       "baiduTranslate",
       "xAIRealtime",
+      "customDashScopeASR",
+      "customOpenAIASR",
     ]);
+  });
+
+  it("keeps both custom speech protocols together at the end of the provider picker", () => {
+    expect(SERVICE_PROVIDERS.slice(-2)).toEqual(["customDashScopeASR", "customOpenAIASR"]);
+    expect(SERVICE_PROVIDERS.slice(0, -2).every(provider => !provider.startsWith("custom"))).toBe(true);
   });
 
   it("uses automatic recognition only where the official protocol supports it", () => {
