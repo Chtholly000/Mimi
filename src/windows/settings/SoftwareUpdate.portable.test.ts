@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../lib/ipc", () => ({
   isTauri: true,
+  setOverlayPointerCursor: vi.fn(),
   appIsUiTest: mocks.appIsUiTest,
   appIsPortable: mocks.appIsPortable,
   appIsLinuxPackage: mocks.appIsLinuxPackage,

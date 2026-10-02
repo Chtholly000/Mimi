@@ -38,12 +38,16 @@ it.each(["zh", "en", "ja"] as const)("uses the unified selector and accurate sys
   setStoredUiLanguage(language); await render();
   expect(host.textContent).toContain(I18N.settings.networkProxyTitle);
   expect(host.querySelector('[role="combobox"]')?.textContent).toContain(I18N.settings.networkProxySystem);
-  expect(host.textContent).toContain(I18N.settings.networkProxySystemHelp);
+  expect(host.querySelector(".settings-help-control__description")?.textContent).toBe(`${I18N.settings.networkProxyScope}\n${I18N.settings.networkProxySystemHelp}`);
+  expect(host.querySelector(".network-proxy-scope, .settings-row__description, p.settings-caption")).toBeNull();
   expect(host.querySelector("input")).toBeNull();
   expect(host.querySelector('button[type="submit"]')).toBeNull();
   await choose(I18N.settings.networkProxyCustom);
   expect(host.querySelector("input")?.getAttribute("autocomplete")).toBe("off");
-  expect(host.textContent).toContain(I18N.settings.networkProxyCustomHelp);
+  expect(host.querySelector(".settings-help-control__description")?.textContent).toBe(`${I18N.settings.networkProxyScope}\n${I18N.settings.networkProxyCustomHelp}`);
+  expect(host.querySelector(".settings-row__description")).toBeNull();
+  await choose(I18N.settings.networkProxyDirect);
+  expect(host.querySelector(".settings-help-control__description")?.textContent).toBe(`${I18N.settings.networkProxyScope}\n${I18N.settings.networkProxyDirectHelp}`);
   expect(save).not.toHaveBeenCalled();
 });
 
@@ -84,7 +88,7 @@ it("guards overlapping submissions, preserves a failed draft across optimistic r
   expect(save).toHaveBeenCalledOnce();
   expect(host.querySelector<HTMLButtonElement>('[role="combobox"]')!.disabled).toBe(true);
   expect(host.querySelector('button[aria-busy="true"]')?.textContent).toContain(I18N.settings.networkProxySaving);
-  expect(host.querySelector(".settings-session-resume__busy")).not.toBeNull();
+  expect(host.querySelector(".settings-spinner")).not.toBeNull();
   await render({ mode: "custom", url: "http://127.0.0.1:7890/" });
   await render(system);
   await act(async () => { reject(new Error("unexpected failure containing synthetic-secret")); });

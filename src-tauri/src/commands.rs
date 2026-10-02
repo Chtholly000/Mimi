@@ -45,18 +45,28 @@ pub struct ServiceProfilePayload {
     pub name: String,
     pub provider: ProviderKind,
     pub credential_state: CredentialState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_credential_state: Option<CredentialState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_credential_state: Option<CredentialState>,
     pub text_translation: crate::core::provider::TextTranslation,
 }
 
 impl ServiceProfilePayload {
     fn from_profile(store: &SettingsStore, profile: ServiceProfile) -> Self {
-        let credential_state = store.credential_state(&profile);
+        let states = store.custom_credential_states(&profile);
+        let credential_state = states.map_or_else(
+            || store.credential_state(&profile),
+            |(speech, text)| speech.combined(text),
+        );
         let text_translation = profile.text_translation();
         Self {
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
             credential_state,
+            speech_credential_state: states.map(|(speech, _)| speech),
+            text_credential_state: states.map(|(_, text)| text),
             text_translation,
         }
     }
@@ -68,6 +78,14 @@ impl ServiceProfilePayload {
             name: profile.name,
             provider: profile.provider,
             credential_state: CredentialState::Unavailable,
+            speech_credential_state: profile
+                .provider
+                .is_custom_speech()
+                .then_some(CredentialState::Unavailable),
+            text_credential_state: profile
+                .provider
+                .is_custom_speech()
+                .then_some(CredentialState::Unavailable),
             text_translation,
         }
     }
@@ -428,6 +446,8 @@ mod tests {
                 name: "Alibaba Cloud".into(),
                 provider: ProviderKind::AlibabaCloud,
                 credential_state: CredentialState::Present,
+                speech_credential_state: None,
+                text_credential_state: None,
                 text_translation: crate::core::provider::TextTranslation::FollowService,
             }],
             active_profile_id: "alibaba-default".into(),
@@ -1619,22 +1639,44 @@ pub async fn profile_test_connection(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
     profile_id: String,
+    stage: Option<crate::clients::connection_diagnostics::ConnectionCheckStage>,
 ) -> Result<crate::clients::connection_diagnostics::ConnectionDiagnostic, String> {
+    use crate::clients::connection_diagnostics::{
+        check_service, check_speech_service, check_text_service, preparation_failure,
+        ConnectionCheckReason, ConnectionCheckStage, ConnectionDiagnostic,
+    };
     let (_, profiles) = state.settings.profile_catalog()?;
     let profile = profiles
         .iter()
         .find(|p| p.id == profile_id)
         .ok_or("profile_not_found")?;
+    if let Some(stage) = stage {
+        // Stage checks deliberately avoid an aggregate credential snapshot: a
+        // text-only check must not prompt for or require the recognizer's key.
+        return Ok(match stage {
+            ConnectionCheckStage::Speech => {
+                match state.settings.configuration_for_speech_probe(profile) {
+                    Err(error) => preparation_failure(&error),
+                    Ok(_) if app_is_ui_test() => ConnectionDiagnostic::not_tested("present"),
+                    Ok(configuration) => check_speech_service(&configuration, false).await,
+                }
+            }
+            ConnectionCheckStage::Text => {
+                match state.settings.configuration_for_text_probe(profile) {
+                    Err(error) => preparation_failure(&error),
+                    Ok(_) if app_is_ui_test() => ConnectionDiagnostic::not_tested("present"),
+                    Ok(configuration) => check_text_service(&configuration).await,
+                }
+            }
+        });
+    }
     let storage = state.settings.credential_diagnostic(profile);
     emit_settings_snapshot(&app, &state.settings)?;
-    use crate::clients::connection_diagnostics::{
-        check_service, ConnectionCheckReason, ConnectionDiagnostic,
-    };
-    if app_is_ui_test() {
-        return Ok(ConnectionDiagnostic::not_tested(storage));
-    }
     if let Some(failure) = ConnectionDiagnostic::credential_failure(storage) {
         return Ok(failure);
+    }
+    if app_is_ui_test() {
+        return Ok(ConnectionDiagnostic::not_tested(storage));
     }
     let configuration = match state.settings.configuration_for_profile_probe(profile) {
         Ok(configuration) => configuration,

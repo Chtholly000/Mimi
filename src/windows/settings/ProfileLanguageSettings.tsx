@@ -5,6 +5,7 @@ import { I18N } from "../../lib/i18n";
 import { sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import { useStore } from "../../lib/store";
 import { SOURCE_LANGUAGE_DISPLAY_NAMES, TARGET_LANGUAGE_DISPLAY_NAMES, type SettingsDraft, type SettingsSnapshot } from "../../lib/types";
+import { SettingsHelp } from "./SettingsHelp";
 import { InlineFeedback, SettingsRow } from "./SettingsPrimitives";
 import { WindowsAudioSource } from "./WindowsAudioSource";
 
@@ -34,7 +35,7 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
     }
   };
   return <section id="translation-languages" className="profile-language-settings" aria-labelledby="translation-languages-title" aria-busy={busy}>
-    <h3 id="translation-languages-title">{I18N.settings.subtitleLanguages}</h3>
+    <header className="profile-language-settings__heading"><h3 id="translation-languages-title">{I18N.settings.subtitleLanguages}</h3>{requiresStop && <SettingsHelp text={I18N.settings.languageChangeRequiresStop} label={I18N.settings.helpLabel} icon="lock" />}</header>
     <WindowsAudioSource />
     <SettingsRow label={I18N.settings.sourceLanguage} align="start">
       <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} disabled={disabled || busy || sources.length === 1}
@@ -46,7 +47,6 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
         options={targets.map(value => ({ value, label: TARGET_LANGUAGE_DISPLAY_NAMES[value] }))}
         onChange={value => { const targetLanguage = targets.find(language => language === value); if (targetLanguage) void save({ targetLanguage }); }} />
     </SettingsRow>
-    {requiresStop && <p className="settings-caption">{I18N.settings.languageChangeRequiresStop}</p>}
     {feedback && <InlineFeedback tone={feedback === "saved" ? "success" : "error"}>{feedback === "saved" ? I18N.settings.languageSaved : I18N.settings.languageSaveFailed}</InlineFeedback>}
   </section>;
 }

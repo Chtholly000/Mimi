@@ -10,7 +10,7 @@ const ipc = vi.hoisted(() => ({
   sessionTranscriptPage: vi.fn(), sessionHistoryList: vi.fn(), sessionHistoryPage: vi.fn(),
   sessionHistoryAudio: vi.fn(), sessionHistoryDelete: vi.fn(),
 }));
-vi.mock("../../lib/ipc", () => ({ isTauri: true, ...ipc }));
+vi.mock("../../lib/ipc", () => ({ isTauri: true, setOverlayPointerCursor: vi.fn(), ...ipc }));
 vi.mock("../../lib/store", () => {
   const state = { session: { isActive: false }, settings: { retainSessionHistory: true, recordSessionAudio: false }, saveSettings: vi.fn() };
   return { useStore: Object.assign((select: (state: unknown) => unknown) => select(state), { getState: () => state }) };
@@ -26,7 +26,8 @@ function deferred() {
 }
 async function flush(ms = 0) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
 function button(label: string) {
-  const found = [...host.querySelectorAll("button")].find((node) => node.textContent === label || node.getAttribute("aria-label") === label);
+  const scope = document.querySelector(".settings-confirmation") ?? host;
+  const found = [...scope.querySelectorAll("button")].find((node) => node.textContent === label || node.getAttribute("aria-label") === label);
   if (!found) throw new Error(`Button missing: ${label}`);
   return found;
 }
@@ -89,7 +90,7 @@ describe("history operation state", () => {
     expect(ipc.sessionHistoryDelete).toHaveBeenCalledTimes(1);
     expect(deleteButton.disabled).toBe(true);
     expect(host.querySelector('[aria-busy="true"]')).not.toBeNull();
-    await select(2); await act(async () => pending.resolve()); await flush();
+    await click(button(I18N.settings.cancel)); await select(2); await act(async () => pending.resolve()); await flush();
     expect(host.textContent).toContain("Synthetic B");
     expect(host.querySelectorAll(".session-history__item")).toHaveLength(2);
     expect(host.querySelector(".is-selected")!.textContent).not.toBe(I18N.settings.historyCurrent);
@@ -108,6 +109,7 @@ describe("history operation state", () => {
     const pending = deferred(); await select(1);
     if (kind === "delete") { ipc.sessionHistoryDelete.mockReturnValueOnce(pending.promise); await confirm(); await click(button(I18N.settings.historyDelete)); }
     else { ipc.sessionExport.mockReturnValueOnce(pending.promise); await click(button(I18N.settings.exportTranscript)); }
+    if (kind === "delete") await click(button(I18N.settings.cancel));
     await select(2); await act(async () => pending.reject(new Error("fixture"))); await flush();
     expect(host.textContent).toContain("Synthetic B");
     expect(host.textContent).not.toContain(I18N.settings.historyReadFailed);
@@ -117,6 +119,7 @@ describe("history operation state", () => {
     const pending = deferred(); await select(1); await confirm(); ipc.sessionHistoryDelete.mockReturnValueOnce(pending.promise);
     await click(button(I18N.settings.historyDelete));
     await act(async () => root.render(<SessionExport visible={false} />));
+    expect(document.querySelector(".settings-confirmation")).toBeNull();
     await act(async () => root.render(<SessionExport visible />)); await flush();
     await act(async () => pending.resolve()); await flush();
     expect(host.querySelector(".is-selected")).not.toBeNull();
@@ -145,6 +148,16 @@ describe("history operation state", () => {
     await select(1); await confirm(); await click(button(I18N.settings.historyCancel));
     expect(ipc.sessionHistoryDelete).not.toHaveBeenCalled();
     expect(host.textContent).toContain("Synthetic A");
+  });
+  it("uses a modal for history deletion and blocks navigation until canceled", async () => {
+    await select(1); await confirm();
+    expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain(I18N.settings.historyDeleteConfirm);
+    expect(host.querySelector(".session-history__confirm")).toBeNull();
+    await select(2);
+    expect(host.textContent).toContain("Synthetic A");
+    await click(button(I18N.settings.cancel)); await select(2);
+    expect(host.textContent).toContain("Synthetic B");
+    expect(ipc.sessionHistoryDelete).not.toHaveBeenCalled();
   });
   it("ignores pending export completion after closing and reopening", async () => {
     const pending = deferred(); ipc.sessionExport.mockReturnValueOnce(pending.promise);

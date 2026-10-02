@@ -8,7 +8,7 @@ use crate::core::protocols::audio3::{
 };
 use crate::core::protocols::live_translate::LiveTranslateServerEvent;
 use futures_util::{SinkExt, StreamExt};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -32,6 +32,10 @@ const SILENCE_PCM: [u8; 3200] = [0; 3200]; // 100 ms of 16 kHz mono PCM16.
 pub enum Audio3ASRClientError {
     #[error("Add an Alibaba Cloud Model Studio API key in Settings.")]
     MissingAPIKey,
+    #[error("custom_speech_endpoint_invalid")]
+    InvalidCustomEndpoint,
+    #[error("custom_speech_model_invalid")]
+    InvalidCustomModel,
     #[error("The speech recognition session is not connected.")]
     NotConnected,
     #[error("The speech recognition connection stopped responding.")]
@@ -44,6 +48,13 @@ pub enum Audio3ASRClientError {
     TaskSetupTimedOut,
     #[error("The speech recognition transport failed.")]
     TransportFailure,
+}
+
+impl Audio3ASRClientError {
+    pub fn is_unreachable(&self) -> bool {
+        matches!(self, Self::TransportFailure | Self::NotConnected)
+            || matches!(self, Self::Task(label) if label == GENERIC_TRANSPORT_ERROR)
+    }
 }
 
 type Sink = futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
@@ -112,6 +123,7 @@ impl Audio3ContentGate {
 }
 
 struct Inner {
+    generation: AtomicU64,
     content_gate: std::sync::Mutex<Audio3ContentGate>,
     sink: Mutex<Option<Sink>>,
     task_started: AtomicBool,
@@ -129,6 +141,8 @@ pub struct Audio3ASRClient {
     network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint: Audio3ASREndpoint,
+    model: String,
+    custom_endpoint: bool,
     api_key: String,
     source_language: SourceLanguage,
     events: Arc<Mutex<Option<ProviderEventSender>>>,
@@ -161,6 +175,7 @@ impl Audio3ASRClient {
         Ok(Self {
             network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
+                generation: AtomicU64::new(0),
                 content_gate: Default::default(),
                 sink: Mutex::new(None),
                 task_started: AtomicBool::new(false),
@@ -173,11 +188,33 @@ impl Audio3ASRClient {
                 receive_task: Mutex::new(None),
             }),
             endpoint: Audio3ASREndpoint::new().map_err(|_| Audio3ASRClientError::MissingAPIKey)?,
+            model: Audio3ASREndpoint::MODEL.to_owned(),
+            custom_endpoint: false,
             api_key: trimmed_key.to_string(),
             source_language,
             events: Arc::new(Mutex::new(None)),
             task_id: Arc::new(Mutex::new(None)),
         })
+    }
+
+    pub fn new_custom(
+        endpoint: &str,
+        model: &str,
+        api_key: &str,
+        source_language: SourceLanguage,
+    ) -> Result<Self, Audio3ASRClientError> {
+        let endpoint = crate::core::protocols::custom_speech::endpoint(
+            endpoint,
+            crate::core::provider::ProviderKind::CustomDashScopeASR,
+        )
+        .map_err(|_| Audio3ASRClientError::InvalidCustomEndpoint)?;
+        let model = crate::core::protocols::custom_speech::validate_model(model)
+            .map_err(|_| Audio3ASRClientError::InvalidCustomModel)?;
+        let mut client = Self::new(api_key, source_language)?;
+        client.endpoint.url = endpoint;
+        client.model = model;
+        client.custom_endpoint = true;
+        Ok(client)
     }
 
     /// Sets the channel the receive loop emits decoded events onto.
@@ -220,21 +257,28 @@ impl Audio3ASRClient {
         silence_heartbeat: bool,
     ) -> Result<(), Audio3ASRClientError> {
         self.disconnect().await;
+        let generation = self.inner.generation.load(Ordering::SeqCst);
         let events = self
             .events
             .lock()
             .await
             .clone()
             .ok_or(Audio3ASRClientError::NotConnected)?;
-        let run_task = Audio3ASRRequestEncoder::run_task(
-            task_id,
-            self.source_language,
-            Some(
-                crate::core::protocols::audio3::Audio3ASRContext::audiovisual_dialogue(
-                    self.source_language,
-                ),
+        let context = Some(
+            crate::core::protocols::audio3::Audio3ASRContext::audiovisual_dialogue(
+                self.source_language,
             ),
-        )
+        );
+        let run_task = if self.model == Audio3ASREndpoint::MODEL {
+            Audio3ASRRequestEncoder::run_task(task_id, self.source_language, context)
+        } else {
+            Audio3ASRRequestEncoder::run_task_for_model(
+                task_id,
+                self.source_language,
+                context,
+                &self.model,
+            )
+        }
         .map_err(|_| Audio3ASRClientError::NotConnected)?;
         *self.task_id.lock().await = Some(task_id.to_string());
 
@@ -283,25 +327,32 @@ impl Audio3ASRClient {
 
         let inner = self.inner.clone();
         let source_language = self.source_language;
+        let expected_task_id = self.custom_endpoint.then(|| task_id.to_owned());
         let task = tokio::spawn(async move {
             let mut heartbeat = tokio::time::interval(SILENCE_INTERVAL);
             heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
+                if inner.generation.load(Ordering::SeqCst) != generation {
+                    return;
+                }
                 let message = tokio::select! {
                     message = stream.next() => message,
                     _ = heartbeat.tick(), if silence_heartbeat && inner.task_started.load(Ordering::SeqCst)
                         && !inner.task_finished.load(Ordering::SeqCst)
                         && !inner.finishing.load(Ordering::SeqCst) => {
                         if send_silence_if_idle(&inner).await.is_err() {
-                            fail_transport(&inner, &events).await;
+                            fail_transport(&inner, &events, generation).await;
                             return;
                         }
                         continue;
                     }
                 };
+                if inner.generation.load(Ordering::SeqCst) != generation {
+                    return;
+                }
                 let Some(message) = message else {
                     if should_report_transport_end(inner.task_finished.load(Ordering::SeqCst)) {
-                        fail_transport(&inner, &events).await;
+                        fail_transport(&inner, &events, generation).await;
                     }
                     return;
                 };
@@ -317,27 +368,36 @@ impl Audio3ASRClient {
                     }
                     Ok(Message::Close(_)) => {
                         if should_report_transport_end(inner.task_finished.load(Ordering::SeqCst)) {
-                            fail_transport(&inner, &events).await;
+                            fail_transport(&inner, &events, generation).await;
                         }
                         return;
                     }
                     Err(_) => {
                         if should_report_transport_end(inner.task_finished.load(Ordering::SeqCst)) {
-                            fail_transport(&inner, &events).await;
+                            fail_transport(&inner, &events, generation).await;
                         }
                         return;
                     }
                 };
                 {
-                    let event = match Audio3ASRServerEventDecoder::decode(&text) {
+                    let decoded = match expected_task_id.as_deref() {
+                        Some(task_id) => {
+                            Audio3ASRServerEventDecoder::decode_for_task(&text, task_id)
+                        }
+                        None => Audio3ASRServerEventDecoder::decode(&text),
+                    };
+                    let event = match decoded {
                         Ok(event) => event,
                         Err(_) => {
                             *inner.terminal_error.lock().await =
                                 Some(GENERIC_PROTOCOL_ERROR.into());
-                            let _ = events.send(LiveTranslateServerEvent::Error {
-                                code: "audio3_protocol_error".into(),
-                                message: GENERIC_PROTOCOL_ERROR.into(),
-                            });
+                            let _ = events.send_if(
+                                LiveTranslateServerEvent::Error {
+                                    code: "audio3_protocol_error".into(),
+                                    message: GENERIC_PROTOCOL_ERROR.into(),
+                                },
+                                || inner.generation.load(Ordering::SeqCst) == generation,
+                            );
                             return;
                         }
                     };
@@ -380,12 +440,17 @@ impl Audio3ASRClient {
                         matches!(subtitle_event, LiveTranslateServerEvent::Error { .. });
                     let send_result = {
                         let mut gate = inner.content_gate.lock().unwrap();
+                        if inner.generation.load(Ordering::SeqCst) != generation {
+                            return;
+                        }
                         if gate.accepts(&event) {
-                            if super::provider_events::is_content_event(&subtitle_event) {
-                                events.send_content(gate.revision, subtitle_event)
-                            } else {
-                                events.send(subtitle_event)
-                            }
+                            let revision = gate.revision;
+                            let is_content =
+                                super::provider_events::is_content_event(&subtitle_event);
+                            events.send_if(subtitle_event, || {
+                                inner.generation.load(Ordering::SeqCst) == generation
+                                    && (!is_content || events.content_revision() == revision)
+                            })
                         } else {
                             Ok(())
                         }
@@ -422,6 +487,11 @@ impl Audio3ASRClient {
     pub async fn send_audio(&self, pcm_data: &[u8]) -> Result<(), Audio3ASRClientError> {
         if pcm_data.is_empty() {
             return Ok(());
+        }
+        if pcm_data.len() > crate::core::protocols::custom_speech::MAX_PCM_CHUNK_BYTES
+            || !pcm_data.len().is_multiple_of(2)
+        {
+            return Err(Audio3ASRClientError::TransportFailure);
         }
         // The reliable provider-error event owns teardown. Avoid a secondary
         // pipeline transport failure racing it and masking authentication.
@@ -499,6 +569,7 @@ impl Audio3ASRClient {
     }
 
     pub async fn disconnect(&self) {
+        self.inner.generation.fetch_add(1, Ordering::SeqCst);
         self.inner.finishing.store(true, Ordering::SeqCst);
         if let Some(task) = self.inner.receive_task.lock().await.take() {
             task.abort();
@@ -544,12 +615,18 @@ impl Audio3ASRClient {
     }
 }
 
-async fn fail_transport(inner: &Inner, events: &ProviderEventSender) {
+async fn fail_transport(inner: &Inner, events: &ProviderEventSender, generation: u64) {
+    if inner.generation.load(Ordering::SeqCst) != generation {
+        return;
+    }
     *inner.terminal_error.lock().await = Some(GENERIC_TRANSPORT_ERROR.into());
-    let _ = events.send(LiveTranslateServerEvent::Error {
-        code: "transport_error".into(),
-        message: GENERIC_TRANSPORT_ERROR.into(),
-    });
+    let _ = events.send_if(
+        LiveTranslateServerEvent::Error {
+            code: "transport_error".into(),
+            message: GENERIC_TRANSPORT_ERROR.into(),
+        },
+        || inner.generation.load(Ordering::SeqCst) == generation,
+    );
 }
 
 fn should_report_transport_end(task_finished: bool) -> bool {
@@ -665,6 +742,101 @@ mod streaming_tests {
     use crate::clients::provider_events::provider_event_channel;
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+
+    #[tokio::test]
+    #[allow(clippy::result_large_err)] // Tungstenite fixes the handshake callback error type.
+    async fn custom_dashscope_uses_selected_model_and_real_task_boundary() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert_eq!(request.uri().path(), "/api-ws/v1/inference");
+                    assert!(request.uri().query().is_none());
+                    assert_eq!(request.headers()["authorization"], "Bearer synthetic-key");
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            let run_task: serde_json::Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            assert_eq!(run_task["header"]["action"], "run-task");
+            assert_eq!(run_task["header"]["task_id"], "synthetic-custom-task");
+            assert_eq!(run_task["payload"]["task"], "asr");
+            assert_eq!(run_task["payload"]["model"], "synthetic-custom-asr-model");
+            assert_eq!(run_task["payload"]["parameters"]["sample_rate"], 16_000);
+            socket.send(Message::Text(serde_json::json!({"header":{"event":"task-started","task_id":"synthetic-custom-task"}}).to_string().into())).await.unwrap();
+            assert!(
+                matches!(socket.next().await.unwrap().unwrap(), Message::Binary(bytes) if bytes.as_ref() == [1,2,3,4])
+            );
+            socket.send(Message::Text(serde_json::json!({"header":{"event":"result-generated","task_id":"synthetic-custom-task"},"payload":{"output":{"sentence":{"sentence_id":1,"sentence_end":true,"text":"Synthetic custom recognition"}}}}).to_string().into())).await.unwrap();
+            let finish: serde_json::Value =
+                serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                    .unwrap();
+            assert_eq!(finish["header"]["action"], "finish-task");
+            assert_eq!(finish["header"]["task_id"], "synthetic-custom-task");
+            socket.send(Message::Text(serde_json::json!({"header":{"event":"task-finished","task_id":"synthetic-custom-task"}}).to_string().into())).await.unwrap();
+            assert!(matches!(
+                socket.next().await,
+                Some(Ok(Message::Close(_))) | None
+            ));
+        });
+        let mut client = Audio3ASRClient::new_custom(
+            &format!("ws://{address}/api-ws/v1/inference"),
+            "synthetic-custom-asr-model",
+            "synthetic-key",
+            SourceLanguage::English,
+        )
+        .unwrap();
+        client
+            .set_network(
+                super::super::provider_network::ProviderNetwork::resolve(
+                    &crate::core::network_proxy::ProxyConfig {
+                        mode: crate::core::network_proxy::ProxyMode::Direct,
+                        url: None,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let (events, mut receiver) = provider_event_channel();
+        client.set_event_sender(events).await;
+        client
+            .connect_for_probe("synthetic-custom-task")
+            .await
+            .unwrap();
+        assert_eq!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::SessionCreated)
+        );
+        client.send_audio(&[1, 2, 3, 4]).await.unwrap();
+        assert_eq!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 1,
+                text: "Synthetic custom recognition".into(),
+                language: Some("en".into())
+            })
+        );
+        assert!(client
+            .send_audio(&vec![
+                0;
+                crate::core::protocols::custom_speech::MAX_PCM_CHUNK_BYTES
+                    + 2
+            ])
+            .await
+            .is_err());
+        client.finish(Duration::from_secs(1)).await;
+        assert_eq!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::SessionFinished)
+        );
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn clear_keeps_one_socket_and_audio_sending_while_old_sentence_is_discarded() {

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { I18N } from "../../lib/i18n";
 import { DEFAULT_NETWORK_PROXY, networkProxyConfigKey, validateNetworkProxy, type NetworkProxyValidationError } from "../../lib/networkProxy";
 import type { NetworkProxyConfig, NetworkProxyMode } from "../../lib/types";
+import { SettingsHelp } from "./SettingsHelp";
 import { InlineFeedback, SettingsRow, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
 
 function validationMessage(error: NetworkProxyValidationError): string {
@@ -73,9 +74,9 @@ export function NetworkProxySettings({ value = DEFAULT_NETWORK_PROXY, disabled, 
   };
 
   return <SettingsSection id="network-proxy" title={I18N.settings.networkProxyTitle}>
-    <p className="settings-caption network-proxy-scope">{I18N.settings.networkProxyScope}</p>
     <form className="network-proxy-form" aria-busy={busy} onSubmit={(event) => { void save(event); }}>
-      <SettingsRow label={I18N.settings.networkProxyMode} description={help} align="start">
+      <SettingsRow label={I18N.settings.networkProxyMode} align="start">
+        <SettingsHelp id={`${addressId}-help`} text={[I18N.settings.networkProxyScope, help, ...(disabled ? [I18N.settings.networkProxyLocked] : [])].join("\n")} label={I18N.settings.helpLabel} />
         <SettingsSelect label={I18N.settings.networkProxyMode} value={mode} disabled={locked}
           options={[
             { value: "system", label: I18N.settings.networkProxySystem },
@@ -87,12 +88,11 @@ export function NetworkProxySettings({ value = DEFAULT_NETWORK_PROXY, disabled, 
       {mode === "custom" && <div className="settings-field network-proxy-address">
         <label htmlFor={addressId}>{I18N.settings.networkProxyAddress}</label>
         <input id={addressId} value={address} type="text" inputMode="url" maxLength={2_048} autoComplete="off" spellCheck={false}
-          disabled={locked} placeholder="http://127.0.0.1:7890" onChange={(event) => { setAddress(event.target.value); setFeedback(null); }} />
+          disabled={locked} aria-describedby={`${addressId}-help`} placeholder="http://127.0.0.1:7890" onChange={(event) => { setAddress(event.target.value); setFeedback(null); }} />
       </div>}
-      {disabled && <p className="settings-caption network-proxy-lock">{I18N.settings.networkProxyLocked}</p>}
       {(changed || busy || feedback) && <div className="network-proxy-actions">
         {(changed || busy) && <button type="submit" className="settings-button settings-button--quiet settings-button--compact" disabled={locked} aria-busy={busy || undefined}>
-          {busy && <span className="settings-session-resume__busy" aria-hidden="true" />}
+          {busy && <span className="settings-spinner" aria-hidden="true" />}
           {busy ? I18N.settings.networkProxySaving : I18N.settings.networkProxySave}
         </button>}
         {feedback && <InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback>}

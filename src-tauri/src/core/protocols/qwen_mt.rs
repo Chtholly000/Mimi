@@ -95,6 +95,7 @@ pub enum QwenMTClientError {
     DeepL(super::deepl::DeepLError),
     OpenAICompatible(super::openai_compatible::OpenAICompatibleError),
     MissingAPIKey,
+    MissingTextTranslation,
     UnsupportedSource,
     InvalidHTTPResponse,
     ResponseTooLarge,
@@ -110,6 +111,9 @@ impl std::fmt::Display for QwenMTClientError {
             Self::OpenAICompatible(error) => write!(f, "{error}"),
             Self::MissingAPIKey => {
                 write!(f, "Add an Alibaba Cloud Model Studio API key in Settings.")
+            }
+            Self::MissingTextTranslation => {
+                write!(f, "Configure a text translation service in Settings.")
             }
             Self::UnsupportedSource => write!(f, "translation_source_unsupported"),
             Self::InvalidHTTPResponse => write!(f, "Qwen-MT returned an invalid HTTP response."),
@@ -161,7 +165,8 @@ impl QwenMTClientError {
             Self::OpenAICompatible(error) => error.authentication_failure(),
             Self::RequestFailed { status_code, .. } => *status_code == 401 || *status_code == 403,
             Self::MissingAPIKey => true,
-            Self::UnsupportedSource
+            Self::MissingTextTranslation
+            | Self::UnsupportedSource
             | Self::InvalidHTTPResponse
             | Self::ResponseTooLarge
             | Self::RequestTimedOut => false,
@@ -175,6 +180,9 @@ impl QwenMTClientError {
             Self::DeepL(error) => error.diagnostic_label(),
             Self::OpenAICompatible(error) => error.diagnostic_label(),
             Self::MissingAPIKey => "QwenMTClientError.missingAPIKey".to_string(),
+            Self::MissingTextTranslation => {
+                "TranslationClientError.missingTextTranslation".to_string()
+            }
             Self::UnsupportedSource => "QwenMTClientError.unsupportedSource".to_string(),
             Self::InvalidHTTPResponse => "QwenMTClientError.invalidHTTPResponse".to_string(),
             Self::ResponseTooLarge => "QwenMTClientError.responseTooLarge".to_string(),
@@ -200,7 +208,8 @@ impl QwenMTRetryPolicy {
             QwenMTClientError::RequestFailed { status_code, .. } => {
                 *status_code == 408 || *status_code == 429 || *status_code >= 500
             }
-            QwenMTClientError::UnsupportedSource
+            QwenMTClientError::MissingTextTranslation
+            | QwenMTClientError::UnsupportedSource
             | QwenMTClientError::MissingAPIKey
             | QwenMTClientError::ResponseTooLarge => false,
         };
@@ -1395,5 +1404,18 @@ mod tests {
                 Some(TranslationRecoveryReason::TemporarilyUnavailable)
             );
         }
+    }
+
+    #[test]
+    fn missing_independent_translation_is_a_configuration_error_without_retry_or_auth_claims() {
+        let error = QwenMTClientError::MissingTextTranslation;
+        assert_eq!(error.recovery_reason(), None);
+        assert!(!error.is_authentication_failure());
+        assert_eq!(QwenMTRetryPolicy::delay(&error, 1), None);
+        assert_eq!(
+            error.diagnostic_label(),
+            "TranslationClientError.missingTextTranslation"
+        );
+        assert!(!error.to_string().contains("Alibaba"));
     }
 }

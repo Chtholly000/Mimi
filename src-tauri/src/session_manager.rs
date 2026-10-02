@@ -11,7 +11,7 @@ use crate::audio::{
 use crate::clients::provider_events::{provider_event_channel, ProviderEvent};
 use crate::clients::translation_client::TranslationClient;
 use crate::core::configuration::LiveTranslationConfiguration;
-use crate::core::credentials::ProviderCredentials;
+use crate::core::credentials::{ProviderCredentials, TextTranslationCredentials};
 use crate::core::diagnostics::{
     milliseconds, TranslationLatency, TranslationLatencyKind, TranslationRecovery,
 };
@@ -150,21 +150,34 @@ impl MTBudgetScope {
         profile_id: String,
         configuration: &LiveTranslationConfiguration,
     ) -> Option<Self> {
-        let route = match &configuration.credentials {
-            ProviderCredentials::DeepL { .. } => MTBudgetRoute::DeepL,
-            ProviderCredentials::DeepLX { .. } => MTBudgetRoute::DeepLX,
-            ProviderCredentials::OpenAICompatible { .. } => MTBudgetRoute::OpenAICompatible,
-            ProviderCredentials::ApiKey { .. }
-                if configuration.provider == ProviderKind::AlibabaCloud =>
-            {
-                let model = match configuration.effective_translation_mode() {
-                    TranslationMode::Turbo => REALTIME_MT_MODEL,
-                    TranslationMode::HighQuality => QwenMTModel::Plus,
-                    TranslationMode::LowLatency => return None,
-                };
-                MTBudgetRoute::Qwen(model)
+        let route = if configuration.provider.is_custom_speech() {
+            if !configuration.target_language.translates_audio() {
+                return None;
             }
-            _ => return None,
+            match configuration.text_credentials.as_ref()? {
+                TextTranslationCredentials::DeepL { .. } => MTBudgetRoute::DeepL,
+                TextTranslationCredentials::DeepLX { .. } => MTBudgetRoute::DeepLX,
+                TextTranslationCredentials::OpenAICompatible { .. } => {
+                    MTBudgetRoute::OpenAICompatible
+                }
+            }
+        } else {
+            match &configuration.credentials {
+                ProviderCredentials::DeepL { .. } => MTBudgetRoute::DeepL,
+                ProviderCredentials::DeepLX { .. } => MTBudgetRoute::DeepLX,
+                ProviderCredentials::OpenAICompatible { .. } => MTBudgetRoute::OpenAICompatible,
+                ProviderCredentials::ApiKey { .. }
+                    if configuration.provider == ProviderKind::AlibabaCloud =>
+                {
+                    let model = match configuration.effective_translation_mode() {
+                        TranslationMode::Turbo => REALTIME_MT_MODEL,
+                        TranslationMode::HighQuality => QwenMTModel::Plus,
+                        TranslationMode::LowLatency => return None,
+                    };
+                    MTBudgetRoute::Qwen(model)
+                }
+                _ => return None,
+            }
         };
         Some(Self {
             profile_id,
@@ -1510,10 +1523,9 @@ impl SessionManager {
             // Create the sole bounded audio queue before capture starts. The
             // native callback writes directly to this synchronous ingress;
             // there is no unbounded bridge ahead of the network sender.
-            let audio_format = AudioCaptureFormat::pcm16_mono(
-                configuration.provider.capabilities().input_sample_rate_hz,
-            )
-            .map_err(|error| error.to_string())?;
+            let audio_format =
+                AudioCaptureFormat::pcm16_mono(configuration.capabilities().input_sample_rate_hz)
+                    .map_err(|error| error.to_string())?;
             let send_manager = Arc::clone(&self);
             let on_error_self = Arc::clone(&self);
             let pipeline = Arc::new(AudioSendPipeline::spawn(
@@ -3476,6 +3488,66 @@ mod lifecycle_tests {
             profile_id: profile_id.into(),
             provider: ProviderKind::AlibabaCloud,
             route,
+        }
+    }
+
+    #[test]
+    fn custom_speech_budget_tracks_only_the_independent_translation_route() {
+        use crate::core::models::TargetLanguage;
+        for provider in [
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let configuration = LiveTranslationConfiguration::with_credentials(
+                provider,
+                ProviderCredentials::CustomSpeech {
+                    endpoint: "wss://example.com/recognition".into(),
+                    model: "synthetic-recognition-model".into(),
+                    api_key: "synthetic-recognition-key".into(),
+                },
+                SourceLanguage::Automatic,
+                TargetLanguage::Japanese,
+                TranslationMode::Turbo,
+            );
+            assert!(
+                MTBudgetScope::for_configuration("synthetic-profile".into(), &configuration)
+                    .is_none()
+            );
+            for (credentials, expected_route) in [
+                (
+                    TextTranslationCredentials::DeepL {
+                        api_key: "synthetic-text-key".into(),
+                    },
+                    MTBudgetRoute::DeepL,
+                ),
+                (
+                    TextTranslationCredentials::DeepLX {
+                        endpoint: "https://example.com/translate".into(),
+                        token: String::new(),
+                    },
+                    MTBudgetRoute::DeepLX,
+                ),
+                (
+                    TextTranslationCredentials::OpenAICompatible {
+                        endpoint: "https://example.com/v1".into(),
+                        model: "synthetic-text-model".into(),
+                        api_key: "synthetic-text-key".into(),
+                    },
+                    MTBudgetRoute::OpenAICompatible,
+                ),
+            ] {
+                let mut selected = configuration.clone().with_text_credentials(credentials);
+                let scope = MTBudgetScope::for_configuration("synthetic-profile".into(), &selected)
+                    .unwrap();
+                assert!(scope.route == expected_route);
+                assert_eq!(scope.provider, provider);
+                assert_eq!(scope.profile_id, "synthetic-profile");
+                selected.target_language = TargetLanguage::Original;
+                assert!(
+                    MTBudgetScope::for_configuration("synthetic-profile".into(), &selected)
+                        .is_none()
+                );
+            }
         }
     }
 

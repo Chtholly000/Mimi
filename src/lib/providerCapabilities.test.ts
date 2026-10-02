@@ -6,6 +6,7 @@ import {
   textTranslationForProfile,
   activeServiceProfile,
   capabilitiesForProfile,
+  credentialStateForTarget,
   effectiveTranslationModeForSettings,
   sourceLanguagesForSettings,
   subtitlePreferencesChanged,
@@ -13,6 +14,14 @@ import {
   targetLanguagesForSettings,
   translationModesForSettings,
 } from "./providerCapabilities";
+
+it("requires only custom speech credentials for Original while translated targets require both stages", () => {
+  const profile = { id: "custom", name: "Custom", provider: "customOpenAIASR", credentialState: "missing", speechCredentialState: "present", textCredentialState: "missing", textTranslation: "deepL" } as const;
+  expect(credentialStateForTarget(profile, "original")).toBe("present");
+  expect(credentialStateForTarget(profile, "zh")).toBe("missing");
+  expect(capabilitiesForProfile(profile).targetLanguages).toEqual(["original", "zh", "en", "ja"]);
+  expect(capabilitiesForProfile({ ...profile, textTranslation: "followService" }).targetLanguages).toEqual(["original"]);
+});
 
 const BASE_SETTINGS: SettingsSnapshot = {
   profiles: [
@@ -131,8 +140,8 @@ describe("provider capabilities", () => {
     expect(effectiveTranslationModeForSettings(settings)).toBe("turbo");
   });
 
-  it("registers every built-in provider exactly once", () => {
-    expect(new Set(SERVICE_PROVIDERS).size).toBe(8);
+  it("lists every provider exactly once with custom recognition protocols after built-in services", () => {
+    expect(new Set(SERVICE_PROVIDERS).size).toBe(10);
     expect(SERVICE_PROVIDERS).toEqual([
       "alibabaCloud",
       "openAIRealtime",
@@ -142,7 +151,14 @@ describe("provider capabilities", () => {
       "tencentCloud",
       "baiduTranslate",
       "xAIRealtime",
+      "customDashScopeASR",
+      "customOpenAIASR",
     ]);
+  });
+
+  it("keeps both custom speech protocols together at the end of the provider picker", () => {
+    expect(SERVICE_PROVIDERS.slice(-2)).toEqual(["customDashScopeASR", "customOpenAIASR"]);
+    expect(SERVICE_PROVIDERS.slice(0, -2).every(provider => !provider.startsWith("custom"))).toBe(true);
   });
 
   it("uses automatic recognition only where the official protocol supports it", () => {

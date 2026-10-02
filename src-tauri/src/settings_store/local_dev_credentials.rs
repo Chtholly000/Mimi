@@ -266,6 +266,10 @@ mod tests {
             "provider-profile:a:openAIRealtime:api-key",
             "provider-profile:a:deepLX:api-key",
             "provider-profile:a:alibabaCloud:text-translation",
+            "provider-profile:a:customDashScopeASR:api-key",
+            "provider-profile:a:customOpenAIASR:api-key",
+            "provider-profile:a:customDashScopeASR:text-translation",
+            "provider-profile:a:customOpenAIASR:text-translation",
             "migration:legacy-alibaba:v1",
             "dashscope-api-key",
         ] {

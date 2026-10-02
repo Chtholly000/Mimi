@@ -1,4 +1,4 @@
-import { Languages } from "lucide-react";
+import { AudioLines, Languages } from "lucide-react";
 import type { ServiceProvider, TextTranslation } from "../lib/types";
 import alibabaCloud from "../assets/providers/alibaba-cloud.svg";
 import openAI from "../assets/providers/openai-black.svg";
@@ -15,7 +15,7 @@ import deepLX from "../assets/providers/deeplx.svg";
 import "./provider-icon.css";
 
 type IconProvider = ServiceProvider | Exclude<TextTranslation, "followService">;
-const PROVIDER_ASSETS: Record<Exclude<IconProvider, "openAICompatible">, string> = {
+const PROVIDER_ASSETS: Record<Exclude<IconProvider, "openAICompatible" | "customDashScopeASR" | "customOpenAIASR">, string> = {
   alibabaCloud,
   openAIRealtime: openAI,
   googleGeminiLive: gemini,
@@ -44,7 +44,7 @@ export function ProviderIcon({ provider, size = 36, className }: ProviderIconPro
       aria-hidden="true"
       style={{ width: size, height: size }}
     >
-      {provider === "openAICompatible" ? (
+      {provider === "customDashScopeASR" || provider === "customOpenAIASR" ? <AudioLines className="provider-icon__generic" size={28} strokeWidth={1.5} /> : provider === "openAICompatible" ? (
         <Languages className="provider-icon__generic" size={28} strokeWidth={1.5} />
       ) : <>
         <img

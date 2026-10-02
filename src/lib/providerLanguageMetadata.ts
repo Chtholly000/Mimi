@@ -1,4 +1,4 @@
-import { capabilitiesForProfile, textTranslationForProfile } from "./providerCapabilities";
+import { capabilitiesForProfile, isCustomSpeechProvider, textTranslationForProfile } from "./providerCapabilities";
 import {
   AUDIO3_RECOGNITION_LANGUAGE_CODES,
   QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES,
@@ -67,6 +67,14 @@ const LITE_AVAILABILITY: ProfileLanguageMetadata["providerAvailable"] = Object.f
 export function languageMetadataForProfile(profile: ServiceProfile, targetLanguage: TargetLanguage = "zh"): ProfileLanguageMetadata {
   const capabilities = capabilitiesForProfile(profile, targetLanguage);
   const appSelectable = { sourceCodes: capabilities.sourceLanguages, targetCodes: capabilities.targetLanguages };
+  if (isCustomSpeechProvider(profile.provider)) return {
+    appSelectable,
+    providerAvailable: {
+      recognition: { model: null, languageCodes: null, automaticDetection: "unverified" },
+      translation: UNKNOWN_TRANSLATION, explicitPipelineSourceCodes: null,
+      limitation: "customUnknown", evidenceUrls: [],
+    },
+  };
   if (profile.provider === "alibabaCloud" || profile.provider === "deepLX") {
     const route = textTranslationForProfile(profile);
     if (route === "followService") return { appSelectable, providerAvailable: LITE_AVAILABILITY };

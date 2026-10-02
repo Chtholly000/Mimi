@@ -154,12 +154,15 @@ export type ServiceProvider =
   | "tencentCloud"
   | "baiduTranslate"
   | "xAIRealtime"
+  | "customDashScopeASR"
+  | "customOpenAIASR"
   | "deepLX";
 
 export type TextTranslation = "followService" | "deepL" | "deepLX" | "openAICompatible";
 
 /** Write-only payload sent to the native secure credential store. */
 export type ProviderCredentialsInput =
+  | { kind: "customSpeech"; endpoint: string; model: string; apiKey: string }
   | { kind: "alibabaTranslation"; apiKey: string; textTranslation: TextTranslation; endpoint: string; token: string; model: string }
   | { kind: "deepLX"; asrApiKey: string; endpoint: string; token: string }
   | { kind: "apiKey"; apiKey: string }
@@ -190,6 +193,9 @@ export interface ServiceProfile {
   name: string;
   provider: ServiceProvider;
   credentialState: CredentialState;
+  /** Custom speech profiles expose each independent store's availability, never its values. */
+  speechCredentialState?: CredentialState;
+  textCredentialState?: CredentialState;
   /** Optional for historical/native fixture snapshots; inferred from provider when absent. */
   textTranslation?: TextTranslation;
 }

@@ -7,7 +7,7 @@ import { SupportDiagnostics } from "./SupportDiagnostics";
 
 const mocks = vi.hoisted(() => ({ invoke: vi.fn(), clipboard: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
-vi.mock("../../lib/ipc", () => ({ isTauri: true }));
+vi.mock("../../lib/ipc", () => ({ isTauri: true, setOverlayPointerCursor: vi.fn() }));
 vi.mock("../../lib/diagnosticClipboard", () => ({ writeDiagnosticClipboard: mocks.clipboard }));
 
 let host: HTMLDivElement;
@@ -83,6 +83,8 @@ it("keeps the existing reviewed public feedback action", async () => {
 it.each(["zh", "en", "ja"] as const)("keeps refresh, copy and feedback actions labeled and keyboard-reachable in %s", async (language) => {
   setStoredUiLanguage(language);
   await mount();
+  expect(host.querySelector(".settings-diagnostic-privacy .settings-help-control__description")?.textContent).toBe(I18N.settings.diagnosticsHelp);
+  expect(host.querySelector(".settings-support-diagnostics > p.settings-caption")).toBeNull();
   const buttons = [...host.querySelectorAll<HTMLButtonElement>(".settings-support-diagnostics__actions button")];
   expect(buttons).toHaveLength(3);
   for (const button of buttons) {
@@ -133,6 +135,8 @@ it("loads a safe snapshot on entry, shows concise measurements with events insid
   const details = host.querySelector<HTMLDetailsElement>(".settings-diagnostic-preview")!;
   await act(() => { details.open = true; details.dispatchEvent(new Event("toggle")); });
   expect(host.querySelectorAll(".settings-diagnostic-preview .settings-diagnostic-events li")).toHaveLength(6);
+  expect(host.querySelector(".settings-diagnostic-events__heading .settings-help-control__description")?.textContent).toBe("Since app start");
+  expect(host.querySelector(".settings-diagnostic-events__heading > span:not(.settings-help-control)")).toBeNull();
   expect(mocks.invoke).toHaveBeenCalledOnce();
   await act(() => { details.open = false; details.dispatchEvent(new Event("toggle")); });
   expect(host.querySelector(".settings-diagnostic-events")).toBeNull();

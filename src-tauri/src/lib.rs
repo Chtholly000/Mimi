@@ -123,8 +123,8 @@ pub fn run() {
                     &app.config().identifier,
                 )
             });
-            // Keep the existing accessory default; Dock visibility is a
-            // global preference, independent of service credentials.
+            // Apply the saved global Dock preference at startup. Missing
+            // preferences show Mimi in the Dock, independently of credentials.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(crate::mac_dock::policy(settings.preferences().show_in_dock));
             // A deterministic standard-overlay fixture is useful for native

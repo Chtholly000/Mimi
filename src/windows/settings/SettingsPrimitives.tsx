@@ -1,3 +1,5 @@
+import { I18N } from "../../lib/i18n";
+import { SettingsHelp } from "./SettingsHelp";
 import type { ReactNode } from "react";
 import { Select, type SelectOption } from "../../components/Select";
 import { Icon, type IconName } from "../../components/Icon";
@@ -43,10 +45,7 @@ export function SettingsRow({
   return (
     <div className={`settings-row settings-row--${align}`}>
       <span className="settings-row__copy">
-        <span className="settings-row__label">{label}{hint && <span className="settings-row__hint" tabIndex={0} role="note" aria-label={hint} title={hint}>ⓘ</span>}</span>
-        {description && (
-          <span className="settings-row__description">{description}</span>
-        )}
+        <span className="settings-row__label">{label}{(description || hint) && <SettingsHelp text={[description, hint].filter(Boolean).join("\n")} label={I18N.settings.helpLabel} />}</span>
       </span>
       <span className="settings-row__control">{children}</span>
     </div>

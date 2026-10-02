@@ -1,3 +1,4 @@
+import { SettingsHelp } from "./SettingsHelp";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, X, AlertCircle, Copy, ExternalLink, RotateCw } from "lucide-react";
 import { TransientToast } from "../../lib/transientToast";
@@ -187,11 +188,11 @@ export function SupportDiagnostics({ visible = false }: { visible?: boolean }) {
       <button type="button" className="settings-link" data-action="issue" disabled={busy}
         onClick={() => void perform("issue")}><ExternalLink size={14} aria-hidden="true" /><span>{text.issue}</span></button>
     </div>
-    <p className="settings-help settings-diagnostic-privacy">{I18N.settings.diagnosticsHelp}</p>
+    <div className="settings-diagnostic-privacy"><SettingsHelp text={I18N.settings.diagnosticsHelp} label={I18N.settings.helpLabel} icon="shield-check" /></div>
     {report !== null && <details className="settings-diagnostic-preview" open={manualCopy || detailsOpen} onToggle={(event) => { const open = event.currentTarget.open; setDetailsOpen(open); if (!open) setManualCopy(false); }}>
       <summary>{text.preview}</summary>
       {(manualCopy || detailsOpen) && summary && summary.recentEvents.length > 0 && <div className="settings-diagnostic-events">
-        <div className="settings-diagnostic-events__heading"><h2>{text.recent}</h2><small>{text.sinceStart}</small></div>
+        <div className="settings-diagnostic-events__heading"><h2>{text.recent}</h2><SettingsHelp text={text.sinceStart} label={I18N.settings.helpLabel} /></div>
         <ol>{summary.recentEvents.map((event, index) => <li key={`${event.sequence}-${index}`}><span className="settings-diagnostic-events__time">{(event.elapsedMs / 1000).toFixed(1)} s</span><span>{eventLabel(event, text)}</span></li>)}</ol>
       </div>}
       {(manualCopy || detailsOpen) && (manualCopy ? <textarea aria-label={text.preview} value={report} readOnly rows={10} wrap="off" spellCheck={false} /> : <pre tabIndex={0} aria-label={text.preview}>{report}</pre>)}

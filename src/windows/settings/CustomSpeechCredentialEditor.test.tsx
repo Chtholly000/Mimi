@@ -1,0 +1,98 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { I18N, setStoredUiLanguage } from "../../lib/i18n";
+import { CustomSpeechCredentialEditor } from "./CustomSpeechCredentialEditor";
+
+vi.mock("../../lib/ipc", () => ({ isTauri: false, profileRevealCredential: vi.fn(), setOverlayPointerCursor: vi.fn() }));
+let root: Root, host: HTMLDivElement;
+let props: Parameters<typeof CustomSpeechCredentialEditor>[0];
+beforeEach(() => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  Element.prototype.scrollIntoView = vi.fn();
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+  props = { profile: { id: "custom", name: "Custom", provider: "customDashScopeASR", credentialState: "missing", speechCredentialState: "missing", textCredentialState: "present" }, inputId: "test", disabled: false, busy: false, feedback: null, onSave: vi.fn().mockResolvedValue(null), onRequestDelete: vi.fn(), onConfirmDelete: vi.fn(), confirmingDelete: false, onCancelDelete: vi.fn() };
+});
+afterEach(async () => { await act(() => root.unmount()); host.remove(); setStoredUiLanguage("en"); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+async function render(next = props) { props = next; await act(() => root.render(<CustomSpeechCredentialEditor {...props} />)); }
+async function change(selector: string, value: string) {
+  const input = host.querySelector<HTMLInputElement>(selector)!;
+  await act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
+}
+async function submit(selector = ".service-stage:not(.service-stage--translation) form") { await act(async () => { const node = host.querySelector(selector)!; (node instanceof HTMLFormElement ? node : node.closest("form")!).dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); }); }
+async function fillSpeech(endpoint = "wss://speech.example/inference") {
+  await change("#test-speech-endpoint", endpoint); await change("#test-speech-model", "synthetic-asr-model"); await change("#test-speech-key", "synthetic-asr-key");
+}
+it.each(["en", "zh", "ja"] as const)("separates stage identities and puts protocol requirements in help in %s", async language => {
+  setStoredUiLanguage(language); await render();
+  expect([...host.querySelectorAll(".service-stage h3")].map(node => node.textContent)).toEqual([I18N.settings.speechRecognition, I18N.settings.textTranslationLabel]);
+  expect(host.querySelector('[role="combobox"]')?.textContent).toBe(I18N.settings.customSpeechNoTranslation);
+  expect(host.querySelector('.service-stage .settings-help-control__description')?.textContent).toContain(I18N.settings.customSpeechRequirementsDashScope);
+  expect(host.querySelectorAll("small, .service-stage p")).toHaveLength(0);
+  expect(host.querySelector('[data-provider="alibabaCloud"]')).toBeNull();
+  expect(host.querySelector('input[type="password"]')?.getAttribute("aria-describedby")).toContain("address-key");
+});
+it("saves speech alone without a translation key or synthetic defaults", async () => {
+  await render(); expect(host.querySelector<HTMLInputElement>("#test-speech-endpoint")?.value).toBe("");
+  expect(host.querySelector('button[type="submit"]')?.hasAttribute("disabled")).toBe(true);
+  await fillSpeech(); await submit();
+  expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ kind: "customSpeech", endpoint: "wss://speech.example/inference", model: "synthetic-asr-model", apiKey: "synthetic-asr-key" });
+});
+it("keeps drafts on failure and focuses an unsafe address before any save", async () => {
+  await render(); await fillSpeech("wss://speech.example?key=synthetic"); await submit();
+  expect(props.onSave).not.toHaveBeenCalled(); expect(document.activeElement?.id).toBe("test-speech-endpoint");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.customSpeechEndpointInvalid);
+  expect(host.querySelector<HTMLInputElement>("#test-speech-key")?.value).toBe("synthetic-asr-key");
+  await change("#test-speech-endpoint", "ws://localhost:1888"); await change("#test-speech-model", "x".repeat(257)); await submit();
+  expect(document.activeElement?.id).toBe("test-speech-model"); expect(props.onSave).not.toHaveBeenCalled();
+});
+it("allows model-only updates but requires a fresh key with a changed speech address", async () => {
+  await render({ ...props, profile: { ...props.profile, credentialState: "present", speechCredentialState: "present" } });
+  expect(host.querySelector("input")).toBeNull();
+  await act(() => [...host.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === I18N.settings.editSpeechConfiguration)!.click());
+  await change("#test-speech-model", "new-model"); await submit();
+  expect(props.onSave).toHaveBeenCalledWith({ kind: "customSpeech", endpoint: "", model: "new-model", apiKey: "" });
+  await change("#test-speech-endpoint", "wss://new.example/inference");
+  expect(host.querySelector<HTMLInputElement>("#test-speech-key")?.required).toBe(true);
+  expect(host.querySelector('button[type="submit"]')?.hasAttribute("disabled")).toBe(true);
+});
+it("configures text translation using its own key while speech drafts remain untouched", async () => {
+  await render({ ...props, profile: { ...props.profile, speechCredentialState: "present", textCredentialState: "missing", textTranslation: "openAICompatible" } });
+  await change("#test-text-endpoint", "https://translation.example/v1"); await change("#test-text-model", "synthetic-text-model"); await change("#test-text-token", "synthetic-text-key");
+  await submit(".service-stage--translation");
+  expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ kind: "alibabaTranslation", apiKey: "", textTranslation: "openAICompatible", endpoint: "https://translation.example/v1", model: "synthetic-text-model", token: "synthetic-text-key" });
+  expect(host.querySelector("#test-speech-key")).toBeNull();
+  for (const input of host.querySelectorAll<HTMLInputElement>("input")) for (const id of (input.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean)) expect(document.getElementById(id), id).not.toBeNull();
+});
+it("retains a saved speech stage even when its translation credentials are missing", async () => {
+  await render({ ...props, profile: { ...props.profile, speechCredentialState: "present", textCredentialState: "missing", textTranslation: "deepL" } });
+  expect(host.querySelector("#test-speech-key")).toBeNull();
+  expect(host.querySelector<HTMLInputElement>("#test-text-token")?.value).toBe("");
+  await change("#test-text-token", "synthetic-text-key"); await submit("form.service-stages");
+  expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ kind: "alibabaTranslation", apiKey: "", textTranslation: "deepL", endpoint: "", model: "", token: "synthetic-text-key" });
+});
+it("can save translation before recognition without submitting speech drafts", async () => {
+  await render({ ...props, profile: { ...props.profile, textTranslation: "deepL", textCredentialState: "missing" } });
+  await change("#test-speech-key", "synthetic-unsaved-speech-key");
+  await change("#test-text-token", "synthetic-text-key"); await submit("form.service-stages");
+  expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ kind: "alibabaTranslation", apiKey: "", textTranslation: "deepL", endpoint: "", model: "", token: "synthetic-text-key" });
+  expect(host.querySelector<HTMLInputElement>("#test-speech-key")?.value).toBe("synthetic-unsaved-speech-key");
+});
+it("shows OpenAI standalone requirements and locks all forms in an active session", async () => {
+  await render({ ...props, disabled: true, profile: { ...props.profile, provider: "customOpenAIASR" } });
+  expect(host.querySelector('.service-stage .settings-help-control__description')?.textContent).toContain(I18N.settings.customSpeechRequirementsOpenAI);
+  expect([...host.querySelectorAll<HTMLInputElement>("input")].every(input => input.disabled)).toBe(true);
+  expect(host.querySelector('[role="combobox"]')?.hasAttribute("disabled")).toBe(true);
+});
+it("keeps local file mode read-only without exposing any credential form", async () => {
+  await render({ ...props, readOnly: true });
+  expect(host.querySelector("input, form, button[type=submit]")).toBeNull();
+  expect(host.querySelector('[role="combobox"]')?.hasAttribute("disabled")).toBe(true);
+});
+it("clears replacement speech and text drafts after confirmed deletion", async () => {
+  await render(); await fillSpeech(); await render({ ...props, confirmingDelete: true });
+  await act(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === I18N.settings.confirmDelete)!.click());
+  expect(props.onConfirmDelete).toHaveBeenCalledOnce(); expect(host.querySelector<HTMLInputElement>("#test-speech-key")?.value).toBe("");
+});

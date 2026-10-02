@@ -21,6 +21,7 @@ import {
   SettingsSection,
 } from "./SettingsPrimitives";
 import { monitorSessionArchive } from "./sessionArchiveMonitor";
+import { SettingsConfirmation } from "./DestructiveConfirmation";
 
 export function SessionExport({ visible }: { visible: boolean }) {
   const active = useStore((state) => state.session.isActive);
@@ -310,9 +311,20 @@ export function SessionExport({ visible }: { visible: boolean }) {
             </div>
             <span>{I18N.settings.transcriptCount(availableCount)}</span>
           </div>
-          {selected && <div className="session-history__actions">
+          {selected && <div className="session-history__actions" aria-busy={busy}>
             {selected.hasAudio && (audioUrl ? <audio controls src={audioUrl} aria-label={I18N.settings.historyAudio} /> : <button type="button" className="settings-button settings-button--quiet" onClick={() => loadAudio(selected.id)}>{I18N.settings.historyPlayAudio}</button>)}
-            {!confirmDelete ? <button type="button" className="settings-button settings-button--text" disabled={busy} onClick={() => setConfirmDelete(true)}>{I18N.settings.historyDelete}</button> : <span className="session-history__confirm" aria-busy={busy}><span>{I18N.settings.historyDeleteConfirm}</span><button type="button" disabled={busy} onClick={() => setConfirmDelete(false)}>{I18N.settings.historyCancel}</button><button type="button" disabled={busy} onClick={() => { void deleteHistory(selected.id); }}>{I18N.settings.historyDelete}</button></span>}
+            <button type="button" className="settings-button settings-button--danger settings-button--compact" disabled={busy} onClick={() => setConfirmDelete(true)}>
+              <Icon name="trash" />{I18N.settings.historyDelete}
+            </button>
+            {confirmDelete && visible && <SettingsConfirmation
+              message={I18N.settings.historyDeleteConfirm}
+              confirmLabel={I18N.settings.historyDelete}
+              disabled={busy}
+              onCancel={() => setConfirmDelete(false)}
+              onConfirm={() => { void deleteHistory(selected.id); }}
+            >
+              {historyError && <InlineFeedback tone="error">{I18N.settings.historyReadFailed}</InlineFeedback>}
+            </SettingsConfirmation>}
           </div>}
           {audioError && <InlineFeedback tone="error">{I18N.settings.historyAudioFailed}</InlineFeedback>}
           {availableCount > 0 && <div className="session-transcript__toolbar">

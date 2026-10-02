@@ -25,12 +25,12 @@ it("hides the control on Windows and Linux", async () => {
     await mount(); expect(host.querySelector('[role="switch"]')).toBeNull();
   }
 });
-it("keeps the accessory default and saves either toggle direction through the shared store", async () => {
-  await mount(); expect(host.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("false");
-  await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
-  expect(useStore.getState().settings.showInDock).toBe(true);
+it("shows in the Dock by default and saves either toggle direction through the shared store", async () => {
+  await mount(); expect(host.querySelector('[role="switch"]')?.getAttribute("aria-checked")).toBe("true");
   await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
   expect(useStore.getState().settings.showInDock).toBe(false);
+  await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+  expect(useStore.getState().settings.showInDock).toBe(true);
 });
 it("blocks another click while saving and reports failure without changing the choice", async () => {
   let rejectSave!: (reason: Error) => void;
@@ -38,9 +38,9 @@ it("blocks another click while saving and reports failure without changing the c
   useStore.setState({ saveSettings: save }); await mount();
   await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
   expect(host.querySelector<HTMLButtonElement>('[role="switch"]')?.disabled).toBe(true);
-  expect(save).toHaveBeenCalledExactlyOnceWith({ showInDock: true });
+  expect(save).toHaveBeenCalledExactlyOnceWith({ showInDock: false });
   await act(async () => rejectSave(new Error("synthetic-write-failure")));
   expect(host.querySelector('[role="alert"]')).toBeTruthy();
   expect(host.querySelector<HTMLButtonElement>('[role="switch"]')?.disabled).toBe(false);
-  expect(useStore.getState().settings.showInDock).toBe(false);
+  expect(useStore.getState().settings.showInDock).toBe(true);
 });

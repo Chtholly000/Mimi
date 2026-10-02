@@ -118,7 +118,7 @@ it("clears drafts before confirmed deletion and respects an active-session lock"
   await render({ ...props, profile: { ...profile, credentialState: "missing" } });
   await change("input", "synthetic-asr");
   await render({ ...props, confirmingDelete: true });
-  const buttons = [...host.querySelectorAll("button")];
+  const buttons = [...document.querySelectorAll("button")];
   await act(async () => buttons.find((button) => button.textContent === I18N.settings.confirmDelete)!.click());
   expect(props.onConfirmDelete).toHaveBeenCalledOnce();
   expect((host.querySelector("input") as HTMLInputElement).value).toBe("");

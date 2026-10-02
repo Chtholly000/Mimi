@@ -59,7 +59,7 @@ it("never borrows Lite's target list for independent official or custom destinat
 });
 
 it("keeps other providers' selectors and unknown full ranges separate", () => {
-  for (const provider of SERVICE_PROVIDERS.filter((provider) => provider !== "alibabaCloud")) {
+  for (const provider of SERVICE_PROVIDERS.filter((provider) => provider !== "alibabaCloud" && provider !== "customDashScopeASR" && provider !== "customOpenAIASR")) {
     const metadata = languageMetadataForProfile({ ...profile, provider, textTranslation: "deepL" });
     expect(metadata.appSelectable.sourceCodes).toEqual(capabilitiesForProvider(provider).sourceLanguages);
     expect(metadata.appSelectable.targetCodes).toEqual(capabilitiesForProvider(provider).targetLanguages);
@@ -70,6 +70,17 @@ it("keeps other providers' selectors and unknown full ranges separate", () => {
   expect(languageMetadataForProfile({ ...profile, provider: "baiduTranslate" }).providerAvailable.recognition.automaticDetection).toBe("unsupported");
   expect(languageMetadataForProfile({ ...profile, provider: "tencentCloud" }).providerAvailable.recognition.automaticDetection).toBe("unsupported");
   expect(languageMetadataForProfile({ ...profile, provider: "volcanoEngine" }).providerAvailable.recognition.automaticDetection).toBe("unverified");
+});
+
+it("keeps custom model languages unknown and Original independent from text translation", () => {
+  for (const provider of ["customDashScopeASR", "customOpenAIASR"] as const) {
+    const original = languageMetadataForProfile({ ...profile, provider, textTranslation: "followService" });
+    expect(original.appSelectable.targetCodes).toEqual(["original"]);
+    expect(original.providerAvailable.recognition.automaticDetection).toBe("unverified");
+    expect(original.providerAvailable.recognition.languageCodes).toBeNull();
+    expect(original.providerAvailable.limitation).toBe("customUnknown");
+    expect(languageMetadataForProfile({ ...profile, provider, textTranslation: "openAICompatible" }).appSelectable.targetCodes).toEqual(["original", "zh", "en", "ja"]);
+  }
 });
 
 it("preserves Chinese scripts and the upstream Tagalog code for display", () => {

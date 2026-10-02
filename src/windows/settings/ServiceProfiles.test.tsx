@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { diagnosticCopy, profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { I18N, providerDisplayName, setStoredUiLanguage } from "../../lib/i18n";
 import { profileRevealCredential, testProfileConnection } from "../../lib/ipc";
-import { sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
+import { SERVICE_PROVIDERS, sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import { SOURCE_LANGUAGE_DISPLAY_NAMES, TARGET_LANGUAGE_DISPLAY_NAMES } from "../../lib/types";
 import type { ServiceProfile, SettingsSnapshot } from "../../lib/types";
 import { ServiceProfiles } from "./ServiceProfiles";
@@ -47,6 +47,15 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 async function render(snapshot = settings, sessionStatusKind: "idle" | "error" = "idle") { await act(() => root.render(<ServiceProfiles settings={snapshot} sessionIsActive={false} sessionStatusKind={sessionStatusKind} />)); }
+it("shows a custom speech profile as ready for Original even when its independent translation key is missing", async () => {
+  const custom: ServiceProfile = { ...profile, provider: "customDashScopeASR", credentialState: "missing", speechCredentialState: "present", textCredentialState: "missing", textTranslation: "deepL" };
+  await render({ ...settings, targetLanguage: "original", profiles: [custom] });
+  expect(host.querySelector(".credential-badge")?.getAttribute("aria-label")).toBe(I18N.settings.credentialPresent);
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  expect(host.querySelector(".service-detail__title .credential-badge")?.getAttribute("aria-label")).toBe(I18N.settings.credentialPresent);
+  expect(host.querySelector(".service-stage--translation")?.textContent).toContain("DeepL");
+  expect(host.querySelector('input[id$="-speech-key"]')).toBeNull();
+});
 it.each(["en", "zh", "ja"] as const)("keeps local dev file credentials out of editors and reveal in %s", async (language) => {
   setStoredUiLanguage(language);
   const snapshot: SettingsSnapshot = { ...settings, credentialStorage: "localDevFile", profiles: [{ ...profile, credentialState: "present" }] };
@@ -70,9 +79,16 @@ it.each(["en", "zh", "ja"] as const)("keeps local dev file credentials out of ed
   expect(host.textContent).not.toContain(I18N.settings.credentialUnavailableHelp);
 });
 async function click(label: string) {
-  const button = [...host.querySelectorAll("button")].find(node => node.textContent === label)!;
-  expect(button).toBeTruthy();
+  const surface = document.querySelector('[role="alertdialog"], [role="dialog"]') ?? host;
+  const button = [...surface.querySelectorAll("button")].find(node => node.textContent === label)
+    ?? (label === diagnosticCopy().test ? host.querySelector<HTMLButtonElement>(".connection-check button") : null);
+  if (!button) throw new Error(`Button not found: ${label}`);
   await act(async () => button.click());
+}
+async function previewProvider(provider: ServiceProfile["provider"]) {
+  const button = host.querySelector<HTMLButtonElement>(`.provider-option[data-provider="${provider}"]`)!;
+  expect(button).toBeTruthy();
+  await act(() => button.click());
 }
 async function change(selector: string, value: string) {
   const node = host.querySelector<HTMLInputElement>(selector)!;
@@ -90,6 +106,33 @@ async function submit() {
   await act(async () => host.querySelector(".credential-form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
 }
 
+it.each(["zh", "en", "ja"] as const)("keeps credential states as accessible icons with keyboard tooltips in %s", async language => {
+  setStoredUiLanguage(language);
+  for (const [credentialState, label] of [["present", I18N.settings.credentialPresent], ["missing", I18N.settings.credentialMissing], ["unavailable", I18N.settings.credentialUnavailable]] as const) {
+    await render({ ...settings, profiles: [{ ...profile, credentialState }] });
+    const badge = host.querySelector<HTMLElement>(".credential-badge")!;
+    expect(badge.textContent).toBe("");
+    expect(badge.getAttribute("role")).toBe("img");
+    expect(badge.getAttribute("aria-label")).toBe(label);
+    expect(badge.tabIndex).toBe(0);
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+    const matches = badge.matches.bind(badge);
+    const focusVisible = vi.spyOn(badge, "matches").mockImplementation(selector => selector === ":focus-visible" || matches(selector));
+    await act(() => badge.focus());
+    const popup = document.querySelector<HTMLElement>('[role="tooltip"]')!;
+    expect(popup.textContent).toBe(label);
+    expect(badge.getAttribute("aria-describedby")).toBe(popup.id);
+    await act(() => badge.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+    expect(document.activeElement).toBe(badge);
+    await act(() => badge.blur());
+    focusVisible.mockRestore();
+  }
+  expect(actions.selectProfile).not.toHaveBeenCalled();
+  expect(actions.updateProfile).not.toHaveBeenCalled();
+  expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
+});
+
 it("shows loading or a retryable initialization timeout without claiming credentials are unavailable", async () => {
   boot.initializationStatus = "loading";
   await render();
@@ -102,6 +145,137 @@ it("shows loading or a retryable initialization timeout without claiming credent
   await click(I18N.settings.retryLoadingSettings);
   expect(boot.init).toHaveBeenCalledOnce();
   expect(testProfileConnection).not.toHaveBeenCalled();
+});
+
+it.each(["zh", "en", "ja"] as const)("previews a provider and leaves settings unchanged when cancelled in %s", async language => {
+  setStoredUiLanguage(language);
+  await render();
+  await click(I18N.settings.addProfile);
+  const options = [...host.querySelectorAll<HTMLButtonElement>(".provider-option")];
+  expect(options.map(option => option.dataset.provider)).toEqual(SERVICE_PROVIDERS);
+  expect(options.slice(-2).map(option => option.dataset.provider)).toEqual(["customDashScopeASR", "customOpenAIASR"]);
+  expect(host.querySelector(".provider-picker small, .provider-picker p")).toBeNull();
+  expect(host.querySelector(".provider-picker__heading .settings-help-control__description")?.textContent).toBe(I18N.settings.chooseProviderDescription);
+  await previewProvider("customOpenAIASR");
+  expect(document.querySelector(".provider-picker__preview h3")?.textContent).toBe(providerDisplayName("customOpenAIASR"));
+  expect(document.querySelector(".provider-picker__preview .settings-help-control__description")?.textContent).toBe(`${I18N.settings.customSpeechRequirementsOpenAI}\n${I18N.settings.customSpeechLanguages}`);
+  expect(actions.createProfile).not.toHaveBeenCalled();
+  await click(I18N.settings.cancel);
+  expect(document.querySelector(".provider-picker__preview")).toBeNull();
+  expect(host.querySelectorAll(".provider-option")).toHaveLength(SERVICE_PROVIDERS.length);
+  await previewProvider("alibabaCloud");
+  await click(I18N.settings.cancel);
+  expect(document.querySelector('[role="alertdialog"], [role="dialog"]')).toBeNull();
+  expect(actions.createProfile).not.toHaveBeenCalled();
+  await click(I18N.settings.cancel);
+  expect(host.querySelector(".provider-picker")).toBeNull();
+  expect(host.querySelectorAll(".service-row")).toHaveLength(1);
+  expect(actions.createProfile).not.toHaveBeenCalled();
+  expect(actions.selectProfile).not.toHaveBeenCalled();
+  expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
+});
+
+it("creates the selected provider only after confirmation and opens the created profile", async () => {
+  const provider = "customDashScopeASR" as const;
+  const created: ServiceProfile = { id: "created-synthetic", provider, name: providerDisplayName(provider), credentialState: "missing" };
+  const next = { ...settings, profiles: [...settings.profiles, created] };
+  actions.createProfile.mockResolvedValue(next);
+  await render(); await click(I18N.settings.addProfile); await previewProvider(provider);
+  expect(actions.createProfile).not.toHaveBeenCalled();
+  await click(I18N.settings.confirmAddProfile);
+  expect(actions.createProfile).toHaveBeenCalledExactlyOnceWith(provider, providerDisplayName(provider));
+  expect(host.querySelector(".provider-picker")).toBeNull();
+  await render(next);
+  expect(host.querySelector(".service-detail__identity h2")?.textContent).toBe(created.name);
+  expect(actions.selectProfile).not.toHaveBeenCalled();
+});
+
+it("guards duplicate confirmation synchronously and keeps a failed provider preview available for retry", async () => {
+  let reject!: (error: unknown) => void;
+  actions.createProfile.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+  await render(); await click(I18N.settings.addProfile); await previewProvider("customOpenAIASR");
+  const confirmation = [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === I18N.settings.confirmAddProfile)!;
+  await act(() => { confirmation.click(); confirmation.click(); });
+  expect(actions.createProfile).toHaveBeenCalledExactlyOnceWith("customOpenAIASR", providerDisplayName("customOpenAIASR"));
+  expect(confirmation.disabled).toBe(true);
+  await act(async () => { reject("synthetic-private-provider-failure"); });
+  expect(document.querySelector(".provider-picker__preview h3")?.textContent).toBe(providerDisplayName("customOpenAIASR"));
+  const dialog = document.querySelector('[role="alertdialog"], [role="dialog"]')!;
+  expect(dialog.querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.profileActionFailed);
+  expect(dialog.textContent).not.toContain("synthetic-private-provider-failure");
+  expect(confirmation.disabled).toBe(false);
+  const created: ServiceProfile = { id: "retry-created", provider: "customOpenAIASR", name: providerDisplayName("customOpenAIASR"), credentialState: "missing" };
+  actions.createProfile.mockResolvedValueOnce({ ...settings, profiles: [...settings.profiles, created] });
+  await click(I18N.settings.confirmAddProfile);
+  expect(actions.createProfile).toHaveBeenCalledTimes(2);
+  expect(actions.createProfile).toHaveBeenLastCalledWith("customOpenAIASR", providerDisplayName("customOpenAIASR"));
+  expect(host.querySelector(".provider-picker")).toBeNull();
+});
+
+it.each(["alibabaCloud", "customDashScopeASR", "customOpenAIASR"] as const)("checks %s recognition and translation separately and retains each stage's own outcome", async provider => {
+  const configured: ServiceProfile = { ...profile, provider, credentialState: "present", speechCredentialState: "present", textCredentialState: "present", textTranslation: "deepLX" };
+  vi.mocked(testProfileConnection).mockResolvedValueOnce({ credential: "present", service: "available", reason: null, elapsedMs: 123 })
+    .mockResolvedValueOnce({ credential: "present", service: "unavailable", reason: "authenticationRejected", elapsedMs: 456 });
+  await render({ ...settings, profiles: [configured] });
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  const checks = [...host.querySelectorAll<HTMLDivElement>(".connection-check")];
+  expect(checks).toHaveLength(2);
+  await click(I18N.settings.checkSpeechRecognition);
+  expect(testProfileConnection).toHaveBeenNthCalledWith(1, profile.id, "speech");
+  expect(checks[0].querySelector('[data-tone="success"]')?.textContent).toContain(diagnosticCopy().available);
+  expect(checks[1].querySelector(".settings-feedback")).toBeNull();
+  await click(I18N.settings.checkTextTranslation);
+  expect(testProfileConnection).toHaveBeenNthCalledWith(2, profile.id, "text");
+  expect(checks[0].querySelector('[data-tone="success"]')?.textContent).toContain(diagnosticCopy().available);
+  expect(checks[0].querySelector('[data-tone="error"]')).toBeNull();
+  expect(checks[1].querySelector('[data-tone="error"]')?.textContent).toContain(diagnosticCopy().reasons.authenticationRejected);
+  expect(checks[1].querySelector('[data-tone="success"]')).toBeNull();
+});
+
+it("does not publish a late translation check into a subsequent recognition check", async () => {
+  vi.useFakeTimers();
+  let finishText!: (result: Awaited<ReturnType<typeof testProfileConnection>>) => void;
+  let finishSpeech!: (result: Awaited<ReturnType<typeof testProfileConnection>>) => void;
+  vi.mocked(testProfileConnection).mockImplementationOnce(() => new Promise(resolve => { finishText = resolve; }))
+    .mockImplementationOnce(() => new Promise(resolve => { finishSpeech = resolve; }));
+  await render({ ...settings, profiles: [{ ...profile, credentialState: "present", textTranslation: "deepLX" }] });
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  await click(I18N.settings.checkTextTranslation);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  const checks = [...host.querySelectorAll<HTMLDivElement>(".connection-check")];
+  expect(checks[1].querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.profileCheckTimedOut);
+  await click(I18N.settings.checkSpeechRecognition);
+  await act(async () => { finishText({ credential: "present", service: "available", reason: null, elapsedMs: 999 }); });
+  expect(checks[0].querySelector(".settings-feedback")).toBeNull();
+  expect(checks[0].querySelector("button")?.getAttribute("aria-busy")).toBe("true");
+  expect(checks[1].querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.profileCheckTimedOut);
+  await act(async () => { finishSpeech({ credential: "present", service: "available", reason: null, elapsedMs: 100 }); });
+  expect(checks[0].querySelector('[data-tone="success"]')?.textContent).toContain(diagnosticCopy().available);
+  expect(checks[1].querySelector('[data-tone="success"]')).toBeNull();
+  expect(testProfileConnection).toHaveBeenNthCalledWith(1, profile.id, "text");
+  expect(testProfileConnection).toHaveBeenNthCalledWith(2, profile.id, "speech");
+});
+
+it("requires saving an unsaved translation route before checking it while leaving recognition available", async () => {
+  vi.mocked(testProfileConnection).mockResolvedValue({ credential: "present", service: "available", reason: null });
+  await render({ ...settings, profiles: [{ ...profile, credentialState: "present", textTranslation: "deepLX" }] });
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  await click(I18N.settings.checkTextTranslation);
+  const textCheck = host.querySelector<HTMLDivElement>(".service-stage--translation .connection-check")!;
+  expect(textCheck.querySelector('[data-tone="success"]')).not.toBeNull();
+  const selector = host.querySelector<HTMLButtonElement>('.service-stage--translation [role="combobox"]')!;
+  await act(() => selector.click());
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === "DeepL")!;
+  await act(() => option.click());
+  expect(textCheck.querySelector<HTMLButtonElement>("button.settings-button")!.disabled).toBe(true);
+  expect(textCheck.querySelector(".settings-help-control__description")?.textContent).toBe(I18N.settings.saveTranslationBeforeCheck);
+  expect(textCheck.querySelector(".settings-feedback")).toBeNull();
+  await act(() => textCheck.querySelector<HTMLButtonElement>("button.settings-button")!.click());
+  expect(testProfileConnection).toHaveBeenCalledExactlyOnceWith(profile.id, "text");
+  await click(I18N.settings.checkSpeechRecognition);
+  expect(testProfileConnection).toHaveBeenLastCalledWith(profile.id, "speech");
+  expect(testProfileConnection).toHaveBeenCalledTimes(2);
+  expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
 });
 
 it("releases a hung connection check after 30 seconds and ignores its late result during a manual retry", async () => {
@@ -195,7 +369,7 @@ it.each(["zh", "en", "ja"] as const)("groups the service identity, credential st
   const identity = host.querySelector(".service-detail__identity")!;
   expect(identity.querySelector('.provider-icon[data-provider="openAIRealtime"]')).not.toBeNull();
   expect(identity.querySelector("h2")?.textContent).toBe(profile.name);
-  expect(identity.querySelector(".service-detail__title .credential-badge")?.textContent).toBe(I18N.settings.credentialPresent);
+  expect(identity.querySelector(".service-detail__title .credential-badge")?.getAttribute("aria-label")).toBe(I18N.settings.credentialPresent);
   expect(identity.querySelector(".service-detail__title .profile-active-badge")?.textContent).toBe(I18N.settings.activeProfile);
   expect(identity.querySelector(".service-detail__description .settings-help-control__description")?.textContent).toContain(I18N.settings.providerOpenAIDescription);
   expect(identity.querySelector(".service-detail__copy > p")).toBeNull();
@@ -229,9 +403,10 @@ it.each(["zh", "en", "ja"] as const)("shows a default provider name once and kee
   await render({ ...settings, profiles: [{ ...profile, name: providerName }, { ...profile, id: "custom", name: "Custom configuration" }] });
   const rows = [...host.querySelectorAll(".service-row")];
   expect(rows[0].querySelector(".service-row__copy")?.textContent).toBe(providerName);
-  expect(rows[0].querySelector(".service-row__copy small")).toBeNull();
+  expect(rows[0].querySelector(".service-row__provider")).toBeNull();
   expect(rows[1].querySelector(".service-row__copy strong")?.textContent).toBe("Custom configuration");
-  expect(rows[1].querySelector(".service-row__copy small")?.textContent).toBe(providerName);
+  expect(rows[1].querySelector(".service-row__provider")?.textContent).toBe(providerName);
+  expect(rows.some(row => !!row.querySelector(".service-row__copy small"))).toBe(false);
   expect(rows.every((row) => !!row.querySelector(".service-row__main") && !!row.querySelector(".service-row__edit"))).toBe(true);
 });
 
@@ -279,7 +454,8 @@ it("does not edit the active service's global languages from another profile's d
   await render({ ...settings, profiles: [profile, { ...profile, id: "other", name: "Other", credentialState: "present" }] });
   await act(() => host.querySelectorAll<HTMLButtonElement>(".service-row__edit")[1].click());
   expect(host.querySelector("#translation-languages")).toBeNull();
-  expect(host.textContent).toContain(I18N.settings.useProfileForLanguages);
+  expect(host.querySelector(".service-detail__language-note")).toBeNull();
+  expect(host.querySelector(".service-detail__actions .settings-help-control__description")?.textContent).toBe(I18N.settings.useProfileForLanguages);
   expect(host.querySelector(".service-detail__actions")?.textContent).toContain(I18N.settings.useProfile);
   expect(actions.saveSettings).not.toHaveBeenCalled();
 });
@@ -296,9 +472,19 @@ it("keeps profile rename and delete actions reachable without opening another pa
   const management = host.querySelector(".service-detail__actions")!;
   expect(management.textContent).toContain(I18N.settings.useProfile);
   expect(management.textContent).toContain(I18N.settings.deleteProfile);
+  const deleteButton = [...management.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === I18N.settings.deleteProfile)!;
+  expect(deleteButton.classList.contains("settings-button--danger")).toBe(true);
   await click(I18N.settings.deleteProfile);
-  expect(host.querySelector(".destructive-confirmation")?.textContent).toContain(I18N.settings.deleteProfileConfirm("Other"));
+  expect(document.querySelector('[role="alertdialog"]')?.textContent).toContain(I18N.settings.deleteProfileConfirm("Other"));
+  expect(document.querySelector('[role="alertdialog"] small')).toBeNull();
   expect(actions.deleteProfile).not.toHaveBeenCalled();
+  await click(I18N.settings.cancel);
+  expect(document.querySelector('[role="alertdialog"]')).toBeNull();
+  expect(actions.deleteProfile).not.toHaveBeenCalled();
+  actions.deleteProfile.mockResolvedValue({ ...snapshot, profiles: [snapshot.profiles[0]] });
+  await click(I18N.settings.deleteProfile);
+  await click(I18N.settings.confirmDelete);
+  expect(actions.deleteProfile).toHaveBeenCalledExactlyOnceWith("other");
 });
 
 it("reveals an existing key only on demand and never puts it in the replacement draft", async () => {
@@ -335,7 +521,7 @@ it.each(["credential_service_unavailable", "credential_store_access_denied", "cr
   for (const [credential, reason] of [["serviceUnavailable", "credentialsServiceUnavailable"], ["accessDenied", "credentialsAccessDenied"], ["missing", "credentialsMissing"]] as const) {
     vi.mocked(testProfileConnection).mockResolvedValue({ credential, service: "unavailable", reason });
     await click(diagnosticCopy("linux").test);
-    expect(testProfileConnection).toHaveBeenLastCalledWith(profile.id);
+    expect(testProfileConnection).toHaveBeenLastCalledWith(profile.id, "speech");
     expect(host.querySelector(".connection-check .settings-feedback")?.textContent).toBe(`${diagnosticCopy("linux").unavailable}: ${diagnosticCopy("linux").reasons[reason]}`);
     expect(host.querySelector<HTMLInputElement>('input[type="password"]')!.value).toBe("synthetic-asr");
     expect(host.querySelector<HTMLInputElement>('input[id$="-token"]')!.value).toBe("synthetic-token");
@@ -361,7 +547,7 @@ it("shows the same platform-aware storage guidance for other service profiles", 
   await render({ ...settings, profiles: [{ ...profile, provider: "openAIRealtime" }] });
   await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
   expect(host.querySelector('.credential-unavailable[role="status"]')?.textContent).toBe(diagnosticCopy("linux").storage);
-  expect(host.textContent).toContain(I18N.settings.credentialUnavailable);
+  expect(host.querySelector(".credential-badge")?.getAttribute("aria-label")).toBe(I18N.settings.credentialUnavailable);
 });
 
 it("replaces generic storage guidance with the failed save error", async () => {
@@ -447,5 +633,5 @@ it("keeps an independent check for another profile when the active session fails
   await click(diagnosticCopy().test);
   await render(configured, "error");
   expect(host.querySelector('.connection-check [data-tone="success"]')?.textContent).toBe(diagnosticCopy().available);
-  expect(testProfileConnection).toHaveBeenCalledExactlyOnceWith("other-synthetic");
+  expect(testProfileConnection).toHaveBeenCalledExactlyOnceWith("other-synthetic", "speech");
 });

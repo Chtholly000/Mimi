@@ -33,6 +33,10 @@ pub enum ProviderKind {
     XAIRealtime,
     #[serde(rename = "deepLX")]
     DeepLX,
+    #[serde(rename = "customDashScopeASR")]
+    CustomDashScopeASR,
+    #[serde(rename = "customOpenAIASR")]
+    CustomOpenAIASR,
 }
 
 impl ProviderKind {
@@ -41,7 +45,9 @@ impl ProviderKind {
         route: TextTranslation,
         target: TargetLanguage,
     ) -> ProviderCapabilities {
-        if self == Self::AlibabaCloud {
+        if self.is_custom_speech() {
+            custom_speech_capabilities(self, route)
+        } else if self == Self::AlibabaCloud {
             alibaba_capabilities(route, target)
         } else {
             self.capabilities()
@@ -59,6 +65,8 @@ impl ProviderKind {
             Self::BaiduTranslate => "baiduTranslate",
             Self::XAIRealtime => "xAIRealtime",
             Self::DeepLX => "deepLX",
+            Self::CustomDashScopeASR => "customDashScopeASR",
+            Self::CustomOpenAIASR => "customOpenAIASR",
         }
     }
 
@@ -73,6 +81,8 @@ impl ProviderKind {
             Self::BaiduTranslate => "Baidu Translate",
             Self::XAIRealtime => "xAI Grok",
             Self::DeepLX => "DeepLX (Audio 3.0 ASR)",
+            Self::CustomDashScopeASR => "Custom DashScope ASR",
+            Self::CustomOpenAIASR => "Custom OpenAI ASR",
         }
     }
 
@@ -115,7 +125,18 @@ impl ProviderKind {
                 ],
                 16_000,
             ),
+            Self::CustomDashScopeASR | Self::CustomOpenAIASR => {
+                custom_speech_capabilities(self, TextTranslation::FollowService)
+            }
         }
+    }
+
+    pub const fn is_custom_speech(self) -> bool {
+        matches!(self, Self::CustomDashScopeASR | Self::CustomOpenAIASR)
+    }
+
+    pub const fn supports_text_translation(self) -> bool {
+        matches!(self, Self::AlibabaCloud | Self::DeepLX) || self.is_custom_speech()
     }
 
     pub const fn uses_api_key_only(self) -> bool {
@@ -127,6 +148,36 @@ impl ProviderKind {
                 | Self::VolcanoEngine
                 | Self::XAIRealtime
         )
+    }
+}
+
+fn custom_speech_capabilities(
+    provider: ProviderKind,
+    route: TextTranslation,
+) -> ProviderCapabilities {
+    let mut target_languages = vec![TargetLanguage::Original];
+    if route != TextTranslation::FollowService {
+        target_languages.extend([
+            TargetLanguage::SimplifiedChinese,
+            TargetLanguage::English,
+            TargetLanguage::Japanese,
+        ]);
+    }
+    ProviderCapabilities {
+        source_languages: vec![
+            SourceLanguage::Automatic,
+            SourceLanguage::Chinese,
+            SourceLanguage::English,
+            SourceLanguage::Japanese,
+            SourceLanguage::Korean,
+        ],
+        target_languages,
+        translation_modes: vec![TranslationMode::Turbo],
+        input_sample_rate_hz: if provider == ProviderKind::CustomOpenAIASR {
+            24_000
+        } else {
+            16_000
+        },
     }
 }
 
@@ -305,7 +356,7 @@ pub struct ProviderPreferences {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ServiceProfileError {
-    #[error("Separate text translation requires Alibaba speech recognition.")]
+    #[error("The selected speech service does not support separate text translation.")]
     UnsupportedTextTranslation,
     #[error("The service profile ID is invalid.")]
     InvalidID,
@@ -315,7 +366,7 @@ pub enum ServiceProfileError {
     NameTooLong,
 }
 
-/// Text translation override, supported only by the Alibaba Audio 3.0 chain.
+/// Independent text translation for supported speech-recognition chains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TextTranslation {
     #[serde(rename = "followService")]
@@ -391,10 +442,8 @@ impl ServiceProfile {
                     | TextTranslation::DeepL
                     | TextTranslation::OpenAICompatible
             )
-        ) && !matches!(
-            self.provider,
-            ProviderKind::AlibabaCloud | ProviderKind::DeepLX
-        ) {
+        ) && !self.provider.supports_text_translation()
+        {
             return Err(ServiceProfileError::UnsupportedTextTranslation);
         }
         profile.text_translation = self.text_translation;
@@ -411,7 +460,9 @@ impl ServiceProfile {
     }
 
     pub fn capabilities(&self, target: TargetLanguage) -> ProviderCapabilities {
-        if self.effective_provider() == ProviderKind::AlibabaCloud {
+        if self.provider.is_custom_speech() {
+            custom_speech_capabilities(self.provider, self.text_translation())
+        } else if self.effective_provider() == ProviderKind::AlibabaCloud {
             alibaba_capabilities(self.text_translation(), target)
         } else {
             self.effective_provider().capabilities()
@@ -613,6 +664,8 @@ mod tests {
             (ProviderKind::TencentCloud, "tencentCloud"),
             (ProviderKind::BaiduTranslate, "baiduTranslate"),
             (ProviderKind::XAIRealtime, "xAIRealtime"),
+            (ProviderKind::CustomDashScopeASR, "customDashScopeASR"),
+            (ProviderKind::CustomOpenAIASR, "customOpenAIASR"),
         ];
         for (provider, wire_value) in cases {
             assert_eq!(serde_json::to_value(provider).unwrap(), json!(wire_value));
@@ -621,6 +674,52 @@ mod tests {
                 provider
             );
             assert_eq!(provider.wire_value(), wire_value);
+        }
+    }
+
+    #[test]
+    fn custom_speech_keeps_protocol_identity_and_requires_an_independent_translation_route() {
+        for (provider, sample_rate) in [
+            (ProviderKind::CustomDashScopeASR, 16_000),
+            (ProviderKind::CustomOpenAIASR, 24_000),
+        ] {
+            let mut profile = ServiceProfile::new("custom", "Custom speech", provider).unwrap();
+            assert_eq!(profile.validated().unwrap().effective_provider(), provider);
+            assert_eq!(
+                profile
+                    .capabilities(TargetLanguage::English)
+                    .target_languages,
+                vec![TargetLanguage::Original]
+            );
+            for translation in [
+                TextTranslation::DeepL,
+                TextTranslation::DeepLX,
+                TextTranslation::OpenAICompatible,
+            ] {
+                profile.text_translation = Some(translation);
+                assert_eq!(profile.validated().unwrap().effective_provider(), provider);
+                let caps = profile.capabilities(TargetLanguage::English);
+                assert_eq!(caps.input_sample_rate_hz, sample_rate);
+                assert_eq!(caps.source_languages.len(), 5);
+                assert_eq!(
+                    caps.target_languages,
+                    vec![
+                        TargetLanguage::Original,
+                        TargetLanguage::SimplifiedChinese,
+                        TargetLanguage::English,
+                        TargetLanguage::Japanese
+                    ]
+                );
+                assert!(!caps.source_languages.contains(&SourceLanguage::French));
+            }
+            profile.text_translation = Some(TextTranslation::FollowService);
+            let normalized = profile.normalize_preferences(ProviderPreferences {
+                source_language: SourceLanguage::French,
+                target_language: TargetLanguage::English,
+                translation_mode: TranslationMode::Turbo,
+            });
+            assert_eq!(normalized.target_language, TargetLanguage::Original);
+            assert_eq!(normalized.source_language, SourceLanguage::Automatic);
         }
     }
 
