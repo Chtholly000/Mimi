@@ -47,6 +47,23 @@ it("can start reading before compact content overflows and explicitly return to 
   expect(scrollTo).toHaveBeenLastCalledWith({ top: 200, behavior: "instant" });
 });
 
+it("keeps explicit Home at the start through expansion, then restores ordinary reading anchors after new input", () => {
+  const { element, scroll } = fixture();
+  scroll.readFromStart(element);
+  expect(element.scrollTop).toBe(0);
+  expect(scroll.isFollowing()).toBe(false);
+  Object.defineProperty(element, "scrollHeight", { value: 800, configurable: true });
+  scroll.reflow(element);
+  scroll.scrolled(element);
+  scroll.contentChanged(element, "instant");
+  expect(element.scrollTop).toBe(0);
+
+  scroll.userIntent(element, "down"); element.scrollTop = 45; scroll.scrolled(element);
+  scroll.reflow(element);
+  expect(element.scrollTop).toBe(45);
+  expect(scroll.isFollowing()).toBe(false);
+});
+
 it("reveals the same read sentence when removing a lane makes its previous offset exceed the new height", () => {
   const { element, scroll } = fixture();
   scroll.userIntent(element); element.scrollTop = 30; scroll.scrolled(element);

@@ -174,6 +174,19 @@ body.settings-body {
 .pulse-off .pulse__ring, .pulse-off .pulse__dot { animation: none !important; transition: none; }
 
 /* Thin, unobtrusive scrollbars for the overlay timeline. */
+.overlay-timeline {
+  outline: none;
+}
+
+.overlay-timeline:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.6);
+  outline-offset: -1px;
+}
+
+@media (forced-colors: active) {
+  .overlay-timeline:focus-visible { outline-color: CanvasText; }
+}
+
 *::-webkit-scrollbar {
   width: 6px;
   height: 6px;

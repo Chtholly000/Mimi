@@ -178,7 +178,11 @@ export const Timeline = memo(function Timeline({
       onPointerUp={() => scroll.endUserIntent()}
       onPointerCancel={() => scroll.endUserIntent()}
       onKeyDown={(event) => {
-        if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
+        if (event.key === "Home") {
+          event.preventDefault();
+          scroll.readFromStart(event.currentTarget);
+          setReadingHistory(true);
+        } else if (["ArrowUp", "PageUp"].includes(event.key) || (event.key === " " && event.shiftKey)) {
           scroll.beginReading(event.currentTarget);
           setReadingHistory(true);
         } else if (event.key === "End") {
@@ -195,7 +199,7 @@ export const Timeline = memo(function Timeline({
         scroll.scrolled(event.currentTarget);
         setReadingHistory(!scroll.isFollowing());
       }}
-      className={timelineClassName(blendsWithBackground)}
+      className={`overlay-timeline ${timelineClassName(blendsWithBackground)}`}
       style={{
         display: "flex", flexDirection: "column",
         overscrollBehavior: "contain", overflowAnchor: "none",

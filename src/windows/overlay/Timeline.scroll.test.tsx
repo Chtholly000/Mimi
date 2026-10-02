@@ -52,6 +52,41 @@ it("switches to bilingual at the latest sentence's start rather than hiding its 
   expect(scrollTop).toBe(220); // source and actual translated line fit; unused compact budget extends below
 });
 
+it.each(["original", "translation", "bilingual"] as const)("reaches the beginning on the first Home after compact %s rows expand", async mode => {
+  await mount();
+  const reading = vi.fn();
+  await render(mode, blocks, 0, reading);
+  const home = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Home" });
+  await act(async () => timeline.dispatchEvent(home));
+  expect(scrollTop).toBe(0);
+  expect(home.defaultPrevented).toBe(true);
+  expect(reading).toHaveBeenLastCalledWith(true);
+  expect(timeline.querySelector("[aria-label]")).toBeNull();
+
+  // Full rows finish measuring after the key event. The old compact-row
+  // anchor must not override explicit Home during this delayed layout.
+  scrollHeight = 800;
+  await act(async () => {
+    resizeRow(timeline.firstElementChild!);
+    timeline.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  expect(scrollTop).toBe(0);
+  expect(reading).toHaveBeenLastCalledWith(true);
+
+  // Ordinary gestures release Home's start intent and keep their own anchor.
+  await act(async () => {
+    timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 45 }));
+    scrollTop = 45; timeline.dispatchEvent(new Event("scroll", { bubbles: true }));
+    resizeRow(timeline.firstElementChild!);
+  });
+  expect(scrollTop).toBe(45);
+  await act(async () => timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Home" })));
+  expect(scrollTop).toBe(0); // Already-open reading needs no second React transition.
+  await act(async () => timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "End" })));
+  expect(scrollTop).toBe(720);
+  expect(reading).toHaveBeenLastCalledWith(false);
+});
+
 it("keeps a live reader's position through equal-length rewraps, growth, modes and confirmation without following the tail", async () => {
   const live: SubtitleBlock = { id: "live", createdAt: null, presentation: "live", streaming: true,
     source: "Long synthetic original. ".repeat(20), translation: "Long synthetic translation. ".repeat(20) };

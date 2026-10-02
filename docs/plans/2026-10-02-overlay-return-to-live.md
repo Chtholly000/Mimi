@@ -76,6 +76,15 @@ a scrollbar drag. Passive notifications can refresh the visible canonical
 anchor while preserving reading. Only a new downward gesture, End, or the
 explicit return action can resume following; no timer guesses user activity.
 
+Home is an explicit reading-at-start intent, rather than an ordinary upward
+gesture. It moves to zero and keeps that target through the compact-to-full
+transition and later row measurements; restoring the former compact sentence
+offset would otherwise move the first Home into the middle of the first row.
+New wheel, touch, pointer or reading-key input releases that target and returns
+to the existing sentence-anchor policy. End and the visible return action still
+restore live following. The focusable timeline uses a thin neutral keyboard-only
+outline instead of WebKit's default focus ring, with a forced-colors fallback.
+
 ## Geometry and copy
 
 Use the existing status band with a small neutral text button on its right.

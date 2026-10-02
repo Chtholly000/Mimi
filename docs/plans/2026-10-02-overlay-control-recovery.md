@@ -26,6 +26,13 @@ panel too: `canBecomeKeyWindow = true`, `canBecomeMainWindow = false`, and
 keyboard reading input without adding a global End binding. The independent
 tracking area still supplies hover while another app owns keyboard focus.
 
+Signed macOS acceptance confirmed deliberate body click followed by Home/End
+reaches the Timeline. Both subtitle and language-control WebViews accept the
+first mouse click while their nonactivating panels are inactive, so that click
+also executes the chosen control instead of requiring another click. Settings
+and application-activation policy remain unchanged. This builder option still
+requires separate native verification of one-click clear and language controls.
+
 Focused regressions first failed on duplicate actions, missing failure text
 and missing rollback, then passed with this implementation. They cover all
 five secondary controls, manual retries, compact expansion/pause failures,

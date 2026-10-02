@@ -534,6 +534,10 @@ impl OverlayWindowManager {
             .visible_on_all_workspaces(true);
         #[cfg(target_os = "windows")]
         let builder = builder.focusable(false).focused(false);
+        // A nonactivating panel's first deliberate click must also reach its
+        // WebView control, rather than merely focusing the native window.
+        #[cfg(target_os = "macos")]
+        let builder = builder.accept_first_mouse(true);
 
         match builder.build() {
             Ok(window) => {
@@ -2060,6 +2064,8 @@ impl OverlayControlWindowManager {
         let builder = builder.visible_on_all_workspaces(true);
         #[cfg(target_os = "windows")]
         let builder = builder.focusable(false);
+        #[cfg(target_os = "macos")]
+        let builder = builder.accept_first_mouse(true);
         let builder = match builder.parent(&overlay) {
             Ok(builder) => builder,
             Err(_) => {
