@@ -47,6 +47,23 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 async function render(snapshot = settings, sessionStatusKind: "idle" | "error" = "idle") { await act(() => root.render(<ServiceProfiles settings={snapshot} sessionIsActive={false} sessionStatusKind={sessionStatusKind} />)); }
+it.each(["en", "zh", "ja"] as const)("keeps local dev file credentials out of editors and reveal in %s", async (language) => {
+  setStoredUiLanguage(language);
+  const snapshot: SettingsSnapshot = { ...settings, credentialStorage: "localDevFile", profiles: [{ ...profile, credentialState: "present" }] };
+  await render(snapshot);
+  expect(host.querySelector(".services-hint")?.textContent).toContain(diagnosticCopy().localDevReadOnly);
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  expect(host.textContent).toContain(diagnosticCopy().localDevReadOnly);
+  expect(host.querySelector('input[type="password"]')).toBeNull();
+  expect(host.querySelector(".credential-form")).toBeNull();
+  expect(host.querySelector<HTMLInputElement>(`#profile-name-${profile.id}`)?.disabled).toBe(false);
+  expect(vi.mocked(profileRevealCredential)).not.toHaveBeenCalled();
+  expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
+  expect(actions.deleteProfileAPIKey).not.toHaveBeenCalled();
+  await render({ ...snapshot, profiles: [profile] });
+  expect(host.textContent).toContain(diagnosticCopy().localDevUnavailable);
+  expect(host.textContent).not.toContain(I18N.settings.credentialUnavailableHelp);
+});
 async function click(label: string) {
   const button = [...host.querySelectorAll("button")].find(node => node.textContent === label)!;
   expect(button).toBeTruthy();

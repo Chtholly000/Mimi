@@ -1,8 +1,11 @@
-//! Non-secret preferences, service-profile metadata, and OS-backed credentials.
+//! Non-secret preferences, service-profile metadata, and native credentials.
 //!
 //! General preferences and the profile catalog are separate JSON documents.
-//! API keys never enter either document: each profile/provider pair owns one
-//! account in the operating-system credential store.
+//! API keys never enter either document: normal/release builds use a scoped OS
+//! account. The explicit macOS dev feature can select a private read-only file.
+
+#[cfg(any(all(feature = "local-dev-credentials", target_os = "macos"), test))]
+mod local_dev_credentials;
 
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::{CredentialRevealField, ProviderCredentials};
@@ -153,6 +156,9 @@ pub enum CredentialState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecretStoreError {
     Unavailable,
+    ReadOnly,
+    #[cfg(any(all(feature = "local-dev-credentials", target_os = "macos"), test))]
+    LocalDevFileUnavailable,
     #[cfg(any(target_os = "linux", test))]
     ServiceUnavailable,
     #[cfg(any(target_os = "linux", test))]
@@ -163,6 +169,9 @@ impl SecretStoreError {
     fn public_error(self) -> String {
         match self {
             Self::Unavailable => CREDENTIAL_STORE_UNAVAILABLE,
+            Self::ReadOnly => "local_dev_credentials_read_only",
+            #[cfg(any(all(feature = "local-dev-credentials", target_os = "macos"), test))]
+            Self::LocalDevFileUnavailable => "local_dev_credentials_unavailable",
             #[cfg(any(target_os = "linux", test))]
             Self::ServiceUnavailable => CREDENTIAL_SERVICE_UNAVAILABLE,
             #[cfg(any(target_os = "linux", test))]
@@ -200,6 +209,9 @@ pub trait SecretStore: Send + Sync {
     fn load(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError>;
     fn save(&self, service: &str, account: &str, value: &str) -> Result<(), SecretStoreError>;
     fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError>;
+    fn is_read_only(&self) -> bool {
+        false
+    }
 }
 
 struct KeyringSecretStore;
@@ -428,12 +440,18 @@ impl SettingsStore {
         } else {
             PROFILE_KEYCHAIN_SERVICE
         };
+        #[cfg(any(all(feature = "local-dev-credentials", target_os = "macos"), test))]
+        let local_dev_secret =
+            local_dev_credentials::select(&app_config_dir, is_ui_test, application_identifier);
+        #[cfg(not(any(all(feature = "local-dev-credentials", target_os = "macos"), test)))]
+        let local_dev_secret: Option<Box<dyn SecretStore>> = None;
+        let is_file_mode = local_dev_secret.is_some();
         Self::load_with_secret(
             app_config_dir,
             is_ui_test,
-            Box::new(KeyringSecretStore),
+            local_dev_secret.unwrap_or_else(|| Box::new(KeyringSecretStore)),
             profile_keychain_service,
-            !is_development,
+            !is_development && !is_file_mode,
         )
     }
 
@@ -758,11 +776,17 @@ impl SettingsStore {
             .find(|profile| profile.id == profile_id)
             .cloned()
             .ok_or_else(|| PROFILE_NOT_FOUND.to_string())?;
-        let previous_secret = self
-            .load_api_key_for_profile(&profile)
-            .map_err(SecretStoreError::public_error)?;
-
-        let previous_destination = self.destination_value(&profile)?;
+        // File credentials belong to the shared dev file, not this metadata
+        // entry. Removing a profile must not try to modify or reveal that file.
+        let (previous_secret, previous_destination) = if self.secret.is_read_only() {
+            (None, None)
+        } else {
+            (
+                self.load_api_key_for_profile(&profile)
+                    .map_err(SecretStoreError::public_error)?,
+                self.destination_value(&profile)?,
+            )
+        };
 
         let previous_catalog = catalog.clone();
         let mut next_catalog = previous_catalog.clone();
@@ -792,7 +816,12 @@ impl SettingsStore {
         // The old provider also accepts the current providers' normalized
         // subset, and startup revalidates both documents after a crash.
         self.persist_preferences_value(&next_prefs)?;
-        if let Err(error) = self.delete_profile_credentials(&profile) {
+        let deleted = if self.secret.is_read_only() {
+            Ok(())
+        } else {
+            self.delete_profile_credentials(&profile)
+        };
+        if let Err(error) = deleted {
             let secret_restored = previous_secret
                 .as_deref()
                 .map(|value| self.save_api_key_for_profile(&profile, value))
@@ -866,6 +895,7 @@ impl SettingsStore {
                 result.is_ok() || !(selected || migration)
             });
         match self.credentials_for_profile(profile) {
+            Err(error) if error == "local_dev_credentials_unavailable" => "localDevUnavailable",
             Err(error) if error == CREDENTIAL_STORE_UNAVAILABLE => "unavailable",
             Err(error) if error == CREDENTIAL_SERVICE_UNAVAILABLE => "serviceUnavailable",
             Err(error) if error == CREDENTIAL_STORE_ACCESS_DENIED => "accessDenied",
@@ -883,6 +913,16 @@ impl SettingsStore {
         }
     }
 
+    /// Public source only; never exposes a file path or secret. This is not a
+    /// persisted preference and cannot enable file mode from the frontend.
+    pub fn credential_storage(&self) -> &'static str {
+        if self.secret.is_read_only() {
+            "localDevFile"
+        } else {
+            "keychain"
+        }
+    }
+
     /// Explicit settings-window action only. Uses the existing profile-scoped
     /// OS store/cache path and never changes preferences or emits a snapshot.
     pub fn reveal_credential(
@@ -891,6 +931,7 @@ impl SettingsStore {
         field: CredentialRevealField,
         text_translation: Option<TextTranslation>,
     ) -> Result<Option<String>, String> {
+        self.require_writable_credentials()?;
         let profile = self.profile(profile_id)?;
         if !field.allowed_for(&profile, text_translation) {
             return Err("credential_reveal_field_mismatch".into());
@@ -953,6 +994,7 @@ impl SettingsStore {
         profile_id: &str,
         credentials: &ProviderCredentials,
     ) -> Result<(), String> {
+        self.require_writable_credentials()?;
         let profile = self.profile(profile_id)?;
         if let ProviderCredentials::AlibabaTranslation {
             api_key,
@@ -1030,6 +1072,13 @@ impl SettingsStore {
         &self,
         profile: &ServiceProfile,
     ) -> Result<Option<ProviderCredentials>, String> {
+        if self.secret.is_read_only()
+            && profile.text_translation() != TextTranslation::FollowService
+        {
+            // The local file supplies an Alibaba key only, not an independent
+            // MT key/endpoint. Never borrow an OS-store destination instead.
+            return Ok(None);
+        }
         let Some(value) = self
             .load_api_key_for_profile(profile)
             .map_err(SecretStoreError::public_error)?
@@ -1283,6 +1332,7 @@ impl SettingsStore {
     }
 
     fn delete_profile_credentials(&self, profile: &ServiceProfile) -> Result<(), String> {
+        self.require_writable_credentials()?;
         let destination = self.destination_value(profile)?;
         if destination.is_some() {
             self.write_destination_value(profile, None)?;
@@ -1685,6 +1735,13 @@ impl SettingsStore {
             .lock()
             .unwrap()
             .insert(cache_key(service, account), Ok(value));
+    }
+
+    fn require_writable_credentials(&self) -> Result<(), String> {
+        if self.secret.is_read_only() {
+            return Err(SecretStoreError::ReadOnly.public_error());
+        }
+        Ok(())
     }
 }
 

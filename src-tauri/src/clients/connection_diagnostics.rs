@@ -34,6 +34,7 @@ pub enum ConnectionCheckReason {
     CredentialsUnavailable,
     CredentialsServiceUnavailable,
     CredentialsAccessDenied,
+    LocalDevCredentialsUnavailable,
     InvalidConfiguration,
     AuthenticationRejected,
     ServiceRejected,
@@ -72,6 +73,7 @@ impl ConnectionDiagnostic {
             "unavailable" => ConnectionCheckReason::CredentialsUnavailable,
             "serviceUnavailable" => ConnectionCheckReason::CredentialsServiceUnavailable,
             "accessDenied" => ConnectionCheckReason::CredentialsAccessDenied,
+            "localDevUnavailable" => ConnectionCheckReason::LocalDevCredentialsUnavailable,
             _ => ConnectionCheckReason::InvalidConfiguration,
         };
         Some(Self::unavailable(credential, reason))
@@ -353,6 +355,10 @@ mod tests {
             (
                 "accessDenied",
                 ConnectionCheckReason::CredentialsAccessDenied,
+            ),
+            (
+                "localDevUnavailable",
+                ConnectionCheckReason::LocalDevCredentialsUnavailable,
             ),
             ("invalid", ConnectionCheckReason::InvalidConfiguration),
         ] {

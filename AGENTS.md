@@ -8,7 +8,7 @@ Preserve these product constraints:
 
 - Capture system audio only. Do not add microphone capture unless the task explicitly requires it.
 - Subtitle history retention and system-audio recording are off by default. When enabled, save bounded confirmed subtitles and/or system audio to private local session files as content arrives. Do not keep full session transcripts or PCM recordings in memory; only bounded overlay display content and size/limit metadata may remain there. New sessions and normal exit finalize the local files. Disabling an option clears its current-session content; saved sessions require explicit deletion. Never add microphone capture.
-- Store API credentials in the OS keychain only (macOS Keychain / Windows Credential Manager / Linux Secret Service via `keyring`). Never add plaintext, source-controlled, or environment-variable credential fallbacks.
+- Store production API credentials in the OS keychain only (macOS Keychain / Windows Credential Manager / Linux Secret Service via `keyring`). Never add source-controlled or process-environment credential fallbacks. The explicitly requested local macOS dev exception is the default-off `local-dev-credentials` feature, further gated by `app.yuxino.mimi.dev` and non-UI-only mode: a private, validated, read-only app-config `.env` may replace Keychain without fallback or migration. Keep this exception isolated; see [local development credentials](docs/development/local-dev-credentials.md).
 - Keep diagnostics content-free: timing, counts, language codes, status codes, and sanitized error labels are acceptable; recognized or translated text is not.
 
 ## Repository map

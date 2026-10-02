@@ -72,6 +72,8 @@ export interface SessionStateEvent {
 // ---------------------------------------------------------------------------
 
 export interface SettingsSnapshot {
+  /** Availability metadata only; local file credentials are dev-only and never exposed. */
+  credentialStorage?: "keychain" | "localDevFile";
   /** Service profiles never contain credential material, only availability. */
   profiles: ServiceProfile[];
   activeProfileId: string;

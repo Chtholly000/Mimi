@@ -77,6 +77,7 @@ impl ServiceProfilePayload {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsSnapshotPayload {
     pub profiles: Vec<ServiceProfilePayload>,
+    pub credential_storage: &'static str,
     pub active_profile_id: String,
     pub source_language: SourceLanguage,
     pub target_language: TargetLanguage,
@@ -304,6 +305,7 @@ mod tests {
     #[test]
     fn settings_payload_is_camel_case_and_write_only() {
         let payload = SettingsSnapshotPayload {
+            credential_storage: "keychain",
             profiles: vec![ServiceProfilePayload {
                 id: "alibaba-default".into(),
                 name: "Alibaba Cloud".into(),
@@ -334,6 +336,7 @@ mod tests {
         };
         let json = serde_json::to_value(&payload).unwrap();
         assert_eq!(json["activeProfileId"], "alibaba-default");
+        assert_eq!(json["credentialStorage"], "keychain");
         assert_eq!(json["pulseStyle"], "ribbon");
         assert_eq!(json["showInDock"], false);
         assert_eq!(json["networkProxy"]["mode"], "system");
@@ -542,6 +545,7 @@ impl SettingsSnapshotPayload {
                 let prefs = store.preferences();
                 let (active_profile_id, profiles) = store.profile_catalog_or_default();
                 Self {
+                    credential_storage: store.credential_storage(),
                     profiles: profiles
                         .into_iter()
                         .map(ServiceProfilePayload::unavailable)
@@ -577,6 +581,7 @@ impl SettingsSnapshotPayload {
         let prefs = store.preferences();
         let (active_profile_id, profiles) = store.profile_catalog()?;
         Ok(Self {
+            credential_storage: store.credential_storage(),
             profiles: profiles
                 .into_iter()
                 .map(|profile| ServiceProfilePayload::from_profile(store, profile))

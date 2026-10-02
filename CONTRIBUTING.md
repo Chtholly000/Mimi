@@ -28,6 +28,10 @@ npm run tauri:dev        # Windows / Linux
 ./scripts/dev-app.sh     # macOS
 ```
 
+macOS 本机开发可以使用私有、只读的 `.env` 测试凭证，减少重编译后的 API Key 钥匙串授权。仅固定 dev 应用启用，正式版不支持；设置步骤及恢复钥匙串方式见[本机开发凭证](docs/development/local-dev-credentials.md)。
+
+For macOS development, an optional private, read-only `.env` can avoid API-key Keychain prompts after rebuilds. Only the fixed dev app supports it. See [local development credentials](docs/development/local-dev-credentials.md) for setup and returning to Keychain; production storage is unchanged.
+
 Windows 安装包需在 Windows 上构建 / Build Windows installers on Windows:
 
 ```bash
@@ -47,11 +51,11 @@ For Linux dependencies, building, and isolated audio/keyring/UI checks, see the 
 ./scripts/package-app.sh
 ```
 
-界面改动还需要在 macOS 通过 `./scripts/dev-app.sh` 启动固定身份的应用（Windows 使用 `npm run tauri:dev`），检查设置窗、托盘面板和字幕浮窗的普通、空白、错误、暂停、收起、翻译中和长字幕状态。涉及延迟或流式管线的改动应使用所改服务商的真实会话（仅使用本地系统钥匙串凭证）验证并记录测量结果。
+界面改动还需要在 macOS 通过 `./scripts/dev-app.sh` 启动固定身份的应用（Windows 使用 `npm run tauri:dev`），检查设置窗、托盘面板和字幕浮窗的普通、空白、错误、暂停、收起、翻译中和长字幕状态。涉及延迟或流式管线的改动应使用所改服务商的真实会话（本地系统钥匙串，或上述明确隔离的 macOS dev 文件凭证）验证并记录测量结果。
 
 macOS 调试或打包前请阅读 [`docs/development/common-regressions.md`](docs/development/common-regressions.md)。日常验证一律使用 `/Applications/mimi-dev.app`。替换正式版前必须比较完整签名要求；旧临时签名版本迁移到固定签名仍可能需要重新授权一次。公开发布请遵循[固定签名流程](docs/development/macos-release-signing.md)。
 
-For UI changes, launch the stable app identity with `./scripts/dev-app.sh` on macOS (`npm run tauri:dev` on Windows) and inspect the settings window, tray panel, and overlay in normal, empty, error, paused, collapsed, translating, and long-subtitle states. Latency- or streaming-sensitive changes should be verified against a real session for the changed provider, using only local OS-keychain credentials, and include measured results.
+For UI changes, launch the stable app identity with `./scripts/dev-app.sh` on macOS (`npm run tauri:dev` on Windows) and inspect the settings window, tray panel, and overlay in normal, empty, error, paused, collapsed, translating, and long-subtitle states. Latency- or streaming-sensitive changes should be verified against a real session for the changed provider, using local OS-keychain credentials or the isolated macOS dev file mode described above, and include measured results.
 
 Before macOS testing or packaging, read [`docs/development/common-regressions.md`](docs/development/common-regressions.md). Routine testing belongs in `/Applications/mimi-dev.app`. Compare complete designated requirements before replacing the formal app; migration from old ad-hoc releases may require one new grant. Follow the [fixed-signing release workflow](docs/development/macos-release-signing.md) for public artifacts.
 

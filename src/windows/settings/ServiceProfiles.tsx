@@ -402,7 +402,9 @@ export function ServiceProfiles({
           </form>
           <div className="service-detail__connection">
             <ConnectionCheck result={diagnostic?.profileId === selectedProfile.id ? diagnostic.result : null} error={diagnostic?.profileId === selectedProfile.id ? diagnostic.error : null} pending={pendingAction === "test-connection"} disabled={mutationsDisabled} onCheck={handleConnectionCheck} />
-            <SelectedCredentialEditor
+            {settings.credentialStorage === "localDevFile" ? <p role="status" className="settings-caption">
+              {selectedProfile.credentialState === "unavailable" ? diagnosticCopy().localDevUnavailable : diagnosticCopy().localDevReadOnly}
+            </p> : <SelectedCredentialEditor
               key={selectedProfile.id}
               profile={selectedProfile}
               inputId={`profile-api-key-${selectedProfile.id}`}
@@ -418,7 +420,7 @@ export function ServiceProfiles({
                 pendingConfirmation.profileId === selectedProfile.id
               }
               onCancelDelete={() => setPendingConfirmation(null)}
-            />
+            />}
           </div>
           <div className="service-detail__actions">
             {selectedProfile.credentialState === "present" &&
@@ -518,7 +520,7 @@ export function ServiceProfiles({
           </div>
           <p className="settings-caption services-hint">
             <Icon name="shield-check" />
-            {I18N.settings.servicesHint}
+            {settings.credentialStorage === "localDevFile" ? diagnosticCopy().localDevReadOnly : I18N.settings.servicesHint}
           </p>
           {atProfileLimit && (
             <InlineFeedback tone="info">{I18N.settings.profileLimitReached}</InlineFeedback>
