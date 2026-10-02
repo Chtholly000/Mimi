@@ -43,6 +43,21 @@ corrections can change its text while the reader keeps a block/pixel anchor.
 Final promotion changes the canonical row ID, so the existing missing-anchor
 policy preserves the current scroll position rather than forcing the tail.
 
+A live row's layout key includes the latest canonical confirmed timestamp.
+Without this epoch, a final and new live row arriving in one snapshot reused
+the key `live`, so restoring the former live anchor moved the reader to the
+new sentence. On confirmation the former key is missing instead, preserving
+the current pixel position; subsequent native scroll notifications capture
+the confirmed row actually visible there. No text matching or arbitrary
+final-to-preview pairing is used. This is presentation identity only: HQ's
+confirmed sequence is not exposed in the current history/preview IPC contract,
+so the UI does not claim to carry a provider utterance ID. Earlier-history
+eviction, display-mode changes and draft revisions keep the same epoch while
+the newest confirmed timestamp stays the same. Clear unmounts the empty
+timeline and the next session starts in following state. A new live key may
+run the existing position-only entrance; confirmed rows never use that
+entrance class, so the row being read does not acquire a fade on promotion.
+
 Returning before compact lanes finish measuring can leave the scroll position
 above the eventual tail. Observe the fixed viewport and its direct subtitle rows,
 then use the existing reflow policy when row height changes: following repins to
@@ -94,3 +109,7 @@ Final/geometry fixtures dispatch the later native-style scroll after the live
 ID disappears and after a row is clamped to its bottom in all three modes.
 They assert that full reading and the return action remain until fresh downward
 input, and that a stationary pointer click cannot implicitly resume following.
+Production-model fixtures also confirm a live row while adding the next live
+row in the same snapshot, with revised final wording, in all three modes. They
+keep the viewport on the confirmed row, retain its anchor when older history
+is evicted, and resume compact following only on an explicit return request.

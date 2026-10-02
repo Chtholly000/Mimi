@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Timeline } from "./Timeline";
-import type { SubtitleBlock } from "./overlayModel";
+import { buildSubtitleBlocks, type SubtitleBlock } from "./overlayModel";
 
 const originalScrollTo = HTMLElement.prototype.scrollTo;
 let root: Root, host: HTMLDivElement;
@@ -148,6 +148,55 @@ it("renews real scrollbar-drag input on each pointer movement and does not treat
   expect(reading).toHaveBeenLastCalledWith(true);
   await act(async () => { pointerMove(); scrollTop = 120; timeline.dispatchEvent(new Event("scroll", { bubbles: true })); });
   expect(reading).toHaveBeenLastCalledWith(false);
+});
+
+it.each(["original", "translation", "bilingual"] as const)("retains a %s reader's viewport when the live row confirms and a new live row arrives together", async mode => {
+  const previous = { source: "Older confirmed original.", translation: "较早确认译文。", createdAt: 1 };
+  const previewA = { source: "Synthetic draft original A. ".repeat(20), translation: "合成预览译文 A。".repeat(20), isStreaming: true };
+  const before = buildSubtitleBlocks([previous], mode, previewA);
+  await mount(before);
+  let promoted = false;
+  scrollHeight = 700;
+  const oldLive = timeline.lastElementChild!;
+  timeline.firstElementChild!.getBoundingClientRect = () => ({ top: -scrollTop, bottom: 100 - scrollTop } as DOMRect);
+  oldLive.getBoundingClientRect = () => ({ top: (promoted ? 700 : 100) - scrollTop, bottom: (promoted ? 800 : 700) - scrollTop } as DOMRect);
+  const reading = vi.fn();
+  await render(mode, before, 0, reading);
+  scrollTop = 130;
+  await act(async () => timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -30 })));
+  expect(reading).toHaveBeenLastCalledWith(true);
+
+  // Final wording can be corrected: the presentation must not guess identity
+  // from a matching source/translation string or move to whichever live comes next.
+  const finalA = { source: "Corrected confirmed original A. ".repeat(20), translation: "修正后的确认译文 A。".repeat(20), createdAt: 2 };
+  const previewB = { source: "New original B.", translation: "新的译文 B。", isStreaming: true };
+  const after = buildSubtitleBlocks([previous, finalA], mode, previewB);
+  promoted = true; scrollHeight = 800;
+  await render(mode, after, 0, reading);
+  expect(scrollTop).toBe(130);
+  expect(reading).toHaveBeenLastCalledWith(true);
+  expect(timeline.lastElementChild).not.toBe(oldLive);
+  let trimmed = false;
+  const finalRow = timeline.querySelector<HTMLElement>('[data-utterance-id="history-2"]')!;
+  finalRow.getBoundingClientRect = () => ({ top: (trimmed ? 0 : 100) - scrollTop, bottom: (trimmed ? 600 : 700) - scrollTop } as DOMRect);
+  const newLive = timeline.lastElementChild!;
+  newLive.getBoundingClientRect = () => ({ top: (trimmed ? 600 : 700) - scrollTop, bottom: (trimmed ? 700 : 800) - scrollTop } as DOMRect);
+  await act(async () => { resizeRow(finalRow); timeline.dispatchEvent(new Event("scroll", { bubbles: true })); });
+  expect(scrollTop).toBe(130);
+  expect(finalRow.classList.contains("subtitle-block")).toBe(false);
+  expect(finalRow.querySelector("[aria-label]")).toBeNull();
+  expect(finalRow.textContent).toContain(mode === "translation" ? finalA.translation : finalA.source);
+  // Removing older bounded history does not create another live epoch. The
+  // captured confirmed-row anchor follows that same row to its new position.
+  trimmed = true; scrollHeight = 700;
+  const afterTrim = buildSubtitleBlocks([finalA], mode, previewB);
+  await render(mode, afterTrim, 0, reading);
+  expect(scrollTop).toBe(30);
+  expect(timeline.lastElementChild).toBe(newLive);
+  expect(reading).toHaveBeenLastCalledWith(true);
+  await render(mode, afterTrim, 1, reading);
+  expect(reading).toHaveBeenLastCalledWith(false);
+  expect(scrollTop).toBe(620);
 });
 
 it("keeps return-to-live intent through later compact row growth, shrink and replacement while preserving a reader on resize", async () => {

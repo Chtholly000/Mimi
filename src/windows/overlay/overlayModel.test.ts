@@ -41,6 +41,25 @@ describe("same-text committed subtitles", () => {
   });
 });
 
+describe("live presentation epochs", () => {
+  const first = { source: "First original.", translation: "第一句译文。", createdAt: 1 };
+  const second = { source: "Second original.", translation: "第二句译文。", createdAt: 2 };
+  const tail = { source: "Live source.", translation: "实时译文。", isStreaming: true };
+  const liveId = (history: SubtitleSnapshot["history"], mode: "original" | "translation" | "bilingual" = "bilingual") => buildSubtitleBlocks(history, mode, tail).at(-1)!.id;
+
+  it("changes a live layout key on confirmation without matching draft wording to a final", () => {
+    expect(liveId([first, second])).not.toBe(liveId([first]));
+    expect(liveId([first])).not.toBe(liveId([]));
+  });
+  it("keeps the epoch stable across modes, history eviction, and draft revisions", () => {
+    for (const mode of ["original", "translation", "bilingual"] as const) {
+      expect(liveId([second], mode)).toBe(liveId([first, second]));
+      expect(buildSubtitleBlocks([second], mode, { ...tail, source: "Corrected live source." }).at(-1)!.id).toBe(liveId([second]));
+    }
+    expect(liveId([])).toBe("live"); // Clear removes the Timeline; the next empty-history mount starts fresh.
+  });
+});
+
 const settings = {
   sourceLanguage: "auto" as const,
   targetLanguage: "zh" as const,
@@ -371,7 +390,7 @@ describe("subtitle display preference", () => {
     const blocks = buildSubtitleBlocks([pair], "bilingual", tail);
     expect(blocks.map((block) => block.presentation)).toEqual(["history", "live"]);
     expect(blocks[1]).toEqual({
-      id: "live",
+      id: "live-after-history-1",
       createdAt: null,
       presentation: "live",
       source: "Streaming",

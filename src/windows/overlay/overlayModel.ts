@@ -271,8 +271,13 @@ export function buildSubtitleBlocks(
     return blocks;
   }
 
+  // This is a layout epoch, not a provider utterance ID. A confirmation can
+  // insert durable rows and a new live tail together; never reuse the old
+  // live reading anchor for that new tail. Use the canonical history identity
+  // even when a display mode omits the last confirmed row.
+  const latestConfirmedAt = history.at(-1)?.createdAt;
   blocks.push({
-    id: "live",
+    id: latestConfirmedAt === undefined ? "live" : `live-after-history-${latestConfirmedAt}`,
     createdAt: null,
     presentation: "live",
     source: liveTail.source,
