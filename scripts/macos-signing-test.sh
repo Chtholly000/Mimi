@@ -28,7 +28,12 @@ case "$*" in
     done
     exit "${TEST_VERIFY_EXIT:-0}" ;;
 
-  *--entitlements*) printf '%s\n' "${TEST_ENTITLEMENTS:-<plist version=\"1.0\"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>}" ;;
+  *--entitlements*)
+    if [[ " $* " == *' --xml '* ]]; then
+      printf '%s\n' "${TEST_ENTITLEMENTS:-<plist version=\"1.0\"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>}"
+    else
+      printf '[Dict]\n  [Key] com.apple.security.device.audio-input\n  [Value]\n    [Bool] true\n'
+    fi ;;
   *--requirements*) printf 'designated => %s\n' "$TEST_REQUIREMENT" ;;
   *) printf 'Identifier=app.yuxino.mimi\nSignature=%s\n' "${TEST_SIGNATURE:-signed}" ;;
 esac

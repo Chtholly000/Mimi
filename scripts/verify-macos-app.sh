@@ -59,10 +59,10 @@ MICROPHONE_USAGE="$(read_plist NSMicrophoneUsageDescription || true)"
 
 codesign --verify --deep --strict "$APP"
 
-ENTITLEMENTS="$(codesign --display --entitlements - "$APP" 2>/dev/null)"
+ENTITLEMENTS="$(codesign --display --entitlements - --xml "$APP" 2>/dev/null)"
 if ! python3 -c 'import plistlib, sys
 try:
-    valid = plistlib.load(sys.stdin.buffer).get("com.apple.security.device.audio-input") is True
+    valid = plistlib.loads(sys.stdin.buffer.read()).get("com.apple.security.device.audio-input") is True
 except (ValueError, TypeError, AttributeError, plistlib.InvalidFileException):
     valid = False
 sys.exit(0 if valid else 1)' <<<"$ENTITLEMENTS"; then

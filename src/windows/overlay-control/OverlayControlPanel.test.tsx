@@ -9,8 +9,6 @@ import { overlayControlPanelModel } from "./overlayControlModel";
 import { sourceLanguagesForSettings } from "../../lib/providerCapabilities";
 import { SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
 
-vi.mock("./CaptureStatusRow", () => ({ CaptureStatusRow: () => <div className="overlay-control-capture">System sound mix · Receiving sound</div> }));
-
 let host: HTMLDivElement;
 let root: Root;
 let props: Parameters<typeof OverlayControlPanel>[0];
@@ -79,6 +77,17 @@ it("supports keyboard source selection and dismisses only after the command succ
   await key(source, "ArrowDown"); await key(source, "End"); await key(source, "Enter");
   expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith(props.model.sourceOptions.at(-1));
   expect(props.onDismiss).toHaveBeenCalledOnce();
+});
+
+it("opens Speech & Translation from the audio-input gear while More settings keeps the default destination", async () => {
+  await mount();
+  const audioSettings = host.querySelector<HTMLButtonElement>(`.overlay-control-capture button[aria-label="${I18N.settings.audioInputTitle}"]`)!;
+  await act(async () => audioSettings.click());
+  expect(props.onShowSettings).toHaveBeenCalledExactlyOnceWith("service");
+  expect(props.onDismiss).not.toHaveBeenCalled();
+  await act(async () => host.querySelector<HTMLButtonElement>(".overlay-control-settings-link")!.click());
+  expect(props.onShowSettings).toHaveBeenNthCalledWith(2);
+  expect(props.onDismiss).not.toHaveBeenCalled();
 });
 
 it("changes subtitle display without closing the panel and lets Escape close only its picker", async () => {

@@ -7,6 +7,7 @@ import { I18N } from "../../lib/i18n";
 import {
   isTauri,
   overlayControlSetPanelHeight,
+  type SettingsNavigationTarget,
 } from "../../lib/ipc";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import type { SubtitleDisplayMode } from "../../lib/types";
@@ -43,7 +44,7 @@ interface OverlayControlPanelProps {
   onSetSubtitleDisplayMode: (mode: SubtitleDisplayMode) => Promise<void>;
   onSetImmersiveMode: (enabled: boolean) => Promise<void>;
   onSetOverlayLocked: (locked: boolean) => Promise<void>;
-  onShowSettings: () => Promise<void>;
+  onShowSettings: (target?: SettingsNavigationTarget) => Promise<void>;
 }
 
 export function OverlayControlPanel({
@@ -151,7 +152,7 @@ export function OverlayControlPanel({
 
         <CaptureStatusRow
           disabled={pendingAction !== null}
-          onShowAudioSettings={() => performAction("settings", onShowSettings, false)}
+          onShowAudioSettings={() => performAction("settings", () => onShowSettings("service"), false)}
         />
 
         <div ref={displayControlRef} className="overlay-control-picker" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>
