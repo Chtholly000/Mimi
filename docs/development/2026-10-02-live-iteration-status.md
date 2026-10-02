@@ -1,6 +1,6 @@
 # 本轮 Mimi 修复状态
 
-更新时间：2026-10-02。[PR #96](https://github.com/yuxino/mimi/pull/96) 已合入 main（合并提交 `27e182b`）。本轮代码和跨平台 CI 已通过，签名 Mac 开发版已安装；最终真实音频验收仍待用户完成 macOS 钥匙串授权。本文件区分代码修复、自动检查和真机验收。本轮不发布版本。
+更新时间：2026-10-02。[PR #96](https://github.com/yuxino/mimi/pull/96) 已合入 main（`27e182b`）；后续字幕修复 [PR #97](https://github.com/yuxino/mimi/pull/97) 也已合入（`e94ff79`）。最终源 `61a321b` 的本地完整检查、跨平台 CI 和 Mac 快慢语音读位复验通过。最新交付、实际代理对比、私有开发凭据以及未完成项见[继续真机验收](2026-10-02-resumed-native-acceptance.md)。以下表格保留首轮记录，后续记录优先；本轮不发布版本。
 
 ## 已完成代码修复
 
@@ -78,8 +78,8 @@
 - 没有真实 CPU/内存改善百分比；合成 50 次草稿的 Timeline 提交从 51 降到 1（稳定后 2）属于渲染证据。
 - Windows/Linux/Android 本次没有全部真机验收；macOS、组件和 CI 证明分开报告。
 - 正式安装升级的 Keychain 连续授权不能由 dev 同签名测试替代；本轮不改正式应用签名、不发布版本。
-- 最终真实会话启动被 OS Keychain 解密等待阻挡，线程栈显示 `SecKeychainFindGenericPassword → CSSMDecrypt`；12 秒界面超时不代表系统读取已取消。重试的处理中/超时反馈和退出仍可用。电脑工具明确禁止操作 `com.apple.SecurityAgent`，需要用户亲自处理系统提示，不需要提供密钥；没有通过删除钥匙串条目、改 ACL、明文凭据或更换证书绕过。
+- 首轮真实会话启动曾被 OS Keychain 解密等待阻挡，线程栈显示 `SecKeychainFindGenericPassword → CSSMDecrypt`；12 秒界面超时不代表系统读取已取消。用户随后亲自授权；继续真机验收又发现并修复超时卸载会话订阅的问题，已验证授权后自动恢复。电脑工具明确禁止操作 `com.apple.SecurityAgent`；没有通过删除钥匙串条目、改 ACL、明文凭据或更换证书绕过。
 - 尚待验收：最终构建的快慢语音、已授权歌曲和 Sintel 视频、真实 429 恢复、原生浮窗长字幕/修订/hover/手型/沉浸/历史滚动、真实密钥临时查看、正式用户偏好在安装更新后的连续性、实际 Dock 菜单退出/原生保存失败/Dock Reopen，以及 Windows/Linux 设备与全局快捷键。UI-only、组件测试和 CI 不替代这些项目；不宣称 Force Quit 或 OS 关机安全收尾。
 - 本机系统翻译按最新用户指示暂缓；PAC、代理认证、系统 SOCKS-only 配置和 HTTPS 代理地址尚不支持，系统/直连/HTTP CONNECT 与 SOCKS5 自定义路由已交付。
 - PR #96 已合入 main，诊断问题 [#75](https://github.com/yuxino/mimi/issues/75) 已关闭；Linux 外部快捷键问题 [#93](https://github.com/yuxino/mimi/issues/93) 和其它需设备验收的问题仍开放。
-- UI-only 测试已结束；交付时仅运行固定路径的真实 dev，未自动开始采音，等待用户处理钥匙串提示后继续已授权测试。
+- UI-only 测试已结束；后续真实会话仅使用固定路径的 dev。测试音频、会话停止和当前交付状态以继续真机验收记录为准。
