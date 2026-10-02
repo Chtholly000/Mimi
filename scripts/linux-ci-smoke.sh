@@ -112,14 +112,21 @@ window_geometry() {
 window_is_visible() {
   xwininfo -id "$1" | grep -q 'Map State: IsViewable'
 }
+control_island_geometry_matches() {
+  local ox="$1" oy="$2" ow="$3" oh="$4" cx="$5" cy="$6" cw="$7" ch="$8"
+  # The compact island hugs its measured content (80..512px); only the expanded
+  # panel has a fixed 280px width. Preserve the exact anchor and height, and
+  # reject a detached, oversized or click-catching surface outside this overlay.
+  [[ "$cx" == "$((ox + 18))" && "$cy" == "$((oy + 16))" && "$ch" == 30 ]] \
+    && (( cw >= 80 && cw <= 512 && cx + cw <= ox + ow && cy + ch <= oy + oh ))
+}
 assert_control_attached() {
   local ox oy ow oh cx cy cw ch
   for _ in {1..20}; do
     read -r ox oy ow oh < <(window_geometry "$overlay_window")
     read -r cx cy cw ch < <(window_geometry "$control_window")
-    if [[ "$cx" == "$((ox + 18))" && "$cy" == "$((oy + 16))" \
-      && "$cw" == 280 && "$ch" == 30 \
-      && ( -z "${1:-}" || ( "$ox" == "$1" && "$oy" == "$2" ) ) ]] \
+    if control_island_geometry_matches "$ox" "$oy" "$ow" "$oh" "$cx" "$cy" "$cw" "$ch" \
+      && [[ -z "${1:-}" || ( "$ox" == "$1" && "$oy" == "$2" ) ]] \
       && window_is_visible "$overlay_window" && window_is_visible "$control_window"; then return; fi
     sleep 0.25
   done
