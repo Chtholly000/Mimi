@@ -55,3 +55,37 @@ it("reveals the same read sentence when removing a lane makes its previous offse
   scroll.displayChanged(element);
   expect(element.scrollTop).toBe(0);
 });
+
+it.each([false, true])("keeps reading after a delayed geometry scroll at the tail with evicted anchor=%s", evicted => {
+  const { element, scroll } = fixture();
+  element.scrollTop = 30;
+  scroll.beginReading(element);
+  if (evicted) (element.children[0] as HTMLElement).dataset.utteranceId = "new-final";
+  Object.defineProperty(element, "scrollHeight", { value: 130, configurable: true });
+  scroll.reflow(element);
+  // Native layout can clamp the full row to its new bottom and dispatch a
+  // scroll after reflow. No new downward input authorized leaving reading.
+  element.scrollTop = 30;
+  scroll.scrolled(element);
+  expect(scroll.isFollowing()).toBe(false);
+});
+
+it("consumes a scroll input instead of authorizing a later unrelated native scroll", () => {
+  const { element, scroll } = fixture();
+  element.scrollTop = 30;
+  scroll.beginReading(element);
+  scroll.userIntent(element); element.scrollTop = 50; scroll.scrolled(element);
+  expect(scroll.isFollowing()).toBe(false);
+  element.scrollTop = 200; scroll.scrolled(element);
+  expect(scroll.isFollowing()).toBe(false);
+});
+
+it("does not grant an upward gesture or a stationary pointer permission to resume at the tail", () => {
+  const { element, scroll } = fixture();
+  scroll.beginReading(element); scroll.scrolled(element);
+  expect(scroll.isFollowing()).toBe(false);
+  scroll.userIntent(element); scroll.scrolled(element);
+  expect(scroll.isFollowing()).toBe(false);
+  scroll.userIntent(element, "down"); scroll.followIfAtTail(element);
+  expect(scroll.isFollowing()).toBe(true);
+});

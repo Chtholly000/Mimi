@@ -95,6 +95,61 @@ it("keeps a live reader's position through equal-length rewraps, growth, modes a
   expect(timeline.querySelector("[aria-label]")).not.toBeNull();
 });
 
+it.each(["original", "translation", "bilingual"] as const)("does not leave full live %s reading when confirmation clamps geometry and later emits a native scroll", async mode => {
+  const live: SubtitleBlock = { id: "live", createdAt: null, presentation: "live", streaming: true,
+    source: "Synthetic original before confirmation. ".repeat(20), translation: "Synthetic translation before confirmation. ".repeat(20) };
+  await mount([live]);
+  const reading = vi.fn();
+  await render(mode, [live], 0, reading);
+  scrollTop = 30;
+  await act(async () => timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -30 })));
+  expect(reading).toHaveBeenLastCalledWith(true);
+  const final = { ...live, id: "confirmed-2", createdAt: 2, presentation: "latestCommitted" as const, streaming: undefined };
+  await render(mode, [final], 0, reading);
+  const row = timeline.firstElementChild!;
+  row.getBoundingClientRect = () => ({ top: -scrollTop, bottom: scrollHeight - scrollTop } as DOMRect);
+  // Emulate native final-layout shrink followed by a delayed scroll event.
+  // The old live ID no longer exists and the current 30px is now the bottom.
+  scrollHeight = 110;
+  await act(async () => { resizeRow(row); scrollTop = 30; timeline.dispatchEvent(new Event("scroll", { bubbles: true })); });
+  expect(reading).toHaveBeenLastCalledWith(true);
+  expect(row.querySelector("[aria-label]")).toBeNull();
+  scrollHeight = 400;
+  await act(async () => { resizeRow(row); timeline.dispatchEvent(new Event("scroll", { bubbles: true })); });
+  expect(scrollTop).toBe(30);
+  expect(reading).toHaveBeenLastCalledWith(true);
+
+  // A fresh deliberate downward gesture can still resume compact following.
+  await act(async () => {
+    timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 300 }));
+    scrollTop = 320; timeline.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  expect(reading).toHaveBeenLastCalledWith(false);
+  expect(row.querySelector("[aria-label]")).not.toBeNull();
+});
+
+it("renews real scrollbar-drag input on each pointer movement and does not treat a stationary click as return intent", async () => {
+  await mount();
+  const reading = vi.fn();
+  await render("translation", blocks, 0, reading);
+  await act(async () => timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -30 })));
+  await act(async () => {
+    timeline.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    timeline.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  expect(reading).toHaveBeenLastCalledWith(true); // Reading at the tail alone is not permission to leave it.
+  scrollTop = 30;
+  const pointerMove = () => {
+    const event = new Event("pointermove", { bubbles: true });
+    Object.defineProperty(event, "buttons", { value: 1 });
+    timeline.dispatchEvent(event);
+  };
+  await act(async () => { pointerMove(); scrollTop = 50; timeline.dispatchEvent(new Event("scroll", { bubbles: true })); });
+  expect(reading).toHaveBeenLastCalledWith(true);
+  await act(async () => { pointerMove(); scrollTop = 120; timeline.dispatchEvent(new Event("scroll", { bubbles: true })); });
+  expect(reading).toHaveBeenLastCalledWith(false);
+});
+
 it("keeps return-to-live intent through later compact row growth, shrink and replacement while preserving a reader on resize", async () => {
   await mount();
   await act(async () => {

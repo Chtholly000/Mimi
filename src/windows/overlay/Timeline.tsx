@@ -146,31 +146,37 @@ export const Timeline = memo(function Timeline({
         if (event.deltaY < 0) {
           scroll.beginReading(event.currentTarget);
           setReadingHistory(true);
-        } else {
-          scroll.userIntent(event.currentTarget);
+        } else if (event.deltaY > 0) {
+          scroll.userIntent(event.currentTarget, "down");
           // A downward gesture at the bottom also closes history when short
           // content has no scrollbar and would not emit a scroll event.
-          if (event.deltaY > 0) {
-            scroll.scrolled(event.currentTarget);
-            setReadingHistory(!scroll.isFollowing());
-          }
+          scroll.followIfAtTail(event.currentTarget);
+          setReadingHistory(!scroll.isFollowing());
         }
       }}
       onTouchStart={(event) => {
         touchStartYRef.current = event.touches[0]?.clientY ?? null;
-        scroll.userIntent(event.currentTarget);
+        scroll.endUserIntent();
       }}
       onTouchMove={(event) => {
         const y = event.touches[0]?.clientY;
         if (touchStartYRef.current !== null && y !== undefined && y - touchStartYRef.current > 2) {
           scroll.beginReading(event.currentTarget);
           setReadingHistory(true);
-          touchStartYRef.current = null;
+          touchStartYRef.current = y;
+        } else if (touchStartYRef.current !== null && y !== undefined && y - touchStartYRef.current < -2) {
+          scroll.userIntent(event.currentTarget, "down");
+          scroll.followIfAtTail(event.currentTarget);
+          setReadingHistory(!scroll.isFollowing());
+          touchStartYRef.current = y;
         }
       }}
-      onTouchEnd={() => { touchStartYRef.current = null; }}
-      onTouchCancel={() => { touchStartYRef.current = null; }}
+      onTouchEnd={() => { touchStartYRef.current = null; scroll.endUserIntent(); }}
+      onTouchCancel={() => { touchStartYRef.current = null; scroll.endUserIntent(); }}
       onPointerDown={(event) => scroll.userIntent(event.currentTarget)}
+      onPointerMove={(event) => { if (event.buttons !== 0) scroll.userIntent(event.currentTarget); }}
+      onPointerUp={() => scroll.endUserIntent()}
+      onPointerCancel={() => scroll.endUserIntent()}
       onKeyDown={(event) => {
         if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
           scroll.beginReading(event.currentTarget);
@@ -179,7 +185,11 @@ export const Timeline = memo(function Timeline({
           event.preventDefault();
           scroll.followTail(event.currentTarget);
           setReadingHistory(false);
-        } else if (["ArrowDown", "PageDown", " "].includes(event.key)) scroll.userIntent(event.currentTarget);
+        } else if (["ArrowDown", "PageDown", " "].includes(event.key)) {
+          scroll.userIntent(event.currentTarget, "down");
+          scroll.followIfAtTail(event.currentTarget);
+          setReadingHistory(!scroll.isFollowing());
+        }
       }}
       onScroll={(event) => {
         scroll.scrolled(event.currentTarget);

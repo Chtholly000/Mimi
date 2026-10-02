@@ -51,6 +51,16 @@ when block IDs change, not for every draft. Explicit return intent runs after a
 same-render mode change, so the mode anchor cannot override that action. No timer
 or forced jump while deliberately reading is added.
 
+Native scroll notifications are not themselves return-to-live intent. A final
+can replace the live row ID, change its height, and produce a delayed scroll
+at the newly clamped bottom without any user action. Every programmatic
+restoration clears input authorization, including a missing reading anchor;
+restoration never re-arms it. Upward reading input also does not authorize
+returning. Scroll input is consumed once, with real pointer movements renewing
+a scrollbar drag. Passive notifications can refresh the visible canonical
+anchor while preserving reading. Only a new downward gesture, End, or the
+explicit return action can resume following; no timer guesses user activity.
+
 ## Geometry and copy
 
 Use the existing status band with a small neutral text button on its right.
@@ -80,3 +90,7 @@ Size-change regressions exercise delayed compact-row growth/shrink, replacing a
 row with the same block count, and preservation of deliberate reading during
 those notifications. This models the native post-measurement scrollHeight change
 without claiming that mocked component geometry replaces native verification.
+Final/geometry fixtures dispatch the later native-style scroll after the live
+ID disappears and after a row is clamped to its bottom in all three modes.
+They assert that full reading and the return action remain until fresh downward
+input, and that a stationary pointer click cannot implicitly resume following.
