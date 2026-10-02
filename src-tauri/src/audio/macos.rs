@@ -516,10 +516,23 @@ impl MacSystemAudioCapture {
         self.teardown_generation(generation_token).await;
     }
 
+    /// Source changes must wait for actual native teardown, not just the
+    /// bounded stop acknowledgement. Timeouts keep the new source closed.
+    pub async fn wait_until_idle(&self) -> Result<(), SystemAudioCaptureError> {
+        tokio::time::timeout(
+            CAPTURE_STOP_TIMEOUT,
+            self.pending_teardown.wait_until_clear(),
+        )
+        .await
+        .map_err(|_| SystemAudioCaptureError::PreviousCaptureStopping)
+    }
+
     async fn teardown_generation(&self, generation_token: u64) {
         let (done_tx, done_rx) = oneshot::channel::<()>();
         let dispatcher = Arc::clone(&self.dispatcher);
-        let pending_teardown = self.pending_teardown.clone();
+        // Reserve before dispatch: a busy main thread must not leave an idle
+        // gap where another source opens while this SCStream is still live.
+        let teardown_guard = self.pending_teardown.begin();
         dispatcher(Box::new(move || {
             if MAIN_GENERATION.get() != Some(generation_token) {
                 let _ = done_tx.send(());
@@ -535,7 +548,6 @@ impl MacSystemAudioCapture {
                 let _ = done_tx.send(());
                 return;
             };
-            let teardown_guard = pending_teardown.begin();
             // ScreenCaptureKit requires the stream and its output to stay
             // retained until the stop completion fires. Releasing them right
             // after calling stop_capture can leave the capture session
@@ -1182,6 +1194,32 @@ mod resampler_tests {
         assert!(slot.is_none(), "stale stream would reject a retry");
         *slot = Some(retry_token);
         assert_eq!(*slot, Some(retry_token));
+    }
+
+    #[tokio::test]
+    async fn source_switch_waits_for_queued_main_thread_teardown_after_stop_is_dropped() {
+        let (dispatch_tx, dispatch_rx) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        let capture = MacSystemAudioCapture::new(Arc::new(move |task| {
+            dispatch_tx.send(task).unwrap();
+        }));
+        capture.started.store(true, Ordering::SeqCst);
+        capture.generation.begin();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), capture.stop())
+                .await
+                .is_err()
+        );
+        assert!(!capture.started.load(Ordering::SeqCst));
+        // The second stop returns immediately, but it cannot imply native
+        // release while the first teardown is still waiting for the main queue.
+        capture.stop().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), capture.wait_until_idle())
+                .await
+                .is_err()
+        );
+        dispatch_rx.try_recv().unwrap()();
+        capture.wait_until_idle().await.unwrap();
     }
 
     #[tokio::test]

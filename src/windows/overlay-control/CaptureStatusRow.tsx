@@ -4,8 +4,7 @@ import { capturePresentation, type CaptureStatus } from "../../lib/captureStatus
 import { isTauri } from "../../lib/ipc";
 import { useStore } from "../../lib/store";
 import { Icon } from "../../components/Icon";
-import { effectiveUiLanguage } from "../../lib/i18n";
-import { audioSourceCopy } from "../../lib/windowsAudioSource";
+import { effectiveUiLanguage, I18N } from "../../lib/i18n";
 
 const systemOutputLabels = { zh: "系统输出", en: "System output", ja: "システム出力" };
 
@@ -17,6 +16,7 @@ export function CaptureStatusRow({ onShowAudioSettings, disabled = false }: {
   const [status, setStatus] = useState<CaptureStatus | null>(null);
   const active = useStore((state) => state.session.isActive);
   const paused = useStore((state) => state.session.isPaused);
+  const input = useStore((state) => state.settings.audioInput) ?? "system";
   useEffect(() => {
     if (!isTauri) return;
     let disposed = false;
@@ -31,26 +31,28 @@ export function CaptureStatusRow({ onShowAudioSettings, disabled = false }: {
     };
     void refresh();
     return () => { disposed = true; clearTimeout(timer); };
-  }, []);
-  const text = capturePresentation(status, active, paused);
+  }, [input]);
+  // Source changes invalidate the previous poll before a new response arrives.
+  const currentStatus = (input === "microphone") === (status?.kind === "microphone") ? status : null;
+  const language = effectiveUiLanguage();
+  const text = capturePresentation(currentStatus, active, paused, language, input);
   // The system output is useful context, not a claim that a system mix is
   // bound to that device. Missing names never manufacture an Unknown row.
-  const outputName = status?.systemOutputDeviceName;
-  const language = effectiveUiLanguage();
-  const source = outputName
+  const outputName = input === "system" ? currentStatus?.systemOutputDeviceName : null;
+  const microphoneName = input === "microphone" ? currentStatus?.actualDeviceName : null;
+  const source = microphoneName ? `${text.source}${language === "en" ? ": " : "："}${microphoneName}` : outputName
     ? `${systemOutputLabels[language]}${language === "en" ? ": " : "："}${outputName}`
     : text.source;
-  const windows = status?.kind === "windows_output" || /Windows|Win32/i.test(`${navigator.userAgent} ${navigator.platform}`);
   return <div className="overlay-control-capture" aria-label={text.title} title={`${source} · ${text.source} · ${text.observation}`}>
     <span className="overlay-control-capture__summary" role="status">
       <span className="overlay-control-capture__source">{source}</span>
       <span aria-hidden="true"> · </span>
       <span className="overlay-control-capture__observation">{text.observation}</span>
     </span>
-    {windows && onShowAudioSettings && <button
+    {onShowAudioSettings && <button
       type="button"
       className="overlay-control-capture__settings"
-      aria-label={audioSourceCopy().title}
+      aria-label={I18N.settings.audioInputTitle}
       disabled={disabled}
       onClick={onShowAudioSettings}
     ><Icon name="gear" /></button>}

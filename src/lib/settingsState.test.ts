@@ -35,13 +35,23 @@ const SETTINGS: SettingsSnapshot = {
   isOverlayLocked: false,
   uiLanguage: null,
   retainSessionHistory: false,
-  recordSessionAudio: false,
+  recordSessionAudio: false, audioInput: "system",
   windowsAudioSource: "",
   showInDock: false,
   networkProxy: { mode: "system", url: null },
 };
 
 describe("mergeSettingsSnapshot", () => {
+  it("preserves input choices and resets recording only when the actual source changes", () => {
+    const recording = { ...SETTINGS, recordSessionAudio: true };
+    const changed = mergeSettingsSnapshot(recording, { audioInput: "microphone", recordSessionAudio: true });
+    expect(changed).toMatchObject({ audioInput: "microphone", recordSessionAudio: false });
+    expect(mergeSettingsSnapshot(changed, { fontSize: 20 }).audioInput).toBe("microphone");
+    const optedIn = mergeSettingsSnapshot(changed, { recordSessionAudio: true });
+    expect(mergeSettingsSnapshot(optedIn, { audioInput: "microphone" }).recordSessionAudio).toBe(true);
+    expect(mergeSettingsSnapshot(optedIn, { audioInput: "system" }).recordSessionAudio).toBe(false);
+    expect(mergeSettingsSnapshot(recording, { audioInput: "system" }).recordSessionAudio).toBe(true);
+  });
   it("normalizes the proxy route while preserving it across unrelated saves", () => {
     const custom = mergeSettingsSnapshot(SETTINGS, { networkProxy: { mode: "custom", url: "socks5h://127.0.0.1" } });
     expect(custom.networkProxy).toEqual({ mode: "custom", url: "socks5h://127.0.0.1:1080" });

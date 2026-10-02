@@ -1,8 +1,9 @@
 import { effectiveUiLanguage } from "./i18n";
+import type { AudioInput } from "./types";
 
 export interface CaptureStatus {
-  kind: "windows_output" | "macos_system_mix" | "linux_output_monitor" | "unknown";
-  strategy: "follow_system" | "manual_output" | "platform_capture";
+  kind: "windows_output" | "macos_system_mix" | "linux_output_monitor" | "microphone" | "unknown";
+  strategy: "follow_system" | "manual_output" | "platform_capture" | "default_input";
   actualDeviceName: string | null;
   /** Default system output, independent of the macOS mixed-audio capture route. */
   systemOutputDeviceName?: string | null;
@@ -15,13 +16,20 @@ const copy = {
   ja: { title: "音声の取得元", system: "システムに合わせる", manual: "選択した出力先", mac: "システム音声ミックス", linux: "開始時に選択した出力のモニター", unknown: "取得元は不明", deviceUnknown: "実際のデバイスは不明", idle: "音声取得前", paused: "音声取得を一時停止中", unobserved: "音声はまだ未確認", sound: "音声を受信中", silent: "データ受信中、明確な音なし", noData: "音声データなし。音を再生し、アプリの出力先を確認してください" },
 };
 
-export function capturePresentation(value: CaptureStatus | null, active: boolean, paused: boolean, language = effectiveUiLanguage()) {
+const microphoneCopy = {
+  en: { source: "Microphone", noData: "No audio data — check the system’s default microphone" },
+  zh: { source: "麦克风", noData: "暂未采到数据，请检查系统默认麦克风" },
+  ja: { source: "マイク", noData: "音声データなし。システムの既定のマイクを確認してください" },
+};
+
+export function capturePresentation(value: CaptureStatus | null, active: boolean, paused: boolean, language = effectiveUiLanguage(), input: AudioInput = "system") {
   const text = copy[language];
-  const source = value?.kind === "windows_output" ? value.strategy === "follow_system" ? text.system : text.manual
+  const microphone = input === "microphone" || value?.kind === "microphone";
+  const source = microphone ? microphoneCopy[language].source : value?.kind === "windows_output" ? value.strategy === "follow_system" ? text.system : text.manual
     : value?.kind === "macos_system_mix" ? text.mac : value?.kind === "linux_output_monitor" ? text.linux : text.unknown;
   const device = value?.actualDeviceName || text.deviceUnknown;
   const observation = !active ? text.idle : paused ? text.paused : !value?.observation ? text.unobserved
     : value.observation.soundRecent && value.observation.pcmDataRecent ? text.sound
-    : value.observation.pcmDataRecent ? text.silent : text.noData;
+    : value.observation.pcmDataRecent ? text.silent : microphone ? microphoneCopy[language].noData : text.noData;
   return { title: text.title, source, device, observation };
 }

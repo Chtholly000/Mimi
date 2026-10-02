@@ -91,6 +91,19 @@ impl SafeFailure {
                 "backlog",
                 "PROVIDER_EVENT_BACKLOG_OVERFLOW",
             )),
+            "Microphone capture permission was denied." => Some((
+                "capture_setup",
+                "permission",
+                "MICROPHONE_PERMISSION_DENIED",
+            )),
+            "No default microphone is available." => Some((
+                "capture_setup",
+                "device_unavailable",
+                "MICROPHONE_UNAVAILABLE",
+            )),
+            "Microphone capture could not be started." => {
+                Some(("capture_setup", "start", "MICROPHONE_START_FAILED"))
+            }
             "capture.native_stopped" => Some(("capture", "stopped", "CAPTURE_STOPPED")),
             "capture.audio_processing_failed" => {
                 Some(("capture", "processing", "AUDIO_PROCESSING_FAILED"))
@@ -319,6 +332,7 @@ pub enum OutputSelection {
     #[cfg(any(target_os = "windows", test))]
     ManualOutput,
     PlatformSystemAudio,
+    DefaultMicrophone,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -420,6 +434,36 @@ pub fn render(facts: DiagnosticFacts) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn microphone_diagnostics_use_fixed_labels_without_device_names() {
+        let facts = DiagnosticFacts {
+            output_selection: OutputSelection::DefaultMicrophone,
+            ..Default::default()
+        };
+        let report = render(facts);
+        assert!(report.contains("default_microphone"));
+        for (message, code) in [
+            (
+                "Microphone capture permission was denied.",
+                "MICROPHONE_PERMISSION_DENIED",
+            ),
+            (
+                "No default microphone is available.",
+                "MICROPHONE_UNAVAILABLE",
+            ),
+            (
+                "Microphone capture could not be started.",
+                "MICROPHONE_START_FAILED",
+            ),
+        ] {
+            assert_eq!(SafeFailure::from_error(message).code, code);
+        }
+        assert_eq!(
+            SafeFailure::from_error("Private microphone name: failed").code,
+            "OTHER"
+        );
+    }
 
     #[test]
     fn issue_link_has_a_fixed_public_destination_and_only_safe_facts() {

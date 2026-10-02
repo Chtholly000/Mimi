@@ -51,7 +51,7 @@ export interface SessionStateEvent {
   apiLatencyMs?: number | null;
   translationLatencyMs?: number | null;
   translationLatencyKind?: "request" | "follow" | null;
-  /** MT backoff leaves system audio and recognition running. */
+  /** MT backoff leaves the selected audio input and recognition running. */
   translationRecovery?: {
     reason: "rateLimited" | "temporarilyUnavailable";
     retryAfterMs: number;
@@ -103,6 +103,7 @@ export interface SettingsSnapshot {
   uiLanguage: UiLanguage | null;
   retainSessionHistory: boolean;
   recordSessionAudio: boolean;
+  audioInput: AudioInput;
   windowsAudioSource: string;
   /** macOS only; false retains menu-bar utility behavior. */
   showInDock: boolean;
@@ -117,6 +118,7 @@ export interface NetworkProxyConfig {
 }
 
 export type UiLanguage = "system" | "zh" | "en" | "ja";
+export type AudioInput = "system" | "microphone";
 export type PulseStyle = "syllable" | "ribbon";
 export type SubtitleDisplayMode = "translation" | "bilingual" | "original";
 export type SubtitlePresetColor = "white" | "teal" | "yellow" | "green" | "pink";
@@ -140,6 +142,7 @@ export interface SettingsDraft {
   uiLanguage?: UiLanguage;
   retainSessionHistory?: boolean;
   recordSessionAudio?: boolean;
+  audioInput?: AudioInput;
   windowsAudioSource?: string;
   showInDock?: boolean;
   networkProxy?: NetworkProxyConfig;

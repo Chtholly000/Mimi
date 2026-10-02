@@ -55,3 +55,27 @@ it("keeps Windows audio selection reachable even if a capture snapshot is unavai
   await mount(true);
   expect(host.querySelector<HTMLButtonElement>("button")?.disabled).toBe(true);
 });
+
+it("shows the microphone and its captured device without any system-output hint", async () => {
+  useStore.setState({ settings: { ...initial.settings, audioInput: "microphone" } });
+  mocks.invoke.mockResolvedValue({ kind: "microphone", strategy: "default_input", actualDeviceName: "Synthetic microphone", systemOutputDeviceName: "Stale headphones", observation: { pcmDataRecent: true, soundRecent: true } });
+  await mount();
+  expect(host.querySelector('[role="status"]')?.textContent).toBe("Microphone: Synthetic microphone · Receiving sound");
+  expect(host.textContent).not.toContain("headphones");
+  expect(host.querySelector('.overlay-control-capture')?.getAttribute("title")).not.toContain("System output");
+  expect(host.querySelector<HTMLButtonElement>("button")?.getAttribute("aria-label")).toBe("Audio input");
+});
+
+it("discards the old system output as soon as microphone is selected, before the next status poll resolves", async () => {
+  mocks.invoke.mockResolvedValueOnce({ kind: "macos_system_mix", strategy: "platform_capture", actualDeviceName: null, systemOutputDeviceName: "Old headphones", observation: { pcmDataRecent: true, soundRecent: true } });
+  await mount();
+  expect(host.textContent).toContain("Old headphones");
+  let finish!: (value: unknown) => void;
+  mocks.invoke.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  await act(() => useStore.setState({ settings: { ...initial.settings, audioInput: "microphone" } }));
+  expect(host.querySelector('[role="status"]')?.textContent).toBe("Microphone · Audio not observed yet");
+  expect(host.textContent).not.toContain("Old headphones");
+  await act(async () => finish({ kind: "microphone", strategy: "default_input", actualDeviceName: null, observation: { pcmDataRecent: false, soundRecent: false } }));
+  expect(host.textContent).toContain("check the system’s default microphone");
+  expect(host.textContent).not.toContain("play sound");
+});

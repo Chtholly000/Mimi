@@ -6,10 +6,11 @@
 
 use crate::audio::send_pipeline::{AudioPipelineFailure, AudioSendPipeline};
 use crate::audio::{
-    AudioCaptureFormat, CaptureFailureSender, SystemAudioCapture, SystemAudioCaptureFailure,
+    AudioCapture, AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureFailure,
 };
 use crate::clients::provider_events::{provider_event_channel, ProviderEvent};
 use crate::clients::translation_client::TranslationClient;
+use crate::core::audio_input::AudioInput;
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::{ProviderCredentials, TextTranslationCredentials};
 use crate::core::diagnostics::{
@@ -678,7 +679,9 @@ pub struct SessionManager {
     health_latency: Arc<Mutex<Option<HealthCheckLatency>>>,
     settings: Arc<SettingsStore>,
     controller: Arc<Mutex<TranslationSessionController>>,
-    audio: Arc<Mutex<SystemAudioCapture>>,
+    audio: Arc<Mutex<AudioCapture>>,
+    /// Captured at manual start; pause, reconnect and recovery preserve it.
+    active_audio_input: Arc<Mutex<AudioInput>>,
     recording: Arc<Mutex<crate::core::session_archive::AudioRecording>>,
     archive_revision: Arc<AtomicU64>,
     history: Arc<SessionHistory>,
@@ -741,7 +744,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(app: AppHandle, settings: Arc<SettingsStore>) -> Arc<Self> {
-        let audio_capture = SystemAudioCapture::for_app(&app);
+        let audio_capture = AudioCapture::for_app(&app);
         let history_directory = app.path().app_data_dir().ok();
         let history = SessionHistory::new(
             history_directory
@@ -761,6 +764,7 @@ impl SessionManager {
             settings,
             controller: Arc::new(Mutex::new(TranslationSessionController::default())),
             audio: Arc::new(Mutex::new(audio_capture)),
+            active_audio_input: Default::default(),
             recording: Default::default(),
             archive_revision: Default::default(),
             history: Arc::new(history),
@@ -947,6 +951,15 @@ impl SessionManager {
                     pcm_data_recent: capture.pcm_data_recent,
                     sound_recent: capture.sound_recent,
                 });
+        if self.settings.preferences().audio_input == AudioInput::Microphone {
+            return crate::audio::CaptureStatus {
+                kind: "microphone",
+                strategy: "default_input",
+                actual_device_name: self.audio.lock().unwrap().microphone_device_name(),
+                system_output_device_name: None,
+                observation,
+            };
+        }
         #[cfg(target_os = "windows")]
         {
             let snapshot = self.windows_audio_status().ok().flatten();
@@ -1092,6 +1105,12 @@ impl SessionManager {
         #[cfg(not(target_os = "windows"))]
         let (output_selection, output_availability) =
             (OutputSelection::PlatformSystemAudio, Availability::Unknown);
+        let (output_selection, output_availability) = if prefs.audio_input == AudioInput::Microphone
+        {
+            (OutputSelection::DefaultMicrophone, Availability::Unknown)
+        } else {
+            (output_selection, output_availability)
+        };
         let translation_latency = self
             .client_for_generation(generation)
             .and_then(|client| client.translation_latency());
@@ -1149,6 +1168,9 @@ impl SessionManager {
     pub fn windows_audio_status(
         &self,
     ) -> Result<Option<crate::audio::AudioSourceSnapshot>, String> {
+        if self.settings.preferences().audio_input == AudioInput::Microphone {
+            return Ok(None);
+        }
         #[cfg(target_os = "windows")]
         {
             let mut snapshot = self.audio.lock().unwrap().snapshot()?;
@@ -1275,6 +1297,7 @@ impl SessionManager {
         self.persist_current_history()
             .map_err(|_| "Could not save the previous session history.".to_string())?;
         let preferences = self.settings.preferences();
+        *self.active_audio_input.lock().unwrap() = preferences.audio_input;
         let started_at_ms = crate::core::subtitle_reducer::now_epoch_ms();
         let history_id = (preferences.retain_session_history || preferences.record_session_audio)
             .then(|| uuid::Uuid::new_v4().to_string());
@@ -1313,7 +1336,7 @@ impl SessionManager {
         self.controller.lock().unwrap().begin_connecting();
         self.publish_state();
         // UI fixtures must never read credentials, open a socket, or touch
-        // ScreenCaptureKit. This branch intentionally runs before resolving
+        // native audio capture. This branch intentionally runs before resolving
         // settings because that resolution reads the OS credential store.
         if self.is_ui_test() {
             if self.is_generation_current(request_generation) {
@@ -1455,6 +1478,7 @@ impl SessionManager {
         configuration: LiveTranslationConfiguration,
         generation: u64,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
+        let audio_input = *self.active_audio_input.lock().unwrap();
         Box::pin(async move {
             // Create the client and consume its events through this manager.
             let (event_tx, mut event_rx) = provider_event_channel();
@@ -1565,16 +1589,14 @@ impl SessionManager {
                     Ordering::SeqCst,
                     Ordering::SeqCst,
                 )
-                .map_err(|_| {
-                    "System audio capture is already assigned to a session.".to_string()
-                })?;
+                .map_err(|_| "Audio capture is already assigned to a session.".to_string())?;
             let capture = self.audio.lock().unwrap().clone();
             #[cfg(target_os = "windows")]
             capture.set_source(self.settings.preferences().windows_audio_source);
             match self
                 .run_while_generation_current(
                     generation,
-                    capture.start(audio_ingress, audio_failure_tx, audio_format),
+                    capture.start(audio_ingress, audio_failure_tx, audio_format, audio_input),
                 )
                 .await
             {

@@ -5,13 +5,19 @@ if [[ "$(uname -s)" != Linux ]]; then
   echo "This test requires Linux and PulseAudio." >&2
   exit 2
 fi
-test_name=audio::linux::tests::native_monitor_capture_is_pcm16_and_restarts
+test_prefix=audio::linux::tests::native_
+test_names=(
+  audio::linux::tests::native_monitor_capture_is_pcm16_and_restarts
+  audio::linux::tests::native_microphone_captures_only_explicit_input_and_restarts
+)
 test_list="$(timeout 120s cargo test --locked --manifest-path src-tauri/Cargo.toml \
-  --lib "$test_name" -- --exact --ignored --list)"
-if ! grep -Fxq "$test_name: test" <<< "$test_list"; then
-  echo "Required Linux audio integration test was not discovered: $test_name" >&2
-  exit 1
-fi
+  --lib "$test_prefix" -- --ignored --list)"
+for test_name in "${test_names[@]}"; do
+  if ! grep -Fxq "$test_name: test" <<< "$test_list"; then
+    echo "Required Linux audio integration test was not discovered: $test_name" >&2
+    exit 1
+  fi
+done
 audio_dir="$(mktemp -d -t mimi-linux-audio.XXXXXX)"
 pulse_pid=""
 cleanup() {
@@ -31,6 +37,7 @@ pulseaudio --daemonize=no --exit-idle-time=-1 --use-pid-file=no -n \
   --load="module-native-protocol-unix socket=$audio_dir/pulse.sock auth-anonymous=1" \
   --load="module-null-sink sink_name=mimi-output" \
   --load="module-null-sink sink_name=mimi-microphone" \
+  --load="module-remap-source source_name=mimi-input master=mimi-microphone.monitor" \
   --log-target="file:$audio_dir/pulse.log" &
 pulse_pid=$!
 ready=0
@@ -48,4 +55,4 @@ fi
 pactl set-default-sink mimi-output
 pactl set-default-source mimi-microphone.monitor
 timeout 120s cargo test --locked --manifest-path src-tauri/Cargo.toml \
-  --lib "$test_name" -- --exact --ignored --nocapture
+  --lib "$test_prefix" -- --ignored --nocapture --test-threads=1

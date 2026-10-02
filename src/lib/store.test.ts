@@ -8,6 +8,25 @@ import {
 } from "./store";
 
 describe("local preview store", () => {
+  it("defaults to system audio, preserves explicit microphone selection, and requires stopping before a change", async () => {
+    const original = useStore.getState();
+    expect(original.settings.audioInput).toBe("system");
+    try {
+      await useStore.getState().saveSettings({ audioInput: "microphone" });
+      await useStore.getState().saveSettings({ fontSize: 19 });
+      expect(useStore.getState().settings.audioInput).toBe("microphone");
+      for (const state of [
+        { status: { kind: "listening" as const }, isActive: true, isPaused: false },
+        { status: { kind: "listening" as const }, isActive: false, isPaused: true },
+        { status: { kind: "connecting" as const }, isActive: false, isPaused: false },
+        { status: { kind: "stopping" as const }, isActive: false, isPaused: false },
+      ]) {
+        useStore.setState({ session: { ...original.session, ...state } });
+        await expect(useStore.getState().saveSettings({ audioInput: "system" })).rejects.toThrow("audio_input_change_requires_stop");
+        expect(useStore.getState().settings.audioInput).toBe("microphone");
+      }
+    } finally { useStore.setState({ settings: original.settings, session: original.session }); }
+  });
   it("defaults to showing in the Dock and preserves an explicit hidden choice on unrelated saves", async () => {
     const original = useStore.getState().settings;
     expect(original.showInDock).toBe(true);

@@ -7,7 +7,6 @@ import { useStore } from "../../lib/store";
 import { SOURCE_LANGUAGE_DISPLAY_NAMES, TARGET_LANGUAGE_DISPLAY_NAMES, type SettingsDraft, type SettingsSnapshot } from "../../lib/types";
 import { SettingsHelp } from "./SettingsHelp";
 import { InlineFeedback, SettingsRow } from "./SettingsPrimitives";
-import { WindowsAudioSource } from "./WindowsAudioSource";
 
 /** Explicit language preferences belong to the active service. */
 export function ProfileLanguageSettings({ settings, disabled, requiresStop = false }: { settings: SettingsSnapshot; disabled: boolean; requiresStop?: boolean }) {
@@ -36,7 +35,6 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
   };
   return <section id="translation-languages" className="profile-language-settings" aria-labelledby="translation-languages-title" aria-busy={busy}>
     <header className="profile-language-settings__heading"><h3 id="translation-languages-title">{I18N.settings.subtitleLanguages}</h3>{requiresStop && <SettingsHelp text={I18N.settings.languageChangeRequiresStop} label={I18N.settings.helpLabel} icon="lock" />}</header>
-    <WindowsAudioSource />
     <SettingsRow label={I18N.settings.sourceLanguage} align="start">
       <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} disabled={disabled || busy || sources.length === 1}
         options={sources.map(value => ({ value, label: SOURCE_LANGUAGE_DISPLAY_NAMES[value] }))}

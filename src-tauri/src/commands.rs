@@ -1,6 +1,7 @@
 //! Tauri command handlers exposed to the frontend. The IPC contract is
 //! documented in docs/plans/2026-08-22-multi-provider-professional-settings-design.md.
 
+use crate::core::audio_input::AudioInput;
 use crate::core::credentials::{CredentialRevealField, ProviderCredentials};
 use crate::core::models::{
     SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
@@ -143,6 +144,7 @@ pub struct SettingsSnapshotPayload {
     pub ui_language: Option<String>,
     pub retain_session_history: bool,
     pub record_session_audio: bool,
+    pub audio_input: AudioInput,
     pub windows_audio_source: String,
     pub show_in_dock: bool,
     pub network_proxy: ProxyConfig,
@@ -424,6 +426,7 @@ mod tests {
             serde_json::json!({"retainSessionHistory": false}),
             serde_json::json!({"recordSessionAudio": false}),
             serde_json::json!({"windowsAudioSource": ""}),
+            serde_json::json!({"audioInput": "microphone"}),
             serde_json::json!({"networkProxy": {"mode": "direct"}}),
         ] {
             for show in [None, Some(false), Some(true)] {
@@ -468,6 +471,7 @@ mod tests {
             ui_language: None,
             retain_session_history: false,
             record_session_audio: false,
+            audio_input: AudioInput::System,
             windows_audio_source: String::new(),
             show_in_dock: false,
             network_proxy: ProxyConfig::default(),
@@ -477,6 +481,7 @@ mod tests {
         assert_eq!(json["credentialStorage"], "keychain");
         assert_eq!(json["pulseStyle"], "ribbon");
         assert_eq!(json["showInDock"], false);
+        assert_eq!(json["audioInput"], "system");
         assert_eq!(json["networkProxy"]["mode"], "system");
         assert_eq!(json["profiles"][0]["provider"], "alibabaCloud");
         assert_eq!(json["profiles"][0]["credentialState"], "present");
@@ -529,6 +534,26 @@ mod tests {
             assert!(ensure_settings_draft_allowed(&draft, true).is_err());
             assert!(ensure_settings_draft_allowed(&draft, false).is_ok());
         }
+    }
+
+    #[test]
+    fn audio_input_changes_are_settings_only_and_require_stop() {
+        for input in [AudioInput::System, AudioInput::Microphone] {
+            let draft = SettingsDraft {
+                audio_input: Some(input),
+                ..Default::default()
+            };
+            assert!(ensure_settings_draft_allowed(&draft, true).is_err());
+            assert!(ensure_settings_draft_allowed(&draft, false).is_ok());
+            assert!(ensure_settings_draft_window_allowed("settings", &draft).is_ok());
+            for window in ["tray-panel", "overlay", "overlay-control"] {
+                assert!(ensure_settings_draft_window_allowed(window, &draft).is_err());
+            }
+        }
+        assert!(
+            serde_json::from_value::<SettingsDraft>(serde_json::json!({"audioInput":"both"}))
+                .is_err()
+        );
     }
 
     #[test]
@@ -708,6 +733,7 @@ impl SettingsSnapshotPayload {
                     ui_language: prefs.ui_language,
                     retain_session_history: prefs.retain_session_history,
                     record_session_audio: prefs.record_session_audio,
+                    audio_input: prefs.audio_input,
                     windows_audio_source: prefs.windows_audio_source,
                     show_in_dock: prefs.show_in_dock,
                     network_proxy: prefs.network_proxy,
@@ -750,6 +776,7 @@ impl SettingsSnapshotPayload {
             ui_language: prefs.ui_language,
             retain_session_history: prefs.retain_session_history,
             record_session_audio: prefs.record_session_audio,
+            audio_input: prefs.audio_input,
             windows_audio_source: prefs.windows_audio_source,
             show_in_dock: prefs.show_in_dock,
             network_proxy: prefs.network_proxy,
@@ -776,6 +803,7 @@ pub struct SettingsDraft {
     pub ui_language: Option<String>,
     pub retain_session_history: Option<bool>,
     pub record_session_audio: Option<bool>,
+    pub audio_input: Option<AudioInput>,
     pub windows_audio_source: Option<String>,
     pub show_in_dock: Option<bool>,
     pub network_proxy: Option<ProxyConfig>,
@@ -862,6 +890,7 @@ pub fn app_open_releases(app: AppHandle) -> Result<(), String> {
 fn ensure_settings_draft_window_allowed(label: &str, draft: &SettingsDraft) -> Result<(), String> {
     if (draft.retain_session_history.is_some()
         || draft.record_session_audio.is_some()
+        || draft.audio_input.is_some()
         || draft.windows_audio_source.is_some()
         || draft.network_proxy.is_some())
         && label != "settings"
@@ -899,6 +928,7 @@ async fn apply_settings_draft(
         || draft.translation_mode.is_some()
         || draft.retain_session_history.is_some()
         || draft.record_session_audio.is_some()
+        || draft.audio_input.is_some()
         || draft.windows_audio_source.is_some()
         || draft.network_proxy.is_some();
     let _lifecycle = state
@@ -952,6 +982,7 @@ fn apply_settings_draft_guarded(
         || draft.ui_language.is_some()
         || draft.retain_session_history.is_some()
         || draft.record_session_audio.is_some()
+        || draft.audio_input.is_some()
         || draft.windows_audio_source.is_some()
         || draft.show_in_dock.is_some()
         || draft.network_proxy.is_some();
@@ -979,9 +1010,7 @@ fn apply_settings_draft_guarded(
             if let Some(source) = draft.windows_audio_source {
                 prefs.windows_audio_source = source;
             }
-            if let Some(enabled) = draft.record_session_audio {
-                prefs.record_session_audio = enabled;
-            }
+            prefs.apply_audio_preferences(draft.audio_input, draft.record_session_audio);
             if let Some(font_size) = draft.font_size {
                 prefs.font_size = font_size;
             }
@@ -1029,9 +1058,13 @@ fn apply_settings_draft_guarded(
     )?;
     #[cfg(not(target_os = "macos"))]
     save_preferences()?;
+    // Source changes can clear recording even when the draft omits it. Use
+    // the saved value so a combined draft cannot retain old-source audio.
+    let recording = (draft.audio_input.is_some() || draft.record_session_audio.is_some())
+        .then(|| state.settings.preferences().record_session_audio);
     state
         .session
-        .apply_archive_opt_out(draft.retain_session_history, draft.record_session_audio);
+        .apply_archive_opt_out(draft.retain_session_history, recording);
     // Background blending has no meaningful collapsed presentation. Enforce
     // this natively so the invariant also holds while the WebView is hidden
     // or reloading; do not rely on a React effect to repair geometry later.
@@ -1141,6 +1174,7 @@ fn ensure_settings_draft_allowed(draft: &SettingsDraft, is_active: bool) -> Resu
             || draft.translation_mode.is_some()
             || draft.retain_session_history.is_some()
             || draft.record_session_audio.is_some()
+            || draft.audio_input.is_some()
             || draft.windows_audio_source.is_some())
     {
         Err(

@@ -1,4 +1,4 @@
-//! Platform audio capture (system audio only, never microphone) and the
+//! Explicitly selected platform audio capture (system audio by default) and the
 //! bounded PCM send pipeline.
 
 pub mod send_pipeline;
@@ -23,8 +23,11 @@ pub struct CaptureSignal {
     pub sound_recent: bool,
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "macos", target_os = "windows", test))]
 mod streaming_resampler;
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+mod microphone;
 
 pub mod census;
 
@@ -65,7 +68,7 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SystemAudioCaptureError {
-    #[error("System audio capture is already running.")]
+    #[error("Audio capture is already running.")]
     AlreadyRunning,
     #[cfg(target_os = "macos")]
     #[error("mimi could not find a display to use for system audio capture.")]
@@ -79,24 +82,28 @@ pub enum SystemAudioCaptureError {
     #[error("System audio capture permission was denied.")]
     PermissionDenied,
     #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[error("System audio capture setup timed out.")]
+    #[error("Audio capture setup timed out.")]
     StartTimedOut,
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[error("System audio capture start was cancelled.")]
+    #[error("Audio capture start was cancelled.")]
     StartCancelled,
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[error("The previous system audio capture is still stopping.")]
+    #[error("The previous audio capture is still stopping.")]
     PreviousCaptureStopping,
     #[cfg(target_os = "windows")]
     #[error("The selected sound output is unavailable. Stop subtitles and choose another sound source in Settings.")]
     SelectedPlaybackDeviceUnavailable,
+    #[error("No default microphone is available.")]
+    NoMicrophoneDevice,
+    #[error("Microphone capture permission was denied.")]
+    MicrophonePermissionDenied,
+    #[error("Microphone capture could not be started.")]
+    MicrophoneStartFailed,
     #[error("System audio capture could not be started.")]
     NativeStartFailed,
     #[cfg(any(target_os = "macos", target_os = "windows", test))]
-    #[error("System audio capture could not process the device audio format.")]
+    #[error("Audio capture could not process the device audio format.")]
     AudioProcessingFailed,
     #[cfg(target_os = "linux")]
-    #[error("Connect to PulseAudio or PipeWire with PulseAudio support to capture system audio.")]
+    #[error("Connect to PulseAudio or PipeWire with PulseAudio support to capture audio.")]
     AudioServerUnavailable,
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     #[error("System audio capture is not supported on this platform.")]
@@ -109,9 +116,9 @@ pub enum SystemAudioCaptureError {
 /// same value is safe to use for both recovery decisions and diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum SystemAudioCaptureFailure {
-    #[error("System audio capture stopped unexpectedly.")]
+    #[error("Audio capture stopped unexpectedly.")]
     NativeStopped,
-    #[error("System audio capture could not process the device audio format.")]
+    #[error("Audio capture could not process the device audio format.")]
     AudioProcessingFailed,
     #[error("Audio streaming fell behind. mimi is reconnecting.")]
     Backpressure,
@@ -167,8 +174,8 @@ impl CaptureFailureSender {
     }
 }
 
-/// Provider-requested wire format. All supported backends capture system
-/// audio only, mix to mono, resample to this rate, and encode little-endian
+/// Provider-requested wire format. All supported backends capture one selected
+/// audio source, mix to mono, resample to this rate, and encode little-endian
 /// PCM16 before emitting buffers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioCaptureFormat {
@@ -232,6 +239,164 @@ impl SystemAudioCapture {
             let _ = app;
             unsupported::UnsupportedSystemAudioCapture::new()
         }
+    }
+}
+
+/// One selected input for a capture generation. System and microphone streams
+/// are never opened concurrently, including during cancelled startup/teardown.
+#[derive(Clone)]
+pub struct AudioCapture {
+    system: SystemAudioCapture,
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    microphone: microphone::MicrophoneCapture,
+    state: Arc<std::sync::Mutex<SelectionState>>,
+}
+
+#[derive(Default)]
+struct SelectionState {
+    next_token: u64,
+    active: Option<u64>,
+    stopping: usize,
+    starting: usize,
+}
+
+struct CancelSelectionOnDrop {
+    state: Arc<std::sync::Mutex<SelectionState>>,
+    token: u64,
+    armed: bool,
+}
+
+impl Drop for CancelSelectionOnDrop {
+    fn drop(&mut self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.starting -= 1;
+            if self.armed && state.active == Some(self.token) {
+                state.active = None;
+            }
+        }
+    }
+}
+
+impl AudioCapture {
+    pub fn for_app(app: &tauri::AppHandle) -> Self {
+        Self {
+            system: SystemAudioCapture::for_app(app),
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            microphone: microphone::MicrophoneCapture::default(),
+            state: Arc::new(std::sync::Mutex::new(SelectionState::default())),
+        }
+    }
+
+    pub async fn start(
+        &self,
+        ingress: send_pipeline::AudioIngress,
+        failure: CaptureFailureSender,
+        format: AudioCaptureFormat,
+        input: crate::core::audio_input::AudioInput,
+    ) -> Result<(), SystemAudioCaptureError> {
+        let token = {
+            let mut state = self.state.lock().unwrap();
+            if state.stopping > 0 {
+                return Err(SystemAudioCaptureError::PreviousCaptureStopping);
+            }
+            if state.active.is_some() || state.starting > 0 {
+                return Err(SystemAudioCaptureError::AlreadyRunning);
+            }
+            let token = state.next_token;
+            state.next_token = state.next_token.wrapping_add(1);
+            state.active = Some(token);
+            state.starting += 1;
+            token
+        };
+        let mut reservation = CancelSelectionOnDrop {
+            state: Arc::clone(&self.state),
+            token,
+            armed: true,
+        };
+        // A dropped prior start has cancelled its native worker. Wait for it
+        // to release the device before allowing a different source to open.
+        self.stop_backends().await;
+        #[cfg(target_os = "macos")]
+        self.system.wait_until_idle().await?;
+        if self.state.lock().unwrap().active != Some(token) {
+            return Err(SystemAudioCaptureError::StartCancelled);
+        }
+        match input {
+            crate::core::audio_input::AudioInput::System => {
+                self.system.start(ingress, failure, format).await?
+            }
+            crate::core::audio_input::AudioInput::Microphone => {
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                self.microphone.start(ingress, failure, format).await?;
+                #[cfg(target_os = "linux")]
+                self.system
+                    .start_input(ingress, failure, format, input)
+                    .await?;
+                #[cfg(not(any(
+                    target_os = "macos",
+                    target_os = "windows",
+                    target_os = "linux"
+                )))]
+                return Err(SystemAudioCaptureError::UnsupportedPlatform);
+            }
+        }
+        if self.state.lock().unwrap().active != Some(token) {
+            return Err(SystemAudioCaptureError::StartCancelled);
+        }
+        reservation.armed = false;
+        Ok(())
+    }
+
+    async fn stop_backends(&self) {
+        self.system.stop().await;
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        self.microphone.stop().await;
+    }
+
+    pub async fn stop(&self) {
+        {
+            let mut state = self.state.lock().unwrap();
+            state.active = None;
+            state.stopping += 1;
+        }
+        struct FinishStop(Arc<std::sync::Mutex<SelectionState>>);
+        impl Drop for FinishStop {
+            fn drop(&mut self) {
+                self.0.lock().unwrap().stopping -= 1;
+            }
+        }
+        let _finish = FinishStop(Arc::clone(&self.state));
+        loop {
+            self.stop_backends().await;
+            if self.state.lock().unwrap().starting == 0 {
+                break;
+            }
+            // A start may have crossed its source-reservation check when
+            // stop invalidated it. Keep cancelling until that future exits.
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    pub fn microphone_device_name(&self) -> Option<String> {
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        {
+            self.microphone.device_name()
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        {
+            None
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn set_source(&self, source: String) {
+        self.system.set_source(source);
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn snapshot(&self) -> Result<AudioSourceSnapshot, String> {
+        self.system.snapshot()
     }
 }
 

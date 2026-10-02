@@ -20,3 +20,14 @@ it("distinguishes silence, signal, unknown and pause across languages", () => {
     expect(capturePresentation(value, true, true, language).observation).not.toBe(silent.observation);
   }
 });
+
+it.each(["en", "zh", "ja"] as const)("reports microphone capture and input recovery without suggesting output playback in %s", language => {
+  const value: CaptureStatus = { kind: "microphone", strategy: "default_input", actualDeviceName: "Synthetic microphone", observation: { pcmDataRecent: false, soundRecent: false } };
+  const view = capturePresentation(value, true, false, language);
+  const label = { en: "Microphone", zh: "麦克风", ja: "マイク" }[language];
+  expect(view.source).toBe(label);
+  expect(view.device).toBe("Synthetic microphone");
+  expect(view.observation).toContain({ en: "default microphone", zh: "默认麦克风", ja: "既定のマイク" }[language]);
+  expect(capturePresentation(null, false, false, language, "microphone").source).toBe(label);
+  expect(capturePresentation(value, true, true, language).observation).not.toBe(view.observation);
+});

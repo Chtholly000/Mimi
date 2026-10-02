@@ -34,7 +34,7 @@ const BASE_SETTINGS: SettingsSnapshot = {
   isOverlayLocked: false,
   uiLanguage: null,
   retainSessionHistory: false,
-  recordSessionAudio: false,
+  recordSessionAudio: false, audioInput: "system",
   windowsAudioSource: "",
   showInDock: false,
   networkProxy: { mode: "system", url: null },

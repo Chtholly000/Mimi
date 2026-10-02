@@ -7,6 +7,7 @@
 #[cfg(any(all(feature = "local-dev-credentials", target_os = "macos"), test))]
 mod local_dev_credentials;
 
+use crate::core::audio_input::AudioInput;
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::{
     CredentialRevealField, ProviderCredentials, TextTranslationCredentials,
@@ -164,6 +165,8 @@ pub struct Preferences {
     pub ui_language: Option<String>,
     pub retain_session_history: bool,
     pub record_session_audio: bool,
+    /// One explicitly selected input; legacy preferences remain system-only.
+    pub audio_input: AudioInput,
     /// Empty means follow the Windows default output, including live changes.
     pub windows_audio_source: String,
     /// macOS Dock/Cmd-Tab presence. Missing preferences show Mimi in the Dock.
@@ -192,9 +195,26 @@ impl Default for Preferences {
             ui_language: None,
             retain_session_history: false,
             record_session_audio: false,
+            audio_input: AudioInput::System,
             windows_audio_source: String::new(),
             show_in_dock: true,
             network_proxy: ProxyConfig::default(),
+        }
+    }
+}
+
+impl Preferences {
+    /// A recording opt-in belongs to the selected source. Switching sources
+    /// always requires a fresh opt-in, even in a combined settings draft.
+    pub fn apply_audio_preferences(&mut self, input: Option<AudioInput>, recording: Option<bool>) {
+        if let Some(recording) = recording {
+            self.record_session_audio = recording;
+        }
+        if let Some(input) = input {
+            if self.audio_input != input {
+                self.record_session_audio = false;
+            }
+            self.audio_input = input;
         }
     }
 }
@@ -2669,6 +2689,44 @@ mod tests {
         let final_store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
         assert!(final_store.preferences().show_in_dock);
         assert!(fake.state.lock().unwrap().loads.is_empty());
+    }
+
+    #[test]
+    fn audio_input_legacy_default_and_explicit_selection_round_trip() {
+        let legacy: super::Preferences = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.audio_input, AudioInput::System);
+        assert!(!legacy.record_session_audio);
+        let mut preferences = legacy;
+        preferences.apply_audio_preferences(Some(AudioInput::Microphone), None);
+        let restored: super::Preferences =
+            serde_json::from_str(&serde_json::to_string(&preferences).unwrap()).unwrap();
+        assert_eq!(restored.audio_input, AudioInput::Microphone);
+        assert!(!restored.record_session_audio);
+    }
+
+    #[test]
+    fn changing_audio_input_requires_a_new_recording_opt_in() {
+        for previous in [AudioInput::System, AudioInput::Microphone] {
+            let next = if previous == AudioInput::System {
+                AudioInput::Microphone
+            } else {
+                AudioInput::System
+            };
+            for request in [None, Some(false), Some(true)] {
+                let mut preferences = super::Preferences {
+                    audio_input: previous,
+                    record_session_audio: true,
+                    ..Default::default()
+                };
+                preferences.apply_audio_preferences(Some(next), request);
+                assert_eq!(preferences.audio_input, next);
+                assert!(!preferences.record_session_audio);
+                preferences.apply_audio_preferences(None, Some(true));
+                assert!(preferences.record_session_audio);
+                preferences.apply_audio_preferences(Some(next), None);
+                assert!(preferences.record_session_audio);
+            }
+        }
     }
 
     #[test]

@@ -20,6 +20,7 @@ export function WindowsAudioSource() {
   const selected = useStore((state) => state.settings.windowsAudioSource) ?? "";
   const active = useStore((state) => state.session.isActive);
   const paused = useStore((state) => state.session.isPaused);
+  const statusKind = useStore((state) => state.session.status?.kind);
   const save = useStore((state) => state.saveSettings);
   const text = audioSourceCopy();
   useEffect(() => {
@@ -51,10 +52,11 @@ export function WindowsAudioSource() {
   const current = snapshot.devices.find((device) => device.id === snapshot.currentDevice)?.name;
   const status = failed ? text.failed : missing || snapshot.devices.length === 0 ? text.missing
     : active && !paused ? snapshot.receivingSound ? text.receiving : snapshot.receivingAudioData ? text.silent : text.noData : text.idle;
+  const requiresStop = active || paused || statusKind === "connecting" || statusKind === "stopping";
   return (
-    <SettingsRow label={text.title} description={active ? text.stop : text.help}>
+    <SettingsRow label={text.title} description={requiresStop ? text.stop : text.help}>
       <span>
-        <SettingsSelect label={text.title} value={selected} disabled={active || failed}
+        <SettingsSelect label={text.title} value={selected} disabled={requiresStop || failed}
           onChange={(value) => void save({ windowsAudioSource: value })}
           options={[
             { value: FOLLOW_SYSTEM, label: text.system },

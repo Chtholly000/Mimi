@@ -11,6 +11,7 @@ cat > "$TEST_ROOT/mimi.app/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIdentifier</key><string>app.yuxino.mimi</string>
 <key>NSScreenCaptureUsageDescription</key><string>System audio</string>
 <key>NSAudioCaptureUsageDescription</key><string>System audio</string>
+<key>NSMicrophoneUsageDescription</key><string>Optional microphone input</string>
 <key>CFBundleShortVersionString</key><string>1.0.0</string>
 <key>MimiSourceRevision</key><string>1111111111111111111111111111111111111111</string>
 </dict></plist>
@@ -27,6 +28,7 @@ case "$*" in
     done
     exit "${TEST_VERIFY_EXIT:-0}" ;;
 
+  *--entitlements*) printf '%s\n' "${TEST_ENTITLEMENTS:-<plist version=\"1.0\"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>}" ;;
   *--requirements*) printf 'designated => %s\n' "$TEST_REQUIREMENT" ;;
   *) printf 'Identifier=app.yuxino.mimi\nSignature=%s\n' "${TEST_SIGNATURE:-signed}" ;;
 esac
@@ -50,6 +52,22 @@ expect_failure() {
     exit 1
   fi
 }
+"$SCRIPT_DIR/verify-macos-app.sh" --release "$TEST_ROOT/mimi.app" >/dev/null
+for invalid_entitlements in \
+  '<plist version="1.0"><dict/></plist>' \
+  '<plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><false/></dict></plist>' \
+  '<plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><string>true</string></dict></plist>' \
+  'invalid plist'; do
+  expect_failure env TEST_ENTITLEMENTS="$invalid_entitlements" "$SCRIPT_DIR/verify-macos-app.sh" --release "$TEST_ROOT/mimi.app"
+  grep -Fq 'The signed app must enable the audio-input entitlement' "$TEST_ROOT/output"
+done
+/usr/libexec/PlistBuddy -c 'Delete :NSMicrophoneUsageDescription' "$TEST_ROOT/mimi.app/Contents/Info.plist"
+expect_failure "$SCRIPT_DIR/verify-macos-app.sh" --release "$TEST_ROOT/mimi.app"
+grep -Fq 'NSMicrophoneUsageDescription must not be empty.' "$TEST_ROOT/output"
+/usr/libexec/PlistBuddy -c 'Add :NSMicrophoneUsageDescription string' "$TEST_ROOT/mimi.app/Contents/Info.plist"
+expect_failure "$SCRIPT_DIR/verify-macos-app.sh" --release "$TEST_ROOT/mimi.app"
+grep -Fq 'NSMicrophoneUsageDescription must not be empty.' "$TEST_ROOT/output"
+/usr/libexec/PlistBuddy -c 'Set :NSMicrophoneUsageDescription Optional microphone input' "$TEST_ROOT/mimi.app/Contents/Info.plist"
 "$SCRIPT_DIR/verify-macos-app.sh" --release "$TEST_ROOT/mimi.app" >/dev/null
 expect_failure env TEST_VERIFY_EXIT=1 "$SCRIPT_DIR/verify-macos-app.sh" --release "$TEST_ROOT/mimi.app"
 expect_failure env TEST_SIGNATURE=adhoc "$SCRIPT_DIR/verify-macos-app.sh" --release "$TEST_ROOT/mimi.app"

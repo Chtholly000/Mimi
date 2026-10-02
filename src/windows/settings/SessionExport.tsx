@@ -29,6 +29,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
     (state) => state.settings.retainSessionHistory,
   );
   const recordAudio = useStore((state) => state.settings.recordSessionAudio);
+  const audioInput = useStore((state) => state.settings.audioInput);
   const saveSettings = useStore((state) => state.saveSettings);
   const [archive, setArchive] = useState<SessionArchiveState>();
   const [transcript, setTranscript] = useState<TranscriptPage>();
@@ -266,7 +267,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
         )}
         {active && recordAudio && (
           <InlineFeedback tone="info">
-            {I18N.settings.sessionAudioEnabled}
+            {audioInput === "microphone" ? I18N.settings.sessionMicrophoneEnabled : I18N.settings.sessionAudioEnabled}
           </InlineFeedback>
         )}
         {archive?.transcriptLimited && (

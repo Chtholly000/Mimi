@@ -1,6 +1,7 @@
 //! UI-independent models, configuration, protocols, subtitle assembly, and
 //! pipeline diagnostics.
 
+pub mod audio_input;
 pub mod committer;
 pub mod configuration;
 pub mod credentials;

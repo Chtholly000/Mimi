@@ -57,14 +57,16 @@ checks the command path, not GNOME/KDE shortcut setup or native Wayland focus.
 
 ## Audio and troubleshooting
 
-Only the current default output's monitor is opened. Mimi verifies the source
-belongs to that output and never falls back to a microphone or default input.
-The output is fixed for a capture session; restart the session after changing
-speakers or headphones. A missing monitor or disconnected sound server is an
-error, not permission to record another source.
+System audio (the default) opens only the current default output's monitor.
+Mimi verifies the source belongs to that output and never falls back to a
+microphone. Selecting Microphone in Settings instead opens the default
+non-monitor input; an output monitor is rejected. One source is captured at a
+time. Restart the session after changing the default device. A missing source
+or disconnected sound server is an error, not permission to capture another
+source.
 
-If capture fails, check that the sound server is running and that normal apps
-can play through the default output.
+If capture fails, check that the sound server is running and that the selected
+system output or default microphone works in the system sound settings.
 
 ### Credential recovery
 
