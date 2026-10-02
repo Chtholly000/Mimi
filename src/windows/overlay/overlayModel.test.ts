@@ -41,6 +41,25 @@ describe("same-text committed subtitles", () => {
   });
 });
 
+describe("live presentation epochs", () => {
+  const first = { source: "First original.", translation: "第一句译文。", createdAt: 1 };
+  const second = { source: "Second original.", translation: "第二句译文。", createdAt: 2 };
+  const tail = { source: "Live source.", translation: "实时译文。", isStreaming: true };
+  const liveId = (history: SubtitleSnapshot["history"], mode: "original" | "translation" | "bilingual" = "bilingual") => buildSubtitleBlocks(history, mode, tail).at(-1)!.id;
+
+  it("changes a live layout key on confirmation without matching draft wording to a final", () => {
+    expect(liveId([first, second])).not.toBe(liveId([first]));
+    expect(liveId([first])).not.toBe(liveId([]));
+  });
+  it("keeps the epoch stable across modes, history eviction, and draft revisions", () => {
+    for (const mode of ["original", "translation", "bilingual"] as const) {
+      expect(liveId([second], mode)).toBe(liveId([first, second]));
+      expect(buildSubtitleBlocks([second], mode, { ...tail, source: "Corrected live source." }).at(-1)!.id).toBe(liveId([second]));
+    }
+    expect(liveId([])).toBe("live"); // Clear removes the Timeline; the next empty-history mount starts fresh.
+  });
+});
+
 const settings = {
   sourceLanguage: "auto" as const,
   targetLanguage: "zh" as const,
@@ -291,13 +310,32 @@ describe("compact lane budget", () => {
     expect(subtitleLaneBudget("original", false)).toEqual({ source: 2, translation: 0 });
   });
 
-  it("yields the second line in a short viewport without removing either bilingual lane", () => {
+  it("allocates whole lines in a short viewport without removing either bilingual lane", () => {
     expect(subtitleLaneBudget("bilingual", true, 49, 20)).toEqual({ source: 1, translation: 1 });
-    expect(subtitleLaneBudget("bilingual", true, 120, 20)).toEqual({ source: 1, translation: 3 });
+    expect(subtitleLaneBudget("bilingual", true, 120, 20)).toEqual({ source: 2, translation: 2 });
     expect(subtitleLaneBudget("translation", true, 40, 20)).toEqual({ source: 0, translation: 1 });
     expect(subtitleLaneBudget("original", false, 40, 20)).toEqual({ source: 1, translation: 0 });
     expect(subtitleLaneBudget("original", false, 48, 20)).toEqual({ source: 1, translation: 0 });
     expect(subtitleLaneBudget("bilingual", false, 48, 20)).toEqual({ source: 2, translation: 0 });
+  });
+
+  it("balances long original and translation lanes at the measured native reading height", () => {
+    for (const sourceScale of [0.88, 0.9]) {
+      const pair = subtitleLaneBudget("bilingual", true, 143, 17,
+        { source: 420, translation: 460 }, sourceScale);
+      expect(pair).toEqual({ source: 3, translation: 3 });
+      const sourceLine = Math.ceil(17 * sourceScale * 1.32);
+      expect(pair.source * sourceLine + pair.translation * 23).toBeLessThanOrEqual(143);
+    }
+    expect(subtitleLaneBudget("bilingual", true, 49, 17,
+      { source: 420, translation: 460 })).toEqual({ source: 1, translation: 1 });
+  });
+
+  it("preserves short-lane borrowing at the same native height", () => {
+    expect(subtitleLaneBudget("bilingual", true, 143, 17,
+      { source: 20, translation: 690 }, 0.88)).toEqual({ source: 1, translation: 5 });
+    expect(subtitleLaneBudget("bilingual", true, 143, 17,
+      { source: 660, translation: 23 }, 0.88)).toEqual({ source: 6, translation: 1 });
   });
 
   it("uses a tall window instead of clipping every language to two lines", () => {
@@ -352,7 +390,7 @@ describe("subtitle display preference", () => {
     const blocks = buildSubtitleBlocks([pair], "bilingual", tail);
     expect(blocks.map((block) => block.presentation)).toEqual(["history", "live"]);
     expect(blocks[1]).toEqual({
-      id: "live",
+      id: "live-after-history-1",
       createdAt: null,
       presentation: "live",
       source: "Streaming",

@@ -194,8 +194,8 @@ export function subtitleLaneBudget(
   availableLaneHeight: number | null = null,
   fontSize = 18,
   measured: { source: number; translation: number } | null = null,
+  sourceScale = subtitleSourceScale(availableLaneHeight),
 ): { source: number; translation: number } {
-  const sourceScale = subtitleSourceScale(availableLaneHeight);
   const sourceLine = Math.ceil((displayMode === "bilingual"
     ? Math.max(12, fontSize * sourceScale) : fontSize) * SUBTITLE_LINE_HEIGHT);
   const translationLine = Math.ceil(fontSize * SUBTITLE_LINE_HEIGHT);
@@ -209,9 +209,9 @@ export function subtitleLaneBudget(
     default: {
       if (!hasTranslation) return { source: linesThatFit(sourceLine), translation: 0 };
       if (availableLaneHeight === null) return { source: 1, translation: 2 };
-      // The original is a readable reference, with most of the space going
-      // to the translation. Measured short text yields space in either lane.
-      let source = linesThatFit(sourceLine, availableLaneHeight * 0.36);
+      // Long bilingual lanes start with equal height rather than exposing
+      // much less original text. Measured short text still yields its space.
+      let source = linesThatFit(sourceLine, availableLaneHeight * 0.5);
       if (measured && measured.source > 0) {
         source = Math.min(source, Math.max(1, Math.ceil(measured.source / sourceLine)));
       }
@@ -271,8 +271,13 @@ export function buildSubtitleBlocks(
     return blocks;
   }
 
+  // This is a layout epoch, not a provider utterance ID. A confirmation can
+  // insert durable rows and a new live tail together; never reuse the old
+  // live reading anchor for that new tail. Use the canonical history identity
+  // even when a display mode omits the last confirmed row.
+  const latestConfirmedAt = history.at(-1)?.createdAt;
   blocks.push({
-    id: "live",
+    id: latestConfirmedAt === undefined ? "live" : `live-after-history-${latestConfirmedAt}`,
     createdAt: null,
     presentation: "live",
     source: liveTail.source,

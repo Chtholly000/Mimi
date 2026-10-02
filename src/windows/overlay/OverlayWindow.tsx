@@ -44,6 +44,8 @@ export function OverlayWindow() {
   }, [session.status.kind, session.isActive, session.isPaused, clearFailure]);
 
   const [isHovering, setIsHovering] = useState(false);
+  const [readingHistory, setReadingHistory] = useState(false);
+  const [followTailRequest, setFollowTailRequest] = useState(0);
   useEffect(() => {
     if (!isTauri) return;
     let disposed = false;
@@ -243,12 +245,18 @@ export function OverlayWindow() {
   );
 
   function renderStatusLine() {
-    if (sessionAction.pending || sessionAction.failed) {
-      return <div role={sessionAction.failed ? "alert" : "status"} className="overlay-action-feedback">
+    const returnToLive = readingHistory && blocks.length > 0 && !presentationCollapsed;
+    const showTiming = session.isActive && !blendsWithBackground;
+    if (!showTiming && !sessionAction.pending && !sessionAction.failed && !returnToLive) return null;
+    return <div className="overlay-status-row" style={{ top: topChromeLayout.topBandHeight - 14 }}>
+      {sessionAction.pending || sessionAction.failed ? <div role={sessionAction.failed ? "alert" : "status"} className="overlay-action-feedback">
         {sessionAction.pending ? I18N.overlay.connecting : I18N.overlay.controlActionFailed}
-      </div>;
-    }
-    return <OverlayLatency session={session} translationRequired={settings.targetLanguage !== "original"} />;
+      </div> : showTiming ? <OverlayLatency session={session} translationRequired={settings.targetLanguage !== "original"} /> : null}
+      {returnToLive && <button type="button" className="overlay-return-to-live" onClick={() => {
+        setReadingHistory(false);
+        setFollowTailRequest(request => request + 1);
+      }}>{I18N.overlay.returnToLive}</button>}
+    </div>;
   }
 
   function renderExpanded() {
@@ -293,6 +301,8 @@ export function OverlayWindow() {
                 showSubtitleDividers={settings.showSubtitleDividers}
                 motionEnabled={motionOn}
                 blendsWithBackground
+                followTailRequest={followTailRequest}
+                onReadingHistoryChange={setReadingHistory}
               />
             )}
           </div>
@@ -390,13 +400,12 @@ export function OverlayWindow() {
                 onClick={() => void setOverlayCollapsed(true)}
                 data-testid="collapse-subtitles"
               />
-              {hasContent && (
-                <ControlButton
-                  icon="eraser"
-                  label={I18N.overlay.clearSubtitles}
-                  onClick={() => void clearSubtitles()}
-                />
-              )}
+              <ControlButton
+                icon="eraser"
+                label={I18N.overlay.clearSubtitles}
+                onClick={() => void clearSubtitles()}
+                disabled={!hasContent}
+              />
               <ControlButton
                 icon="blend"
                 label={I18N.overlay.enterImmersiveMode}
@@ -475,6 +484,8 @@ export function OverlayWindow() {
               displayMode={settings.subtitleDisplayMode}
               showSubtitleDividers={settings.showSubtitleDividers}
               motionEnabled={motionOn}
+              followTailRequest={followTailRequest}
+              onReadingHistoryChange={setReadingHistory}
             />
           )}
           </div>

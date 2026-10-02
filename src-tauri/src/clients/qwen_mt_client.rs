@@ -32,6 +32,17 @@ pub struct QwenMTClient {
 }
 
 impl QwenMTClient {
+    #[cfg(test)]
+    pub(super) fn use_synthetic_endpoint(&mut self, endpoint: url::Url) {
+        assert_eq!(endpoint.scheme(), "http");
+        assert!(matches!(
+            endpoint.host_str(),
+            Some("127.0.0.1" | "[::1]" | "localhost")
+        ));
+        self.endpoint.url = endpoint;
+        self.client = http_client_builder().no_proxy().build().unwrap();
+    }
+
     /// Rebuild only this fixed endpoint's connection pool before requests start.
     pub fn set_network(
         &mut self,
@@ -573,20 +584,43 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn completed_sse_reuses_tcp_when_http_terminator_arrives_after_done() {
+        assert_eq!(
+            released_sse_tail_connection_count(true).await,
+            1,
+            "both translations must share one TCP connection"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_completed_sse_without_drain_cannot_reuse_the_late_tail_connection() {
+        assert_eq!(
+            released_sse_tail_connection_count(false).await,
+            2,
+            "the fixture must still expose the original immediate-drop defect"
+        );
+    }
+
+    async fn released_sse_tail_connection_count(drain_tail: bool) -> usize {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let (release_tail, tail_consumed) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+            socket.set_nodelay(true).unwrap();
             assert!(read_fixture_request(&mut socket).await);
             let body =
                 "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"}}]}\n\ndata: [DONE]\n\n";
             let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{body}\r\n", body.len());
             socket.write_all(response.as_bytes()).await.unwrap();
-            // The logical SSE result is complete, but HTTP/1 cannot reuse the
-            // connection until this separately delivered chunk terminator.
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            // Release the separate HTTP terminator when the client consumes
+            // this single complete SSE chunk, rather than racing a 5 ms sleep
+            // against the product's 20 ms drain. On this current-thread
+            // runtime the callback wakes this task, but it runs only when the
+            // client yields while awaiting the tail. TCP_NODELAY prevents the
+            // tiny terminator from waiting for the first chunk's delayed ACK.
+            tail_consumed.await.unwrap();
             let _ = socket.write_all(b"0\r\n\r\n").await;
             let reused =
                 tokio::time::timeout(Duration::from_secs(1), read_fixture_request(&mut socket))
@@ -621,20 +655,43 @@ mod tests {
         .unwrap();
         client.endpoint.url = format!("http://{address}/translate").parse().unwrap();
         client.client = http_client_builder().no_proxy().build().unwrap();
+        let release_tail = std::sync::Mutex::new(Some(release_tail));
         for _ in 0..2 {
-            assert_eq!(
+            let on_partial = |text| {
+                assert_eq!(text, "complete");
+                if let Some(release) = release_tail.lock().unwrap().take() {
+                    release.send(()).unwrap();
+                }
+            };
+            let translated = if drain_tail {
                 client
-                    .translate_streaming("synthetic", None, &[], |_| {})
+                    .translate_streaming("synthetic", None, &[], on_partial)
                     .await
-                    .unwrap(),
-                "complete"
-            );
+                    .unwrap()
+            } else {
+                // Negative control executes the actual decoder/HTTP path but
+                // drops its owned response at DONE, as the old wrapper did.
+                // No production cleanup timeout or implementation is changed.
+                let request = client
+                    .client
+                    .post(client.endpoint.url.clone())
+                    .bearer_auth(&client.api_key)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "text/event-stream")
+                    .body(client.make_body("synthetic", None, true, &[]).unwrap());
+                let (translated, response) = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    client.stream(request, &on_partial),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                drop(response);
+                translated
+            };
+            assert_eq!(translated, "complete");
         }
-        assert_eq!(
-            server.await.unwrap(),
-            1,
-            "both translations must share one TCP connection"
-        );
+        server.await.unwrap()
     }
 
     #[tokio::test]

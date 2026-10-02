@@ -4,6 +4,8 @@ import type { ConnectionDiagnostic } from "./ipc";
 export type DiagnosticPlatform = "macos" | "windows" | "linux";
 const copy = {
   en: {
+    localDevReadOnly: "This dev app reads credentials from its local .env. Edit that file and restart mimi dev.",
+    localDevUnavailable: "Cannot read the local dev .env. Check its format, ownership and 0600 permissions, then restart mimi dev.",
     storage: "Cannot read service credentials. Handle the system unlock prompt, then check again.",
     linuxStorage: "Cannot access your desktop password store. Confirm a Secret Service provider, such as GNOME Keyring, is installed and enabled in this desktop session. Unlock it or allow the system prompt, then check again.",
     serviceUnavailable: "Linux Secret Service is unavailable. Install or enable a Secret Service provider, such as GNOME Keyring, in this desktop session. Sign out and back in if required by your desktop setup, then check again.",
@@ -38,6 +40,8 @@ const copy = {
     },
   },
   zh: {
+    localDevReadOnly: "开发版正在读取本机 .env 凭据。请修改该文件后重新打开 mimi dev。",
+    localDevUnavailable: "无法读取本机开发 .env。请检查格式、文件归属及 0600 权限，然后重新打开 mimi dev。",
     storage: "无法读取服务凭据。先处理系统解锁提示，再重新检查。",
     linuxStorage: "无法访问桌面密码存储。请确认当前桌面会话已安装并启用 Secret Service 服务（例如 GNOME Keyring）。解锁密码存储或允许系统授权提示后，重新检查。",
     serviceUnavailable: "Linux Secret Service 服务不可用。请在当前桌面会话安装或启用兼容服务，例如 GNOME Keyring。若桌面配置要求，请注销并重新登录后再检查。",
@@ -72,6 +76,8 @@ const copy = {
     },
   },
   ja: {
+    localDevReadOnly: "開発版はローカルの .env から認証情報を読み込みます。ファイルを編集して mimi dev を再起動してください。",
+    localDevUnavailable: "開発用 .env を読めません。形式、所有者、0600 権限を確認し、mimi dev を再起動してください。",
     storage: "サービスの認証情報を読めません。システムの解除案内を確認し、もう一度お試しください。",
     linuxStorage: "デスクトップのパスワードストアにアクセスできません。現在のデスクトップセッションで GNOME Keyring などの Secret Service がインストールされ、有効になっていることを確認してください。ストアのロックを解除するかシステムのアクセス許可を承認して、再確認してください。",
     serviceUnavailable: "Linux Secret Service を利用できません。現在のデスクトップセッションで GNOME Keyring などの対応サービスをインストールするか有効にしてください。デスクトップの設定に応じてログアウトして再ログインし、再確認してください。",
@@ -115,7 +121,8 @@ export function diagnosticCopy(platform: DiagnosticPlatform = diagnosticPlatform
   return {
     ...labels,
     storage: platform === "linux" ? labels.linuxStorage : labels.storage,
-    reasons: { ...labels.reasons, credentialsUnavailable: recovery, credentialsAccessDenied: recovery },
+    reasons: { ...labels.reasons, credentialsUnavailable: recovery, credentialsAccessDenied: recovery,
+      localDevCredentialsUnavailable: labels.localDevUnavailable },
   };
 }
 export function credentialUnavailableHelp(platform: DiagnosticPlatform = diagnosticPlatform()): string {
@@ -168,6 +175,8 @@ export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlat
   const rejected = /^DeepLX rejected the request \(code (\d{1,3})\)\./.exec(error);
   if (rejected) return `${dlx.rejected} (${rejected[1]})`;
 
+  if (error === "local_dev_credentials_read_only") return diagnosticCopy(platform).localDevReadOnly;
+  if (error === "local_dev_credentials_unavailable") return diagnosticCopy(platform).localDevUnavailable;
   if (error === "credential_service_unavailable") return diagnosticCopy(platform).serviceUnavailable;
   if (error === "credential_store_access_denied") return diagnosticCopy(platform).accessDenied;
   if (error === "credential_store_unavailable" || error === "The system credential store is unavailable.") return diagnosticCopy(platform).storage;

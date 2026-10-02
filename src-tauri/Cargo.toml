@@ -20,6 +20,8 @@ default = []
 # The stable development bundle is compiled in release mode, so expose the
 # WebView inspector only when the launcher opts into this local-only feature.
 devtools = ["tauri/devtools"]
+# Read-only local .env keys; runtime also requires the exact macOS dev identifier.
+local-dev-credentials = []
 
 [dependencies]
 tauri = { version = "2", default-features = false, features = ["wry", "compression", "common-controls-v6", "tray-icon", "image-png", "macos-private-api"] }

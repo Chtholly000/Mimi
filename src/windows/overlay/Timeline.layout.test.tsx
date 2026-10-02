@@ -59,8 +59,8 @@ const live: SubtitleBlock = {
   source: "新的流式原文。", translation: "新的流式译文。", streaming: true,
 };
 
-async function render(blocks: SubtitleBlock[], fontSize = 18, motionEnabled = false, showSubtitleDividers = false) {
-  await act(async () => root.render(<Timeline blocks={blocks} fontSize={fontSize} alignment="center" color="white" displayMode="bilingual" motionEnabled={motionEnabled} showSubtitleDividers={showSubtitleDividers} />));
+async function render(blocks: SubtitleBlock[], fontSize = 18, motionEnabled = false, showSubtitleDividers = false, displayMode: "original" | "translation" | "bilingual" = "bilingual") {
+  await act(async () => root.render(<Timeline blocks={blocks} fontSize={fontSize} alignment="center" color="white" displayMode={displayMode} motionEnabled={motionEnabled} showSubtitleDividers={showSubtitleDividers} />));
   return host.firstElementChild as HTMLDivElement;
 }
 
@@ -180,11 +180,30 @@ it("reveals full confirmed history on upward intent and returns to compact follo
   expect(read.querySelector("[aria-label]")).toBeNull();
   expect(read.textContent).toContain(confirmed.source);
   expect(read.textContent).toContain(confirmed.translation);
-  expect(timeline.querySelector('[data-utterance-id="live"] [aria-label]')).not.toBeNull();
+  expect(timeline.querySelector('[data-utterance-id="live"] [aria-label]')).toBeNull();
   await render([{ ...confirmed, presentation: "history" }, { ...live, translation: "仍然流入" }]);
   expect(read.querySelector("[aria-label]")).toBeNull();
   await act(async () => { timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "End" })); });
   expect(read.querySelector("[aria-label]")).not.toBeNull();
+});
+
+it.each(["original", "translation", "bilingual"] as const)("opens the complete lone live sentence on reading intent and returns to bounded lines with End in %s", async displayMode => {
+  measuredHeight = 240;
+  viewportHeight = 51;
+  const longLive = { ...confirmed, id: "live", createdAt: null, presentation: "live" as const, streaming: true as const };
+  const timeline = await render([longLive], 20, false, false, displayMode);
+  const row = timeline.querySelector('[data-utterance-id="live"]')!;
+  expect(row.querySelector("[aria-label]")).not.toBeNull();
+  await act(async () => timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -30 })));
+  expect(timeline.querySelector('[data-utterance-id="live"]')).toBe(row);
+  expect(row.querySelector("[aria-label]")).toBeNull();
+  const visible = Array.from(row.querySelectorAll<HTMLElement>(".subtitle-lane"));
+  expect(visible.map(lane => lane.textContent)).toEqual(displayMode === "original" ? [longLive.source]
+    : displayMode === "translation" ? [longLive.translation] : [longLive.source, longLive.translation]);
+  expect(visible.every(lane => lane.style.overflow === "" && lane.parentElement?.style.overflow !== "hidden")).toBe(true);
+  await act(async () => timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "End" })));
+  expect(timeline.querySelector('[data-utterance-id="live"]')).toBe(row);
+  expect(row.querySelector("[aria-label]")).not.toBeNull();
 });
 
 it("opens a single compact confirmed sentence without needing a scrollbar, while clicks keep following", async () => {
@@ -212,7 +231,10 @@ it("fits both long bilingual lanes into the actual 51px body and uses added spac
   expect(row.style.paddingTop).toBe("0px");
   viewportHeight = 130;
   await act(async () => { resize.forEach(callback => callback()); });
-  expect(lanes[1].style.height).toBe("81px");
+  const resizedHeights = lanes.map(lane => Number.parseFloat(lane.style.height));
+  expect(resizedHeights).toEqual([48, 54]);
+  expect(resizedHeights.reduce((sum, height) => sum + height, 0) + 2 + 3 + 2)
+    .toBeLessThanOrEqual(viewportHeight);
   expect(row.textContent).toContain(confirmed.source);
   expect(row.textContent).toContain(confirmed.translation);
 });
@@ -243,6 +265,32 @@ it.each([80, 81])("fits long original and short translation at the %ipx responsi
   const textHeight = lanes.reduce((sum, lane) => sum + Number.parseFloat(lane.style.height), 0);
   expect(textHeight + 7).toBeLessThanOrEqual(viewportHeight);
   expect(lanes[0].style.height).toBe("44px");
+});
+
+it.each([83, 84, 85])("keeps the reference font stable as translation arrives and leaves at the %ipx boundary", async (height) => {
+  viewportHeight = height;
+  measuredHeight = 240;
+  const waiting = { ...live, translation: null };
+  const timeline = await render([waiting], 20);
+  const original = timeline.querySelector<HTMLElement>(`[aria-label="${live.source}"]`)!;
+  const text = original.firstElementChild as HTMLElement;
+  const font = text.style.fontSize;
+  const lineHeight = text.style.lineHeight;
+  expect(font).toBe(height < 85 ? "16.4px" : "18px");
+
+  await render([live], 20);
+  expect(timeline.querySelector(`[aria-label="${live.source}"]`)).toBe(original);
+  expect(original.firstElementChild).toBe(text);
+  expect(text.style.fontSize).toBe(font);
+  expect(text.style.lineHeight).toBe(lineHeight);
+  const pairedLanes = Array.from(timeline.querySelectorAll<HTMLElement>("[aria-label]"));
+  expect(pairedLanes.map(lane => lane.firstElementChild?.textContent)).toEqual([live.source, live.translation]);
+  expect(pairedLanes.reduce((sum, lane) => sum + Number.parseFloat(lane.style.height), 0) + 7).toBeLessThanOrEqual(height);
+
+  await render([waiting], 20);
+  expect(original.firstElementChild).toBe(text);
+  expect(text.style.fontSize).toBe(font);
+  expect(text.style.lineHeight).toBe(lineHeight);
 });
 
 it("gives a bilingual translation the unused original lane's space before that original arrives", async () => {

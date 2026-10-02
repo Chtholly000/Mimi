@@ -15,12 +15,22 @@ request measurements reported during this iteration are about 351–400 ms; the
 separate health round trip is about 46 ms. They measure different operations,
 so subtracting them does not establish model inference time.
 
-A localhost SSE fixture separates `[DONE]` from the HTTP chunked-body terminator
-by 5 ms. Before this change, two sequential translations opened two TCP
-connections. After the bounded tail drain, both translations use the same TCP
-connection. This proves a client-side reuse defect for that response shape. It
-does not prove how often the actual provider separates those frames, or how
-much of its measured latency this defect contributes.
+The initial localhost SSE fixture separated `[DONE]` from the HTTP chunked-body
+terminator by a 5 ms timer. Before the bounded tail drain, two sequential
+translations opened two TCP connections; afterwards they reused one locally.
+Windows ARM64 CI later opened two connections because the server timer and tiny
+TCP write were not guaranteed to arrive within the product's 20 ms cleanup
+bound. That result does not justify extending the cleanup bound.
+
+The fixture now releases the separate HTTP terminator from a one-shot signal
+when the client consumes the complete SSE chunk. It uses a single-thread test
+runtime and `TCP_NODELAY`, removing the server timer and delayed-ACK dependence.
+The normal wrapper reuses one TCP connection. A permanent negative control runs
+the same actual HTTP/decoder path but drops the response immediately at `[DONE]`;
+it opens two connections. This proves a client-side reuse defect for that
+response shape, without changing the production drain. It does not prove how
+often the actual provider separates those frames, or how much of its measured
+latency this defect contributes.
 
 Hyper's HTTP/1 implementation only attempts an immediate drain when the body
 receiver is dropped; if the body is not already drainable, it closes that read
@@ -70,11 +80,16 @@ made from the localhost fixture.
 bounded bodies, authentication status, request cancellation, plus:
 
 - Two complete SSE requests reuse one TCP connection when EOF arrives later.
+- Dropping the completed response without draining opens two connections in
+  the same signalled-tail fixture, preserving the regression's negative control.
 - A missing HTTP terminator keeps the completed result and closes the peer.
 - The drain obeys byte and chunk limits, including empty chunks.
 - Cancelling during cleanup closes the response without a surviving task.
 
 Both the initial module run and the shared backend rerun after the final
 deadline-scope refinement passed 15 tests, with the existing public-network
-smoke test ignored. Installed-app latency and supplier behavior require the
-subsequent signed-dev session and are not established by these tests.
+smoke test ignored. The signalled-tail fixture and its negative control passed
+in the subsequent module run: 16 passed, one intentional public-network smoke
+ignored. Windows ARM64 confirmation requires a new CI run. Installed-app
+latency and supplier behavior require the subsequent signed-dev session and
+are not established by these tests.

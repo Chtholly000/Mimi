@@ -42,6 +42,13 @@ Rules:
 
 ## Know which prompt appeared
 
+For routine macOS API-key testing, the fixed dev launcher supports an explicitly
+isolated, private read-only file mode. See [local development credentials](local-dev-credentials.md)
+for setup, strict 0600 validation and returning to Keychain. This avoids only
+provider-key Keychain reads; signing-private-key and audio permissions still
+apply. Production credentials remain OS-backed. Do not weaken Keychain ACLs to
+avoid development prompts.
+
 These prompts have different causes and fixes:
 
 - **Screen & System Audio Recording:** TCC compares the bundle identifier and

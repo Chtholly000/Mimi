@@ -68,7 +68,9 @@ actual measured height instead of occupying their full line budget. Following
 live output bounds both confirmed and live presentation to finite tails; a new
 sentence no longer expands its predecessor into a wall. Upward wheel,
 Home/ArrowUp/PageUp or a deliberate touch scroll opens complete confirmed
-history with the same reading anchor. End or returning to the bottom resumes
+history and the current replaceable live text with the same reading anchor.
+Reading a live row does not confirm it or retain its earlier revisions. End,
+the visible return-to-live action, or returning to the bottom resumes
 compact following. A ResizeObserver gives each bilingual lane the number of whole lines that
 fit the actual body height, including 1+1 in short windows. Absent source text
 leaves the available space to translation.
@@ -163,8 +165,16 @@ dash; MT recovery displays a short explicit rate-limit/retry status. Unsupported
 or inactive observations show an em dash. Timings are
 content-free and clear across inactive/paused/error/reconnecting or stale
 generations; original-only mode has no translation sample. Immersive mode
-keeps the requested status/timings without a background panel, and its help
-text describes this presentation in all three UI languages. Characters per second is omitted:
+hides the API and translation timing row. It retains explicit control-action
+feedback and the return-to-live reading action without introducing another
+panel or shifting the subtitle content origin.
+Only completed numeric samples receive a presentation color: API measurements
+are neutral below 500ms, amber from 500ms, and pale red from 1500ms; translation
+request/follow measurements are neutral below 1000ms, amber from 1000ms, and
+pale red from 3000ms. These are UI experience bands, not network-only RTT,
+end-to-end subtitle latency, provider SLAs, or failure classifications. Pending,
+recovery and inactive labels stay neutral rather than inheriting stale samples.
+Characters per second is omitted:
 provider batching and sentence length make it less useful than elapsed time
 for diagnosing the user's reported delays.
 
@@ -251,11 +261,16 @@ history corrections, appended pairs, clearing and trimming still update at once.
 While following, a preceding bilingual sentence keeps one visible line in each
 selected language; scrolling upward opens its full text. The newest
 sentence uses the actual measured viewport height, rather than a fixed two-line
-limit. The original has 36% of available height initially, with spare height from
-either measured short lane given to the longer one. A sole language uses all the
+limit. Long bilingual lanes start with 50% of available height each, with spare
+height from either measured short lane given to the longer one. At 143px of
+available height and subtitle size 17, this changes the long/long presentation
+from two original plus four translated lines to three plus three. The native
+minimum still keeps one line in each language. Independent wrapping and tail
+clipping do not provide sentence alignment; complete pairs and full reading
+remain intact. A sole language uses all the
 available height. Reference text is 90% of the primary size (82% in a short body)
 and 86% white; integer line heights keep glyphs inside the clipping boundary.
-Upward reading intent restores full confirmed text. No edge fade or continuation
+Upward reading intent restores full confirmed and current live text. No edge fade or continuation
 glyph is inserted into the text. The optional divider is one full CSS pixel, at
 34% white, across the inset body width, with 7px breathing room. It remains
 default-off and persists.

@@ -1,19 +1,23 @@
 /** Owns follow/read intent and sentence anchors; never changes subtitle text. */
 export class TimelineScroll {
   private following = true;
-  private userScrolling = false;
+  private userScrolling: { top: number; direction: "down" | "pointer" } | null = null;
   private modeAnchor = false;
   private reading: { id: string; offset: number } | null = null;
 
-  userIntent(element: HTMLElement) {
-    this.userScrolling = true;
+  userIntent(element: HTMLElement, direction: "down" | "pointer" = "pointer") {
+    this.userScrolling = { top: element.scrollTop, direction };
     this.rememberReading(element);
+  }
+
+  endUserIntent() {
+    this.userScrolling = null;
   }
 
   /** Enter full confirmed-history reading even if the compact rows do not
    * overflow yet, so an upward wheel/key can reveal a single long sentence. */
   beginReading(element: HTMLElement) {
-    this.userScrolling = true;
+    this.endUserIntent();
     this.following = false;
     this.rememberReading(element);
   }
@@ -29,10 +33,23 @@ export class TimelineScroll {
     this.move(element, element.scrollHeight, "instant");
   }
 
+  /** Called only by a new downward gesture; short text may emit no scroll. */
+  followIfAtTail(element: HTMLElement) {
+    if (this.atTail(element)) this.followTail(element);
+  }
+
   scrolled(element: HTMLElement) {
-    if (!this.userScrolling) return; // Ignore our instant and smooth scroll events.
-    this.following = element.scrollHeight - element.clientHeight - element.scrollTop <= 2;
-    this.rememberReading(element);
+    const intent = this.userScrolling;
+    this.endUserIntent();
+    if (intent) {
+      const downward = element.scrollTop > intent.top ||
+        (intent.direction === "down" && element.scrollTop === intent.top);
+      if (this.atTail(element) && downward) this.following = true;
+      else if (!this.atTail(element)) this.following = false;
+    }
+    // Native layout/anchor corrections may emit scroll without user input.
+    // Keep the actual visible anchor, but never use them to leave reading.
+    if (!this.following) this.rememberReading(element);
   }
 
   displayChanged(element: HTMLElement) {
@@ -67,6 +84,7 @@ export class TimelineScroll {
   }
 
   private restoreReading(element: HTMLElement) {
+    this.endUserIntent();
     if (!this.reading) return;
     const block = Array.from(element.children).find(child => (child as HTMLElement).dataset.utteranceId === this.reading!.id) as HTMLElement | undefined;
     // A bounded history may evict the old sentence; preserve the current
@@ -79,7 +97,6 @@ export class TimelineScroll {
       const offset = -this.reading.offset >= rect.bottom - rect.top ? 0 : this.reading.offset;
       this.reading.offset = offset;
       this.move(element, this.top(element, block) - offset, "instant");
-      this.userScrolling = true;
     }
   }
 
@@ -88,7 +105,11 @@ export class TimelineScroll {
   }
 
   private move(element: HTMLElement, top: number, behavior: ScrollBehavior) {
-    this.userScrolling = false;
+    this.endUserIntent();
     element.scrollTo({ top: Math.max(0, Math.min(top, element.scrollHeight - element.clientHeight)), behavior });
+  }
+
+  private atTail(element: HTMLElement): boolean {
+    return element.scrollHeight - element.clientHeight - element.scrollTop <= 2;
   }
 }

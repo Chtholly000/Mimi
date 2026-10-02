@@ -15,6 +15,7 @@ interface SnapshotStreamSources<Settings, Session> {
 interface SnapshotStreamConsumers<Settings, Session> {
   applySettings: (settings: Settings) => void;
   applySession: (session: Session) => void;
+  onReady?: () => void;
 }
 
 export const SNAPSHOT_STEP_TIMEOUT_MS = 12_000;
@@ -23,82 +24,157 @@ export class SnapshotBootstrapTimeoutError extends Error {
   constructor() { super("snapshot-step-timeout"); }
 }
 
-function withSnapshotDeadline<Value>(operation: Promise<Value>): Promise<Value> {
+function withSnapshotDeadline<Value>(operation: Promise<Value>, signal: AbortSignal): Promise<Value> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new SnapshotBootstrapTimeoutError()), SNAPSHOT_STEP_TIMEOUT_MS);
+    const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); };
+    const abort = () => { cleanup(); reject(new Error("snapshot-stream-disposed")); };
+    const timer = setTimeout(() => { cleanup(); reject(new SnapshotBootstrapTimeoutError()); }, SNAPSHOT_STEP_TIMEOUT_MS);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
     operation.then(
-      (value) => { clearTimeout(timer); resolve(value); },
-      (error: unknown) => { clearTimeout(timer); reject(error); },
+      (value) => { cleanup(); resolve(value); },
+      (error: unknown) => { cleanup(); reject(error); },
     );
   });
 }
 
 /**
- * Installs event listeners before requesting boot snapshots. Events received
- * while a snapshot is in flight are buffered and win over the older response.
- * Each stream progresses independently with a deadline for each native step:
- * a delayed credential snapshot must not hold back the session snapshot.
+ * One stream owns its listener and pending native read for the WebView's
+ * lifetime. A UI deadline cannot cancel a Keychain call and must not remove
+ * healthy listeners. Explicit retries reuse unfinished native operations.
  */
-export async function initializeSnapshotStreams<Settings, Session>(
-  sources: SnapshotStreamSources<Settings, Session>,
-  consumers: SnapshotStreamConsumers<Settings, Session>,
-): Promise<Unlisten[]> {
-  let active = true;
-  const unlisteners: Unlisten[] = [];
-  const clearBuffers: Unlisten[] = [];
-  const safelyUnlisten = (unlisten: Unlisten) => {
-    try { unlisten(); } catch { /* Continue cleaning other subscriptions. */ }
-  };
+class SnapshotStream<Snapshot> {
+  private lifetime = new AbortController();
+  private listener: Promise<void> | null = null;
+  private unlisten: Unlisten | null = null;
+  private read: Promise<void> | null = null;
+  private readFailed = false;
+  private revision = 0;
+  private hasSnapshot = false;
+  private listen: (handler: (snapshot: Snapshot) => void) => Promise<Unlisten>;
+  private getSnapshot: () => Promise<Snapshot>;
+  private apply: (snapshot: Snapshot) => void;
+  private progressed: () => void;
 
-  const startStream = async <Snapshot>(
+  constructor(
     listen: (handler: (snapshot: Snapshot) => void) => Promise<Unlisten>,
     getSnapshot: () => Promise<Snapshot>,
     apply: (snapshot: Snapshot) => void,
-  ) => {
-    let bootstrapping = true;
-    let buffered: Snapshot | undefined;
-    clearBuffers.push(() => { buffered = undefined; });
-    try {
-      const subscription = listen((snapshot) => {
-        if (!active) return;
-        if (bootstrapping) buffered = snapshot;
-        else apply(snapshot);
-      }).then((unlisten) => {
-        // A listen command can complete after its UI attempt has expired.
-        if (active) unlisteners.push(unlisten);
-        else safelyUnlisten(unlisten);
-      });
-      await withSnapshotDeadline(subscription);
-    } catch (error) {
-      active = false;
-      throw error instanceof SnapshotBootstrapTimeoutError ? error : new Error("snapshot-listener-unavailable");
-    }
-    if (!active) return;
-    let snapshot: Snapshot;
-    try { snapshot = await withSnapshotDeadline(getSnapshot()); }
-    catch (error) {
-      active = false;
-      throw error instanceof SnapshotBootstrapTimeoutError ? error : new Error("boot-snapshot-unavailable");
-    }
-    if (!active) return;
-    // Selecting the buffered event and enabling live mode happen in one turn.
-    const latest = buffered ?? snapshot;
-    buffered = undefined;
-    bootstrapping = false;
-    apply(latest);
-  };
+    progressed: () => void,
+  ) {
+    this.listen = listen;
+    this.getSnapshot = getSnapshot;
+    this.apply = apply;
+    this.progressed = progressed;
+  }
 
-  try {
-    await Promise.all([
-      startStream(sources.listenSettings, sources.getSettings, consumers.applySettings),
-      startStream(sources.listenSession, sources.getSession, consumers.applySession),
-    ]);
-    return unlisteners.map((unlisten) => () => { active = false; safelyUnlisten(unlisten); });
-  } catch (error) {
-    active = false;
-    for (const clear of clearBuffers) clear();
-    for (const unlisten of unlisteners) safelyUnlisten(unlisten);
-    throw error;
+  get ready(): boolean { return this.hasSnapshot && this.unlisten !== null; }
+
+  private accept(snapshot: Snapshot): void {
+    if (this.lifetime.signal.aborted) return;
+    this.hasSnapshot = true;
+    this.apply(snapshot);
+    this.progressed();
+  }
+
+  private ensureListener(): Promise<void> {
+    if (this.unlisten !== null) return Promise.resolve();
+    if (this.listener !== null) return this.listener;
+    const listener = Promise.resolve().then(() => {
+      if (this.lifetime.signal.aborted) throw new Error("snapshot-stream-disposed");
+      return this.listen((snapshot) => {
+        if (this.lifetime.signal.aborted) return;
+        this.revision += 1;
+        // Events are already complete snapshots. Publish promptly, including
+        // while credential hydration is pending or its UI deadline has expired.
+        this.accept(snapshot);
+      });
+    }).then((unlisten) => {
+      if (this.lifetime.signal.aborted) safelyUnlisten(unlisten);
+      else {
+        this.unlisten = unlisten;
+        this.progressed();
+        // A listener acknowledgement may arrive after initialize's deadline.
+        // Start its first read once, so hidden windows recover without a retry
+        // button. This is not a re-read or a background retry after failure.
+        if (!this.hasSnapshot) void this.ensureRead().catch(() => {});
+      }
+    }, () => { throw new Error("snapshot-listener-unavailable"); })
+      .finally(() => { if (this.listener === listener) this.listener = null; });
+    this.listener = listener;
+    return listener;
+  }
+
+  private ensureRead(): Promise<void> {
+    if (this.read !== null) return this.read;
+    const revision = this.revision;
+    const read = Promise.resolve().then(() => {
+      if (this.lifetime.signal.aborted) throw new Error("snapshot-stream-disposed");
+      return this.getSnapshot();
+    }).then((snapshot) => {
+      // A newer event wins even when the old read finishes hours after timeout.
+      if (revision === this.revision) this.accept(snapshot);
+    }, () => {
+      this.readFailed = true;
+      throw new Error("boot-snapshot-unavailable");
+    });
+    this.read = read;
+    return read;
+  }
+
+  async initialize(): Promise<void> {
+    if (this.lifetime.signal.aborted || this.ready) return;
+    // Only a new explicit attempt may replace an actually failed read. Keep
+    // even a settled first read while its listener acknowledgement reconciles,
+    // so an immediate rejection cannot cause an automatic second native read.
+    if (this.readFailed) { this.read = null; this.readFailed = false; }
+    await withSnapshotDeadline(this.ensureListener(), this.lifetime.signal);
+    if (this.lifetime.signal.aborted || this.ready) return;
+    await withSnapshotDeadline(this.ensureRead(), this.lifetime.signal);
+  }
+
+  dispose(): void {
+    this.lifetime.abort();
+    if (this.unlisten !== null) safelyUnlisten(this.unlisten);
+    this.unlisten = null;
+  }
+}
+
+function safelyUnlisten(unlisten: Unlisten): void {
+  try { unlisten(); } catch { /* Other stream cleanup must still run. */ }
+}
+
+/** Independent, persistent streams; retries never recreate healthy subscriptions. */
+export class SnapshotStreamBootstrap<Settings, Session> {
+  private settings: SnapshotStream<Settings>;
+  private session: SnapshotStream<Session>;
+  private disposed = false;
+  private reportedReady = false;
+
+  constructor(sources: SnapshotStreamSources<Settings, Session>, consumers: SnapshotStreamConsumers<Settings, Session>) {
+    const progressed = () => {
+      if (!this.disposed && this.ready && !this.reportedReady) {
+        this.reportedReady = true;
+        consumers.onReady?.();
+      }
+    };
+    this.settings = new SnapshotStream(sources.listenSettings, sources.getSettings, consumers.applySettings, progressed);
+    this.session = new SnapshotStream(sources.listenSession, sources.getSession, consumers.applySession, progressed);
+  }
+
+  get ready(): boolean { return !this.disposed && this.settings.ready && this.session.ready; }
+
+  async initialize(): Promise<void> {
+    if (this.disposed) return;
+    const results = await Promise.allSettled([this.settings.initialize(), this.session.initialize()]);
+    if (this.disposed || this.ready) return;
+    for (const result of results) if (result.status === "rejected") throw result.reason;
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.settings.dispose();
+    this.session.dispose();
   }
 }
 

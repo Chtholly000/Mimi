@@ -189,7 +189,7 @@ it.each(modes)("keeps the original and final history available without a duplica
     translation: { text: confirmed.translation, isFinal: true }, history: [confirmed] }, { isTranslationPending: false });
   const expected = displayMode === "original" ? [confirmed.source] : displayMode === "translation" ? [confirmed.translation] : [confirmed.source, confirmed.translation];
   expect(visibleLanes()).toEqual(expected);
-  expect(host.querySelector('[data-utterance-id="live"]')).toBeNull();
+  expect(host.querySelector('[data-utterance-id^="live"]')).toBeNull();
   expect(host.querySelectorAll("[data-utterance-id]")).toHaveLength(1);
   await mode("original");
   expect(visibleLanes()).toEqual([confirmed.source]);
@@ -243,7 +243,7 @@ it("does not duplicate committed same-language recognition when a prior translat
   for (const displayMode of modes) {
     await mode(displayMode);
     expect(visibleLanes()).toEqual([sameLanguagePair.source]);
-    expect(host.querySelector('[data-utterance-id="live"]')).toBeNull();
+    expect(host.querySelector('[data-utterance-id^="live"]')).toBeNull();
   }
 });
 

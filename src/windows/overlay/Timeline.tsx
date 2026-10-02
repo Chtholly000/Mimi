@@ -41,6 +41,9 @@ interface TimelineProps {
   blendsWithBackground?: boolean;
   /** Resolved motion setting: gates the roll-up glide. */
   motionEnabled?: boolean;
+  /** A new request explicitly returns a history reader to the live tail. */
+  followTailRequest?: number;
+  onReadingHistoryChange?: (reading: boolean) => void;
 }
 
 /** Scrolling sentence blocks; auto-scrolls to the newest block. Memoized:
@@ -57,6 +60,8 @@ export const Timeline = memo(function Timeline({
   motionEnabled = true,
   showTimestamps = false,
   showSubtitleDividers = false,
+  followTailRequest = 0,
+  onReadingHistoryChange,
 }: TimelineProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   // Keep the newest content pinned to the bottom: the block count changes when
@@ -66,11 +71,17 @@ export const Timeline = memo(function Timeline({
     const last = blocks[blocks.length - 1];
     return (last?.source?.length ?? 0) + (last?.translation?.length ?? 0);
   }, [blocks]);
+  const blockLayoutKey = useMemo(() => JSON.stringify(blocks.map(block => block.id)), [blocks]);
   const prevBlockCountRef = useRef(blocks.length);
   const previousModeRef = useRef(displayMode);
   const modeChangedRef = useRef(false);
   const [scroll] = useState(() => new TimelineScroll());
-  const [readingHistory, setReadingHistory] = useState(false);
+  const [reading, setReading] = useState({ active: false, request: followTailRequest });
+  const readingHistory = reading.active && reading.request === followTailRequest;
+  const previousFollowRequest = useRef(followTailRequest);
+  const setReadingHistory = (active: boolean) => setReading(previous =>
+    previous.active === active && previous.request === followTailRequest
+      ? previous : { active, request: followTailRequest });
   const [viewportHeight, setViewportHeight] = useState<number | null>(null);
   const [laneMeasurements, setLaneMeasurements] = useState({ blockId: "", source: 0, translation: 0 });
   const touchStartYRef = useRef<number | null>(null);
@@ -78,6 +89,9 @@ export const Timeline = memo(function Timeline({
   const laneGap = tight ? 1 : LANE_GAP;
   const paddingTop = tight ? 0 : blendsWithBackground ? IMMERSIVE_BLOCK_GAP : BLOCK_PADDING_Y;
   const paddingBottom = tight ? 1 : LAST_BLOCK_PADDING_Y;
+
+  useEffect(() => { onReadingHistoryChange?.(readingHistory); }, [onReadingHistoryChange, readingHistory]);
+  useEffect(() => () => onReadingHistoryChange?.(false), [onReadingHistoryChange]);
 
   useLayoutEffect(() => {
     if (containerRef.current) scroll.reflow(containerRef.current);
@@ -89,6 +103,17 @@ export const Timeline = memo(function Timeline({
     modeChangedRef.current = true;
     if (containerRef.current) scroll.displayChanged(containerRef.current);
   }, [displayMode, scroll]);
+
+  // Explicit follow intent wins even if a display-mode change shares this
+  // render. Later row-size observations keep it pinned as compact lanes settle.
+  useLayoutEffect(() => {
+    if (previousFollowRequest.current === followTailRequest) return;
+    previousFollowRequest.current = followTailRequest;
+    if (containerRef.current) {
+      scroll.followTail(containerRef.current);
+      containerRef.current.focus({ preventScroll: true });
+    }
+  }, [followTailRequest, scroll]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -111,7 +136,7 @@ export const Timeline = memo(function Timeline({
     };
     resized();
     return observeTimelineResize(element, resized);
-  }, [scroll]);
+  }, [scroll, blockLayoutKey]);
 
   return (
     <div
@@ -121,31 +146,37 @@ export const Timeline = memo(function Timeline({
         if (event.deltaY < 0) {
           scroll.beginReading(event.currentTarget);
           setReadingHistory(true);
-        } else {
-          scroll.userIntent(event.currentTarget);
+        } else if (event.deltaY > 0) {
+          scroll.userIntent(event.currentTarget, "down");
           // A downward gesture at the bottom also closes history when short
           // content has no scrollbar and would not emit a scroll event.
-          if (event.deltaY > 0) {
-            scroll.scrolled(event.currentTarget);
-            setReadingHistory(!scroll.isFollowing());
-          }
+          scroll.followIfAtTail(event.currentTarget);
+          setReadingHistory(!scroll.isFollowing());
         }
       }}
       onTouchStart={(event) => {
         touchStartYRef.current = event.touches[0]?.clientY ?? null;
-        scroll.userIntent(event.currentTarget);
+        scroll.endUserIntent();
       }}
       onTouchMove={(event) => {
         const y = event.touches[0]?.clientY;
         if (touchStartYRef.current !== null && y !== undefined && y - touchStartYRef.current > 2) {
           scroll.beginReading(event.currentTarget);
           setReadingHistory(true);
-          touchStartYRef.current = null;
+          touchStartYRef.current = y;
+        } else if (touchStartYRef.current !== null && y !== undefined && y - touchStartYRef.current < -2) {
+          scroll.userIntent(event.currentTarget, "down");
+          scroll.followIfAtTail(event.currentTarget);
+          setReadingHistory(!scroll.isFollowing());
+          touchStartYRef.current = y;
         }
       }}
-      onTouchEnd={() => { touchStartYRef.current = null; }}
-      onTouchCancel={() => { touchStartYRef.current = null; }}
+      onTouchEnd={() => { touchStartYRef.current = null; scroll.endUserIntent(); }}
+      onTouchCancel={() => { touchStartYRef.current = null; scroll.endUserIntent(); }}
       onPointerDown={(event) => scroll.userIntent(event.currentTarget)}
+      onPointerMove={(event) => { if (event.buttons !== 0) scroll.userIntent(event.currentTarget); }}
+      onPointerUp={() => scroll.endUserIntent()}
+      onPointerCancel={() => scroll.endUserIntent()}
       onKeyDown={(event) => {
         if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) {
           scroll.beginReading(event.currentTarget);
@@ -154,7 +185,11 @@ export const Timeline = memo(function Timeline({
           event.preventDefault();
           scroll.followTail(event.currentTarget);
           setReadingHistory(false);
-        } else if (["ArrowDown", "PageDown", " "].includes(event.key)) scroll.userIntent(event.currentTarget);
+        } else if (["ArrowDown", "PageDown", " "].includes(event.key)) {
+          scroll.userIntent(event.currentTarget, "down");
+          scroll.followIfAtTail(event.currentTarget);
+          setReadingHistory(!scroll.isFollowing());
+        }
       }}
       onScroll={(event) => {
         scroll.scrolled(event.currentTarget);
@@ -170,20 +205,24 @@ export const Timeline = memo(function Timeline({
         const isLast = index === blocks.length - 1;
         const distance = blocks.length - 1 - index;
         // Following keeps completed long utterances in the same bounded tail
-        // as the live sentence. Their full text opens only on reading intent,
-        // so starting another sentence cannot turn the last one into a wall.
-        const compact = !readingHistory || block.presentation === "live";
+        // as the live sentence. Deliberate reading opens either kind of row;
+        // it does not confirm or retain a replaceable live draft.
+        const compact = !readingHistory;
         // Only a sentence that appears for the first time animates in. A
         // committed utterance replaces the live row it was already visible as,
         // so animating it again would blink the text the user is reading.
         const entering = block.presentation === "live";
         const availableLaneHeight = viewportHeight === null ? null
           : viewportHeight - paddingTop - paddingBottom - (block.source !== null && block.translation !== null ? laneGap : 0);
+        // A bilingual original keeps its reference font while waiting for MT.
+        // Only its line budget changes when the translation takes its space.
+        const sourceScale = subtitleSourceScale(viewportHeight === null ? null
+          : viewportHeight - paddingTop - paddingBottom - (displayMode === "bilingual" ? laneGap : 0));
         // When the original has not arrived, the translation owns the full
         // viewport rather than reserving height for an absent reference lane.
         const budgetMode = displayMode === "bilingual" && block.source === null ? "translation" : displayMode;
         const budget = subtitleLaneBudget(budgetMode, block.translation !== null, availableLaneHeight, fontSize,
-          isLast && laneMeasurements.blockId === block.id ? laneMeasurements : null);
+          isLast && laneMeasurements.blockId === block.id ? laneMeasurements : null, sourceScale);
         const measureLane = (kind: "source" | "translation", height: number) => {
           if (!isLast) return;
           setLaneMeasurements(previous => {
@@ -258,7 +297,7 @@ export const Timeline = memo(function Timeline({
                   blendsWithBackground={blendsWithBackground}
                   motionEnabled={motionEnabled}
                   entering={entering}
-                  sourceScale={subtitleSourceScale(availableLaneHeight)}
+                  sourceScale={sourceScale}
                   onMeasure={height => measureLane("source", height)}
                 />
               ) : null}
