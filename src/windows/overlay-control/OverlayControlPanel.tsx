@@ -1,5 +1,6 @@
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
+import { LanguageSelect } from "../../components/LanguageSelect";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
@@ -9,14 +10,13 @@ import {
 } from "../../lib/ipc";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import type { SubtitleDisplayMode } from "../../lib/types";
-import { targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import {
+  SOURCE_LANGUAGE_DISPLAY_NAMES,
   type OverlayActivityPhaseKind,
   type SettingsSnapshot,
   type SourceLanguage,
 } from "../../lib/types";
 import {
-  sourceLanguageButtonTitle,
   type LanguageStatus,
 } from "../overlay/overlayModel";
 import { LanguageStatusCapsule } from "./LanguageStatusCapsule";
@@ -71,8 +71,6 @@ export function OverlayControlPanel({
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const canChangeSessionSettings = !isChangingSession && pendingAction === null;
-  const chineseIsOriginalOnly =
-    targetLanguagesForSettings(settings).includes("original");
 
   useLayoutEffect(() => {
     if (!isTauri || !panelRef.current || !contentRef.current) return;
@@ -166,12 +164,12 @@ export function OverlayControlPanel({
         {model.sourceOptions.length > 0 && (
           <div ref={sourceControlRef} className="overlay-control-picker">
             <span>{I18N.overlay.sourceLanguage}</span>
-            <Select
+            <LanguageSelect
               label={I18N.overlay.sourceLanguage}
               value={settings.sourceLanguage}
               options={model.sourceOptions.map((language) => ({
                 value: language,
-                label: sourceLanguageButtonTitle(language, chineseIsOriginalOnly),
+                label: SOURCE_LANGUAGE_DISPLAY_NAMES[language],
               }))}
               disabled={!canChangeSessionSettings}
               onChange={(value) => performAction("source", () => onSwitchSourceLanguage(value as SourceLanguage))}

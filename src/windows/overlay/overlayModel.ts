@@ -12,7 +12,6 @@ import type {
 } from "../../lib/types";
 import { I18N } from "../../lib/i18n";
 import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
   TARGET_LANGUAGE_DISPLAY_NAMES,
   sourceLanguageStatusDisplayName,
 } from "../../lib/types";
@@ -488,17 +487,6 @@ export function languageStatus(
     separator: I18N.overlay.separator,
     target: TARGET_LANGUAGE_DISPLAY_NAMES[settings.targetLanguage],
   };
-}
-
-export function sourceLanguageButtonTitle(
-  sourceLanguage: SettingsSnapshot["sourceLanguage"],
-  chineseIsOriginalOnly = true,
-): string {
-  return sourceLanguage === "zh"
-    ? chineseIsOriginalOnly
-      ? I18N.overlay.chineseSource
-      : SOURCE_LANGUAGE_DISPLAY_NAMES.zh
-    : SOURCE_LANGUAGE_DISPLAY_NAMES[sourceLanguage];
 }
 
 export function hasSubtitleContent(subtitles: SubtitleSnapshot): boolean {

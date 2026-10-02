@@ -1806,11 +1806,10 @@ impl SessionManager {
             return;
         }
         let (target_language, next_mode, needs_reconnect) = {
-            let target = capabilities.target_language_after_source_switch(
-                language,
-                prefs.source_language,
-                prefs.target_language,
-            );
+            // Menus and settings share explicit source-selection semantics:
+            // retain the target unless this route requires normalization.
+            let target =
+                capabilities.target_language_after_source_switch(language, prefs.target_language);
             if !profile
                 .capabilities(target)
                 .source_languages

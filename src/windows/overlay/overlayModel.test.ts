@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { I18N } from "../../lib/i18n";
 import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
   type SubtitleSnapshot,
 } from "../../lib/types";
 import {
   buildSubtitleBlocks,
   subtitleLaneBudget,
   computeActivityPhaseFromSignals,
-  sourceLanguageButtonTitle,
   visibleLiveSubtitle,
   visibleLiveSubtitles,
 } from "./overlayModel";
@@ -239,17 +236,6 @@ describe("live subtitle display mode", () => {
         false,
       ),
     ).toBeNull();
-  });
-});
-
-describe("source language labels", () => {
-  it("labels Chinese as original-only only when the active provider supports that mode", () => {
-    expect(sourceLanguageButtonTitle("zh", true)).toBe(
-      I18N.overlay.chineseSource,
-    );
-    expect(sourceLanguageButtonTitle("zh", false)).toBe(
-      SOURCE_LANGUAGE_DISPLAY_NAMES.zh,
-    );
   });
 });
 

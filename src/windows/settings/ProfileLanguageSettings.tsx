@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
-import { Select } from "../../components/Select";
+import { LanguageSelect } from "../../components/LanguageSelect";
 import { I18N } from "../../lib/i18n";
 import { sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import { useStore } from "../../lib/store";
@@ -8,8 +8,7 @@ import { SOURCE_LANGUAGE_DISPLAY_NAMES, TARGET_LANGUAGE_DISPLAY_NAMES, type Sett
 import { InlineFeedback, SettingsRow } from "./SettingsPrimitives";
 import { WindowsAudioSource } from "./WindowsAudioSource";
 
-/** Explicit language preferences belong to the active service. Unlike the
- * overlay's source quick switch, choosing Chinese here preserves the target. */
+/** Explicit language preferences belong to the active service. */
 export function ProfileLanguageSettings({ settings, disabled, requiresStop = false }: { settings: SettingsSnapshot; disabled: boolean; requiresStop?: boolean }) {
   const saveSettings = useStore(state => state.saveSettings);
   const [busy, setBusy] = useState(false);
@@ -55,8 +54,7 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
 function LanguageChoices({ label, value, options, disabled, onChange }: {
   label: string; value: string; options: readonly { value: string; label: string }[]; disabled: boolean; onChange: (value: string) => void;
 }) {
-  if (options.length > 6) return <Select label={label} value={value} options={options} disabled={disabled} onChange={onChange}
-    searchLabel={I18N.settings.searchLanguages} emptyMessage={I18N.settings.noMatchingLanguages} />;
+  if (options.length > 6) return <LanguageSelect label={label} value={value} options={options} disabled={disabled} onChange={onChange} />;
   return <div className="profile-language-choices" role="group" aria-label={label}>
     {options.map(option => <button key={option.value} type="button" className="profile-language-choice" aria-pressed={option.value === value}
       disabled={disabled} onClick={() => { if (option.value !== value) onChange(option.value); }}>

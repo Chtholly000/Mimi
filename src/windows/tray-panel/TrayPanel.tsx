@@ -1,5 +1,6 @@
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
+import { LanguageSelect } from "../../components/LanguageSelect";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "../../components/Icon";
@@ -7,8 +8,7 @@ import { I18N, providerDisplayName } from "../../lib/i18n";
 import { isTauri } from "../../lib/ipc";
 import {
   activeServiceProfile,
-  quickSourceLanguagesForSettings,
-  targetLanguagesForSettings,
+  sourceLanguagesForSettings,
 } from "../../lib/providerCapabilities";
 import {
   selectSessionErrorMessage,
@@ -16,6 +16,7 @@ import {
   useStore,
 } from "../../lib/store";
 import {
+  SOURCE_LANGUAGE_DISPLAY_NAMES,
   TARGET_LANGUAGE_DISPLAY_NAMES,
   targetLanguageTranslatesAudio,
   type SettingsSnapshot,
@@ -24,7 +25,6 @@ import {
 } from "../../lib/types";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import type { SubtitleDisplayMode } from "../../lib/types";
-import { sourceLanguageButtonTitle } from "../overlay/overlayModel";
 import {
   actionErrorMessage,
   deriveTrayPresentation,
@@ -80,9 +80,7 @@ export function TrayPanel() {
   const panelRef = useRef<HTMLElement>(null);
 
   const activeProfile = activeServiceProfile(settings);
-  const sourceLanguages = quickSourceLanguagesForSettings(settings);
-  const chineseIsOriginalOnly =
-    targetLanguagesForSettings(settings).includes("original");
+  const sourceLanguages = sourceLanguagesForSettings(settings);
   const presentation = deriveTrayPresentation({
     statusKind: sessionStatusKind,
     isPaused,
@@ -261,9 +259,9 @@ export function TrayPanel() {
             <small>{translationSummary(settings)}</small>
           </span>
           <span className="tray-select-wrap">
-            <Select label={I18N.tray.sourceLanguage} value={settings.sourceLanguage}
+            <LanguageSelect label={I18N.tray.sourceLanguage} value={settings.sourceLanguage}
               disabled={sourcePickerDisabled}
-              options={sourceLanguages.map((language) => ({ value: language, label: sourceLanguageButtonTitle(language, chineseIsOriginalOnly) }))}
+              options={sourceLanguages.map((language) => ({ value: language, label: SOURCE_LANGUAGE_DISPLAY_NAMES[language] }))}
               onChange={(value) => performAction("language", () => switchSourceLanguage(value as SourceLanguage))} />
           </span>
         </div>

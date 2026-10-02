@@ -8,7 +8,6 @@ import {
   capabilitiesForProfile,
   effectiveTranslationModeForSettings,
   sourceLanguagesForSettings,
-  quickSourceLanguagesForSettings,
   subtitlePreferencesChanged,
   targetLanguageAfterSourceSwitch,
   targetLanguagesForSettings,
@@ -295,7 +294,6 @@ it("uses actual stamped native options instead of an older local fallback", () =
   const settings = { ...BASE_SETTINGS, languageCapabilities: NATIVE_CAPABILITIES };
   expect(sourceLanguagesForSettings(settings)).toEqual(["auto", "fr"]);
   expect(targetLanguagesForSettings(settings)).toEqual(["original", "zh", "fr"]);
-  expect(quickSourceLanguagesForSettings({ ...settings, sourceLanguage: "fr" })).toEqual(["auto", "fr"]);
   expect(translationModesForSettings(settings)).toEqual(["turbo"]);
 });
 
@@ -332,10 +330,13 @@ it("falls back atomically for malformed native options and deduplicates valid li
   expect(sourceLanguagesForSettings(settings)).toEqual(["auto", "fr"]);
 });
 
-it("keeps quick controls compact and preserves supported selected languages", () => {
-  expect(quickSourceLanguagesForSettings(BASE_SETTINGS)).toEqual(["auto", "ja", "en", "ko", "zh"]);
-  expect(quickSourceLanguagesForSettings({ ...BASE_SETTINGS, sourceLanguage: "fr" })).toEqual(["auto", "ja", "en", "ko", "zh", "fr"]);
-  expect(quickSourceLanguagesForSettings({ ...BASE_SETTINGS, sourceLanguage: "no", targetLanguage: "original" })).toContain("no");
-  expect(quickSourceLanguagesForSettings({ ...BASE_SETTINGS, sourceLanguage: "no" })).not.toContain("no");
-  expect(quickSourceLanguagesForSettings({ ...BASE_SETTINGS, activeProfileId: "openai" })).toEqual(["auto"]);
+it("preserves an explicit Alibaba translation target when choosing Chinese", () => {
+  const settings = { ...BASE_SETTINGS, sourceLanguage: "auto" as const, targetLanguage: "en" as const };
+  expect(targetLanguageAfterSourceSwitch(settings, "zh")).toBe("en");
+});
+
+it("keeps Original when choosing a supported recognition language after Chinese", () => {
+  const settings = { ...BASE_SETTINGS, sourceLanguage: "zh" as const, targetLanguage: "original" as const };
+  expect(sourceLanguagesForSettings(settings)).toContain("no");
+  expect(targetLanguageAfterSourceSwitch(settings, "no")).toBe("original");
 });

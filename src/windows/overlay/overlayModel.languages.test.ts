@@ -1,9 +1,6 @@
-import { afterEach, expect, it } from "vitest";
-import { setStoredUiLanguage } from "../../lib/i18n";
+import { expect, it } from "vitest";
 import type { SubtitleSnapshot } from "../../lib/types";
-import { isWaitingForFinalTranslation, sourceLanguageButtonTitle, visibleLiveSubtitles } from "./overlayModel";
-
-afterEach(() => setStoredUiLanguage("en"));
+import { isWaitingForFinalTranslation, visibleLiveSubtitles } from "./overlayModel";
 
 const subtitles: SubtitleSnapshot = {
   source: { text: "Synthetic current source.", isFinal: false, utteranceId: "current" },
@@ -28,9 +25,4 @@ it("keeps Simplified-to-Traditional Chinese as MT instead of treating Chinese sc
       { kind: "translation", text: subtitles.previewPair!.translation, isFinal: false, isStable: true },
     ]);
   expect(isWaitingForFinalTranslation({ ...settings, sourceLanguage: "auto" }, null, true)).toBe(true);
-});
-
-it.each([["zh", "法语"], ["en", "French"], ["ja", "フランス語"]] as const)("localizes the selected extended shortcut in %s", (locale, label) => {
-  setStoredUiLanguage(locale);
-  expect(sourceLanguageButtonTitle("fr", true)).toBe(label);
 });

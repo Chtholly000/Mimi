@@ -130,6 +130,13 @@ translated output. Record only timing/counts/status, never speech or subtitles.
 
 ## Overlay and UI checks
 
+- Language menus in settings, the subtitle controls and the tray use the full
+  `sourceLanguagesForSettings` route catalog and the shared `LanguageSelect`.
+  Keep the same choices, order and localized names; use search/scrolling for a
+  long list instead of introducing a second list of preferred languages.
+  Verify both translated and Original routes and a stale capability snapshot.
+  Explicit source selection retains the target subject to provider normalization;
+  Chinese must not silently switch translation off or rewrite an Original target.
 - AppKit window mutations, including window level and collection behavior,
   must run on the macOS main thread.
 - Full-screen visibility requires the overlay's all-spaces and full-screen

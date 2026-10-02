@@ -281,23 +281,6 @@ impl SourceLanguage {
             .into_iter()
             .find(|language| *language != Self::Automatic && language.raw_value() == code)
     }
-
-    /// Target-language adjustment applied when the user quick-switches the
-    /// source language from a menu or picker.
-    pub fn target_language_after_quick_switch(
-        self,
-        previous_source: SourceLanguage,
-        current_target: TargetLanguage,
-    ) -> TargetLanguage {
-        if self == SourceLanguage::Chinese {
-            return TargetLanguage::Original;
-        }
-        if previous_source == SourceLanguage::Chinese && current_target == TargetLanguage::Original
-        {
-            return TargetLanguage::SimplifiedChinese;
-        }
-        current_target
-    }
 }
 
 /// A language code reported by the recognition service.
@@ -789,39 +772,6 @@ mod tests {
         assert!(!TargetLanguage::TraditionalChinese.matches_reported_asr(Some("zh")));
         assert!(TargetLanguage::TraditionalChinese.matches_reported_asr(Some("zh-Hant")));
         assert!(!TargetLanguage::TraditionalChinese.matches_reported_asr(Some("unknown")));
-    }
-
-    #[test]
-    fn chinese_quick_switch_shows_original_subtitles() {
-        assert_eq!(
-            SourceLanguage::Chinese.target_language_after_quick_switch(
-                SourceLanguage::Japanese,
-                TargetLanguage::SimplifiedChinese
-            ),
-            TargetLanguage::Original
-        );
-    }
-
-    #[test]
-    fn leaving_chinese_original_mode_restores_chinese_translation() {
-        assert_eq!(
-            SourceLanguage::Japanese.target_language_after_quick_switch(
-                SourceLanguage::Chinese,
-                TargetLanguage::Original
-            ),
-            TargetLanguage::SimplifiedChinese
-        );
-    }
-
-    #[test]
-    fn ordinary_language_switches_preserve_a_custom_target() {
-        assert_eq!(
-            SourceLanguage::English.target_language_after_quick_switch(
-                SourceLanguage::Japanese,
-                TargetLanguage::English
-            ),
-            TargetLanguage::English
-        );
     }
 
     #[test]

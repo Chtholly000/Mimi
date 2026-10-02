@@ -16,8 +16,12 @@ frontend accepts this snapshot only when its route stamp matches; older
 snapshots use the equivalent local resolver.
 
 Explicit source and target settings are independent: choosing Chinese in this
-form no longer forces Original. Existing overlay/tray source shortcuts retain
-their compact behavior and include a currently selected extended language.
+form no longer forces Original. The subsequent
+[shared language-menu repair](2026-10-02-shared-language-pickers.md) removes the
+overlay/tray's five-language filter: all three surfaces use the full active-route
+catalog, with searchable bounded menus in the compact surfaces. Source selections
+also consistently preserve the current target subject to provider normalization;
+Chinese no longer implicitly enables Original in the compact menus.
 Settings edits require a stopped session. Transient connection checks disable
 controls without incorrectly telling users to stop an already stopped session.
 
