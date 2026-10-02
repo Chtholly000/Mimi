@@ -515,13 +515,10 @@ impl SettingsStore {
             tracing::warn!("service profile catalog unavailable label=create_failed");
         }
         if !store.catalog_write_blocked {
-            let provider = store
-                .active_profile()
-                .map(|profile| profile.effective_provider())
-                .unwrap_or(ProviderKind::AlibabaCloud);
+            let profile = store.active_profile().unwrap_or_default();
             let mut prefs = store.prefs.lock().unwrap();
             let original = prefs.clone();
-            normalize_preferences_value(&mut prefs, provider);
+            normalize_preferences_value(&mut prefs, &profile);
             if *prefs != original && store.persist_preferences_value(&prefs).is_err() {
                 tracing::warn!("preferences unavailable label=normalization_write_failed");
             }
@@ -638,9 +635,18 @@ impl SettingsStore {
     /// transaction. A failed write leaves the published in-memory snapshot
     /// unchanged, so callers never report settings that will vanish on restart.
     pub fn save_preferences(&self, update: impl FnOnce(&mut Preferences)) -> Result<(), String> {
+        self.save_preferences_validated(update, |_, _| Ok(()))
+    }
+
+    fn save_preferences_validated(
+        &self,
+        update: impl FnOnce(&mut Preferences),
+        validate: impl FnOnce(&Preferences, &mut Preferences) -> Result<(), String>,
+    ) -> Result<(), String> {
         let mut current = self.prefs.lock().unwrap();
         let mut next = current.clone();
         update(&mut next);
+        validate(&current, &mut next)?;
         next.translation_mode = TranslationMode::Turbo;
         next.font_size = next
             .font_size
@@ -660,10 +666,19 @@ impl SettingsStore {
         &self,
         update: impl FnOnce(&mut Preferences),
     ) -> Result<(), String> {
-        let provider = self.active_profile()?.effective_provider();
-        self.save_preferences(|prefs| {
-            update(prefs);
-            normalize_preferences_value(prefs, provider);
+        let profile = self.active_profile()?;
+        self.save_preferences_validated(update, |previous, next| {
+            let capabilities = profile.capabilities(next.target_language);
+            if next.target_language != previous.target_language
+                && !capabilities.target_languages.contains(&next.target_language) {
+                return Err(crate::core::configuration::LiveTranslationConfigurationError::UnsupportedTargetLanguage.to_string());
+            }
+            if next.source_language != previous.source_language
+                && !capabilities.source_languages.contains(&next.source_language) {
+                return Err(crate::core::configuration::LiveTranslationConfigurationError::UnsupportedSourceLanguage.to_string());
+            }
+            normalize_preferences_value(next, &profile);
+            Ok(())
         })
     }
 
@@ -673,6 +688,22 @@ impl SettingsStore {
         }
         let catalog = self.catalog.lock().unwrap();
         Ok((catalog.active_profile_id.clone(), catalog.profiles.clone()))
+    }
+
+    pub fn preferences_and_catalog(
+        &self,
+    ) -> Result<(Preferences, String, Vec<ServiceProfile>), String> {
+        if self.catalog_write_blocked {
+            return Err(PROFILE_CATALOG_UNAVAILABLE.to_string());
+        }
+        let catalog = self.catalog.lock().unwrap();
+        let mut prefs = self.prefs.lock().unwrap().clone();
+        prefs.translation_mode = TranslationMode::Turbo;
+        Ok((
+            prefs,
+            catalog.active_profile_id.clone(),
+            catalog.profiles.clone(),
+        ))
     }
 
     /// Safe fallback used only for best-effort broadcasts after the initial
@@ -732,11 +763,11 @@ impl SettingsStore {
 
         let mut catalog = self.catalog.lock().unwrap();
         let mut next_catalog = catalog.clone();
-        let provider = next_catalog
+        let profile = next_catalog
             .profiles
             .iter()
             .find(|profile| profile.id == profile_id)
-            .map(|profile| profile.effective_provider())
+            .cloned()
             .ok_or_else(|| PROFILE_NOT_FOUND.to_string())?;
         next_catalog.active_profile_id = profile_id.to_string();
         next_catalog
@@ -747,7 +778,7 @@ impl SettingsStore {
         let mut prefs = self.prefs.lock().unwrap();
         let previous_prefs = prefs.clone();
         let mut next_prefs = previous_prefs.clone();
-        normalize_preferences_value(&mut next_prefs, provider);
+        normalize_preferences_value(&mut next_prefs, &profile);
 
         self.persist_preferences_value(&next_prefs)?;
         if let Err(error) = self.persist_catalog_value(&next_catalog) {
@@ -801,16 +832,16 @@ impl SettingsStore {
             .validated()
             .map_err(|_| PROFILE_CATALOG_UNAVAILABLE.to_string())?;
 
-        let next_provider = next_catalog
+        let next_profile = next_catalog
             .profiles
             .iter()
             .find(|candidate| candidate.id == next_catalog.active_profile_id)
-            .map(|candidate| candidate.effective_provider())
+            .cloned()
             .ok_or_else(|| PROFILE_CATALOG_UNAVAILABLE.to_string())?;
         let mut prefs = self.prefs.lock().unwrap();
         let previous_prefs = prefs.clone();
         let mut next_prefs = previous_prefs.clone();
-        normalize_preferences_value(&mut next_prefs, next_provider);
+        normalize_preferences_value(&mut next_prefs, &next_profile);
 
         // Persist the normalized preferences before selecting their provider.
         // The old provider also accepts the current providers' normalized
@@ -1291,9 +1322,19 @@ impl SettingsStore {
             .find(|candidate| candidate.id == profile.id)
             .ok_or_else(|| PROFILE_NOT_FOUND.to_string())?;
         updated.text_translation = Some(translation);
+        let mut prefs = self.prefs.lock().unwrap();
+        let previous_prefs = prefs.clone();
+        let mut next_prefs = previous_prefs.clone();
+        if next.active_profile_id == profile.id {
+            normalize_preferences_value(&mut next_prefs, updated);
+        }
+        let prefs_changed = next_prefs != previous_prefs;
         let destination_changed = destination_value != previous_destination;
         let key_changed = previous.as_deref() != Some(key_value.as_str());
         let write_result = (|| {
+            if prefs_changed {
+                self.persist_preferences_value(&next_prefs)?;
+            }
             if destination_changed {
                 self.write_destination_value(profile, destination_value.as_deref())?;
             }
@@ -1303,6 +1344,9 @@ impl SettingsStore {
             self.persist_catalog_value(&next)
         })();
         if let Err(error) = write_result {
+            if prefs_changed && self.persist_preferences_value(&previous_prefs).is_err() {
+                tracing::warn!("preferences unavailable label=text_route_rollback_failed");
+            }
             // Restore in place, never delete/recreate an existing key or widen its ACL.
             if destination_changed
                 && self
@@ -1322,6 +1366,7 @@ impl SettingsStore {
             }
             return Err(error);
         }
+        *prefs = next_prefs;
         *catalog = next;
         Ok(())
     }
@@ -1383,15 +1428,11 @@ impl SettingsStore {
     ) -> Result<LiveTranslationConfiguration, String> {
         let mut prefs = self.prefs.lock().unwrap().clone();
         if for_probe {
-            let normalized =
-                profile
-                    .effective_provider()
-                    .capabilities()
-                    .normalize(ProviderPreferences {
-                        source_language: prefs.source_language,
-                        target_language: prefs.target_language,
-                        translation_mode: prefs.translation_mode,
-                    });
+            let normalized = profile.normalize_preferences(ProviderPreferences {
+                source_language: prefs.source_language,
+                target_language: prefs.target_language,
+                translation_mode: prefs.translation_mode,
+            });
             prefs.source_language = normalized.source_language;
             prefs.target_language = normalized.target_language;
             prefs.translation_mode = normalized.translation_mode;
@@ -1424,11 +1465,8 @@ impl SettingsStore {
 
     /// Applies listening-time constraints without changing profile metadata.
     pub fn prepare_for_listening(&self) -> Result<(), String> {
-        let provider = self
-            .active_profile()
-            .map(|profile| profile.effective_provider())
-            .unwrap_or(ProviderKind::AlibabaCloud);
-        self.save_preferences(|prefs| normalize_preferences_value(prefs, provider))
+        let profile = self.active_profile()?;
+        self.save_preferences(|prefs| normalize_preferences_value(prefs, &profile))
     }
 
     fn persist_preferences_value(&self, prefs: &Preferences) -> Result<(), String> {
@@ -1757,9 +1795,8 @@ fn is_default_alibaba(profile: &ServiceProfile) -> bool {
     profile.id == DEFAULT_ALIBABA_PROFILE_ID && profile.provider == ProviderKind::AlibabaCloud
 }
 
-fn normalize_preferences_value(prefs: &mut Preferences, provider: ProviderKind) {
-    let capabilities = provider.capabilities();
-    let normalized = capabilities.normalize(ProviderPreferences {
+fn normalize_preferences_value(prefs: &mut Preferences, profile: &ServiceProfile) {
+    let normalized = profile.normalize_preferences(ProviderPreferences {
         source_language: prefs.source_language,
         target_language: prefs.target_language,
         translation_mode: prefs.translation_mode,
@@ -1767,13 +1804,6 @@ fn normalize_preferences_value(prefs: &mut Preferences, provider: ProviderKind) 
     prefs.source_language = normalized.source_language;
     prefs.target_language = normalized.target_language;
     prefs.translation_mode = normalized.translation_mode;
-    if prefs.source_language == SourceLanguage::Chinese
-        && capabilities
-            .target_languages
-            .contains(&TargetLanguage::Original)
-    {
-        prefs.target_language = TargetLanguage::Original;
-    }
 }
 
 fn cache_key(service: &str, account: &str) -> SecretCacheKey {
@@ -2073,6 +2103,202 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn explicit_settings_preserve_chinese_translation_and_reject_wrong_provider_languages() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.source_language = SourceLanguage::Chinese;
+                prefs.target_language = TargetLanguage::English;
+            })
+            .unwrap();
+        assert_eq!(store.preferences().target_language, TargetLanguage::English);
+        let openai = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Synthetic realtime")
+            .unwrap();
+        store.select_profile(&openai.id).unwrap();
+        let before = store.preferences();
+        assert!(store
+            .save_preferences_for_active_profile(
+                |prefs| prefs.target_language = TargetLanguage::French
+            )
+            .is_err());
+        assert_eq!(store.preferences(), before);
+        assert!(store
+            .save_preferences_for_active_profile(
+                |prefs| prefs.source_language = SourceLanguage::French
+            )
+            .is_err());
+        assert_eq!(store.preferences(), before);
+    }
+
+    #[test]
+    fn original_only_source_is_normalized_to_auto_when_translation_is_selected() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.target_language = TargetLanguage::Original;
+                prefs.source_language = SourceLanguage::Greek;
+            })
+            .unwrap();
+        assert_eq!(store.preferences().source_language, SourceLanguage::Greek);
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.target_language = TargetLanguage::French
+            })
+            .unwrap();
+        assert_eq!(
+            store.preferences().source_language,
+            SourceLanguage::Automatic
+        );
+        assert_eq!(store.preferences().target_language, TargetLanguage::French);
+    }
+
+    #[test]
+    fn active_text_route_change_normalizes_languages_but_inactive_profile_and_probe_do_not() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let active = store.active_profile().unwrap();
+        store.save_api_key(&active.id, "synthetic-asr").unwrap();
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.source_language = SourceLanguage::French;
+                prefs.target_language = TargetLanguage::TraditionalChinese;
+            })
+            .unwrap();
+        let expanded = store.preferences();
+        let other = store
+            .create_profile(ProviderKind::AlibabaCloud, "Synthetic DeepL")
+            .unwrap();
+        store
+            .save_credentials(
+                &other.id,
+                &translation_request(TextTranslation::DeepL, "synthetic-asr", "", "synthetic:fx"),
+            )
+            .unwrap();
+        assert_eq!(store.preferences(), expanded);
+        let updated = store.profile(&other.id).unwrap();
+        let probe = store.configuration_for_profile_probe(&updated).unwrap();
+        assert_eq!(probe.source_language, SourceLanguage::Automatic);
+        assert_eq!(probe.target_language, TargetLanguage::Original);
+        assert_eq!(store.preferences(), expanded);
+        store
+            .save_credentials(
+                &active.id,
+                &translation_request(TextTranslation::DeepL, "", "", "synthetic:fx"),
+            )
+            .unwrap();
+        assert_eq!(
+            store.preferences().source_language,
+            SourceLanguage::Automatic
+        );
+        assert_eq!(
+            store.preferences().target_language,
+            TargetLanguage::Original
+        );
+        assert!(store.configuration().is_ok());
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.target_language = TargetLanguage::English
+            })
+            .unwrap();
+        assert!(store
+            .save_preferences_for_active_profile(
+                |prefs| prefs.target_language = TargetLanguage::French
+            )
+            .is_err());
+        store
+            .save_credentials(
+                &active.id,
+                &translation_request(
+                    TextTranslation::DeepLX,
+                    "",
+                    "https://example.com/translate",
+                    "",
+                ),
+            )
+            .unwrap();
+        assert!(store.configuration().is_ok());
+        assert!(store.preferences().target_language.translates_audio());
+        store
+            .save_credentials(
+                &active.id,
+                &translation_request(TextTranslation::FollowService, "", "", ""),
+            )
+            .unwrap();
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.source_language = SourceLanguage::French;
+                prefs.target_language = TargetLanguage::TraditionalChinese;
+            })
+            .unwrap();
+        assert!(store.configuration().is_ok());
+    }
+
+    #[test]
+    fn failed_route_catalog_commit_restores_expanded_preferences_in_memory_and_on_disk() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let mut store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        let profile = store.active_profile().unwrap();
+        store.save_api_key(&profile.id, "synthetic-asr").unwrap();
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.source_language = SourceLanguage::French;
+                prefs.target_language = TargetLanguage::Persian;
+            })
+            .unwrap();
+        let before = store.preferences();
+        store.catalog_path = directory.path().join("blocked-catalog");
+        std::fs::create_dir(&store.catalog_path).unwrap();
+        assert!(store
+            .save_credentials(
+                &profile.id,
+                &translation_request(TextTranslation::DeepL, "", "", "synthetic:fx")
+            )
+            .is_err());
+        assert_eq!(store.preferences(), before);
+        assert_eq!(
+            store.active_profile().unwrap().text_translation(),
+            TextTranslation::FollowService
+        );
+        let persisted: Preferences =
+            serde_json::from_slice(&std::fs::read(&store.prefs_path).unwrap()).unwrap();
+        assert_eq!(persisted, before);
+        assert!(fake
+            .value(
+                PROFILE_KEYCHAIN_SERVICE,
+                &SettingsStore::destination_account(&profile)
+            )
+            .is_none());
+        assert!(store.configuration().is_ok());
+    }
+
+    #[test]
+    fn expanded_languages_persist_and_reload_with_route_validation() {
+        let fake = FakeSecretStore::default();
+        let directory = tempfile::tempdir().unwrap();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.source_language = SourceLanguage::Filipino;
+                prefs.target_language = TargetLanguage::Persian;
+            })
+            .unwrap();
+        let restarted = SettingsStore::at_path(directory.path().into(), Box::new(fake));
+        assert_eq!(
+            restarted.preferences().source_language,
+            SourceLanguage::Filipino
+        );
+        assert_eq!(
+            restarted.preferences().target_language,
+            TargetLanguage::Persian
+        );
+    }
+
     use std::cell::Cell;
     use std::sync::Arc;
 
@@ -4156,7 +4382,7 @@ mod tests {
     }
 
     #[test]
-    fn loading_persists_chinese_source_with_original_target() {
+    fn loading_preserves_explicit_chinese_translation_target() {
         let fake = FakeSecretStore::default();
         let directory = std::env::temp_dir().join(format!(
             "mimi-preferences-chinese-original-{}",
@@ -4177,7 +4403,7 @@ mod tests {
         let store = SettingsStore::at_path(directory.clone(), Box::new(fake));
         let normalized = store.preferences();
         assert_eq!(normalized.source_language, SourceLanguage::Chinese);
-        assert_eq!(normalized.target_language, TargetLanguage::Original);
+        assert_eq!(normalized.target_language, TargetLanguage::English);
 
         let persisted: Preferences =
             serde_json::from_slice(&std::fs::read(directory.join("preferences.json")).unwrap())
@@ -4195,12 +4421,18 @@ mod tests {
             ..Preferences::default()
         };
 
-        normalize_preferences_value(&mut preferences, ProviderKind::TencentCloud);
+        normalize_preferences_value(
+            &mut preferences,
+            &ServiceProfile::new("tencent", "Tencent", ProviderKind::TencentCloud).unwrap(),
+        );
         assert_eq!(preferences.source_language, SourceLanguage::Chinese);
         assert_eq!(preferences.target_language, TargetLanguage::English);
 
         preferences.target_language = TargetLanguage::SimplifiedChinese;
-        normalize_preferences_value(&mut preferences, ProviderKind::TencentCloud);
+        normalize_preferences_value(
+            &mut preferences,
+            &ServiceProfile::new("tencent", "Tencent", ProviderKind::TencentCloud).unwrap(),
+        );
         assert_eq!(preferences.target_language, TargetLanguage::English);
     }
 

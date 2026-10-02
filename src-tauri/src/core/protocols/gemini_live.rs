@@ -100,10 +100,10 @@ fn target_language_code(
     target_language: TargetLanguage,
 ) -> Result<&'static str, GeminiLiveProtocolError> {
     match target_language {
-        TargetLanguage::Original => Err(GeminiLiveProtocolError::InvalidTargetLanguage),
         TargetLanguage::SimplifiedChinese => Ok("zh-Hans"),
         TargetLanguage::English => Ok("en"),
         TargetLanguage::Japanese => Ok("ja"),
+        _ => Err(GeminiLiveProtocolError::InvalidTargetLanguage),
     }
 }
 
@@ -296,6 +296,23 @@ fn is_recoverable_provider_error(code: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_app_targets_do_not_expand_this_wire_contract() {
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                target_language_code(target).unwrap_err(),
+                GeminiLiveProtocolError::InvalidTargetLanguage
+            );
+        }
+    }
 
     #[test]
     fn endpoint_and_audio_contract_match_gemini_live_translation() {

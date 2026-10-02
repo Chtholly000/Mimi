@@ -6,7 +6,7 @@ use crate::core::models::{
     SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
 };
 use crate::core::network_proxy::ProxyConfig;
-use crate::core::provider::{ProviderKind, ServiceProfile};
+use crate::core::provider::{ProviderKind, ServiceProfile, TextTranslation};
 use crate::session_manager::{SessionManager, SessionStateEvent};
 use crate::settings_store::{CredentialState, PulseStyle, SettingsStore, SubtitleAlignment};
 use crate::windows::{
@@ -75,10 +75,37 @@ impl ServiceProfilePayload {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LanguageCapabilitiesPayload {
+    pub profile_id: String,
+    pub provider: ProviderKind,
+    pub text_translation: TextTranslation,
+    pub target_language: TargetLanguage,
+    pub source_languages: Vec<SourceLanguage>,
+    pub target_languages: Vec<TargetLanguage>,
+}
+
+impl LanguageCapabilitiesPayload {
+    fn from_profile(profile: &ServiceProfile, target: TargetLanguage) -> Self {
+        let capabilities = profile.capabilities(target);
+        Self {
+            profile_id: profile.id.clone(),
+            provider: profile.provider,
+            text_translation: profile.text_translation(),
+            target_language: target,
+            source_languages: capabilities.source_languages,
+            target_languages: capabilities.target_languages,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SettingsSnapshotPayload {
     pub profiles: Vec<ServiceProfilePayload>,
     pub credential_storage: &'static str,
     pub active_profile_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language_capabilities: Option<LanguageCapabilitiesPayload>,
     pub source_language: SourceLanguage,
     pub target_language: TargetLanguage,
     pub translation_mode: TranslationMode,
@@ -106,6 +133,46 @@ pub struct SettingsSnapshotPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_capability_snapshot_is_stamped_and_tracks_the_atomic_profile_route() {
+        let store = SettingsStore::in_memory(Box::new(PartiallyUnavailableSecretStore), false);
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.target_language = TargetLanguage::French
+            })
+            .unwrap();
+        let snapshot = SettingsSnapshotPayload::try_from_store(&store).unwrap();
+        let value = serde_json::to_value(snapshot).unwrap();
+        let caps = &value["languageCapabilities"];
+        assert_eq!(caps["profileId"], value["activeProfileId"]);
+        assert_eq!(caps["targetLanguage"], value["targetLanguage"]);
+        assert_eq!(caps["provider"], "alibabaCloud");
+        assert_eq!(caps["textTranslation"], "followService");
+        assert_eq!(caps["sourceLanguages"].as_array().unwrap().len(), 25);
+        assert_eq!(caps["targetLanguages"].as_array().unwrap().len(), 32);
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.target_language = TargetLanguage::Original;
+                prefs.source_language = SourceLanguage::Greek;
+            })
+            .unwrap();
+        let snapshot = SettingsSnapshotPayload::try_from_store(&store).unwrap();
+        assert_eq!(
+            snapshot
+                .language_capabilities
+                .unwrap()
+                .source_languages
+                .len(),
+            31
+        );
+        let mut profile = ServiceProfile::alibaba_default();
+        profile.text_translation = Some(TextTranslation::DeepL);
+        let deep_l = LanguageCapabilitiesPayload::from_profile(&profile, TargetLanguage::Original);
+        assert_eq!(deep_l.text_translation, TextTranslation::DeepL);
+        assert_eq!(deep_l.source_languages.len(), 5);
+        assert_eq!(deep_l.target_languages.len(), 4);
+    }
 
     #[test]
     fn background_blend_forces_expanded_overlay() {
@@ -314,6 +381,7 @@ mod tests {
                 text_translation: crate::core::provider::TextTranslation::FollowService,
             }],
             active_profile_id: "alibaba-default".into(),
+            language_capabilities: None,
             source_language: SourceLanguage::Japanese,
             target_language: TargetLanguage::SimplifiedChinese,
             translation_mode: TranslationMode::HighQuality,
@@ -551,6 +619,7 @@ impl SettingsSnapshotPayload {
                         .map(ServiceProfilePayload::unavailable)
                         .collect(),
                     active_profile_id,
+                    language_capabilities: None,
                     source_language: prefs.source_language,
                     target_language: prefs.target_language,
                     translation_mode: prefs.translation_mode,
@@ -578,8 +647,13 @@ impl SettingsSnapshotPayload {
     }
 
     pub fn try_from_store(store: &SettingsStore) -> Result<Self, String> {
-        let prefs = store.preferences();
-        let (active_profile_id, profiles) = store.profile_catalog()?;
+        let (prefs, active_profile_id, profiles) = store.preferences_and_catalog()?;
+        let language_capabilities = profiles
+            .iter()
+            .find(|profile| profile.id == active_profile_id)
+            .map(|profile| {
+                LanguageCapabilitiesPayload::from_profile(profile, prefs.target_language)
+            });
         Ok(Self {
             credential_storage: store.credential_storage(),
             profiles: profiles
@@ -587,6 +661,7 @@ impl SettingsSnapshotPayload {
                 .map(|profile| ServiceProfilePayload::from_profile(store, profile))
                 .collect(),
             active_profile_id,
+            language_capabilities,
             source_language: prefs.source_language,
             target_language: prefs.target_language,
             translation_mode: prefs.translation_mode,

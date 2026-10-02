@@ -318,6 +318,32 @@ fn source_lang_name(language: SourceLanguage) -> &'static str {
         SourceLanguage::English => "English",
         SourceLanguage::Japanese => "Japanese",
         SourceLanguage::Korean => "Korean",
+        SourceLanguage::Vietnamese => "Vietnamese",
+        SourceLanguage::Thai => "Thai",
+        SourceLanguage::Indonesian => "Indonesian",
+        SourceLanguage::Malay => "Malay",
+        SourceLanguage::Filipino => "Tagalog",
+        SourceLanguage::Hindi => "Hindi",
+        SourceLanguage::Arabic => "Arabic",
+        SourceLanguage::French => "French",
+        SourceLanguage::German => "German",
+        SourceLanguage::Spanish => "Spanish",
+        SourceLanguage::Portuguese => "Portuguese",
+        SourceLanguage::Russian => "Russian",
+        SourceLanguage::Italian => "Italian",
+        SourceLanguage::Dutch => "Dutch",
+        SourceLanguage::Swedish => "Swedish",
+        SourceLanguage::Danish => "Danish",
+        SourceLanguage::Finnish => "Finnish",
+        SourceLanguage::Norwegian => "Norwegian Bokmål",
+        SourceLanguage::Greek => "Greek",
+        SourceLanguage::Polish => "Polish",
+        SourceLanguage::Czech => "Czech",
+        SourceLanguage::Hungarian => "Hungarian",
+        SourceLanguage::Romanian => "Romanian",
+        SourceLanguage::Bulgarian => "Bulgarian",
+        SourceLanguage::Croatian => "Croatian",
+        SourceLanguage::Slovak => "Slovak",
     }
 }
 
@@ -470,6 +496,7 @@ impl QwenMTDomainHint {
                  and English fillers as natural Japanese equivalents; never drop a \
                  meaningful filler."
             }
+            _ => "",
         };
         let source_guidance = source_guidance(source_language, target_language);
         format!(
@@ -631,20 +658,130 @@ fn source_guidance(source: SourceLanguage, target: TargetLanguage) -> &'static s
             }
             _ => "",
         },
-        S::Korean => {
-            if target == T::SimplifiedChinese {
-                "For every Korean filler use its natural Chinese counterpart: 어→嗯，아→啊，음→嗯。 Dropping a filler is an error."
-            } else {
-                ""
-            }
+        S::Korean if target == T::SimplifiedChinese => {
+            "For every Korean filler use its natural Chinese counterpart: 어→嗯，아→啊，음→嗯。 Dropping a filler is an error."
         }
-        S::Chinese | S::Automatic => "",
+        _ => "",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_lite_targets_and_explicit_intersection_sources_encode_without_model_or_prompt_changes() {
+        let names = [
+            "English",
+            "Chinese",
+            "Traditional Chinese",
+            "Russian",
+            "Japanese",
+            "Korean",
+            "Spanish",
+            "French",
+            "Portuguese",
+            "German",
+            "Italian",
+            "Thai",
+            "Vietnamese",
+            "Indonesian",
+            "Malay",
+            "Arabic",
+            "Hindi",
+            "Hebrew",
+            "Urdu",
+            "Bengali",
+            "Polish",
+            "Dutch",
+            "Turkish",
+            "Khmer",
+            "Czech",
+            "Swedish",
+            "Hungarian",
+            "Danish",
+            "Finnish",
+            "Tagalog",
+            "Persian",
+        ];
+        // Independent upstream full-English-name oracle, in Audio3 hint order.
+        // The MT API specifies names even though the overview also lists codes.
+        let source_names = [
+            "auto",
+            "Chinese",
+            "English",
+            "Japanese",
+            "Korean",
+            "Vietnamese",
+            "Thai",
+            "Indonesian",
+            "Malay",
+            "Tagalog",
+            "Hindi",
+            "Arabic",
+            "French",
+            "German",
+            "Spanish",
+            "Portuguese",
+            "Russian",
+            "Italian",
+            "Dutch",
+            "Swedish",
+            "Danish",
+            "Finnish",
+            "Norwegian Bokmål",
+            "Greek",
+            "Polish",
+            "Czech",
+            "Hungarian",
+            "Romanian",
+            "Bulgarian",
+            "Croatian",
+            "Slovak",
+        ];
+        for (code, name) in QWEN_MT_LITE_LANGUAGE_CODES.iter().zip(names) {
+            let target = TargetLanguage::ALL
+                .into_iter()
+                .find(|target| target.raw_value() == *code)
+                .unwrap();
+            for (source, expected_source) in SourceLanguage::ALL.into_iter().zip(source_names) {
+                let result = QwenMTRequestEncoder::request(
+                    "Synthetic fixture.",
+                    source,
+                    target,
+                    REALTIME_MT_MODEL,
+                    true,
+                    Some("existing domain"),
+                    &[],
+                    &[],
+                );
+                if source == SourceLanguage::Automatic
+                    || QWEN_MT_LITE_LANGUAGE_CODES.contains(&source.raw_value())
+                {
+                    let request = result.unwrap();
+                    assert_eq!(request["model"], "qwen-mt-lite");
+                    assert_eq!(request["translation_options"]["target_lang"], name);
+                    assert_eq!(
+                        request["translation_options"]["source_lang"],
+                        expected_source
+                    );
+                    assert!(request["translation_options"].get("domains").is_none());
+                    assert!(request["translation_options"].get("tm_list").is_none());
+                    assert_eq!(request["stream"], true);
+                } else {
+                    assert_eq!(
+                        result.unwrap_err(),
+                        QwenMTProtocolError::UnsupportedLanguage
+                    );
+                }
+            }
+        }
+        for code in ["no", "el", "ro", "bg", "hr", "sk"] {
+            assert!(!REALTIME_MT_MODEL.supports_reported_source(Some(code)));
+        }
+        assert!(REALTIME_MT_MODEL.supports_reported_source(None));
+        assert!(REALTIME_MT_MODEL.supports_reported_source(Some("unknown")));
+    }
 
     #[test]
     fn rejection_codes_classify_documented_aliases_in_both_response_shapes() {

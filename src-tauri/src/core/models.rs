@@ -148,6 +148,32 @@ pub enum SourceLanguage {
     English,
     Japanese,
     Korean,
+    Vietnamese,
+    Thai,
+    Indonesian,
+    Malay,
+    Filipino,
+    Hindi,
+    Arabic,
+    French,
+    German,
+    Spanish,
+    Portuguese,
+    Russian,
+    Italian,
+    Dutch,
+    Swedish,
+    Danish,
+    Finnish,
+    Norwegian,
+    Greek,
+    Polish,
+    Czech,
+    Hungarian,
+    Romanian,
+    Bulgarian,
+    Croatian,
+    Slovak,
 }
 
 impl Serialize for SourceLanguage {
@@ -159,50 +185,101 @@ impl Serialize for SourceLanguage {
 impl<'de> Deserialize<'de> for SourceLanguage {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;
-        match value.as_str() {
-            "auto" => Ok(Self::Automatic),
-            "zh" => Ok(Self::Chinese),
-            "en" => Ok(Self::English),
-            "ja" => Ok(Self::Japanese),
-            "ko" => Ok(Self::Korean),
-            other => Err(serde::de::Error::custom(format!(
-                "unknown source language: {other}"
-            ))),
-        }
+        Self::ALL
+            .into_iter()
+            .find(|language| language.raw_value() == value)
+            .ok_or_else(|| serde::de::Error::custom("unknown source language"))
     }
 }
 
 impl SourceLanguage {
+    /// Exact Audio3 hint catalog, including its real automatic mode.
+    pub const ALL: [Self; 31] = [
+        Self::Automatic,
+        Self::Chinese,
+        Self::English,
+        Self::Japanese,
+        Self::Korean,
+        Self::Vietnamese,
+        Self::Thai,
+        Self::Indonesian,
+        Self::Malay,
+        Self::Filipino,
+        Self::Hindi,
+        Self::Arabic,
+        Self::French,
+        Self::German,
+        Self::Spanish,
+        Self::Portuguese,
+        Self::Russian,
+        Self::Italian,
+        Self::Dutch,
+        Self::Swedish,
+        Self::Danish,
+        Self::Finnish,
+        Self::Norwegian,
+        Self::Greek,
+        Self::Polish,
+        Self::Czech,
+        Self::Hungarian,
+        Self::Romanian,
+        Self::Bulgarian,
+        Self::Croatian,
+        Self::Slovak,
+    ];
+
     /// Service wire code used in protocol payloads.
     pub fn raw_value(self) -> &'static str {
         match self {
-            SourceLanguage::Automatic => "auto",
-            SourceLanguage::Chinese => "zh",
-            SourceLanguage::English => "en",
-            SourceLanguage::Japanese => "ja",
-            SourceLanguage::Korean => "ko",
+            Self::Automatic => "auto",
+            Self::Chinese => "zh",
+            Self::English => "en",
+            Self::Japanese => "ja",
+            Self::Korean => "ko",
+            Self::Vietnamese => "vi",
+            Self::Thai => "th",
+            Self::Indonesian => "id",
+            Self::Malay => "ms",
+            Self::Filipino => "tl",
+            Self::Hindi => "hi",
+            Self::Arabic => "ar",
+            Self::French => "fr",
+            Self::German => "de",
+            Self::Spanish => "es",
+            Self::Portuguese => "pt",
+            Self::Russian => "ru",
+            Self::Italian => "it",
+            Self::Dutch => "nl",
+            Self::Swedish => "sv",
+            Self::Danish => "da",
+            Self::Finnish => "fi",
+            Self::Norwegian => "no",
+            Self::Greek => "el",
+            Self::Polish => "pl",
+            Self::Czech => "cs",
+            Self::Hungarian => "hu",
+            Self::Romanian => "ro",
+            Self::Bulgarian => "bg",
+            Self::Croatian => "hr",
+            Self::Slovak => "sk",
         }
     }
 
-    /// Parses a normalized language code reported by a service (e.g. `"ja-JP"`,
-    /// `"chinese"`, `"mandarin"`) into a `SourceLanguage`.
-    pub fn from_detected(detected_language: Option<&str>) -> Option<SourceLanguage> {
-        let normalized = detected_language?.trim().to_lowercase();
-        if normalized == "zh"
-            || normalized.starts_with("zh-")
-            || normalized == "chinese"
-            || normalized == "mandarin"
-        {
-            Some(SourceLanguage::Chinese)
-        } else if normalized == "ja" || normalized.starts_with("ja-") || normalized == "japanese" {
-            Some(SourceLanguage::Japanese)
-        } else if normalized == "en" || normalized.starts_with("en-") || normalized == "english" {
-            Some(SourceLanguage::English)
-        } else if normalized == "ko" || normalized.starts_with("ko-") || normalized == "korean" {
-            Some(SourceLanguage::Korean)
-        } else {
-            None
-        }
+    /// Parses only documented ASR codes and known service language names.
+    /// This is not a script-equivalence test; MT bypass checks the raw report.
+    pub fn from_detected(detected_language: Option<&str>) -> Option<Self> {
+        let normalized = detected_language?.trim().to_ascii_lowercase();
+        let code = match normalized.as_str() {
+            "chinese" | "mandarin" => "zh",
+            "english" => "en",
+            "japanese" => "ja",
+            "korean" => "ko",
+            "fil" | "filipino" | "tagalog" => "tl",
+            _ => normalized.split('-').next().unwrap_or(&normalized),
+        };
+        Self::ALL
+            .into_iter()
+            .find(|language| *language != Self::Automatic && language.raw_value() == code)
     }
 
     /// Target-language adjustment applied when the user quick-switches the
@@ -251,6 +328,34 @@ pub enum TargetLanguage {
     SimplifiedChinese,
     English,
     Japanese,
+    TraditionalChinese,
+    Korean,
+    Russian,
+    Spanish,
+    French,
+    Portuguese,
+    German,
+    Italian,
+    Thai,
+    Vietnamese,
+    Indonesian,
+    Malay,
+    Arabic,
+    Hindi,
+    Hebrew,
+    Urdu,
+    Bengali,
+    Polish,
+    Dutch,
+    Turkish,
+    Khmer,
+    Czech,
+    Swedish,
+    Hungarian,
+    Danish,
+    Finnish,
+    Tagalog,
+    Persian,
 }
 
 impl Serialize for TargetLanguage {
@@ -262,35 +367,122 @@ impl Serialize for TargetLanguage {
 impl<'de> Deserialize<'de> for TargetLanguage {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = String::deserialize(deserializer)?;
-        match value.as_str() {
-            "original" => Ok(Self::Original),
-            "zh" => Ok(Self::SimplifiedChinese),
-            "en" => Ok(Self::English),
-            "ja" => Ok(Self::Japanese),
-            other => Err(serde::de::Error::custom(format!(
-                "unknown target language: {other}"
-            ))),
-        }
+        Self::ALL
+            .into_iter()
+            .find(|language| language.raw_value() == value)
+            .ok_or_else(|| serde::de::Error::custom("unknown target language"))
     }
 }
 
 impl TargetLanguage {
+    /// Qwen-MT Lite's complete catalog, plus the local no-translation choice.
+    pub const ALL: [Self; 32] = [
+        Self::Original,
+        Self::SimplifiedChinese,
+        Self::English,
+        Self::Japanese,
+        Self::TraditionalChinese,
+        Self::Korean,
+        Self::Russian,
+        Self::Spanish,
+        Self::French,
+        Self::Portuguese,
+        Self::German,
+        Self::Italian,
+        Self::Thai,
+        Self::Vietnamese,
+        Self::Indonesian,
+        Self::Malay,
+        Self::Arabic,
+        Self::Hindi,
+        Self::Hebrew,
+        Self::Urdu,
+        Self::Bengali,
+        Self::Polish,
+        Self::Dutch,
+        Self::Turkish,
+        Self::Khmer,
+        Self::Czech,
+        Self::Swedish,
+        Self::Hungarian,
+        Self::Danish,
+        Self::Finnish,
+        Self::Tagalog,
+        Self::Persian,
+    ];
+
     pub fn raw_value(self) -> &'static str {
         match self {
-            TargetLanguage::Original => "original",
-            TargetLanguage::SimplifiedChinese => "zh",
-            TargetLanguage::English => "en",
-            TargetLanguage::Japanese => "ja",
+            Self::Original => "original",
+            Self::SimplifiedChinese => "zh",
+            Self::English => "en",
+            Self::Japanese => "ja",
+            Self::TraditionalChinese => "zh_tw",
+            Self::Korean => "ko",
+            Self::Russian => "ru",
+            Self::Spanish => "es",
+            Self::French => "fr",
+            Self::Portuguese => "pt",
+            Self::German => "de",
+            Self::Italian => "it",
+            Self::Thai => "th",
+            Self::Vietnamese => "vi",
+            Self::Indonesian => "id",
+            Self::Malay => "ms",
+            Self::Arabic => "ar",
+            Self::Hindi => "hi",
+            Self::Hebrew => "he",
+            Self::Urdu => "ur",
+            Self::Bengali => "bn",
+            Self::Polish => "pl",
+            Self::Dutch => "nl",
+            Self::Turkish => "tr",
+            Self::Khmer => "km",
+            Self::Czech => "cs",
+            Self::Swedish => "sv",
+            Self::Hungarian => "hu",
+            Self::Danish => "da",
+            Self::Finnish => "fi",
+            Self::Tagalog => "tl",
+            Self::Persian => "fa",
         }
     }
 
-    /// Service-side language name used in Qwen-MT requests.
+    /// Official service-side name; historical names remain unchanged.
     pub fn qwen_mt_name(self) -> &'static str {
         match self {
-            TargetLanguage::Original => "",
-            TargetLanguage::SimplifiedChinese => "Chinese",
-            TargetLanguage::English => "English",
-            TargetLanguage::Japanese => "Japanese",
+            Self::Original => "",
+            Self::SimplifiedChinese => "Chinese",
+            Self::English => "English",
+            Self::Japanese => "Japanese",
+            Self::TraditionalChinese => "Traditional Chinese",
+            Self::Korean => "Korean",
+            Self::Russian => "Russian",
+            Self::Spanish => "Spanish",
+            Self::French => "French",
+            Self::Portuguese => "Portuguese",
+            Self::German => "German",
+            Self::Italian => "Italian",
+            Self::Thai => "Thai",
+            Self::Vietnamese => "Vietnamese",
+            Self::Indonesian => "Indonesian",
+            Self::Malay => "Malay",
+            Self::Arabic => "Arabic",
+            Self::Hindi => "Hindi",
+            Self::Hebrew => "Hebrew",
+            Self::Urdu => "Urdu",
+            Self::Bengali => "Bengali",
+            Self::Polish => "Polish",
+            Self::Dutch => "Dutch",
+            Self::Turkish => "Turkish",
+            Self::Khmer => "Khmer",
+            Self::Czech => "Czech",
+            Self::Swedish => "Swedish",
+            Self::Hungarian => "Hungarian",
+            Self::Danish => "Danish",
+            Self::Finnish => "Finnish",
+            Self::Tagalog => "Tagalog",
+            Self::Persian => "Persian",
         }
     }
 
@@ -309,7 +501,8 @@ impl TargetLanguage {
             Self::Original => false,
             Self::SimplifiedChinese => matches!(reported.as_str(), "zh" | "zh-cn" | "zh-hans"),
             Self::English => reported == "en",
-            Self::Japanese => reported == "ja",
+            Self::TraditionalChinese => matches!(reported.as_str(), "zh_tw" | "zh-tw" | "zh-hant"),
+            _ => reported == self.raw_value(),
         }
     }
 }
@@ -526,6 +719,62 @@ pub enum UtteranceRole {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_language_codes_round_trip_without_unknown_fallback() {
+        assert_eq!(SourceLanguage::ALL.len(), 31);
+        assert_eq!(TargetLanguage::ALL.len(), 32);
+        let mut sources = std::collections::HashSet::new();
+        for language in SourceLanguage::ALL {
+            assert!(sources.insert(language.raw_value()));
+            assert_eq!(
+                serde_json::from_value::<SourceLanguage>(serde_json::to_value(language).unwrap())
+                    .unwrap(),
+                language
+            );
+            if language != SourceLanguage::Automatic {
+                assert_eq!(
+                    SourceLanguage::from_detected(Some(language.raw_value())),
+                    Some(language)
+                );
+            }
+        }
+        let mut targets = std::collections::HashSet::new();
+        for language in TargetLanguage::ALL {
+            assert!(targets.insert(language.raw_value()));
+            assert_eq!(
+                serde_json::from_value::<TargetLanguage>(serde_json::to_value(language).unwrap())
+                    .unwrap(),
+                language
+            );
+        }
+        for unknown in ["xx", "zh-hant", "fr-FR", "", "auto"] {
+            assert!(serde_json::from_value::<TargetLanguage>(serde_json::json!(unknown)).is_err());
+        }
+        assert!(serde_json::from_value::<SourceLanguage>(serde_json::json!("he")).is_err());
+        assert_eq!(SourceLanguage::from_detected(Some("unrecognized")), None);
+    }
+
+    #[test]
+    fn same_language_bypass_requires_explicit_matching_code_and_script() {
+        for source in SourceLanguage::ALL
+            .into_iter()
+            .filter(|source| *source != SourceLanguage::Automatic)
+        {
+            for target in TargetLanguage::ALL {
+                assert_eq!(
+                    target.matches_reported_asr(Some(source.raw_value())),
+                    target.raw_value() == source.raw_value()
+                );
+            }
+        }
+        assert!(!TargetLanguage::French.matches_reported_asr(None));
+        assert!(!TargetLanguage::French.matches_reported_asr(Some("fr-FR")));
+        assert!(!TargetLanguage::SimplifiedChinese.matches_reported_asr(Some("zh_tw")));
+        assert!(!TargetLanguage::TraditionalChinese.matches_reported_asr(Some("zh")));
+        assert!(TargetLanguage::TraditionalChinese.matches_reported_asr(Some("zh-Hant")));
+        assert!(!TargetLanguage::TraditionalChinese.matches_reported_asr(Some("unknown")));
+    }
 
     #[test]
     fn chinese_quick_switch_shows_original_subtitles() {

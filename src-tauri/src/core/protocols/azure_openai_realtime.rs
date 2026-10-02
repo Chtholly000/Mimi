@@ -99,7 +99,10 @@ impl AzureOpenAIRealtimeRequestEncoder {
         transcription_deployment: &str,
         event_id: Option<&str>,
     ) -> Result<Value, AzureOpenAIRealtimeProtocolError> {
-        if !target_language.translates_audio() {
+        if !matches!(
+            target_language,
+            TargetLanguage::SimplifiedChinese | TargetLanguage::English | TargetLanguage::Japanese
+        ) {
             return Err(AzureOpenAIRealtimeProtocolError::InvalidTargetLanguage);
         }
         let transcription_deployment = transcription_deployment.trim();
@@ -344,6 +347,28 @@ fn is_recoverable_provider_error(kind: &str, code: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_app_targets_do_not_expand_this_wire_contract() {
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                AzureOpenAIRealtimeRequestEncoder::session_update(
+                    target,
+                    "synthetic-deployment",
+                    None
+                )
+                .unwrap_err(),
+                AzureOpenAIRealtimeProtocolError::InvalidTargetLanguage
+            );
+        }
+    }
 
     #[test]
     fn endpoint_uses_resource_host_and_escaped_deployment() {
