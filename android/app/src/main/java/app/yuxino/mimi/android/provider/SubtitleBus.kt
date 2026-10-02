@@ -102,6 +102,37 @@ object SubtitleBus {
         notifyListeners()
     }
 
+    /** Independent translation never pairs a newer recognition draft with an older translation. */
+    fun onUntranslatedSource(text: String, language: String?, final: Boolean) {
+        val trimmed = lastSentence(text)
+        if (trimmed.isBlank()) return
+        sourceDraft = if (final) "" else trimmed
+        if (final) sourceFinal = trimmed
+        translationDraft = ""
+        translationFinal = ""
+        detectedSourceLanguage = normalizeLang(language) ?: detectedSourceLanguage
+        liveHidden = false
+        notifyListeners()
+    }
+
+    /** The request owns its source; no FIFO inference across asynchronous provider events. */
+    fun onTranslatedSource(source: String, language: String?, translation: String) {
+        val sourceText = lastSentence(source)
+        val translatedText = lastSentence(translation)
+        if (sourceText.isBlank() || translatedText.isBlank()) return
+        synchronized(this) {
+            sourceFinal = sourceText; sourceDraft = ""
+            translationFinal = translatedText; translationDraft = ""
+            detectedSourceLanguage = normalizeLang(language) ?: detectedSourceLanguage
+            liveHidden = false
+            if (historyLimit > 0) {
+                if (history.size >= historyLimit) history.removeFirst()
+                history.addLast(Pair(sourceText, translatedText))
+            }
+        }
+        notifyListeners()
+    }
+
     fun setHistoryLimit(limit: Int) {
         synchronized(this) {
             historyLimit = limit.coerceIn(0, MAX_HISTORY)

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <string name="translation_title">Text translation</string>
+    <string name="translation_speech_title">Speech recognition · Alibaba Cloud</string>
+    <string name="translation_speech_help_title">Speech service help</string>
+    <string name="translation_builtin">Alibaba Cloud (built-in)</string>
+    <string name="translation_chatmock">ChatMock / OpenAI compatible</string>
+    <string name="translation_endpoint">Translation URL</string>
+    <string name="translation_model">Translation model</string>
+    <string name="translation_key">Translation API key (optional)</string>
+    <string name="translation_key_optional">Leave empty if authentication is not required</string>
+    <string name="translation_local_http">Allow local HTTP (unencrypted)</string>
+    <string name="translation_remove_key">Remove key</string>
+    <string name="translation_check">Test translation</string>
+    <string name="translation_checking">Testing…</string>
+    <string name="translation_check_success">Translation succeeded · %1$d ms</string>
+    <string name="translation_check_failure">Test failed · %1$d ms. Check the URL, model, key and server status.</string>
+    <string name="translation_required">Enter the translation URL and model.</string>
+    <string name="translation_invalid">Invalid URL or model. Use HTTPS, or explicitly allow HTTP for a supported loopback address. The URL must not contain credentials, query parameters or fragments.</string>
+    <string name="translation_help_title">ChatMock requirements</string>
+    <!-- Literal CLI options must keep their double hyphens. -->
+    <string name="translation_help" tools:ignore="TypographyDashes">Alibaba Cloud recognizes speech; ChatMock receives only the recognized text for translation. Enabling this uses qwen3-asr-flash-realtime, which must be available in your Alibaba account. Speech and text translation use separate keys.\n\nRun ChatMock on your own computer or server. Enter its /v1 base URL or full /v1/chat/completions URL. Find a model ID in /v1/models. The endpoint must accept model, messages and stream: false, and return choices[0].message.content.\n\n127.0.0.1 on a phone means the phone itself. Use a reachable HTTPS URL for a computer or server. Local HTTP is unencrypted and requires permission; only localhost, 127.0.0.1, [::1] and the emulator host 10.0.2.2 are supported. Developers can use adb reverse to forward a computer port to the phone. Leave the key empty unless your proxy requires Bearer authentication. A changed URL does not reuse the saved key.\n\nRecommended ChatMock startup options: --reasoning-compat legacy --reasoning-summary none. The test sends a fixed example and shows elapsed time; it does not send system audio or save your draft. Only Save and use commits the configuration. Keys stay in encrypted storage on this device.</string>
+    <string name="translation_session_failed">Text translation failed. Check the ChatMock configuration and reconnect.</string>
+    <string name="translation_service_name">Alibaba Cloud + ChatMock</string>
+    <string name="translation_check_auth">Authentication failed · %1$d ms. Check the translation key and service access.</string>
+    <string name="translation_check_not_found">Endpoint or model not found · %1$d ms. Check the URL and model name.</string>
+    <string name="translation_check_busy">Request limited · %1$d ms. Check your quota or try again later.</string>
+    <string name="translation_check_timeout">Request timed out · %1$d ms. Check the network or server response time.</string>
+    <string name="translation_check_response">Incompatible response · %1$d ms. The server must return complete Chat Completions translation text.</string>
+    <string name="translation_key_saved">Translation API key (saved)</string>
+    <string name="translation_saved_field">%1$s (saved)</string>
+</resources>

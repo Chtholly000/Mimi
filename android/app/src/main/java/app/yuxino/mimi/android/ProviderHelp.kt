@@ -31,7 +31,9 @@ internal fun providerHelp(provider: ServiceProvider): ProviderHelp = when (provi
         "https://docs.x.ai/developers/pricing")
 }
 
-internal fun providerTitle(context: android.content.Context, provider: ServiceProvider): String = context.getString(when (provider) {
+internal fun providerTitle(context: android.content.Context, provider: ServiceProvider): String {
+    if (provider == ServiceProvider.DASHSCOPE && runCatching { SettingsStore.useChatMockTranslation(context) }.getOrDefault(false)) return context.getString(R.string.translation_service_name)
+    return context.getString(when (provider) {
     ServiceProvider.DASHSCOPE -> R.string.guide_name_dashscope
     ServiceProvider.OPENAI -> R.string.guide_name_openai
     ServiceProvider.GEMINI -> R.string.guide_name_gemini
@@ -41,6 +43,7 @@ internal fun providerTitle(context: android.content.Context, provider: ServicePr
     ServiceProvider.BAIDU -> R.string.guide_name_baidu
     ServiceProvider.XAI -> R.string.guide_name_xai
 })
+}
 
 internal fun providerDescription(context: android.content.Context, provider: ServiceProvider): String = context.getString(when (provider) {
     ServiceProvider.DASHSCOPE -> R.string.guide_detail_dashscope

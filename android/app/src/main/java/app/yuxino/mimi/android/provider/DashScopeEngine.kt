@@ -2,6 +2,7 @@ package app.yuxino.mimi.android.provider
 
 import android.util.Base64
 import android.util.Log
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -24,10 +25,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  *        conversation.item.input_audio_transcription.text/.completed,
  *        response.text.text/.done, response.audio_transcript.text/.done, error
  */
-class DashScopeEngine(private val listener: EngineListener) : ProviderEngine {
+class DashScopeEngine(
+    private val listener: EngineListener,
+    private val transcriptionOnly: Boolean = false,
+) : ProviderEngine {
     override val sampleRateHz: Int = 16_000
 
     private val client = OkHttpClient.Builder()
+        .followRedirects(false)
+        .followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
@@ -39,7 +45,7 @@ class DashScopeEngine(private val listener: EngineListener) : ProviderEngine {
     private val audioBuffer = java.io.ByteArrayOutputStream()
     private var sourceLang: String = "auto"
     private var targetLang: String = "zh"
-    private var model: String = MODEL
+    private var model: String = if (transcriptionOnly) ASR_MODEL else MODEL
     private var hotwords: Map<String, String> = emptyMap()
 
     override fun setHotwords(words: Map<String, String>) {
@@ -55,8 +61,8 @@ class DashScopeEngine(private val listener: EngineListener) : ProviderEngine {
     ) {
         this.sourceLang = sourceLang
         this.targetLang = targetLang
-        model = customModel.trim().ifEmpty { MODEL }
-        val url = resolveEndpoint(customBaseUrl)
+        model = customModel.trim().ifEmpty { if (transcriptionOnly) ASR_MODEL else MODEL }
+        val url = resolveEndpoint(customBaseUrl).also { require(it.startsWith("wss://")) { "speech_https_required" } }
         val request = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer $apiKey")
@@ -124,9 +130,15 @@ class DashScopeEngine(private val listener: EngineListener) : ProviderEngine {
         sessionReady.set(false)
     }
 
-    private fun resolveEndpoint(customBaseUrl: String): String {
+    internal fun resolveEndpoint(customBaseUrl: String): String {
         val custom = normalizeWebSocketUrl(customBaseUrl)
         val base = if (customBaseUrl.isBlank()) DASHSCOPE_REALTIME_WS else custom
+        if (transcriptionOnly) {
+            // A pasted live-translate URL must not override the ASR-only session contract.
+            return base.replaceFirst("wss://", "https://").replaceFirst("ws://", "http://")
+                .toHttpUrl().newBuilder().setQueryParameter("model", ASR_MODEL).build().toString()
+                .replaceFirst("https://", "wss://").replaceFirst("http://", "ws://")
+        }
         return if (base.contains("?")) {
             if (base.contains("model=")) base else "$base&model=$model"
         } else {
@@ -135,7 +147,8 @@ class DashScopeEngine(private val listener: EngineListener) : ProviderEngine {
     }
 
     internal fun buildSessionUpdate(): JSONObject {
-        val transcription = JSONObject().put("model", ASR_MODEL)
+        val transcription = JSONObject()
+        if (!transcriptionOnly) transcription.put("model", ASR_MODEL)
         if (sourceLang != "auto") {
             transcription.put("language", sourceLang)
         }
@@ -148,11 +161,18 @@ class DashScopeEngine(private val listener: EngineListener) : ProviderEngine {
             translation.put("corpus", JSONObject().put("phrases", phrases))
         }
         val session = JSONObject()
-            .put("modalities", org.json.JSONArray(listOf("text")))
             .put("sample_rate", 16_000)
             .put("input_audio_format", "pcm")
             .put("input_audio_transcription", transcription)
-            .put("translation", translation)
+        if (transcriptionOnly) {
+            session.put("turn_detection", JSONObject()
+                .put("type", "server_vad")
+                .put("threshold", 0.2)
+                .put("silence_duration_ms", 800))
+        } else {
+            session.put("modalities", org.json.JSONArray(listOf("text")))
+            session.put("translation", translation)
+        }
         return JSONObject()
             .put("event_id", "setup_" + System.nanoTime())
             .put("type", "session.update")
@@ -204,13 +224,13 @@ class DashScopeEngine(private val listener: EngineListener) : ProviderEngine {
                 )
             }
             "response.text.text", "response.audio_transcript.text" -> {
-                listener.onTranslationDraft(combinedText(json))
+                if (!transcriptionOnly) listener.onTranslationDraft(combinedText(json))
             }
             "response.text.done" -> {
-                listener.onTranslationFinal(json.optString("text").trim())
+                if (!transcriptionOnly) listener.onTranslationFinal(json.optString("text").trim())
             }
             "response.audio_transcript.done" -> {
-                listener.onTranslationFinal(json.optString("transcript").trim())
+                if (!transcriptionOnly) listener.onTranslationFinal(json.optString("transcript").trim())
             }
             "error" -> {
                 val error = json.optJSONObject("error")

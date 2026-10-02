@@ -86,6 +86,7 @@ class MimiService : Service() {
     private var generation = 0
     private var projectionCallback: MediaProjection.Callback? = null
     private var engine: ProviderEngine? = null
+    private var textTranslation: app.yuxino.mimi.android.provider.TranslationPipeline? = null
     private lateinit var immersiveHelp: ImmersiveModeHelp
 
     private var windowManager: WindowManager? = null
@@ -286,23 +287,41 @@ class MimiService : Service() {
             val sourceLang = SettingsStore.sourceLang(this)
             sessionSourceLanguage = sourceLang
             val targetLang = SettingsStore.targetLang(this)
+            val customTranslation = provider == SettingsStore.PROVIDER_DASHSCOPE && SettingsStore.useChatMockTranslation(this)
+            if (customTranslation) {
+                textTranslation = app.yuxino.mimi.android.provider.TranslationPipeline(
+                    app.yuxino.mimi.android.provider.OpenAITranslationClient(SettingsStore.translationConfiguration(this)),
+                    sourceLang, targetLang, object : app.yuxino.mimi.android.provider.TranslationPipeline.Listener {
+                        override fun onTranslation(source: String, language: String?, translation: String, elapsedMs: Long) = dispatch {
+                            SubtitleBus.onTranslatedSource(source, language, translation)
+                            scheduleAutoHide()
+                        }
+                        override fun onError(code: String) = dispatch {
+                            Toast.makeText(this@MimiService, R.string.translation_session_failed, Toast.LENGTH_LONG).show()
+                            stopEverything()
+                        }
+                    },
+                )
+            }
             val listener = object : EngineListener {
                 override fun onSessionReady() = dispatch { Log.i(TAG, "session ready") }
                 override fun onSourceDraft(text: String, language: String?) = dispatch {
                     cancelAutoHide()
-                    SubtitleBus.onSourceDraft(text, language)
+                    if (customTranslation) SubtitleBus.onUntranslatedSource(text, language, false)
+                    else SubtitleBus.onSourceDraft(text, language)
                 }
                 override fun onSourceFinal(text: String, language: String?) = dispatch {
                     cancelAutoHide()
-                    SubtitleBus.onSourceFinal(text, language)
+                    if (customTranslation) {
+                        SubtitleBus.onUntranslatedSource(text, language, true)
+                        textTranslation?.submit(text, language)
+                    } else SubtitleBus.onSourceFinal(text, language)
                 }
                 override fun onTranslationDraft(text: String) = dispatch {
-                    cancelAutoHide()
-                    SubtitleBus.onTranslationDraft(text)
+                    if (!customTranslation) { cancelAutoHide(); SubtitleBus.onTranslationDraft(text) }
                 }
                 override fun onTranslationFinal(text: String) = dispatch {
-                    SubtitleBus.onTranslationFinal(text)
-                    scheduleAutoHide()
+                    if (!customTranslation) { SubtitleBus.onTranslationFinal(text); scheduleAutoHide() }
                 }
                 override fun onError(code: String, message: String) = dispatch {
                     // Provider error bodies can echo user content or credentials.
@@ -314,14 +333,14 @@ class MimiService : Service() {
             }
             engine = when (provider) {
                 SettingsStore.PROVIDER_OPENAI -> OpenAIRealtimeEngine(listener)
-                SettingsStore.PROVIDER_DASHSCOPE -> DashScopeEngine(listener)
+                SettingsStore.PROVIDER_DASHSCOPE -> DashScopeEngine(listener, transcriptionOnly = customTranslation)
                 else -> app.yuxino.mimi.android.provider.StreamingServiceEngine(SettingsStore.configuration(this), listener)
             }
             engine?.setHotwords(SettingsStore.hotwords(this))
             engine?.start(
                 apiKey, sourceLang, targetLang,
                 SettingsStore.baseUrl(this, provider),
-                SettingsStore.model(this, provider),
+                if (customTranslation) "" else SettingsStore.model(this, provider),
             )
         }
 
@@ -409,6 +428,8 @@ class MimiService : Service() {
         captureThread = null
         if (worker != null) worker.join(600) else record?.release()
         synchronized(firstRunEvidence) { firstRunEvidence.reset() }
+        textTranslation?.stop()
+        textTranslation = null
         engine?.stop()
         engine = null
         val projection = mediaProjection

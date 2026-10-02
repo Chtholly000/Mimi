@@ -24,7 +24,10 @@ class ServiceSettingsActivity : AppCompatActivity() {
     private var storageUnavailable = false
     private lateinit var endpointInput: TextInputEditText
     private lateinit var modelInput: TextInputEditText
+    private lateinit var modelLayout: TextInputLayout
+    private var hotwordsLayout: TextInputLayout? = null
     private var hotwordsInput: TextInputEditText? = null
+    private var translationSettings: TextTranslationSettings? = null
     private lateinit var status: android.widget.TextView
     private fun dp(value:Int)=ServiceSettingsUi.dp(this,value)
 
@@ -39,26 +42,27 @@ class ServiceSettingsActivity : AppCompatActivity() {
             imageTintList=ContextCompat.getColorStateList(context,R.color.mimi_text)
             contentDescription=getString(R.string.settings_back); setOnClickListener { finish() }
         },LinearLayout.LayoutParams(dp(48),dp(48)))
-        header.addView(ServiceSettingsUi.label(this,providerTitle(this, provider),21f))
+        header.addView(ServiceSettingsUi.label(this,providerTitle(this, provider),21f), LinearLayout.LayoutParams(0,-2,1f))
+        header.addView(helpButton(this, R.string.translation_speech_help_title, providerHelp(provider).setup, "speech-help").apply {
+            setOnClickListener {
+                val help = providerHelp(provider)
+                com.google.android.material.dialog.MaterialAlertDialogBuilder(this@ServiceSettingsActivity)
+                    .setTitle(providerTitle(this@ServiceSettingsActivity, provider))
+                    .setMessage(getString(help.setup) + "\n\n" + getString(R.string.guide_local_save))
+                    .setPositiveButton(android.R.string.ok, null)
+                    .setNeutralButton(R.string.guide_official) { _, _ -> openHelp(help.documentation) }
+                    .setNegativeButton(R.string.guide_billing) { _, _ -> openHelp(help.billing) }.show()
+            }
+        }, LinearLayout.LayoutParams(dp(48),dp(48)))
         root.addView(header,LinearLayout.LayoutParams(-1,dp(64)))
         val scroll=ScrollView(this).apply { isFillViewport=true }
         val content=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(24),dp(12),dp(24),dp(24)) }
-        content.addView(ServiceSettingsUi.label(this,providerDescription(this, provider),14f,true))
-        status=ServiceSettingsUi.label(this,getString(if(runCatching { SettingsStore.isConfigured(this,provider) }.getOrDefault(false)) R.string.service_saved_hint else R.string.service_setup_hint),13f,true)
-        if (storageUnavailable) status.text = getString(R.string.guide_storage_unavailable)
-        content.addView(status,LinearLayout.LayoutParams(-1,-2).apply { topMargin=dp(10); bottomMargin=dp(24) })
-        val help = providerHelp(provider)
-        content.addView(ServiceSettingsUi.label(this, getString(help.setup), 13f, true))
-        listOf(getString(R.string.guide_official) to help.documentation, getString(R.string.guide_billing) to help.billing).forEach { (title, url) ->
-            content.addView(MaterialButton(this, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
-                text = title; isAllCaps = false
-                setOnClickListener {
-                    try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
-                    catch (_: android.content.ActivityNotFoundException) { Toast.makeText(this@ServiceSettingsActivity, getString(R.string.guide_no_browser), Toast.LENGTH_SHORT).show() }
-                }
-            })
+        status=ServiceSettingsUi.label(this,"",16f).apply {
+            visibility=View.GONE; accessibilityLiveRegion=View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        content.addView(ServiceSettingsUi.label(this, getString(R.string.guide_local_save), 12f, true))
+        if (storageUnavailable) { status.text=getString(R.string.guide_storage_unavailable); status.visibility=View.VISIBLE }
+        content.addView(status,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(16) })
+        if (provider == ServiceProvider.DASHSCOPE) content.addView(ServiceSettingsUi.label(this,getString(R.string.translation_speech_title),18f), LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(16) })
         provider.fields.forEach { field ->
             val title = when (field.id) {
                 "endpoint" -> getString(R.string.guide_field_endpoint)
@@ -68,7 +72,10 @@ class ServiceSettingsActivity : AppCompatActivity() {
             }
             val pair=field(content,field.id,title,field.secret)
             if(field.secret) {
-                if(saved.value(field.id).isNotBlank()) pair.first.helperText=getString(R.string.service_secret_saved)
+                if(saved.value(field.id).isNotBlank()) {
+                    pair.first.hint=getString(R.string.translation_saved_field,title)
+                    pair.first.placeholderText=getString(R.string.service_secret_saved)
+                }
             } else pair.second.setText(saved.value(field.id))
             inputs[field.id]=pair
         }
@@ -82,16 +89,27 @@ class ServiceSettingsActivity : AppCompatActivity() {
             }
             content.addView(toggle,LinearLayout.LayoutParams(-1,dp(48)))
         }
-        endpointInput=field(advanced,"baseUrl",getString(R.string.service_endpoint),false).second
-        modelInput=field(advanced,"model",getString(R.string.service_model),false).second
-        endpointInput.setText(saved.endpoint); endpointInput.hint=provider.endpoint
-        modelInput.setText(saved.model); modelInput.hint=provider.model
+        val endpointField=field(advanced,"baseUrl",getString(R.string.service_endpoint),false)
+        endpointInput=endpointField.second
+        val modelField=field(advanced,"model",getString(R.string.service_model),false)
+        modelLayout=modelField.first; modelInput=modelField.second
+        endpointInput.setText(saved.endpoint); endpointField.first.placeholderText=provider.endpoint
+        modelInput.setText(saved.model); modelLayout.placeholderText=provider.model
         if(provider == ServiceProvider.DASHSCOPE) {
-            hotwordsInput=field(advanced,"hotwords",getString(R.string.service_glossary),false).second.apply {
-                setText(runCatching { SettingsStore.hotwordsText(this@ServiceSettingsActivity) }.getOrDefault("")); hint="Mimi=mimi"
+            val hotwordsField=field(advanced,"hotwords",getString(R.string.service_glossary),false)
+            hotwordsLayout=hotwordsField.first
+            hotwordsInput=hotwordsField.second.apply {
+                setText(runCatching { SettingsStore.hotwordsText(this@ServiceSettingsActivity) }.getOrDefault("")); hotwordsLayout?.placeholderText="Mimi=mimi"
             }
         }
         if(provider.hasAdvanced) content.addView(advanced)
+        if (provider == ServiceProvider.DASHSCOPE && !storageUnavailable) {
+            translationSettings = TextTranslationSettings(this) { custom ->
+                modelLayout.visibility = if (custom) View.GONE else View.VISIBLE
+                hotwordsLayout?.let { it.visibility = if (custom) View.GONE else View.VISIBLE }
+            }
+            content.addView(translationSettings!!.view, LinearLayout.LayoutParams(-1,-2).apply { topMargin=dp(12) })
+        }
         scroll.addView(content); root.addView(scroll,LinearLayout.LayoutParams(-1,0,1f))
         val footer=LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(dp(24),dp(8),dp(24),dp(12)) }
         footer.addView(MaterialButton(this).apply {
@@ -108,13 +126,22 @@ class ServiceSettingsActivity : AppCompatActivity() {
         val edit=TextInputEditText(box.context).apply {
             this.tag="credential-$tag"; isSaveEnabled=false; importantForAutofill=View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
             inputType=if(secret) InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD else InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-            isSingleLine=true; textSize=15f; typeface=android.graphics.Typeface.DEFAULT
+            isSingleLine=true; textSize=16f; typeface=android.graphics.Typeface.DEFAULT
         }
         box.addView(edit,LinearLayout.LayoutParams(-1,-2))
         container.addView(box,LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(18) })
         return box to edit
     }
+    override fun onDestroy() { translationSettings?.dispose(); super.onDestroy() }
+    private fun openHelp(url: String) {
+        try { startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))) }
+        catch (_: android.content.ActivityNotFoundException) { Toast.makeText(this, R.string.guide_no_browser, Toast.LENGTH_SHORT).show() }
+    }
     private fun save() {
+        status.visibility=View.VISIBLE
+        if(storageUnavailable) return
+        val textTranslation = translationSettings?.draft()
+        if(translationSettings != null && textTranslation == null) { status.visibility=View.GONE; return }
         if(MimiService.isRunning) { Toast.makeText(this,R.string.service_stop_first,Toast.LENGTH_SHORT).show(); return }
         var valid=true
         val values=provider.fields.associate { field ->
@@ -134,7 +161,7 @@ class ServiceSettingsActivity : AppCompatActivity() {
             if(provider.hasAdvanced && config.endpoint.isNotBlank()) endpoint(config)
             if(provider !in listOf(ServiceProvider.DASHSCOPE,ServiceProvider.OPENAI)) createProtocol(config,source,target).request()
         } catch (_:Exception) { status.text=getString(R.string.service_invalid); return }
-        if(!runCatching { SettingsStore.saveConfiguration(this,config) && SettingsStore.activateProvider(this,provider) }.getOrDefault(false)) {
+        if(!runCatching { SettingsStore.saveConfiguration(this,config,textTranslation,translationSettings?.enabled) && SettingsStore.activateProvider(this,provider) }.getOrDefault(false)) {
             status.text=getString(R.string.guide_storage_unavailable); return
         }
         hotwordsInput?.let { SettingsStore.setHotwords(this,it.text.toString()) }

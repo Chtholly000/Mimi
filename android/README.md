@@ -134,6 +134,38 @@ fields and are written to the app's external `files/ui-preview` directory. Pass
 `-e demo true` for a paced walkthrough suitable for emulator screen recording;
 it demonstrates the labeled sample, not live translation.
 
+## ChatMock text translation
+
+In Services → Alibaba Cloud, choose **ChatMock / OpenAI compatible** under **Text translation**.
+Alibaba Cloud performs recognition with `qwen3-asr-flash-realtime`; ChatMock translates its
+confirmed text. Enable that ASR model for your Alibaba key. Other speech providers keep their
+built-in translation. This is not an OpenAI Realtime endpoint override.
+
+Run [ChatMock](https://github.com/RayBytes/ChatMock) yourself and enter its `/v1` base URL
+(or full `/v1/chat/completions` URL), a model ID from its `/v1/models`, and an optional
+Bearer key if your reverse proxy requires one. The endpoint must accept non-streaming
+Chat Completions (`model`, `messages`, `stream: false`) and return a final
+`choices[0].message.content`. Recommended ChatMock options are
+`--reasoning-compat legacy --reasoning-summary none`; Mimi also removes complete leading
+`<think>` blocks and rejects missing final text.
+
+Use HTTPS for computers and servers, including LAN addresses. With explicit local HTTP
+permission, only `localhost`, `127.0.0.1`, `[::1]` and Android emulator host `10.0.2.2`
+are supported. On a phone, localhost is the phone itself. For USB development, `adb reverse
+tcp:8000 tcp:8000` can make the computer's local ChatMock service available at
+`http://127.0.0.1:8000/v1` on the phone. Do not use a ChatGPT password or session token as
+Mimi's API key; account login stays in your ChatMock installation.
+
+**Test translation** sends a fixed example through the same HTTP path as subtitles and
+shows elapsed milliseconds. It does not save the draft or send system audio. **Save and use**
+commits both stages; back discards changes. Translation keys have independent encrypted
+storage and are not reused when the destination changes. Help icons open the requirements
+without persistent explanatory paragraphs in the editor.
+
+The final-only translation queue is bounded and serial. Failure, backlog overflow or session
+stop cancels pending work; late results cannot enter a newer session. These checks do not
+prove a live ChatMock account or physical Android device until those are tested separately.
+
 ## Architecture
 
 ```

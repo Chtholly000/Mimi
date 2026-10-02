@@ -69,4 +69,30 @@ class SubtitleBusTest {
         assertEquals(200, SubtitleBus.translationDraft.length)
         assertTrue(SubtitleBus.translationDraft.endsWith("RECENT"))
     }
+    @Test fun independentTranslationPairsItsOwnSourceAndClearsOldTranslationForNewRecognition() {
+        SubtitleBus.clear()
+        SubtitleBus.setHistoryLimit(2)
+        SubtitleBus.onUntranslatedSource("First sentence.", "en", true)
+        SubtitleBus.onUntranslatedSource("Second sentence.", "en", true)
+        assertTrue(SubtitleBus.historySnapshot().isEmpty())
+        SubtitleBus.onTranslatedSource("First sentence.", "en", "最初の文。")
+        assertEquals("First sentence", SubtitleBus.sourceFinal)
+        assertEquals("最初の文", SubtitleBus.translationFinal)
+        assertEquals(SubtitleBus.Pair("First sentence", "最初の文"), SubtitleBus.historySnapshot().single())
+        SubtitleBus.onUntranslatedSource("Next draft", "en", false)
+        assertEquals("", SubtitleBus.translationFinal)
+        SubtitleBus.onTranslatedSource("Second sentence.", "en", "二番目の文。")
+        assertEquals("", SubtitleBus.sourceDraft)
+        assertEquals("Second sentence", SubtitleBus.historySnapshot().last().source)
+        SubtitleBus.clear()
+        SubtitleBus.setHistoryLimit(0)
+    }
+
+    @Test fun independentTranslationKeepsNoHistoryWhenDisabled() {
+        SubtitleBus.clear()
+        SubtitleBus.setHistoryLimit(0)
+        SubtitleBus.onTranslatedSource("Example", "en", "例")
+        assertTrue(SubtitleBus.historySnapshot().isEmpty())
+        SubtitleBus.clear()
+    }
 }

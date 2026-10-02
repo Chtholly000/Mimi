@@ -9,8 +9,6 @@
     <string name="service_configure">設定する</string>
     <string name="service_edit_named">%1$s を設定</string>
     <string name="service_stop_first">サービスや認証情報を変更する前に字幕を停止してください。</string>
-    <string name="service_saved_hint">認証情報は端末に保存済みです。接続は使用時に確認されます。変更する場合は下で入力してください。</string>
-    <string name="service_setup_hint">提供元の認証情報を入力してください。保存だけでは認証は確認されません。</string>
     <string name="service_secret_saved">保存済み · 空欄で元の値を保持</string>
     <string name="service_endpoint">接続先の変更（任意）</string>
     <string name="service_model">モデルの変更（任意）</string>

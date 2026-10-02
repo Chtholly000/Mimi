@@ -89,7 +89,9 @@ object SettingsStore {
         provider.configured(configuration(context, provider).credentials)
 
     /** Save one complete profile atomically; callers preserve blank, write-only secret fields. */
-    fun saveConfiguration(context: Context, config: app.yuxino.mimi.android.provider.ServiceConfiguration): Boolean {
+    fun saveConfiguration(context: Context, config: app.yuxino.mimi.android.provider.ServiceConfiguration,
+        translation: app.yuxino.mimi.android.provider.TranslationConfiguration? = null,
+        translationEnabled: Boolean? = null): Boolean {
         apiKey(context, config.provider.id) // Resolve legacy ownership before activating another provider.
         val editor = get(context).edit()
         config.provider.fields.forEach { field ->
@@ -98,8 +100,26 @@ object SettingsStore {
         }
         editor.putString(KEY_BASE_URL_PREFIX + config.provider.id, config.endpoint.trim())
         editor.putString(KEY_MODEL_PREFIX + config.provider.id, config.model.trim())
+        if (config.provider == app.yuxino.mimi.android.provider.ServiceProvider.DASHSCOPE && translationEnabled != null) {
+            requireNotNull(translation)
+            if (translationEnabled) app.yuxino.mimi.android.provider.validateTranslationConfiguration(translation)
+            editor.putBoolean("chatmock_enabled", translationEnabled)
+                .putString("chatmock_endpoint", translation.endpoint)
+                .putString("chatmock_model", translation.model)
+                .putString("chatmock_api_key", translation.apiKey)
+                .putBoolean("chatmock_local_http", translation.allowLocalHttp)
+        }
         return editor.commit()
     }
+
+    fun useChatMockTranslation(context: Context): Boolean = get(context).getBoolean("chatmock_enabled", false)
+
+    fun translationConfiguration(context: Context) = app.yuxino.mimi.android.provider.TranslationConfiguration(
+        get(context).getString("chatmock_endpoint", "").orEmpty(),
+        get(context).getString("chatmock_model", "").orEmpty(),
+        get(context).getString("chatmock_api_key", "").orEmpty(),
+        get(context).getBoolean("chatmock_local_http", false),
+    )
 
     fun activateProvider(context: Context, provider: app.yuxino.mimi.android.provider.ServiceProvider): Boolean {
         if (!isConfigured(context, provider)) return false
