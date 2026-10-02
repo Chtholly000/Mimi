@@ -68,7 +68,9 @@ actual measured height instead of occupying their full line budget. Following
 live output bounds both confirmed and live presentation to finite tails; a new
 sentence no longer expands its predecessor into a wall. Upward wheel,
 Home/ArrowUp/PageUp or a deliberate touch scroll opens complete confirmed
-history with the same reading anchor. End or returning to the bottom resumes
+history and the current replaceable live text with the same reading anchor.
+Reading a live row does not confirm it or retain its earlier revisions. End,
+the visible return-to-live action, or returning to the bottom resumes
 compact following. A ResizeObserver gives each bilingual lane the number of whole lines that
 fit the actual body height, including 1+1 in short windows. Absent source text
 leaves the available space to translation.
@@ -255,7 +257,7 @@ limit. The original has 36% of available height initially, with spare height fro
 either measured short lane given to the longer one. A sole language uses all the
 available height. Reference text is 90% of the primary size (82% in a short body)
 and 86% white; integer line heights keep glyphs inside the clipping boundary.
-Upward reading intent restores full confirmed text. No edge fade or continuation
+Upward reading intent restores full confirmed and current live text. No edge fade or continuation
 glyph is inserted into the text. The optional divider is one full CSS pixel, at
 34% white, across the inset body width, with 7px breathing room. It remains
 default-off and persists.

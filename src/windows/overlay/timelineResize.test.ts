@@ -13,9 +13,11 @@ it("repins unchanged subtitles after a narrower viewport rewraps them and discon
     disconnect = disconnect;
   });
   const scrollTo = vi.fn();
-  const element = { scrollHeight: 180, scrollTo } as unknown as HTMLElement;
+  const row = {} as Element;
+  const element = { scrollHeight: 180, scrollTo, children: [row] } as unknown as HTMLElement;
   const cleanup = observeTimelineResize(element);
   expect(observe).toHaveBeenCalledWith(element);
+  expect(observe).toHaveBeenCalledWith(row);
   Object.defineProperty(element, "scrollHeight", { value: 340 });
   resize();
   expect(scrollTo).toHaveBeenLastCalledWith({ top: 340, behavior: "instant" });

@@ -71,6 +71,7 @@ export const Timeline = memo(function Timeline({
     const last = blocks[blocks.length - 1];
     return (last?.source?.length ?? 0) + (last?.translation?.length ?? 0);
   }, [blocks]);
+  const blockLayoutKey = useMemo(() => JSON.stringify(blocks.map(block => block.id)), [blocks]);
   const prevBlockCountRef = useRef(blocks.length);
   const previousModeRef = useRef(displayMode);
   const modeChangedRef = useRef(false);
@@ -89,15 +90,6 @@ export const Timeline = memo(function Timeline({
   const paddingTop = tight ? 0 : blendsWithBackground ? IMMERSIVE_BLOCK_GAP : BLOCK_PADDING_Y;
   const paddingBottom = tight ? 1 : LAST_BLOCK_PADDING_Y;
 
-  useLayoutEffect(() => {
-    if (previousFollowRequest.current === followTailRequest) return;
-    previousFollowRequest.current = followTailRequest;
-    if (containerRef.current) {
-      scroll.followTail(containerRef.current);
-      containerRef.current.focus({ preventScroll: true });
-    }
-  }, [followTailRequest, scroll]);
-
   useEffect(() => { onReadingHistoryChange?.(readingHistory); }, [onReadingHistoryChange, readingHistory]);
   useEffect(() => () => onReadingHistoryChange?.(false), [onReadingHistoryChange]);
 
@@ -111,6 +103,17 @@ export const Timeline = memo(function Timeline({
     modeChangedRef.current = true;
     if (containerRef.current) scroll.displayChanged(containerRef.current);
   }, [displayMode, scroll]);
+
+  // Explicit follow intent wins even if a display-mode change shares this
+  // render. Later row-size observations keep it pinned as compact lanes settle.
+  useLayoutEffect(() => {
+    if (previousFollowRequest.current === followTailRequest) return;
+    previousFollowRequest.current = followTailRequest;
+    if (containerRef.current) {
+      scroll.followTail(containerRef.current);
+      containerRef.current.focus({ preventScroll: true });
+    }
+  }, [followTailRequest, scroll]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -133,7 +136,7 @@ export const Timeline = memo(function Timeline({
     };
     resized();
     return observeTimelineResize(element, resized);
-  }, [scroll]);
+  }, [scroll, blockLayoutKey]);
 
   return (
     <div
@@ -192,9 +195,9 @@ export const Timeline = memo(function Timeline({
         const isLast = index === blocks.length - 1;
         const distance = blocks.length - 1 - index;
         // Following keeps completed long utterances in the same bounded tail
-        // as the live sentence. Their full text opens only on reading intent,
-        // so starting another sentence cannot turn the last one into a wall.
-        const compact = !readingHistory || block.presentation === "live";
+        // as the live sentence. Deliberate reading opens either kind of row;
+        // it does not confirm or retain a replaceable live draft.
+        const compact = !readingHistory;
         // Only a sentence that appears for the first time animates in. A
         // committed utterance replaces the live row it was already visible as,
         // so animating it again would blink the text the user is reading.

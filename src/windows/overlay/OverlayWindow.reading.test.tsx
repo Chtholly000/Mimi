@@ -108,6 +108,33 @@ it("removes the reading action on clear and starts new session content in live f
   expect(timeline().textContent).not.toContain(confirmed.source);
 });
 
+it("opens an unconfirmed long pair through pause and mode changes and returns it to live following explicitly", async () => {
+  const live = { ...empty, source: { text: confirmed.source, isFinal: false },
+    previewPair: { source: confirmed.source, translation: confirmed.translation } };
+  useStore.setState(state => ({ session: { ...state.session, subtitles: live }, settings: {
+    ...state.settings, profiles: [{ id: "atomic", name: "Alibaba", provider: "alibabaCloud", credentialState: "present" }], activeProfileId: "atomic",
+  } }));
+  await mount(); const element = timeline();
+  expect(element.querySelector("[aria-label]")).not.toBeNull();
+  await readHistory();
+  for (const subtitleDisplayMode of ["original", "translation", "bilingual"] as const) {
+    await act(async () => useStore.setState(state => ({ settings: { ...state.settings, subtitleDisplayMode } })));
+    expect(timeline()).toBe(element); expect(returnButton()).not.toBeNull();
+    expect(element.querySelector("[aria-label]")).toBeNull();
+  }
+  for (const isPaused of [true, false]) {
+    await act(async () => useStore.setState(state => ({ session: { ...state.session, isPaused } })));
+    expect(element.querySelector("[aria-label]")).toBeNull(); expect(returnButton()).not.toBeNull();
+  }
+  expect(element.textContent).toContain(confirmed.source);
+  expect(element.textContent).toContain(confirmed.translation);
+  expect(useStore.getState().session.subtitles.history).toEqual([]);
+  await act(async () => returnButton()!.click());
+  expect(returnButton()).toBeNull(); expect(element.scrollTop).toBe(249);
+  expect(element.querySelectorAll("[aria-label]")).toHaveLength(2);
+  expect(useStore.getState().session.subtitles.history).toEqual([]);
+});
+
 it.each(["zh", "en", "ja"] as const)("keeps the return action beside timings and actionable errors at 360×136 in %s", async language => {
   vi.stubGlobal("innerWidth", 360); setStoredUiLanguage(language);
   useStore.setState({ togglePaused: vi.fn().mockRejectedValue(new Error("synthetic-action-failure")) });

@@ -2,7 +2,7 @@
 
 ## Decision
 
-Add a visible “Back to live” action while the user reads confirmed history.
+Add a visible “Back to live” action while the user reads complete subtitles.
 Keep the existing atomic original/translation pairs and measured visual-line
 budgets. Do not zip paragraphs into sentence pairs by matching sentence counts:
 translators may merge, divide, or reorder sentences even when both sides contain
@@ -16,7 +16,7 @@ confirmed-identity, translation-memory, and clear-boundary fixes.
 
 ## Interaction and state
 
-Upward wheel/key/touch intent opens full confirmed text and reports reading
+Upward wheel/key/touch intent opens full confirmed and current live text and reports reading
 state to the overlay. Incoming content, pause/resume, display-mode changes, and
 resize retain that deliberate reading position. Previously only End or scrolling
 back to the bottom resumed live following.
@@ -33,6 +33,23 @@ IDs and reading anchors remain intact. Clear removes empty timeline content,
 cleans up the reading callback, and hides the action immediately. A subsequently
 mounted session starts in live following. No preview is promoted to confirmed
 history; snapshots and saved session files are unchanged.
+
+The current live row also opens on deliberate reading, even when no final has
+arrived. Its earlier content must not remain trapped behind a finite lane while
+the return action is visible. Default following still clips to measured whole
+lines. A live row is the latest replaceable snapshot, bounded by the existing
+64KiB-per-field limit; this does not archive previous draft revisions. Recognition
+corrections can change its text while the reader keeps a block/pixel anchor.
+Final promotion changes the canonical row ID, so the existing missing-anchor
+policy preserves the current scroll position rather than forcing the tail.
+
+Returning before compact lanes finish measuring can leave the scroll position
+above the eventual tail. Observe the fixed viewport and its direct subtitle rows,
+then use the existing reflow policy when row height changes: following repins to
+the current bottom; reading restores its anchor. Rebind row observations only
+when block IDs change, not for every draft. Explicit return intent runs after a
+same-render mode change, so the mode anchor cannot override that action. No timer
+or forced jump while deliberately reading is added.
 
 ## Geometry and copy
 
@@ -56,3 +73,10 @@ with timings and failed control feedback at the native minimum in three UI
 languages. Private acceptance audio/captions are not fixtures. Native acceptance
 must still check the actual small-window text geometry, focus/click reachability,
 and slow-speech paired subtitles; component checks do not replace those checks.
+Long-live fixtures also cover all three display modes, full text before a final,
+equal-length rewraps, continued growth, explicit return to compact following,
+and live-to-final promotion while retaining reading intent and scroll position.
+Size-change regressions exercise delayed compact-row growth/shrink, replacing a
+row with the same block count, and preservation of deliberate reading during
+those notifications. This models the native post-measurement scrollHeight change
+without claiming that mocked component geometry replaces native verification.
