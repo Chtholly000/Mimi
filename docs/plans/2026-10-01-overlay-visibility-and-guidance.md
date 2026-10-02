@@ -261,8 +261,13 @@ history corrections, appended pairs, clearing and trimming still update at once.
 While following, a preceding bilingual sentence keeps one visible line in each
 selected language; scrolling upward opens its full text. The newest
 sentence uses the actual measured viewport height, rather than a fixed two-line
-limit. The original has 36% of available height initially, with spare height from
-either measured short lane given to the longer one. A sole language uses all the
+limit. Long bilingual lanes start with 50% of available height each, with spare
+height from either measured short lane given to the longer one. At 143px of
+available height and subtitle size 17, this changes the long/long presentation
+from two original plus four translated lines to three plus three. The native
+minimum still keeps one line in each language. Independent wrapping and tail
+clipping do not provide sentence alignment; complete pairs and full reading
+remain intact. A sole language uses all the
 available height. Reference text is 90% of the primary size (82% in a short body)
 and 86% white; integer line heights keep glyphs inside the clipping boundary.
 Upward reading intent restores full confirmed and current live text. No edge fade or continuation

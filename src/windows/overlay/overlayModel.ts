@@ -209,9 +209,9 @@ export function subtitleLaneBudget(
     default: {
       if (!hasTranslation) return { source: linesThatFit(sourceLine), translation: 0 };
       if (availableLaneHeight === null) return { source: 1, translation: 2 };
-      // The original is a readable reference, with most of the space going
-      // to the translation. Measured short text yields space in either lane.
-      let source = linesThatFit(sourceLine, availableLaneHeight * 0.36);
+      // Long bilingual lanes start with equal height rather than exposing
+      // much less original text. Measured short text still yields its space.
+      let source = linesThatFit(sourceLine, availableLaneHeight * 0.5);
       if (measured && measured.source > 0) {
         source = Math.min(source, Math.max(1, Math.ceil(measured.source / sourceLine)));
       }

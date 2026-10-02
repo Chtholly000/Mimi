@@ -291,13 +291,32 @@ describe("compact lane budget", () => {
     expect(subtitleLaneBudget("original", false)).toEqual({ source: 2, translation: 0 });
   });
 
-  it("yields the second line in a short viewport without removing either bilingual lane", () => {
+  it("allocates whole lines in a short viewport without removing either bilingual lane", () => {
     expect(subtitleLaneBudget("bilingual", true, 49, 20)).toEqual({ source: 1, translation: 1 });
-    expect(subtitleLaneBudget("bilingual", true, 120, 20)).toEqual({ source: 1, translation: 3 });
+    expect(subtitleLaneBudget("bilingual", true, 120, 20)).toEqual({ source: 2, translation: 2 });
     expect(subtitleLaneBudget("translation", true, 40, 20)).toEqual({ source: 0, translation: 1 });
     expect(subtitleLaneBudget("original", false, 40, 20)).toEqual({ source: 1, translation: 0 });
     expect(subtitleLaneBudget("original", false, 48, 20)).toEqual({ source: 1, translation: 0 });
     expect(subtitleLaneBudget("bilingual", false, 48, 20)).toEqual({ source: 2, translation: 0 });
+  });
+
+  it("balances long original and translation lanes at the measured native reading height", () => {
+    for (const sourceScale of [0.88, 0.9]) {
+      const pair = subtitleLaneBudget("bilingual", true, 143, 17,
+        { source: 420, translation: 460 }, sourceScale);
+      expect(pair).toEqual({ source: 3, translation: 3 });
+      const sourceLine = Math.ceil(17 * sourceScale * 1.32);
+      expect(pair.source * sourceLine + pair.translation * 23).toBeLessThanOrEqual(143);
+    }
+    expect(subtitleLaneBudget("bilingual", true, 49, 17,
+      { source: 420, translation: 460 })).toEqual({ source: 1, translation: 1 });
+  });
+
+  it("preserves short-lane borrowing at the same native height", () => {
+    expect(subtitleLaneBudget("bilingual", true, 143, 17,
+      { source: 20, translation: 690 }, 0.88)).toEqual({ source: 1, translation: 5 });
+    expect(subtitleLaneBudget("bilingual", true, 143, 17,
+      { source: 660, translation: 23 }, 0.88)).toEqual({ source: 6, translation: 1 });
   });
 
   it("uses a tall window instead of clipping every language to two lines", () => {

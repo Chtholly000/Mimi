@@ -231,7 +231,10 @@ it("fits both long bilingual lanes into the actual 51px body and uses added spac
   expect(row.style.paddingTop).toBe("0px");
   viewportHeight = 130;
   await act(async () => { resize.forEach(callback => callback()); });
-  expect(lanes[1].style.height).toBe("81px");
+  const resizedHeights = lanes.map(lane => Number.parseFloat(lane.style.height));
+  expect(resizedHeights).toEqual([48, 54]);
+  expect(resizedHeights.reduce((sum, height) => sum + height, 0) + 2 + 3 + 2)
+    .toBeLessThanOrEqual(viewportHeight);
   expect(row.textContent).toContain(confirmed.source);
   expect(row.textContent).toContain(confirmed.translation);
 });
