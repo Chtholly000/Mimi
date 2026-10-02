@@ -370,6 +370,46 @@ mod tests {
     }
 
     #[test]
+    fn dock_preference_is_settings_and_tray_panel_scoped() {
+        for show in [false, true] {
+            let draft = SettingsDraft {
+                show_in_dock: Some(show),
+                ..SettingsDraft::default()
+            };
+            for label in ["settings", "tray-panel"] {
+                assert!(ensure_settings_draft_window_allowed(label, &draft).is_ok());
+            }
+            for label in ["overlay", "overlay-control", "unknown"] {
+                assert!(ensure_settings_draft_window_allowed(label, &draft).is_err());
+            }
+        }
+        let presentation = SettingsDraft {
+            subtitle_display_mode: Some(SubtitleDisplayMode::Bilingual),
+            ..SettingsDraft::default()
+        };
+        assert!(ensure_settings_draft_window_allowed("overlay-control", &presentation).is_ok());
+    }
+
+    #[test]
+    fn dock_access_does_not_widen_settings_only_preferences() {
+        for field in [
+            serde_json::json!({"retainSessionHistory": false}),
+            serde_json::json!({"recordSessionAudio": false}),
+            serde_json::json!({"windowsAudioSource": ""}),
+            serde_json::json!({"networkProxy": {"mode": "direct"}}),
+        ] {
+            for show in [None, Some(false), Some(true)] {
+                let mut draft: SettingsDraft = serde_json::from_value(field.clone()).unwrap();
+                draft.show_in_dock = show;
+                assert!(ensure_settings_draft_window_allowed("settings", &draft).is_ok());
+                for label in ["tray-panel", "overlay", "overlay-control", "unknown"] {
+                    assert!(ensure_settings_draft_window_allowed(label, &draft).is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn settings_payload_is_camel_case_and_write_only() {
         let payload = SettingsSnapshotPayload {
             credential_storage: "keychain",
@@ -789,6 +829,23 @@ pub fn app_open_releases(app: AppHandle) -> Result<(), String> {
         })
 }
 
+fn ensure_settings_draft_window_allowed(label: &str, draft: &SettingsDraft) -> Result<(), String> {
+    if (draft.retain_session_history.is_some()
+        || draft.record_session_audio.is_some()
+        || draft.windows_audio_source.is_some()
+        || draft.network_proxy.is_some())
+        && label != "settings"
+    {
+        return Err("These preferences can only be changed in settings.".into());
+    }
+    if draft.show_in_dock.is_some() && !matches!(label, "settings" | "tray-panel") {
+        return Err(
+            "The Dock preference can only be changed in settings or the tray panel.".into(),
+        );
+    }
+    Ok(())
+}
+
 /// Saves non-secret preferences only. Credentials use dedicated write-only
 /// commands so a general settings draft can never echo or overwrite a key.
 #[tauri::command]
@@ -798,15 +855,7 @@ pub async fn settings_save(
     state: State<'_, AppState>,
     draft: SettingsDraft,
 ) -> Result<SettingsSnapshotPayload, String> {
-    if (draft.retain_session_history.is_some()
-        || draft.record_session_audio.is_some()
-        || draft.windows_audio_source.is_some()
-        || draft.show_in_dock.is_some()
-        || draft.network_proxy.is_some())
-        && window.label() != "settings"
-    {
-        return Err("These preferences can only be changed in settings.".into());
-    }
+    ensure_settings_draft_window_allowed(window.label(), &draft)?;
     apply_settings_draft(&app, &state, draft).await
 }
 
@@ -975,6 +1024,7 @@ fn apply_settings_draft_guarded(
         || draft.subtitle_display_mode.is_some()
         || draft.pulse_animation.is_some()
         || draft.subtitle_animation.is_some()
+        || draft.show_in_dock.is_some()
     {
         crate::refresh_native_tray_language(app);
     }
@@ -982,6 +1032,25 @@ fn apply_settings_draft_guarded(
     let payload = SettingsSnapshotPayload::try_from_store(&state.settings)?;
     let _ = app.emit("settings-changed", payload.clone());
     Ok(payload)
+}
+
+/// Serializes a native Dock toggle with settings and tray-panel saves.
+#[cfg(target_os = "macos")]
+pub(crate) async fn toggle_dock_visibility(app: AppHandle) -> Result<(), String> {
+    let state = app
+        .try_state::<AppState>()
+        .ok_or_else(|| "Application state is unavailable.".to_string())?;
+    let _lifecycle = state.session.settings_mutation_guard(false).await?;
+    let show = !state.settings.preferences().show_in_dock;
+    apply_settings_draft_guarded(
+        &app,
+        &state,
+        SettingsDraft {
+            show_in_dock: Some(show),
+            ..SettingsDraft::default()
+        },
+    )?;
+    Ok(())
 }
 
 /// Toggles the persisted Immersive Mode presentation from native surfaces

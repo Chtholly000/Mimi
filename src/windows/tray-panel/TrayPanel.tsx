@@ -45,6 +45,7 @@ type PendingAction =
   | "alignment"
   | "blend"
   | "lock"
+  | "dock"
   | "show"
   | "clear"
   | "settings"
@@ -88,6 +89,9 @@ export function TrayPanel() {
     hasSubtitleContent: subtitleHasContent,
   });
   const anyActionPending = pendingAction !== null;
+  const isMacOS =
+    typeof navigator !== "undefined" &&
+    /Macintosh|MacIntel/i.test(navigator.userAgent + " " + navigator.platform);
   const sourcePickerDisabled =
     anyActionPending ||
     !presentation.canChangeSourceLanguage ||
@@ -104,7 +108,11 @@ export function TrayPanel() {
     void operation()
       .catch((error: unknown) => {
         setOperationError(
-          name === "quit" ? I18N.tray.quitFailed : actionErrorMessage(error, I18N.settings.profileActionFailed),
+          name === "quit"
+            ? I18N.tray.quitFailed
+            : name === "dock"
+              ? I18N.settings.dockSaveFailed
+              : actionErrorMessage(error, I18N.settings.profileActionFailed),
         );
       })
       .finally(() => {
@@ -309,7 +317,7 @@ export function TrayPanel() {
           aria-checked={settings.subtitleBlendsWithBackground}
           aria-label={I18N.tray.blendBackground}
           disabled={anyActionPending}
-          className="tray-setting-row tray-setting-row--toggle"
+          className={`tray-setting-row tray-setting-row--toggle${settings.subtitleBlendsWithBackground ? " is-checked" : ""}`}
           onClick={() =>
             performAction("blend", () =>
               saveSettings({
@@ -338,7 +346,7 @@ export function TrayPanel() {
           aria-checked={settings.isOverlayLocked}
           aria-label={I18N.tray.lockPosition}
           disabled={anyActionPending}
-          className="tray-setting-row tray-setting-row--toggle"
+          className={`tray-setting-row tray-setting-row--toggle${settings.isOverlayLocked ? " is-checked" : ""}`}
           onClick={() =>
             performAction("lock", () =>
               setOverlayLocked(!settings.isOverlayLocked),
@@ -355,6 +363,36 @@ export function TrayPanel() {
             <span />
           </span>
         </button>
+
+        {isMacOS && (
+          <>
+            <span className="tray-card__divider" />
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.showInDock}
+              aria-label={I18N.settings.showInDock}
+              aria-busy={pendingAction === "dock"}
+              disabled={anyActionPending}
+              className={`tray-setting-row tray-setting-row--toggle${settings.showInDock ? " is-checked" : ""}`}
+              onClick={() =>
+                performAction("dock", () =>
+                  saveSettings({ showInDock: !settings.showInDock }),
+                )
+              }
+            >
+              <span className="tray-setting-row__icon" aria-hidden="true">
+                <Icon name="app-window" />
+              </span>
+              <span className="tray-setting-row__copy">
+                <span>{I18N.settings.showInDock}</span>
+              </span>
+              <span className="tray-switch" aria-hidden="true">
+                <span />
+              </span>
+            </button>
+          </>
+        )}
       </div>
 
       {(presentation.canShowOverlay || presentation.canClearSubtitles) && (

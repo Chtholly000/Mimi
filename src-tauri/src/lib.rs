@@ -430,6 +430,8 @@ struct NativeMenuLabels {
     quit: &'static str,
     subtitle_display: &'static str,
     display_modes: [&'static str; 3],
+    #[cfg(any(target_os = "macos", test))]
+    show_in_dock: &'static str,
 }
 
 #[derive(Clone)]
@@ -440,6 +442,8 @@ struct NativeTrayMenuItems {
     quit: MenuItem<tauri::Wry>,
     subtitle_display: Submenu<tauri::Wry>,
     display_modes: [CheckMenuItem<tauri::Wry>; 3],
+    #[cfg(target_os = "macos")]
+    show_in_dock: CheckMenuItem<tauri::Wry>,
 }
 
 const APPLICATION_QUIT_MENU_ID: &str = "mimi-app-quit";
@@ -560,6 +564,8 @@ fn native_menu_labels(language: NativeMenuLanguage) -> NativeMenuLabels {
             quit: "退出 mimi",
             subtitle_display: "字幕显示",
             display_modes: ["仅译文", "原文与译文", "仅原文"],
+            #[cfg(any(target_os = "macos", test))]
+            show_in_dock: "在 Dock 中显示",
         },
         NativeMenuLanguage::Japanese => NativeMenuLabels {
             start_subtitles: "字幕を開始",
@@ -569,6 +575,8 @@ fn native_menu_labels(language: NativeMenuLanguage) -> NativeMenuLabels {
             quit: "mimiを終了",
             subtitle_display: "字幕表示",
             display_modes: ["翻訳のみ", "原文と翻訳", "原文のみ"],
+            #[cfg(any(target_os = "macos", test))]
+            show_in_dock: "Dock に表示",
         },
         NativeMenuLanguage::English => NativeMenuLabels {
             start_subtitles: "Start Subtitles",
@@ -582,6 +590,8 @@ fn native_menu_labels(language: NativeMenuLanguage) -> NativeMenuLabels {
                 "Original and Translation",
                 "Original Only",
             ],
+            #[cfg(any(target_os = "macos", test))]
+            show_in_dock: "Show in Dock",
         },
     }
 }
@@ -720,6 +730,18 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         menu_builder = menu_builder.item(item);
     }
 
+    #[cfg(target_os = "macos")]
+    let show_in_dock = {
+        let checked = app
+            .try_state::<AppState>()
+            .is_some_and(|state| state.settings.preferences().show_in_dock);
+        let item = CheckMenuItemBuilder::with_id("show-in-dock", labels.show_in_dock)
+            .checked(checked)
+            .build(app)?;
+        menu_builder = menu_builder.item(&item);
+        item
+    };
+
     let settings_item = MenuItemBuilder::with_id("settings", labels.settings).build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", labels.quit).build(app)?;
 
@@ -785,6 +807,20 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                         }
                     }
                 }
+                #[cfg(target_os = "macos")]
+                "show-in-dock" => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if commands::toggle_dock_visibility(app.clone()).await.is_err() {
+                            // Restore the checkmark from the saved preference
+                            // when native application or persistence fails.
+                            refresh_native_tray_language(&app);
+                            tracing::warn!(
+                                "Dock visibility setting failed label=settings_unavailable"
+                            );
+                        }
+                    });
+                }
                 id if is_settings_menu_event(id) => {
                     // The shared command also dismisses the always-on-top
                     // control panel so neither surface obscures Settings.
@@ -842,6 +878,8 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         quit: quit_item,
         subtitle_display,
         display_modes,
+        #[cfg(target_os = "macos")]
+        show_in_dock,
     });
 
     // Session broadcasts already cover every start/stop path (native menu,
@@ -895,6 +933,14 @@ pub(crate) fn refresh_native_tray_language(app: &tauri::AppHandle) {
     let _ = items.settings.set_text(labels.settings);
     let _ = items.quit.set_text(labels.quit);
     let _ = items.subtitle_display.set_text(labels.subtitle_display);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = items.show_in_dock.set_text(labels.show_in_dock);
+        let checked = app
+            .try_state::<AppState>()
+            .is_some_and(|state| state.settings.preferences().show_in_dock);
+        let _ = items.show_in_dock.set_checked(checked);
+    }
     let current_mode = app
         .try_state::<AppState>()
         .map(|state| state.settings.preferences().subtitle_display_mode)
@@ -1164,6 +1210,19 @@ mod tests {
             native_menu_labels(NativeMenuLanguage::Japanese).settings,
             "設定…"
         );
+    }
+
+    #[test]
+    fn native_dock_visibility_labels_match_the_existing_frontend_copy() {
+        let frontend_i18n = include_str!("../../src/lib/i18n.ts");
+        for language in [
+            NativeMenuLanguage::Chinese,
+            NativeMenuLanguage::English,
+            NativeMenuLanguage::Japanese,
+        ] {
+            let label = native_menu_labels(language).show_in_dock;
+            assert!(frontend_i18n.contains(&format!("showInDock: \"{label}\"")));
+        }
     }
 
     #[test]
