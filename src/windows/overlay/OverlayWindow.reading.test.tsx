@@ -39,8 +39,8 @@ beforeEach(() => {
   Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true,
     get(this: HTMLElement) { return Number.parseFloat(this.style.height) || 51; } });
   Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get() { return 300; } });
-  HTMLElement.prototype.scrollTo = function (options: ScrollToOptions | number) {
-    this.scrollTop = Math.min(typeof options === "number" ? options : options.top ?? 0, this.scrollHeight - this.clientHeight);
+  HTMLElement.prototype.scrollTo = function (options?: ScrollToOptions | number, y?: number) {
+    this.scrollTop = Math.min(typeof options === "number" ? y ?? 0 : options?.top ?? 0, this.scrollHeight - this.clientHeight);
   };
   setStoredUiLanguage("en");
   useStore.setState({ ...original,
