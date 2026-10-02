@@ -179,11 +179,15 @@ export const Timeline = memo(function Timeline({
         const entering = block.presentation === "live";
         const availableLaneHeight = viewportHeight === null ? null
           : viewportHeight - paddingTop - paddingBottom - (block.source !== null && block.translation !== null ? laneGap : 0);
+        // A bilingual original keeps its reference font while waiting for MT.
+        // Only its line budget changes when the translation takes its space.
+        const sourceScale = subtitleSourceScale(viewportHeight === null ? null
+          : viewportHeight - paddingTop - paddingBottom - (displayMode === "bilingual" ? laneGap : 0));
         // When the original has not arrived, the translation owns the full
         // viewport rather than reserving height for an absent reference lane.
         const budgetMode = displayMode === "bilingual" && block.source === null ? "translation" : displayMode;
         const budget = subtitleLaneBudget(budgetMode, block.translation !== null, availableLaneHeight, fontSize,
-          isLast && laneMeasurements.blockId === block.id ? laneMeasurements : null);
+          isLast && laneMeasurements.blockId === block.id ? laneMeasurements : null, sourceScale);
         const measureLane = (kind: "source" | "translation", height: number) => {
           if (!isLast) return;
           setLaneMeasurements(previous => {
@@ -258,7 +262,7 @@ export const Timeline = memo(function Timeline({
                   blendsWithBackground={blendsWithBackground}
                   motionEnabled={motionEnabled}
                   entering={entering}
-                  sourceScale={subtitleSourceScale(availableLaneHeight)}
+                  sourceScale={sourceScale}
                   onMeasure={height => measureLane("source", height)}
                 />
               ) : null}

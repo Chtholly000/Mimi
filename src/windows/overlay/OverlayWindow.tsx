@@ -390,13 +390,12 @@ export function OverlayWindow() {
                 onClick={() => void setOverlayCollapsed(true)}
                 data-testid="collapse-subtitles"
               />
-              {hasContent && (
-                <ControlButton
-                  icon="eraser"
-                  label={I18N.overlay.clearSubtitles}
-                  onClick={() => void clearSubtitles()}
-                />
-              )}
+              <ControlButton
+                icon="eraser"
+                label={I18N.overlay.clearSubtitles}
+                onClick={() => void clearSubtitles()}
+                disabled={!hasContent}
+              />
               <ControlButton
                 icon="blend"
                 label={I18N.overlay.enterImmersiveMode}

@@ -162,7 +162,7 @@ pub fn run() {
 
             setup_tray(&app_handle)?;
             #[cfg(target_os = "macos")]
-            setup_application_quit_menu(&app_handle)?;
+            setup_application_menu(&app_handle)?;
             #[cfg(target_os = "macos")]
             mac_native_quit::install(&app_handle)?;
             setup_global_shortcuts(&app_handle, Arc::clone(&session))?;
@@ -441,11 +441,21 @@ struct NativeTrayMenuItems {
 }
 
 const APPLICATION_QUIT_MENU_ID: &str = "mimi-app-quit";
+const APPLICATION_SETTINGS_MENU_ID: &str = "mimi-app-settings";
 #[cfg(any(target_os = "macos", test))]
 const APPLICATION_QUIT_ACCELERATOR: &str = "CmdOrCtrl+Q";
+#[cfg(any(target_os = "macos", test))]
+const APPLICATION_SETTINGS_ACCELERATOR: &str = "CmdOrCtrl+,";
 
 #[cfg(target_os = "macos")]
-struct NativeApplicationQuitMenuItem(MenuItem<tauri::Wry>);
+struct NativeApplicationMenuItems {
+    settings: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+}
+
+fn is_settings_menu_event(id: &str) -> bool {
+    matches!(id, "settings" | APPLICATION_SETTINGS_MENU_ID)
+}
 
 fn is_normal_quit_menu_event(id: &str) -> bool {
     matches!(id, "quit" | APPLICATION_QUIT_MENU_ID)
@@ -467,14 +477,15 @@ fn default_application_quit_position(
 }
 
 #[cfg(target_os = "macos")]
-fn setup_application_quit_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
+fn setup_application_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     fn unexpected_default_menu() -> tauri::Error {
-        std::io::Error::other("The default application quit menu could not be installed.").into()
+        std::io::Error::other("The default application menu could not be installed.").into()
     }
 
     // Keep Tauri's complete default menu, including native Services and the
-    // Edit menu's standard copy/paste responders. Only predefined Quit uses
-    // NSApplication::terminate directly and bypasses our async finalization.
+    // Edit menu's standard copy/paste responders. Replace predefined Quit,
+    // which bypasses our async finalization, and add Settings before Services
+    // so it remains reachable while the subtitle controls are hidden.
     let menu = app.menu().ok_or_else(unexpected_default_menu)?;
     let root_items = menu.items()?;
     let application_menu = root_items
@@ -489,6 +500,9 @@ fn setup_application_quit_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
         .transpose()?;
     let position = default_application_quit_position(items.len(), last_predefined_text.as_deref())
         .ok_or_else(unexpected_default_menu)?;
+    if position < 2 {
+        return Err(unexpected_default_menu());
+    }
 
     let override_language = app
         .try_state::<AppState>()
@@ -501,9 +515,17 @@ fn setup_application_quit_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     let quit_item = MenuItemBuilder::with_id(APPLICATION_QUIT_MENU_ID, labels.quit)
         .accelerator(APPLICATION_QUIT_ACCELERATOR)
         .build(app)?;
+    let settings_item = MenuItemBuilder::with_id(APPLICATION_SETTINGS_MENU_ID, labels.settings)
+        .accelerator(APPLICATION_SETTINGS_ACCELERATOR)
+        .build(app)?;
     application_menu.remove_at(position)?;
     application_menu.insert(&quit_item, position)?;
-    app.manage(NativeApplicationQuitMenuItem(quit_item));
+    application_menu.insert(&settings_item, 2)?;
+    application_menu.insert(&tauri::menu::PredefinedMenuItem::separator(app)?, 3)?;
+    app.manage(NativeApplicationMenuItems {
+        settings: settings_item,
+        quit: quit_item,
+    });
     Ok(())
 }
 
@@ -761,11 +783,10 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                         }
                     }
                 }
-                "settings" => {
-                    // The tray panel is always-on-top; hide it so the
-                    // settings window is not obscured behind it.
-                    windows::TrayPanelManager::hide(app);
-                    windows::ensure_settings_window(app);
+                id if is_settings_menu_event(id) => {
+                    // The shared command also dismisses the always-on-top
+                    // control panel so neither surface obscures Settings.
+                    let _ = commands::app_show_settings(app.clone(), None);
                 }
                 id if is_normal_quit_menu_event(id) => {
                     let session = Arc::clone(&state.session);
@@ -855,8 +876,9 @@ pub(crate) fn refresh_native_tray_language(app: &tauri::AppHandle) {
         system_language.as_deref(),
     ));
     #[cfg(target_os = "macos")]
-    if let Some(item) = app.try_state::<NativeApplicationQuitMenuItem>() {
-        let _ = item.0.set_text(labels.quit);
+    if let Some(items) = app.try_state::<NativeApplicationMenuItems>() {
+        let _ = items.settings.set_text(labels.settings);
+        let _ = items.quit.set_text(labels.quit);
     }
     let Some(items) = app.try_state::<NativeTrayMenuItems>() else {
         return;
@@ -1041,6 +1063,28 @@ fn setup_global_shortcuts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_settings_and_tray_share_the_settings_route_in_all_languages() {
+        assert!(is_settings_menu_event("settings"));
+        assert!(is_settings_menu_event(APPLICATION_SETTINGS_MENU_ID));
+        for id in [
+            "quit",
+            APPLICATION_QUIT_MENU_ID,
+            "live-subtitles",
+            "mimi-app-settings-extra",
+        ] {
+            assert!(!is_settings_menu_event(id));
+        }
+        assert_eq!(APPLICATION_SETTINGS_ACCELERATOR, "CmdOrCtrl+,");
+        for (language, label) in [
+            (NativeMenuLanguage::Chinese, "设置…"),
+            (NativeMenuLanguage::English, "Settings…"),
+            (NativeMenuLanguage::Japanese, "設定…"),
+        ] {
+            assert_eq!(native_menu_labels(language).settings, label);
+        }
+    }
 
     #[test]
     fn application_and_tray_quit_share_the_normal_finalization_route() {

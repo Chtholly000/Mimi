@@ -194,8 +194,8 @@ export function subtitleLaneBudget(
   availableLaneHeight: number | null = null,
   fontSize = 18,
   measured: { source: number; translation: number } | null = null,
+  sourceScale = subtitleSourceScale(availableLaneHeight),
 ): { source: number; translation: number } {
-  const sourceScale = subtitleSourceScale(availableLaneHeight);
   const sourceLine = Math.ceil((displayMode === "bilingual"
     ? Math.max(12, fontSize * sourceScale) : fontSize) * SUBTITLE_LINE_HEIGHT);
   const translationLine = Math.ceil(fontSize * SUBTITLE_LINE_HEIGHT);

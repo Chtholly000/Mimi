@@ -245,6 +245,32 @@ it.each([80, 81])("fits long original and short translation at the %ipx responsi
   expect(lanes[0].style.height).toBe("44px");
 });
 
+it.each([83, 84, 85])("keeps the reference font stable as translation arrives and leaves at the %ipx boundary", async (height) => {
+  viewportHeight = height;
+  measuredHeight = 240;
+  const waiting = { ...live, translation: null };
+  const timeline = await render([waiting], 20);
+  const original = timeline.querySelector<HTMLElement>(`[aria-label="${live.source}"]`)!;
+  const text = original.firstElementChild as HTMLElement;
+  const font = text.style.fontSize;
+  const lineHeight = text.style.lineHeight;
+  expect(font).toBe(height < 85 ? "16.4px" : "18px");
+
+  await render([live], 20);
+  expect(timeline.querySelector(`[aria-label="${live.source}"]`)).toBe(original);
+  expect(original.firstElementChild).toBe(text);
+  expect(text.style.fontSize).toBe(font);
+  expect(text.style.lineHeight).toBe(lineHeight);
+  const pairedLanes = Array.from(timeline.querySelectorAll<HTMLElement>("[aria-label]"));
+  expect(pairedLanes.map(lane => lane.firstElementChild?.textContent)).toEqual([live.source, live.translation]);
+  expect(pairedLanes.reduce((sum, lane) => sum + Number.parseFloat(lane.style.height), 0) + 7).toBeLessThanOrEqual(height);
+
+  await render([waiting], 20);
+  expect(original.firstElementChild).toBe(text);
+  expect(text.style.fontSize).toBe(font);
+  expect(text.style.lineHeight).toBe(lineHeight);
+});
+
 it("gives a bilingual translation the unused original lane's space before that original arrives", async () => {
   measuredHeight = 240;
   viewportHeight = 51;
