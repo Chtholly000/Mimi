@@ -47,7 +47,71 @@ pub enum Audio3ASRClientError {
 
 type Sink = futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
 
+/// Clear follows the recognizer's real sentence boundary; it never subtracts
+/// a guessed text prefix. An unseen server sentence cannot be classified by
+/// capture time, so only the currently observed sentence/ID watermark is cut.
+#[derive(Default)]
+struct Audio3ContentGate {
+    revision: u64,
+    active: bool,
+    highest_sentence_id: Option<u64>,
+    discard_through_id: Option<u64>,
+    discard_unknown_sentence: bool,
+}
+
+impl Audio3ContentGate {
+    fn clear(&mut self, revision: u64) {
+        self.revision = revision;
+        self.discard_through_id = self.highest_sentence_id;
+        self.discard_unknown_sentence |= self.active;
+        self.active = false;
+    }
+
+    fn accepts(&mut self, event: &Audio3ASRServerEvent) -> bool {
+        let Audio3ASRServerEvent::Transcription {
+            is_final,
+            sentence_id,
+            ..
+        } = event
+        else {
+            return true;
+        };
+        if self.discard_unknown_sentence {
+            let next_identified_sentence = sentence_id.is_some_and(|id| {
+                self.discard_through_id
+                    .is_some_and(|watermark| id > watermark)
+            });
+            if next_identified_sentence {
+                self.discard_unknown_sentence = false;
+            } else {
+                if *is_final {
+                    self.discard_unknown_sentence = false;
+                    if let Some(id) = sentence_id {
+                        let watermark = self.highest_sentence_id.map_or(*id, |seen| seen.max(*id));
+                        self.highest_sentence_id = Some(watermark);
+                        self.discard_through_id = Some(watermark);
+                    }
+                }
+                return false;
+            }
+        }
+        if let Some(id) = sentence_id {
+            if self
+                .discard_through_id
+                .is_some_and(|watermark| *id <= watermark)
+            {
+                return false;
+            }
+            self.highest_sentence_id =
+                Some(self.highest_sentence_id.map_or(*id, |seen| seen.max(*id)));
+        }
+        self.active = !*is_final;
+        true
+    }
+}
+
 struct Inner {
+    content_gate: std::sync::Mutex<Audio3ContentGate>,
     sink: Mutex<Option<Sink>>,
     task_started: AtomicBool,
     task_finished: AtomicBool,
@@ -90,6 +154,7 @@ impl Audio3ASRClient {
         Ok(Self {
             network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
+                content_gate: Default::default(),
                 sink: Mutex::new(None),
                 task_started: AtomicBool::new(false),
                 task_finished: AtomicBool::new(false),
@@ -109,7 +174,26 @@ impl Audio3ASRClient {
 
     /// Sets the channel the receive loop emits decoded events onto.
     pub async fn set_event_sender(&self, sender: ProviderEventSender) {
+        *self.inner.content_gate.lock().unwrap() = Audio3ContentGate {
+            revision: sender.content_revision(),
+            ..Default::default()
+        };
         *self.events.lock().await = Some(sender);
+    }
+
+    pub fn content_revision(&self) -> u64 {
+        self.inner.content_gate.lock().unwrap().revision
+    }
+
+    pub async fn clear_content(&self) -> u64 {
+        let events = self.events.lock().await.clone();
+        let mut gate = self.inner.content_gate.lock().unwrap();
+        let revision = events.as_ref().map_or(
+            gate.revision.wrapping_add(1),
+            ProviderEventSender::advance_content_revision,
+        );
+        gate.clear(revision);
+        revision
     }
 
     /// Opens the socket, sends `run-task`, and waits for `task-started`.
@@ -286,7 +370,18 @@ impl Audio3ASRClient {
                     };
                     let is_task_failed =
                         matches!(subtitle_event, LiveTranslateServerEvent::Error { .. });
-                    let send_result = events.send(subtitle_event);
+                    let send_result = {
+                        let mut gate = inner.content_gate.lock().unwrap();
+                        if gate.accepts(&event) {
+                            if super::provider_events::is_content_event(&subtitle_event) {
+                                events.send_content(gate.revision, subtitle_event)
+                            } else {
+                                events.send(subtitle_event)
+                            }
+                        } else {
+                            Ok(())
+                        }
+                    };
                     // `finish` disconnects the socket as soon as this flag is
                     // visible. Publish SessionFinished first so that cleanup
                     // cannot abort the receive task between provider ack and
@@ -486,6 +581,48 @@ async fn send_silence_if_idle(inner: &Inner) -> Result<(), Audio3ASRClientError>
 mod tests {
     use super::*;
 
+    fn caption(id: Option<u64>, is_final: bool) -> Audio3ASRServerEvent {
+        Audio3ASRServerEvent::Transcription {
+            text: "Synthetic caption".into(),
+            is_final,
+            sentence_id: id,
+        }
+    }
+
+    #[test]
+    fn content_clear_suppresses_current_sentence_and_replays_but_accepts_next_id() {
+        let mut gate = Audio3ContentGate::default();
+        assert!(gate.accepts(&caption(Some(7), false)));
+        gate.clear(1);
+        assert!(!gate.accepts(&caption(Some(7), false)));
+        gate.clear(2);
+        assert!(!gate.accepts(&caption(None, false)));
+        assert!(!gate.accepts(&caption(Some(7), false)));
+        assert!(gate.accepts(&caption(Some(8), false)));
+        assert!(!gate.accepts(&caption(Some(7), true)));
+        assert!(gate.accepts(&caption(Some(8), true)));
+        gate.clear(2);
+        assert!(!gate.accepts(&caption(Some(8), true)));
+        assert!(gate.accepts(&caption(Some(9), false)));
+    }
+
+    #[test]
+    fn missing_identity_clear_waits_for_a_real_final_without_guessing_a_prefix() {
+        let mut gate = Audio3ContentGate::default();
+        assert!(gate.accepts(&caption(None, false)));
+        gate.clear(1);
+        gate.clear(2);
+        assert!(!gate.accepts(&caption(None, false)));
+        assert!(!gate.accepts(&caption(None, false)));
+        assert!(!gate.accepts(&caption(Some(1), true)));
+        assert!(!gate.accepts(&caption(Some(1), true)));
+        assert!(gate.accepts(&caption(Some(2), false)));
+        let mut unseen = Audio3ContentGate::default();
+        unseen.clear(1);
+        // No observed sentence means there is no honest capture-time cutoff.
+        assert!(unseen.accepts(&caption(Some(1), false)));
+    }
+
     #[test]
     fn socket_end_is_failure_only_before_task_finished() {
         assert!(should_report_transport_end(false));
@@ -511,6 +648,99 @@ mod streaming_tests {
     use crate::clients::provider_events::provider_event_channel;
     use tokio::net::TcpListener;
     use tokio_tungstenite::accept_async;
+
+    #[tokio::test]
+    async fn clear_keeps_one_socket_and_audio_sending_while_old_sentence_is_discarded() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            assert!(socket
+                .next()
+                .await
+                .unwrap()
+                .unwrap()
+                .to_text()
+                .unwrap()
+                .contains("run-task"));
+            socket
+                .send(Message::Text(
+                    r#"{"header":{"event":"task-started"}}"#.into(),
+                ))
+                .await
+                .unwrap();
+            let frame = |id, final_sentence| {
+                Message::Text(serde_json::json!({
+                "header":{"event":"result-generated"}, "payload":{"output":{"sentence":{
+                    "text":"Synthetic test sentence", "sentence_id":id, "sentence_end":final_sentence
+                }}}
+            }).to_string().into())
+            };
+            socket.send(frame(7, false)).await.unwrap();
+            release_rx.await.unwrap();
+            let audio = socket.next().await.unwrap().unwrap();
+            assert!(matches!(audio, Message::Binary(bytes) if bytes.as_ref() == [1, 2, 3, 4]));
+            socket.send(frame(7, false)).await.unwrap();
+            socket.send(frame(7, true)).await.unwrap();
+            socket.send(frame(8, true)).await.unwrap();
+            assert!(matches!(
+                socket.next().await,
+                None | Some(Ok(Message::Close(_)))
+            ));
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let mut client = Audio3ASRClient::new("synthetic-key", SourceLanguage::English).unwrap();
+        client.endpoint.url = url::Url::parse(&format!("ws://{address}")).unwrap();
+        client
+            .set_network(
+                super::super::provider_network::ProviderNetwork::resolve(
+                    &crate::core::network_proxy::ProxyConfig {
+                        mode: crate::core::network_proxy::ProxyMode::Direct,
+                        url: None,
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let (sender, mut receiver) = provider_event_channel();
+        client.set_event_sender(sender).await;
+        client
+            .connect_for_probe("synthetic-clear-task")
+            .await
+            .unwrap();
+        loop {
+            if matches!(
+                receiver.recv().await,
+                Some(LiveTranslateServerEvent::SourceDraft { .. })
+            ) {
+                break;
+            }
+        }
+        assert_eq!(client.clear_content().await, 1);
+        client.send_audio(&[1, 2, 3, 4]).await.unwrap();
+        release_tx.send(()).unwrap();
+        let next = tokio::time::timeout(Duration::from_secs(2), receiver.recv_with_revision())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(next.content_revision, 1);
+        assert!(matches!(
+            next.event,
+            LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 8,
+                ..
+            }
+        ));
+        assert!(receiver.try_recv().is_err());
+        client.disconnect().await;
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn service_probe_waits_for_task_ready_without_sending_silence_pcm() {

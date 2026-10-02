@@ -122,6 +122,10 @@ struct PendingFinalTextLimitExceeded;
 type SubtitleCommitResult = Result<Option<LiveTranslateServerEvent>, PendingFinalTextLimitExceeded>;
 
 struct VolcanoSubtitlePairCommitter {
+    source_in_progress: bool,
+    translation_in_progress: bool,
+    discard_source: bool,
+    discard_translation: bool,
     source_language: String,
     sources: VecDeque<PendingFinal>,
     translations: VecDeque<PendingFinal>,
@@ -132,6 +136,10 @@ struct VolcanoSubtitlePairCommitter {
 impl VolcanoSubtitlePairCommitter {
     fn new(source_language: SourceLanguage) -> Self {
         Self {
+            source_in_progress: false,
+            translation_in_progress: false,
+            discard_source: false,
+            discard_translation: false,
             source_language: source_language.raw_value().into(),
             sources: VecDeque::new(),
             translations: VecDeque::new(),
@@ -226,7 +234,33 @@ impl VolcanoSubtitlePairCommitter {
         }
     }
 
+    fn clear_content(&mut self) {
+        let active = self.source_in_progress
+            || self.translation_in_progress
+            || !self.sources.is_empty()
+            || !self.translations.is_empty();
+        // Known old final intervals remain tombstoned, without retaining text.
+        let timings: Vec<_> = self
+            .sources
+            .iter()
+            .chain(self.translations.iter())
+            .map(|pending| pending.timing)
+            .collect();
+        for timing in timings {
+            self.mark_committed(timing);
+        }
+        self.sources.clear();
+        self.translations.clear();
+        self.pending_text_bytes = 0;
+        self.discard_source |= active;
+        self.discard_translation |= active;
+    }
+
     fn reset(&mut self) {
+        self.source_in_progress = false;
+        self.translation_in_progress = false;
+        self.discard_source = false;
+        self.discard_translation = false;
         self.sources.clear();
         self.translations.clear();
         self.pending_text_bytes = 0;
@@ -263,6 +297,8 @@ fn upsert_bounded(
 }
 
 struct Inner {
+    // Serializes the content barrier with local assembly, never socket/audio state.
+    content_lock: Mutex<()>,
     sink: Mutex<Option<Sink>>,
     receive_task: Mutex<Option<JoinHandle<()>>>,
     audio_send_lock: Mutex<()>,
@@ -292,6 +328,16 @@ pub struct VolcanoEngineClient {
 }
 
 impl VolcanoEngineClient {
+    pub fn content_revision(&self) -> u64 {
+        self.events.content_revision()
+    }
+
+    pub async fn clear_content(&self) -> u64 {
+        let _content = self.inner.content_lock.lock().await;
+        self.inner.committer.lock().await.clear_content();
+        self.events.advance_content_revision()
+    }
+
     /// Applied before connect so ASR and translation share one immutable route.
     pub fn set_network(
         &mut self,
@@ -328,6 +374,7 @@ impl VolcanoEngineClient {
         Ok(Self {
             network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
+                content_lock: Mutex::new(()),
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
                 audio_send_lock: Mutex::new(()),
@@ -750,6 +797,25 @@ fn fail_receive_loop(context: &ReceiveContext, code: &str, message: &str) {
 
 /// Returns true when the receive loop must stop.
 async fn handle_server_event(context: &ReceiveContext, event: VolcanoEngineServerEvent) -> bool {
+    let revision = context.events.content_revision();
+    let _content = context.inner.content_lock.lock().await;
+    if context.inner.generation.load(Ordering::SeqCst) != context.generation {
+        return false;
+    }
+    if revision != context.events.content_revision()
+        && matches!(
+            &event,
+            VolcanoEngineServerEvent::SourceSubtitleStarted
+                | VolcanoEngineServerEvent::SourceSubtitleDraft(_)
+                | VolcanoEngineServerEvent::SourceSubtitleFinal { .. }
+                | VolcanoEngineServerEvent::TranslationSubtitleStarted
+                | VolcanoEngineServerEvent::TranslationSubtitleDraft(_)
+                | VolcanoEngineServerEvent::TranslationSubtitleFinal { .. }
+        )
+    {
+        return false;
+    }
+
     let setup_is_awaiting = *context.setup.borrow() == SetupState::Awaiting;
     if setup_is_awaiting
         && !matches!(
@@ -774,8 +840,17 @@ async fn handle_server_event(context: &ReceiveContext, event: VolcanoEngineServe
                 let _ = context.setup.send(SetupState::Ready);
             }
         }
-        VolcanoEngineServerEvent::SourceSubtitleStarted => {}
+        VolcanoEngineServerEvent::SourceSubtitleStarted => {
+            let mut committer = context.inner.committer.lock().await;
+            committer.source_in_progress = true;
+            committer.discard_source = false;
+        }
         VolcanoEngineServerEvent::SourceSubtitleDraft(text) => {
+            let mut committer = context.inner.committer.lock().await;
+            committer.source_in_progress = true;
+            if committer.discard_source {
+                return false;
+            }
             if !emit_if_current(
                 context,
                 LiveTranslateServerEvent::SourceDraft {
@@ -791,23 +866,30 @@ async fn handle_server_event(context: &ReceiveContext, event: VolcanoEngineServe
             start_time_ms,
             end_time_ms,
         } => {
-            let commit =
-                context
-                    .inner
-                    .committer
-                    .lock()
-                    .await
-                    .push_source(text, start_time_ms, end_time_ms);
+            let mut committer = context.inner.committer.lock().await;
+            committer.source_in_progress = false;
+            if committer.discard_source {
+                return false;
+            }
+            let commit = committer.push_source(text, start_time_ms, end_time_ms);
             if !emit_commit_result(context, commit) {
                 return true;
             }
         }
         VolcanoEngineServerEvent::TranslationSubtitleStarted => {
+            let mut committer = context.inner.committer.lock().await;
+            committer.translation_in_progress = true;
+            committer.discard_translation = false;
             if !emit_if_current(context, LiveTranslateServerEvent::TranslationStarted) {
                 return true;
             }
         }
         VolcanoEngineServerEvent::TranslationSubtitleDraft(text) => {
+            let mut committer = context.inner.committer.lock().await;
+            committer.translation_in_progress = true;
+            if committer.discard_translation {
+                return false;
+            }
             if !emit_if_current(context, LiveTranslateServerEvent::TranslationDraft(text)) {
                 return true;
             }
@@ -817,11 +899,12 @@ async fn handle_server_event(context: &ReceiveContext, event: VolcanoEngineServe
             start_time_ms,
             end_time_ms,
         } => {
-            let commit = context.inner.committer.lock().await.push_translation(
-                text,
-                start_time_ms,
-                end_time_ms,
-            );
+            let mut committer = context.inner.committer.lock().await;
+            committer.translation_in_progress = false;
+            if committer.discard_translation {
+                return false;
+            }
+            let commit = committer.push_translation(text, start_time_ms, end_time_ms);
             if !emit_commit_result(context, commit) {
                 return true;
             }
@@ -903,6 +986,60 @@ fn emit_if_current(context: &ReceiveContext, event: LiveTranslateServerEvent) ->
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn clear_removes_pending_text_but_tombstones_its_real_interval() {
+        let (sender, mut receiver) = provider_event_channel();
+        let client = VolcanoEngineClient::with_endpoint(
+            "test-key-not-real",
+            SourceLanguage::English,
+            TargetLanguage::Japanese,
+            sender.clone(),
+            url::Url::parse("ws://127.0.0.1:1/translate").unwrap(),
+        )
+        .unwrap();
+        {
+            let mut committer = client.inner.committer.lock().await;
+            committer.source_in_progress = true;
+            committer
+                .push_source("old source".into(), Some(0), Some(10))
+                .unwrap();
+        }
+        sender
+            .send(LiveTranslateServerEvent::SessionFinished)
+            .unwrap();
+        assert_eq!(client.clear_content().await, 1);
+        assert_eq!(client.content_revision(), 1);
+        let mut committer = client.inner.committer.lock().await;
+        assert!(committer.sources.is_empty() && committer.translations.is_empty());
+        assert_eq!(committer.pending_text_bytes, 0);
+        assert!(committer.discard_source && committer.discard_translation);
+        assert!(committer
+            .push_translation("late old".into(), Some(0), Some(10))
+            .unwrap()
+            .is_none());
+        assert!(committer
+            .push_source("old replay".into(), Some(0), Some(10))
+            .unwrap()
+            .is_none());
+        committer.discard_source = false;
+        committer.discard_translation = false;
+        committer
+            .push_source("new source".into(), Some(11), Some(20))
+            .unwrap();
+        let pair = committer
+            .push_translation("new translation".into(), Some(11), Some(20))
+            .unwrap();
+        assert!(
+            matches!(pair, Some(LiveTranslateServerEvent::SubtitleFinalPair {source,translation,..})
+            if source == "new source" && translation == "new translation")
+        );
+        drop(committer);
+        assert_eq!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::SessionFinished)
+        );
+    }
+
     use super::*;
     use crate::clients::provider_events::{provider_event_channel, ProviderEventReceiver};
     use futures_util::{SinkExt, StreamExt};

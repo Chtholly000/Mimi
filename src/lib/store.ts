@@ -182,6 +182,7 @@ const settingsResponseGate = new SnapshotResponseGate();
 let snapshotBootstrap: SnapshotStreamBootstrap<SettingsSnapshot, SessionStateEvent> | null = null;
 let initializationAttempt: Promise<void> | null = null;
 let initializationGeneration = 0;
+let overlayCollapseRequest = 0;
 
 /** A timeout is recoverable; only an actual WebView teardown expires streams. */
 export function disposeStoreSnapshotStreams(): void {
@@ -339,7 +340,12 @@ export const useStore = create<StoreState>()((set, get) => ({
       session: {
         ...state.session,
         subtitles: EMPTY_SUBTITLES,
+        isTranslationPending: false,
+        isTranslationPreviewPending: false,
         isTranslationTimedOut: false,
+        translationRecovery: null,
+        translationLatencyMs: null,
+        translationLatencyKind: null,
       },
     }));
   },
@@ -564,12 +570,23 @@ export const useStore = create<StoreState>()((set, get) => ({
 
   setOverlayCollapsed: async (collapsed) => {
     // Optimistic local update so the overlay layout switches immediately;
-    // the backend event confirms it afterwards.
+    // the backend event confirms it afterwards. Only the latest failed request
+    // can undo its own still-current optimistic value, preserving new content
+    // and newer presentation requests/events.
+    const request = ++overlayCollapseRequest;
+    const previous = get().session.isOverlayCollapsed;
     set((state) => ({
       session: { ...state.session, isOverlayCollapsed: collapsed },
     }));
     if (isTauri) {
-      await overlaySetCollapsed(collapsed);
+      try {
+        await overlaySetCollapsed(collapsed);
+      } catch (error) {
+        if (request === overlayCollapseRequest && get().session.isOverlayCollapsed === collapsed) {
+          set(state => ({ session: { ...state.session, isOverlayCollapsed: previous } }));
+        }
+        throw error;
+      }
     }
   },
 

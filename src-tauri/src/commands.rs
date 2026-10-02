@@ -1197,6 +1197,7 @@ pub async fn session_clear_subtitles(state: State<'_, AppState>) -> Result<(), S
     state
         .session
         .clear_subtitles()
+        .await
         .map_err(|_| "Could not clear subtitles.")?;
     Ok(())
 }

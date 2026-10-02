@@ -59,6 +59,7 @@ struct TranslationRequest {
     language: Option<String>,
     boundary: FinalBoundary,
     utterance_revision: u64,
+    content_revision: u64,
     enqueued_at: tokio::time::Instant,
 }
 
@@ -275,6 +276,7 @@ pub struct HighQualityTranslationClient {
     events: ProviderEventSender,
     inner: Arc<Mutex<Inner>>,
     asr_bridge: Arc<Mutex<ASRBridgeState>>,
+    content_operation: Arc<Mutex<()>>,
     preview_epoch: Arc<AtomicU64>,
     mt_work_allowed: Arc<AtomicBool>,
     translation_latency: Arc<std::sync::Mutex<Option<TranslationLatency>>>,
@@ -355,6 +357,7 @@ impl HighQualityTranslationClient {
                 preview_request_pacer: PreviewRequestPacer::default(),
             })),
             asr_bridge: Arc::new(Mutex::new(ASRBridgeState::default())),
+            content_operation: Arc::new(Mutex::new(())),
             preview_epoch: Arc::new(AtomicU64::new(0)),
             mt_work_allowed: Arc::new(AtomicBool::new(true)),
             translation_latency: Default::default(),
@@ -536,6 +539,37 @@ impl HighQualityTranslationClient {
     }
 
     // MARK: ASR event handling
+
+    pub fn content_revision(&self) -> u64 {
+        self.events.content_revision()
+    }
+
+    /// Discards local work without disconnecting ASR or refunding an already
+    /// started request's spacing, quota suppression or shared cooldown.
+    pub async fn clear_content(&self) -> u64 {
+        let _content = self.content_operation.lock().await;
+        let revision = {
+            let mut inner = self.inner.lock().await;
+            abort_task(&mut inner.draft_stability_task);
+            abort_task(&mut inner.draft_maximum_wait_task);
+            self.cancel_preview(&mut inner, PreviewCancellationReason::Reset);
+            self.advance_preview_epoch();
+            abort_task(&mut inner.final_worker);
+            inner.final_queue.clear();
+            inner.active_final = None;
+            inner.final_completion_in_progress = false;
+            inner.deferred_overload = false;
+            inner.committer.reset();
+            inner.latest_draft_language = None;
+            next_nonzero(&mut inner.draft_revision);
+            // Keep provider final-ID/replay watermarks and quota state.
+            inner.preview_request_pacer.finish_utterance();
+            *self.translation_latency.lock().unwrap() = None;
+            self.events.advance_content_revision()
+        };
+        self.asr_client.clear_content().await;
+        revision
+    }
 
     async fn handle_asr_event(&self, event: LiveTranslateServerEvent) {
         if !self.mt_work_allowed.load(Ordering::SeqCst)
@@ -1192,6 +1226,7 @@ impl HighQualityTranslationClient {
             language,
             boundary,
             utterance_revision,
+            content_revision: self.content_revision(),
             enqueued_at: tokio::time::Instant::now(),
         };
         let outcome = {
@@ -1270,6 +1305,13 @@ impl HighQualityTranslationClient {
         loop {
             let request = {
                 let mut inner = self.inner.lock().await;
+                if inner
+                    .final_worker
+                    .as_ref()
+                    .is_none_or(|task| task.id != worker_id)
+                {
+                    return;
+                }
                 if inner.pipeline_failed {
                     clear_task_if_id(&mut inner.final_worker, worker_id);
                     inner.active_final = None;
@@ -1312,20 +1354,33 @@ impl HighQualityTranslationClient {
                     queue_age.as_millis(),
                     self.inner.lock().await.final_queue.len()
                 );
-                self.emit(LiveTranslateServerEvent::TranslationStarted);
+                self.emit_content(
+                    request.content_revision,
+                    LiveTranslateServerEvent::TranslationStarted,
+                );
             }
-            self.emit(LiveTranslateServerEvent::SourceDraft {
-                text: request.text.clone(),
-                language: request.language.clone(),
-            });
+            self.emit_content(
+                request.content_revision,
+                LiveTranslateServerEvent::SourceDraft {
+                    text: request.text.clone(),
+                    language: request.language.clone(),
+                },
+            );
             // A server final can revise the preview's source. Its prior
             // translation must not remain beside the new request's source
             // while the first streamed partial is still pending.
-            self.emit(LiveTranslateServerEvent::TranslationDraft(String::new()));
+            self.emit_content(
+                request.content_revision,
+                LiveTranslateServerEvent::TranslationDraft(String::new()),
+            );
 
             let events = self.events.clone();
+            let content_revision = request.content_revision;
             let partial_handler: PartialHandler = Arc::new(move |partial| {
-                let _ = events.send(LiveTranslateServerEvent::TranslationDraft(partial));
+                let _ = events.send_content(
+                    content_revision,
+                    LiveTranslateServerEvent::TranslationDraft(partial),
+                );
             });
             let deadline = request.enqueued_at + MAX_FINAL_REQUEST_AGE;
             let result = if same_language {
@@ -1351,9 +1406,14 @@ impl HighQualityTranslationClient {
                             .final_worker
                             .as_ref()
                             .is_some_and(|task| task.id == worker_id);
-                        if inner.pipeline_failed || !owned {
-                            clear_task_if_id(&mut inner.final_worker, worker_id);
-                            inner.active_final = None;
+                        if inner.pipeline_failed
+                            || !owned
+                            || self.content_revision() != request.content_revision
+                        {
+                            if owned {
+                                clear_task_if_id(&mut inner.final_worker, worker_id);
+                                inner.active_final = None;
+                            }
                             false
                         } else {
                             inner.final_completion_in_progress = true;
@@ -1374,15 +1434,26 @@ impl HighQualityTranslationClient {
                         return;
                     }
 
-                    self.emit(LiveTranslateServerEvent::SubtitleConfirmedPair {
-                        utterance_id: request.utterance_revision,
-                        source: request.text.clone(),
-                        language: request.language.clone(),
-                        translation: translation.text.clone(),
-                    });
+                    self.emit_content(
+                        request.content_revision,
+                        LiveTranslateServerEvent::SubtitleConfirmedPair {
+                            utterance_id: request.utterance_revision,
+                            source: request.text.clone(),
+                            language: request.language.clone(),
+                            translation: translation.text.clone(),
+                        },
+                    );
 
                     let deferred_overload = {
                         let mut inner = self.inner.lock().await;
+                        if self.content_revision() != request.content_revision
+                            || inner
+                                .final_worker
+                                .as_ref()
+                                .is_none_or(|task| task.id != worker_id)
+                        {
+                            return;
+                        }
                         inner.final_completion_in_progress = false;
                         inner.active_final = None;
                         if inner.deferred_overload {
@@ -1876,7 +1947,14 @@ impl HighQualityTranslationClient {
         let self_arc = self.clone();
         let task = tokio::spawn(async move {
             let mut finish_tx = Some(finish_tx);
-            while let Some(event) = receiver.recv().await {
+            while let Some(envelope) = receiver.recv_with_revision().await {
+                let _content = self_arc.content_operation.lock().await;
+                if envelope.is_content()
+                    && envelope.content_revision != self_arc.asr_client.content_revision()
+                {
+                    continue;
+                }
+                let event = envelope.event;
                 let is_session_finished = event == LiveTranslateServerEvent::SessionFinished;
                 self_arc.handle_asr_event(event).await;
                 if is_session_finished {
@@ -1913,6 +1991,10 @@ impl HighQualityTranslationClient {
         }
     }
 
+    fn emit_content(&self, revision: u64, event: LiveTranslateServerEvent) {
+        let _ = self.events.send_content(revision, event);
+    }
+
     fn emit(&self, event: LiveTranslateServerEvent) {
         let _ = self.events.send(event);
     }
@@ -1942,6 +2024,259 @@ fn clear_task_if_id(slot: &mut Option<TaskSlot>, task_id: u64) {
 mod tests {
     use super::*;
     use crate::clients::provider_events::ProviderEventReceiver;
+
+    #[tokio::test]
+    async fn clear_after_a_real_sse_partial_does_not_restore_late_stream_content() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint =
+            url::Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let (release_tx, release_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let _request = read_synthetic_request(&mut socket).await;
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.unwrap();
+            let partial =
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Synthetic old partial\"}}]}\n\n";
+            socket
+                .write_all(format!("{:x}\r\n{partial}\r\n", partial.len()).as_bytes())
+                .await
+                .unwrap();
+            release_rx.await.unwrap();
+            let late = "data: {\"choices\":[{\"delta\":{\"content\":\" late old suffix\"}}]}\n\ndata: [DONE]\n\n";
+            let _ = socket
+                .write_all(format!("{:x}\r\n{late}\r\n0\r\n\r\n", late.len()).as_bytes())
+                .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let (sender, mut receiver) = provider_event_channel();
+        let mut client = HighQualityTranslationClient::new(
+            "synthetic-key",
+            SourceLanguage::English,
+            TargetLanguage::Japanese,
+            QwenMTModel::Lite,
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            12,
+            sender,
+        )
+        .unwrap();
+        let TextTranslationClient::Qwen(mt, _) = Arc::make_mut(&mut client.mt) else {
+            unreachable!()
+        };
+        mt.use_synthetic_endpoint(endpoint);
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 1,
+                text: "Synthetic old source".into(),
+                language: Some("en".into()),
+            })
+            .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if matches!(receiver.recv().await, Some(LiveTranslateServerEvent::TranslationDraft(text)) if text == "Synthetic old partial") { break; }
+            }
+        }).await.unwrap();
+        client.clear_content().await;
+        assert!(receiver.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        server.await.unwrap();
+        assert!(receiver.try_recv().is_err());
+        assert!(client.inner.lock().await.final_worker.is_none());
+        client.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn clear_keeps_quota_budget_and_rejects_old_preview_and_final_callbacks() {
+        let (client, mut receiver) = test_client(TargetLanguage::Japanese, 20);
+        let old_revision = client.content_revision();
+        let preview_id = client.advance_preview_epoch();
+        let late_partial = client.preview_partial_handler(preview_id);
+        let cooldown_until = tokio::time::Instant::now() + Duration::from_secs(8);
+        let now = std::time::Instant::now();
+        let (shared_at, preview_at) = {
+            let mut inner = client.inner.lock().await;
+            inner.committer.update_draft("Synthetic cleared draft");
+            inner.last_source_utterance_id = Some(7);
+            inner.mt_failure_streak = 2;
+            inner.mt_cooldown = Some(MTCooldown {
+                until: cooldown_until,
+                reason: TranslationRecoveryReason::RateLimited,
+            });
+            inner.preview_request_pacer.record_start(now);
+            inner.preview_request_pacer.suppress_after_rate_limit(now);
+            inner
+                .preview_request_pacer
+                .set_shared_cooldown(Some(now + Duration::from_secs(8)));
+            inner.preview_task = Some(TaskSlot {
+                id: preview_id,
+                handle: tokio::spawn(std::future::pending()),
+            });
+            inner.preview_http_pending = Some(preview_id);
+            inner.pending_preview_revision = Some(inner.draft_revision);
+            (
+                inner.preview_request_pacer.next_shared_start_at(now),
+                inner.preview_request_pacer.next_start_at(now),
+            )
+        };
+        let revision = client.clear_content().await;
+        assert_ne!(revision, old_revision);
+        late_partial("Synthetic old partial".into());
+        client.emit_content(
+            old_revision,
+            LiveTranslateServerEvent::SubtitleConfirmedPair {
+                utterance_id: 1,
+                source: "old".into(),
+                language: None,
+                translation: "old".into(),
+            },
+        );
+        assert!(receiver.try_recv().is_err());
+        let inner = client.inner.lock().await;
+        assert_eq!(inner.mt_failure_streak, 2);
+        assert_eq!(inner.mt_cooldown.unwrap().until, cooldown_until);
+        assert_eq!(
+            inner.preview_request_pacer.next_shared_start_at(now),
+            shared_at
+        );
+        assert_eq!(inner.preview_request_pacer.next_start_at(now), preview_at);
+        assert_eq!(inner.last_source_utterance_id, Some(7));
+        assert!(!inner.committer.has_pending_text());
+        assert!(inner.final_queue.is_empty());
+        assert!(inner.preview_task.is_none());
+        assert!(inner.pending_preview_revision.is_none());
+        assert!(client.mt_work_allowed.load(Ordering::SeqCst));
+        drop(inner);
+        assert!(client
+            .prepare_server_final("Synthetic replay", Some(7))
+            .await
+            .is_none());
+        assert!(client
+            .prepare_server_final("Synthetic new sentence", Some(8))
+            .await
+            .is_some());
+        client.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn clear_cancels_inflight_http_and_queued_finals_then_new_final_recovers() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut old, _) = listener.accept().await.unwrap();
+            let request = String::from_utf8(read_synthetic_request(&mut old).await).unwrap();
+            assert!(request.contains("Synthetic old active"));
+            started_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            let body = r#"{"code":200,"data":"Late old translation"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = old.write_all(response.as_bytes()).await;
+            let (mut next, _) = tokio::time::timeout(Duration::from_secs(4), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+            let request = String::from_utf8(read_synthetic_request(&mut next).await).unwrap();
+            assert!(request.contains("Synthetic new sentence"));
+            assert!(!request.contains("Synthetic old queued"));
+            write_synthetic_response(&mut next, 200, r#"{"code":200,"data":"New translation"}"#)
+                .await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let (sender, mut receiver) = provider_event_channel();
+        let mut client = HighQualityTranslationClient::new_deeplx(
+            "synthetic-key",
+            &endpoint,
+            "",
+            SourceLanguage::English,
+            TargetLanguage::Japanese,
+            sender,
+        )
+        .unwrap();
+        client
+            .set_network(
+                ProviderNetwork::resolve(&crate::core::network_proxy::ProxyConfig {
+                    mode: crate::core::network_proxy::ProxyMode::Direct,
+                    url: None,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 1,
+                text: "Synthetic old active".into(),
+                language: Some("en".into()),
+            })
+            .await;
+        tokio::time::timeout(Duration::from_secs(2), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 2,
+                text: "Synthetic old queued".into(),
+                language: Some("en".into()),
+            })
+            .await;
+        assert_eq!(client.inner.lock().await.final_queue.len(), 1);
+        let revision = client.clear_content().await;
+        assert!(receiver.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 2,
+                text: "Synthetic old queued".into(),
+                language: Some("en".into()),
+            })
+            .await;
+        assert!(client.inner.lock().await.final_queue.is_empty());
+        client
+            .handle_asr_event(LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 3,
+                text: "Synthetic new sentence".into(),
+                language: Some("en".into()),
+            })
+            .await;
+        tokio::time::timeout(Duration::from_secs(4), async {
+            loop {
+                let event = receiver.recv_with_revision().await.unwrap();
+                assert_eq!(event.content_revision, revision);
+                if let LiveTranslateServerEvent::SubtitleConfirmedPair {
+                    source,
+                    translation,
+                    ..
+                } = event.event
+                {
+                    assert_eq!(source, "Synthetic new sentence");
+                    assert_eq!(translation, "New translation");
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        client
+            .wait_for_final_translations(Duration::from_secs(1))
+            .await;
+        assert!(receiver.try_recv().is_err());
+        client.disconnect().await;
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn lite_rejects_known_unsupported_source_before_http_or_request_accounting() {

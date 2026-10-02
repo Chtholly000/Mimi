@@ -8,7 +8,7 @@ use crate::audio::send_pipeline::{AudioPipelineFailure, AudioSendPipeline};
 use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCapture, SystemAudioCaptureFailure,
 };
-use crate::clients::provider_events::provider_event_channel;
+use crate::clients::provider_events::{provider_event_channel, ProviderEvent};
 use crate::clients::translation_client::TranslationClient;
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::ProviderCredentials;
@@ -457,6 +457,14 @@ fn generation_accepts_event(
                 )))
 }
 
+fn subtitle_content_is_current(
+    generation: u64,
+    event: &ProviderEvent,
+    current: (u64, u64),
+) -> bool {
+    !event.is_content() || current == (generation, event.content_revision)
+}
+
 fn confirmed_history_tail_changed(
     previous: Option<&crate::core::models::SubtitlePair>,
     current: Option<&crate::core::models::SubtitlePair>,
@@ -666,6 +674,10 @@ pub struct SessionManager {
     history_save_error: Arc<AtomicBool>,
     client: Arc<Mutex<Option<TranslationClient>>>,
     client_generation: Arc<AtomicU64>,
+    /// Clear and event application (including local-history append) are atomic.
+    subtitle_content_lock: Arc<TokioMutex<()>>,
+    /// Retained after client removal so a valid stopping tail is still checked.
+    subtitle_content_revision: Arc<Mutex<(u64, u64)>>,
     mt_budget_continuity: Arc<Mutex<MTBudgetContinuity>>,
     audio_pipeline: Arc<Mutex<Option<Arc<AudioSendPipeline>>>>,
     audio_pipeline_generation: Arc<AtomicU64>,
@@ -744,6 +756,8 @@ impl SessionManager {
             history_save_error: Arc::new(AtomicBool::new(false)),
             client: Arc::new(Mutex::new(None)),
             client_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
+            subtitle_content_lock: Default::default(),
+            subtitle_content_revision: Default::default(),
             mt_budget_continuity: Default::default(),
             audio_pipeline: Arc::new(Mutex::new(None)),
             audio_pipeline_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
@@ -1451,7 +1465,7 @@ impl SessionManager {
             };
             new_client.restore_mt_request_budget(budget).await;
             self.ensure_generation_current(generation)?;
-            self.install_client(generation, new_client)?;
+            self.install_client(generation, new_client).await?;
 
             // Start consuming before awaiting setup: a provider may acknowledge
             // setup and immediately send a terminal error/close in the same
@@ -1459,7 +1473,7 @@ impl SessionManager {
             // every later startup step checks it before installing resources.
             let self_arc = Arc::clone(&self);
             let pump = tokio::spawn(async move {
-                while let Some(event) = event_rx.recv().await {
+                while let Some(event) = event_rx.recv_with_revision().await {
                     self_arc.handle_event(generation, event).await;
                 }
             });
@@ -2168,8 +2182,26 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn clear_subtitles(self: &Arc<Self>) -> std::io::Result<()> {
-        let mut controller = self.controller.lock().unwrap();
+    pub async fn clear_subtitles(self: &Arc<Self>) -> std::io::Result<()> {
+        let _content = self.subtitle_content_lock.lock().await;
+        self.clear_current_subtitle_history()?;
+        let generation = self.client_generation.load(Ordering::SeqCst);
+        if let Some(client) = self.client_for_generation(generation) {
+            let revision = client.clear_content().await;
+            *self.subtitle_content_revision.lock().unwrap() = (generation, revision);
+        } else {
+            // Keep the retired connection cut even after teardown has taken
+            // its client. A previously popped stopping tail must stay stale.
+            let mut boundary = self.subtitle_content_revision.lock().unwrap();
+            boundary.1 = boundary.1.wrapping_add(1);
+        }
+        self.cancel_translation_timeout();
+        self.controller.lock().unwrap().clear_subtitles();
+        self.publish_state();
+        Ok(())
+    }
+
+    fn clear_current_subtitle_history(&self) -> std::io::Result<()> {
         let pending = self.history_pending_id.lock().unwrap();
         if let Some(id) = pending.as_deref() {
             self.history.clear_text(id)?;
@@ -2180,10 +2212,6 @@ impl SessionManager {
         stats.transcript_limited = false;
         drop(stats);
         self.archive_revision.fetch_add(1, Ordering::SeqCst);
-        controller.clear_subtitles();
-        drop(pending);
-        drop(controller);
-        self.publish_state();
         Ok(())
     }
 
@@ -2193,7 +2221,16 @@ impl SessionManager {
 
     // MARK: event handling
 
-    async fn handle_event(self: &Arc<Self>, generation: u64, mut event: LiveTranslateServerEvent) {
+    async fn handle_event(self: &Arc<Self>, generation: u64, envelope: ProviderEvent) {
+        let content = self.subtitle_content_lock.lock().await;
+        if !subtitle_content_is_current(
+            generation,
+            &envelope,
+            *self.subtitle_content_revision.lock().unwrap(),
+        ) {
+            return;
+        }
+        let mut event = envelope.event;
         if !self.accepts_event(generation, &event) || self.is_paused() {
             return;
         }
@@ -2269,6 +2306,7 @@ impl SessionManager {
                 self.cancel_translation_timeout();
                 self.controller.lock().unwrap().begin_connecting();
                 self.publish_state();
+                drop(content);
                 let _lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
                 self.stop_health_checks().await;
                 self.cleanup_generation_without_pump(generation).await;
@@ -2348,6 +2386,7 @@ impl SessionManager {
             }
         }
         self.publish_state();
+        drop(content);
 
         if is_terminal {
             // Provider error codes are not universally trustworthy (some
@@ -2389,6 +2428,7 @@ impl SessionManager {
         let this = Arc::clone(self);
         let task = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            let _content = this.subtitle_content_lock.lock().await;
             if !this.is_generation_current(generation)
                 || !this.clear_translation_timeout_task_if_id(task_id)
             {
@@ -2879,11 +2919,21 @@ impl SessionManager {
         )
     }
 
-    fn install_client(&self, generation: u64, client: TranslationClient) -> Result<(), String> {
+    async fn install_client(
+        &self,
+        generation: u64,
+        client: TranslationClient,
+    ) -> Result<(), String> {
+        // Recovery may install outside the command lifecycle guard. Keep its
+        // owner/revision atomic with a Clear that is still awaiting the old client.
+        let _content = self.subtitle_content_lock.lock().await;
+        let _transition = self.generation_transition.lock().unwrap();
+        self.ensure_generation_current(generation)?;
         let mut slot = self.client.lock().unwrap();
         if slot.is_some() {
             return Err("A live translation client is already installed.".into());
         }
+        *self.subtitle_content_revision.lock().unwrap() = (generation, client.content_revision());
         *slot = Some(client);
         self.client_generation.store(generation, Ordering::SeqCst);
         // Settings can rebuild a client within the same lifecycle generation.
@@ -3190,14 +3240,14 @@ impl SessionManager {
             this.publish_dirty.store(false, Ordering::SeqCst);
             loop {
                 tokio::time::sleep(std::time::Duration::from_millis(60)).await;
-                this.publish_state_now();
+                this.publish_state_now().await;
                 if !this.publish_dirty.swap(false, Ordering::SeqCst) {
                     // Release the scheduling lock first, then check for a
                     // caller that set the dirty bit while the lock was still
                     // held (that caller could not schedule its own task).
                     drop(guard);
                     if this.publish_dirty.load(Ordering::SeqCst) {
-                        this.publish_state_now();
+                        this.publish_state_now().await;
                     }
                     return;
                 }
@@ -3205,7 +3255,10 @@ impl SessionManager {
         });
     }
 
-    fn publish_state_now(self: &Arc<Self>) {
+    async fn publish_state_now(self: &Arc<Self>) {
+        // Snapshot and delivery share the clear/apply gate, so a snapshot
+        // captured before Clear cannot be emitted after the cleared one.
+        let _content = self.subtitle_content_lock.lock().await;
         let event = self.current_state_event();
         self.write_ui_test_session_state(&event);
         let should_show_overlay =
@@ -3298,6 +3351,81 @@ impl SessionManager {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn popped_pre_clear_event_cannot_restore_overlay_or_private_history() {
+        let directory = tempfile::tempdir().unwrap();
+        let history = SessionHistory::new(directory.path().to_path_buf(), false);
+        let id = uuid::Uuid::new_v4().to_string();
+        history.begin(&id, 0).unwrap();
+        let mut controller = TranslationSessionController::default();
+        controller.did_connect();
+        let (sender, mut receiver) = provider_event_channel();
+        let final_event = |source: &str| LiveTranslateServerEvent::SubtitleFinalPair {
+            source: source.into(),
+            translation: "synthetic translation".into(),
+            language: None,
+        };
+        sender.send(final_event("synthetic old pair")).unwrap();
+        // This is the race a receiver-only filter cannot fix: already popped.
+        let popped = receiver.recv_with_revision().await.unwrap();
+        let generation = 3;
+        let content = TokioMutex::new((generation, sender.content_revision()));
+        {
+            let mut boundary = content.lock().await;
+            history.clear_text(&id).unwrap();
+            boundary.1 = sender.advance_content_revision();
+            controller.clear_subtitles();
+        }
+        let boundary = content.lock().await;
+        assert!(!subtitle_content_is_current(generation, &popped, *boundary));
+        assert!(generation_accepts_event(
+            NO_GENERATION,
+            generation,
+            generation,
+            &popped.event
+        ));
+        // A valid stopping tail still needs the retained content revision.
+        assert!(!subtitle_content_is_current(generation, &popped, *boundary));
+        assert!(controller.state.subtitles.history.is_empty());
+        drop(boundary);
+        sender.send(final_event("synthetic next sentence")).unwrap();
+        let next = receiver.recv_with_revision().await.unwrap();
+        {
+            let boundary = content.lock().await;
+            assert!(subtitle_content_is_current(generation, &next, *boundary));
+            controller.handle(next.event);
+            history
+                .append_pair(&id, controller.state.subtitles.history.last().unwrap())
+                .unwrap();
+        }
+        assert_eq!(controller.state.subtitles.history.len(), 1);
+        let stored = std::fs::read_to_string(directory.path().join(format!("{id}.jsonl"))).unwrap();
+        assert!(!stored.contains("synthetic old pair"));
+        assert!(stored.contains("synthetic next sentence"));
+        // An older session's revision cannot match a new session by accident.
+        assert!(!subtitle_content_is_current(
+            generation + 1,
+            &popped,
+            (generation, 0)
+        ));
+        for event in [
+            LiveTranslateServerEvent::SessionFinished,
+            LiveTranslateServerEvent::Error {
+                code: "authentication_error".into(),
+                message: "fixed label".into(),
+            },
+        ] {
+            assert!(subtitle_content_is_current(
+                generation,
+                &ProviderEvent {
+                    content_revision: 0,
+                    event
+                },
+                (generation, sender.content_revision())
+            ));
+        }
+    }
 
     #[test]
     fn repeated_confirmations_trigger_private_file_append_even_when_text_is_equal() {

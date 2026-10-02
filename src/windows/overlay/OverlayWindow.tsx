@@ -25,6 +25,7 @@ import {
 
 const ACCENT = "#7AA8FF";
 const OVERLAY_INSET = 6;
+type ControlAction = "collapse" | "clear" | "immersive" | "lock" | "settings";
 
 /** Floating subtitle overlay driven by native session and geometry state. */
 export function OverlayWindow() {
@@ -38,10 +39,25 @@ export function OverlayWindow() {
   const saveSettings = useStore((state) => state.saveSettings);
   const showSettings = useStore((state) => state.showSettings);
   const sessionAction = useSessionAction();
+  const controlAction = useSessionAction();
+  const { run: runGuardedControl, clearFailure: clearControlFailure } = controlAction;
+  const [pendingControl, setPendingControl] = useState<ControlAction | null>(null);
   const { clearFailure } = sessionAction;
   useEffect(() => {
     clearFailure();
-  }, [session.status.kind, session.isActive, session.isPaused, clearFailure]);
+    clearControlFailure();
+  }, [session.status.kind, session.isActive, session.isPaused, clearFailure, clearControlFailure]);
+
+  const runControlAction = (action: ControlAction, operation: () => Promise<void>) => {
+    void runGuardedControl(async () => {
+      setPendingControl(action);
+      try {
+        await operation();
+      } finally {
+        setPendingControl(null);
+      }
+    });
+  };
 
   const [isHovering, setIsHovering] = useState(false);
   const [readingHistory, setReadingHistory] = useState(false);
@@ -184,14 +200,14 @@ export function OverlayWindow() {
   };
 
   const toggleCollapsed = () => {
-    void setOverlayCollapsed(!collapsed);
+    runControlAction("collapse", () => setOverlayCollapsed(!collapsed));
   };
 
   useEffect(() => {
     if (blendsWithBackground && collapsed) {
-      void setOverlayCollapsed(false);
+      void runGuardedControl(() => setOverlayCollapsed(false));
     }
-  }, [blendsWithBackground, collapsed, setOverlayCollapsed]);
+  }, [blendsWithBackground, collapsed, setOverlayCollapsed, runGuardedControl]);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -247,9 +263,10 @@ export function OverlayWindow() {
   function renderStatusLine() {
     const returnToLive = readingHistory && blocks.length > 0 && !presentationCollapsed;
     const showTiming = session.isActive && !blendsWithBackground;
-    if (!showTiming && !sessionAction.pending && !sessionAction.failed && !returnToLive) return null;
+    const actionFailed = sessionAction.failed || controlAction.failed;
+    if (!showTiming && !sessionAction.pending && !actionFailed && !returnToLive) return null;
     return <div className="overlay-status-row" style={{ top: topChromeLayout.topBandHeight - 14 }}>
-      {sessionAction.pending || sessionAction.failed ? <div role={sessionAction.failed ? "alert" : "status"} className="overlay-action-feedback">
+      {sessionAction.pending || actionFailed ? <div role={sessionAction.pending ? "status" : "alert"} className="overlay-action-feedback">
         {sessionAction.pending ? I18N.overlay.connecting : I18N.overlay.controlActionFailed}
       </div> : showTiming ? <OverlayLatency session={session} translationRequired={settings.targetLanguage !== "original"} /> : null}
       {returnToLive && <button type="button" className="overlay-return-to-live" onClick={() => {
@@ -397,33 +414,42 @@ export function OverlayWindow() {
               <ControlButton
                 icon="chevron-up"
                 label={I18N.overlay.collapseSubtitle}
-                onClick={() => void setOverlayCollapsed(true)}
+                onClick={() => runControlAction("collapse", () => setOverlayCollapsed(true))}
+                busy={pendingControl === "collapse"}
+                disabled={controlAction.pending}
                 data-testid="collapse-subtitles"
               />
               <ControlButton
                 icon="eraser"
                 label={I18N.overlay.clearSubtitles}
-                onClick={() => void clearSubtitles()}
-                disabled={!hasContent}
+                onClick={() => runControlAction("clear", clearSubtitles)}
+                busy={pendingControl === "clear"}
+                disabled={!hasContent || controlAction.pending}
               />
               <ControlButton
                 icon="blend"
                 label={I18N.overlay.enterImmersiveMode}
                 onClick={() =>
-                  void saveSettings({ subtitleBlendsWithBackground: true })
+                  runControlAction("immersive", () => saveSettings({ subtitleBlendsWithBackground: true }))
                 }
+                busy={pendingControl === "immersive"}
+                disabled={controlAction.pending}
                 data-testid="toggle-immersive-mode"
               />
               <ControlButton
                 icon="lock"
                 label={I18N.overlay.lockPosition}
-                onClick={() => void setOverlayLocked(true)}
+                onClick={() => runControlAction("lock", () => setOverlayLocked(true))}
+                busy={pendingControl === "lock"}
+                disabled={controlAction.pending}
                 data-testid="toggle-overlay-lock"
               />
               <ControlButton
                 icon="gear"
                 label={I18N.overlay.openSettings}
-                onClick={() => void showSettings()}
+                onClick={() => runControlAction("settings", () => showSettings())}
+                busy={pendingControl === "settings"}
+                disabled={controlAction.pending}
               />
               </>}
             </div>
@@ -510,7 +536,7 @@ export function OverlayWindow() {
         onWheel={(event) => {
           if (event.deltaY !== 0) {
             event.preventDefault();
-            void setOverlayCollapsed(false);
+            runControlAction("collapse", () => setOverlayCollapsed(false));
           }
         }}
       >
@@ -532,9 +558,10 @@ export function OverlayWindow() {
           <PulseRing phase={phase} compact motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
           <span
             className="truncate"
+            role={sessionAction.failed || controlAction.failed ? "alert" : undefined}
             style={{ fontSize: 11, fontWeight: 500, color: "rgba(255,255,255,0.76)" }}
           >
-            {phaseLabel}
+            {sessionAction.failed || controlAction.failed ? I18N.overlay.controlActionFailed : phaseLabel}
           </span>
           <span className="flex-1" style={{ minWidth: 4 }} />
           <ControlButton
@@ -547,7 +574,9 @@ export function OverlayWindow() {
           <ControlButton
             icon="chevron-down"
             label={I18N.overlay.expandSubtitle}
-            onClick={() => void setOverlayCollapsed(false)}
+            onClick={() => runControlAction("collapse", () => setOverlayCollapsed(false))}
+            busy={pendingControl === "collapse"}
+            disabled={controlAction.pending}
             data-testid="expand-subtitles"
           />
         </div>

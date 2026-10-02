@@ -257,6 +257,35 @@ impl TranslationClient {
         }
     }
 
+    /// Content clearing preserves the provider connection and audio route.
+    pub async fn clear_content(&self) -> u64 {
+        match self {
+            Self::LowLatency(client) => client.clear_content().await,
+            Self::HighQuality(client) => client.clear_content().await,
+            Self::OpenAIRealtime(client) => client.clear_content().await,
+            Self::GeminiLive(client) => client.clear_content().await,
+            Self::AzureOpenAIRealtime(client) => client.clear_content().await,
+            Self::TencentCloud(client) => client.clear_content().await,
+            Self::BaiduTranslate(client) => client.clear_content().await,
+            Self::VolcanoEngine(client) => client.clear_content().await,
+            Self::XaiRealtime(client) => client.clear_content().await,
+        }
+    }
+
+    pub fn content_revision(&self) -> u64 {
+        match self {
+            Self::LowLatency(client) => client.content_revision(),
+            Self::HighQuality(client) => client.content_revision(),
+            Self::OpenAIRealtime(client) => client.content_revision(),
+            Self::GeminiLive(client) => client.content_revision(),
+            Self::AzureOpenAIRealtime(client) => client.content_revision(),
+            Self::TencentCloud(client) => client.content_revision(),
+            Self::BaiduTranslate(client) => client.content_revision(),
+            Self::VolcanoEngine(client) => client.content_revision(),
+            Self::XaiRealtime(client) => client.content_revision(),
+        }
+    }
+
     pub async fn send_audio(&self, pcm_data: &[u8]) -> Result<(), ConnectError> {
         match self {
             Self::LowLatency(client) => client

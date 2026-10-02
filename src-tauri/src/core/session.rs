@@ -118,6 +118,9 @@ impl TranslationSessionController {
     }
 
     pub fn clear_subtitles(&mut self) {
+        self.clear_preview_pending();
+        self.state.is_translation_pending = false;
+        self.state.translation_recovery = None;
         self.subtitle_reducer
             .apply(crate::core::models::SubtitleEvent::Clear);
         self.state.subtitles = self.subtitle_reducer.snapshot.clone();
@@ -631,6 +634,32 @@ mod tests {
 
         assert_eq!(controller.state.status, SessionStatus::Listening);
         assert_eq!(controller.state.subtitles, SubtitleSnapshot::empty());
+    }
+
+    #[test]
+    fn clear_resets_pending_work_without_stopping_and_new_preview_remains_owned() {
+        let mut controller = TranslationSessionController::default();
+        controller.did_connect();
+        controller.handle(LiveTranslateServerEvent::TranslationStarted);
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 1 });
+        controller.state.is_translation_timed_out = true;
+        controller.state.translation_recovery =
+            Some(crate::core::diagnostics::TranslationRecovery {
+                reason: crate::core::diagnostics::TranslationRecoveryReason::RateLimited,
+                retry_after_ms: 4_000,
+                retry_scheduled: true,
+            });
+        controller.clear_subtitles();
+        assert_eq!(controller.state.status, SessionStatus::Listening);
+        assert!(!controller.state.is_translation_pending);
+        assert!(!controller.state.is_translation_preview_pending);
+        assert!(!controller.state.is_translation_timed_out);
+        assert!(controller.state.translation_recovery.is_none());
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 2 });
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationFinished { request_id: 1 });
+        assert!(controller.state.is_translation_preview_pending);
+        controller.handle(LiveTranslateServerEvent::PreviewTranslationFinished { request_id: 2 });
+        assert!(!controller.state.is_translation_preview_pending);
     }
 
     #[test]
