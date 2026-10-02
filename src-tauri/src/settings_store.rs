@@ -440,16 +440,16 @@ impl SettingsStore {
         } else {
             PROFILE_KEYCHAIN_SERVICE
         };
+        let secret: Box<dyn SecretStore> = Box::new(KeyringSecretStore);
         #[cfg(any(all(feature = "local-dev-credentials", target_os = "macos"), test))]
-        let local_dev_secret =
-            local_dev_credentials::select(&app_config_dir, is_ui_test, application_identifier);
-        #[cfg(not(any(all(feature = "local-dev-credentials", target_os = "macos"), test)))]
-        let local_dev_secret: Option<Box<dyn SecretStore>> = None;
-        let is_file_mode = local_dev_secret.is_some();
+        let secret =
+            local_dev_credentials::select(&app_config_dir, is_ui_test, application_identifier)
+                .unwrap_or(secret);
+        let is_file_mode = secret.is_read_only();
         Self::load_with_secret(
             app_config_dir,
             is_ui_test,
-            local_dev_secret.unwrap_or_else(|| Box::new(KeyringSecretStore)),
+            secret,
             profile_keychain_service,
             !is_development && !is_file_mode,
         )
