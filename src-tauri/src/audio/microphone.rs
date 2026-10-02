@@ -419,8 +419,10 @@ mod tests {
             .unwrap();
         let samples: Vec<_> = pcm
             .concat()
-            .chunks_exact(2)
-            .map(|p| i16::from_le_bytes([p[0], p[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|p| i16::from_le_bytes(*p))
             .collect();
         assert_eq!(samples.len(), 2);
         assert!((samples[0] - 8_192).abs() <= 1);
