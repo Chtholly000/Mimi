@@ -61,7 +61,7 @@ it("keeps the guide reachable across categories without starting capture or savi
   await mount();
   for (const category of ["subtitles", "service", "general", "export", "diagnostics"]) {
     await act(async () => host.querySelector<HTMLButtonElement>(`#settings-category-${category}`)!.click());
-    expect(host.querySelector(".settings-guide-entry")?.textContent).toContain(I18N.settings.quickStartTitle);
+    expect(host.querySelector(".settings-guide-entry")?.textContent).toContain(I18N.settings.quickStartNav);
     await clickGuide();
     expect(host.querySelector(".settings-page-header h1")?.textContent).toBe(I18N.settings.quickStartTitle);
     expect(host.querySelectorAll(".quick-start-guide > li")).toHaveLength(3);

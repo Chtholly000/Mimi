@@ -359,6 +359,16 @@ it("shows the same platform-aware storage guidance for other service profiles", 
   expect(host.textContent).toContain(I18N.settings.credentialUnavailable);
 });
 
+it("replaces generic storage guidance with the failed save error", async () => {
+  await render({ ...settings, profiles: [{ ...profile, provider: "openAIRealtime" }] });
+  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  await change('input[type="password"]', "synthetic-key");
+  actions.saveProfileCredentials.mockRejectedValueOnce("credential_service_unavailable");
+  await act(async () => host.querySelector<HTMLFormElement>(".credential-form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+  expect(host.textContent).toContain(profileErrorMessage("credential_service_unavailable"));
+  expect(host.querySelector('.credential-unavailable[role="status"]')).toBeNull();
+});
+
 it.each(["alibabaCloud", "openAIRealtime"] as const)("keeps an unsaved %s key visible when a connection check recovers stored credentials", async (provider) => {
   await render({ ...settings, profiles: [{ ...profile, provider }] });
   await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());

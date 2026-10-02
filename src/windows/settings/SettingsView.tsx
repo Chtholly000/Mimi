@@ -295,7 +295,7 @@ export function SettingsView() {
               onClick={() => selectCategory("guide")}
             >
               <Icon name="captions-bubble" />
-              <span>{I18N.settings.quickStartTitle}</span>
+              <span>{I18N.settings.quickStartNav}</span>
             </button>
           </div>
         </div>

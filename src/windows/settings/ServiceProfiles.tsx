@@ -668,7 +668,7 @@ function CredentialEditor({
         )}
       </div>
 
-      {profile.credentialState === "unavailable" && (
+      {profile.credentialState === "unavailable" && (feedback?.tone !== "error" || feedback.message === I18N.settings.profileActionFailed) && (
         <p className="credential-unavailable" role="status">
           {diagnosticCopy().storage}
         </p>

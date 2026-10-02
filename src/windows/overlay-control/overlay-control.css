@@ -20,9 +20,7 @@
   --control-focus: #ffffff;
   width: 100%;
   color: var(--control-text);
-  font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system,
-    BlinkMacSystemFont, "PingFang SC", "Hiragino Sans", "Microsoft YaHei",
-    sans-serif;
+  font-family: var(--mimi-ui-font);
   color-scheme: dark;
   -webkit-font-smoothing: antialiased;
 }

@@ -73,6 +73,9 @@ const TRAY_ZH = {
   appName: "mimi",
   sourceLanguage: "识别语言",
   originalOnly: "只显示原文",
+  displayTranslation: "译文",
+  displayBilingual: "双语",
+  displayOriginal: "原文",
   subtitleAlignment: "字幕对齐",
   alignLeft: "左对齐",
   alignCenter: "居中对齐",
@@ -97,6 +100,9 @@ const TRAY_EN = {
   appName: "mimi",
   sourceLanguage: "Recognition Language",
   originalOnly: "Original only",
+  displayTranslation: "Translation",
+  displayBilingual: "Bilingual",
+  displayOriginal: "Original",
   subtitleAlignment: "Subtitle Alignment",
   alignLeft: "Align Left",
   alignCenter: "Align Center",
@@ -121,6 +127,9 @@ const TRAY_JA = {
   appName: "mimi",
   sourceLanguage: "認識言語",
   originalOnly: "原文のみ表示",
+  displayTranslation: "翻訳",
+  displayBilingual: "二言語",
+  displayOriginal: "原文",
   subtitleAlignment: "字幕の配置",
   alignLeft: "左揃え",
   alignCenter: "中央揃え",
@@ -332,6 +341,7 @@ const OVERLAY_JA = {
 
 const SETTINGS_ZH = {
   quickStartTitle: "新手指引",
+  quickStartNav: "新手指引",
   quickStartDescription: "从配置服务到显示字幕，按这三步开始。",
   quickStartServiceTitle: "配置服务",
   quickStartServiceBody: "在服务页面选择服务，填入凭证并保存。API 使用费用由服务商收取。",
@@ -661,6 +671,7 @@ type SettingsCopy = {
 
 const SETTINGS_EN = {
   quickStartTitle: "Getting started",
+  quickStartNav: "Guide",
   quickStartDescription: "Set up a service and show subtitles in three steps.",
   quickStartServiceTitle: "Set up a service",
   quickStartServiceBody: "Choose a service in Services, enter its credentials and save. The provider charges for API use.",
@@ -877,7 +888,7 @@ const SETTINGS_EN = {
   immersiveStartFirst: "Turn on Live Subtitles first.",
   lockPosition: "Lock Subtitle Position",
   lockHelp: "When unlocked, drag the subtitle top to move it, or resize from any edge or corner.",
-  serviceProfilesTitle: "Translation Service",
+  serviceProfilesTitle: "Services",
   serviceProfilesDescription: "Choose a service and keep its credentials in the system's secure storage.",
   manageServiceProfiles: "Manage Configurations",
   addProfile: "Add Configuration",
@@ -988,6 +999,7 @@ const SETTINGS_EN = {
 
 const SETTINGS_JA = {
   quickStartTitle: "はじめに",
+  quickStartNav: "はじめに",
   quickStartDescription: "サービスの設定から字幕の表示まで、3つの手順で始められます。",
   quickStartServiceTitle: "サービスを設定",
   quickStartServiceBody: "「サービス」でサービスを選び、認証情報を入力して保存します。APIの利用料金はサービス提供元により請求されます。",

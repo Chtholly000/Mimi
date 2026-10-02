@@ -81,7 +81,7 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
   };
 
   return <div className="credential-panel" aria-busy={busy}>
-    {profile.credentialState === "unavailable" && <p role="status" className="credential-unavailable">{credentialUnavailableHelp()}</p>}
+    {profile.credentialState === "unavailable" && (feedback?.tone !== "error" || feedback.message === I18N.settings.profileActionFailed) && <p role="status" className="credential-unavailable">{credentialUnavailableHelp()}</p>}
     <form className="credential-form" onSubmit={submit}>
       {saved && !editingKey ? <span className="credential-panel__saved-actions">
         <button type="button" className="settings-button settings-button--quiet" disabled={disabled} onClick={() => setEditingKey(true)}>{I18N.settings.replaceCredentials}</button>

@@ -63,12 +63,12 @@ internal object ServiceSettingsUi {
             row.addView(select,LinearLayout.LayoutParams(0,-2,1f))
             val edit=MaterialButton(activity,null,com.google.android.material.R.attr.borderlessButtonStyle).apply {
                 text=activity.getString(if(configured) R.string.service_edit else R.string.service_configure)
-                textSize=13f; isAllCaps=false; minWidth=0; minimumWidth=0; tag="configure-${provider.id}"
+                textSize=13f; isAllCaps=false; minWidth=dp(activity,72); minimumWidth=dp(activity,72); minimumHeight=dp(activity,48); tag="configure-${provider.id}"
                 contentDescription=activity.getString(R.string.service_edit_named,providerTitle(activity, provider))
                 setTextColor(ContextCompat.getColor(activity,R.color.mimi_text))
                 setOnClickListener { if(MimiService.isRunning) Toast.makeText(activity,R.string.service_stop_first,Toast.LENGTH_SHORT).show() else edit() }
             }
-            row.addView(edit,LinearLayout.LayoutParams(dp(activity,72),dp(activity,48)))
+            row.addView(edit,LinearLayout.LayoutParams(-2,-2))
             container.addView(row)
             container.addView(View(activity).apply { setBackgroundColor(ContextCompat.getColor(activity,R.color.mimi_border)) },LinearLayout.LayoutParams(-1,dp(activity,1)))
         }

@@ -23,7 +23,7 @@ import {
   type SourceLanguage,
   type SubtitleAlignment,
 } from "../../lib/types";
-import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
+import { subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import type { SubtitleDisplayMode } from "../../lib/types";
 import {
   actionErrorMessage,
@@ -273,7 +273,11 @@ export function TrayPanel() {
           <span className="tray-setting-row__copy"><span>{I18N.settings.subtitleDisplay}</span></span>
           <span className="tray-select-wrap">
             <Select label={I18N.settings.subtitleDisplay} value={settings.subtitleDisplayMode}
-              options={SUBTITLE_DISPLAY_OPTIONS} disabled={anyActionPending}
+              options={[
+                { value: "translation", label: I18N.tray.displayTranslation },
+                { value: "bilingual", label: I18N.tray.displayBilingual },
+                { value: "original", label: I18N.tray.displayOriginal },
+              ]} disabled={anyActionPending}
               onChange={(value) => performAction("display", () => saveSettings({ subtitleDisplayMode: value as SubtitleDisplayMode }))} />
           </span>
         </div>
@@ -578,5 +582,5 @@ function translationSummary(settings: SettingsSnapshot) {
     return I18N.tray.originalOnly;
   }
   const target = TARGET_LANGUAGE_DISPLAY_NAMES[settings.targetLanguage];
-  return `${I18N.settings.translateTo} ${target}`;
+  return `→ ${target}`;
 }

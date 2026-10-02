@@ -234,6 +234,15 @@ it("uses platform-aware Linux guidance for unavailable storage in each language"
   }
 });
 
+it("shows one actionable credential error after a failed save", async () => {
+  vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla Linux");
+  await render({ ...props, profile: { ...profile, credentialState: "unavailable" }, feedback: { tone: "error", message: diagnosticCopy("linux").serviceUnavailable } });
+  expect(host.textContent).toContain(diagnosticCopy("linux").serviceUnavailable);
+  expect(host.textContent).not.toContain(diagnosticCopy("linux").storage);
+  await render({ ...props, feedback: { tone: "error", message: I18N.settings.profileActionFailed } });
+  expect(host.textContent).toContain(diagnosticCopy("linux").storage);
+});
+
 it("discards the write-only draft after a successful save", async () => {
   await render({ ...props, profile: { ...profile, credentialState: "unavailable" }, onSave: vi.fn().mockResolvedValue({}) });
   await change("input", "synthetic-asr"); await submit();
