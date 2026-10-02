@@ -132,6 +132,12 @@ impl Audio3ASRServerEvent {
                             language: reported_language,
                         }
                     }
+                } else if let Some(utterance_id) = sentence_id.filter(|id| *id > 0) {
+                    LiveTranslateServerEvent::SourceUtteranceDraft {
+                        utterance_id,
+                        text: text.clone(),
+                        language: reported_language,
+                    }
                 } else {
                     LiveTranslateServerEvent::SourceDraft {
                         text: text.clone(),
@@ -203,18 +209,23 @@ impl Audio3ASRServerEventDecoder {
                     return Err(LiveTranslateProtocolError::InvalidJSON);
                 }
                 let text = text.trim().to_string();
-                if text.is_empty() {
+                let sentence_id = sentence
+                    .get("sentence_id")
+                    .and_then(Value::as_u64)
+                    .filter(|id| *id > 0);
+                let is_final = sentence.get("sentence_end").and_then(Value::as_bool) == Some(true);
+                let is_real_begin = !is_final
+                    && sentence_id.is_some()
+                    && sentence.get("sentence_begin").and_then(Value::as_bool) == Some(true);
+                if text.is_empty() && !is_real_begin {
                     return Ok(Audio3ASRServerEvent::Ignored {
                         kind: "empty-result".into(),
                     });
                 }
                 Ok(Audio3ASRServerEvent::Transcription {
                     text,
-                    is_final: sentence.get("sentence_end").and_then(Value::as_bool) == Some(true),
-                    sentence_id: sentence
-                        .get("sentence_id")
-                        .and_then(Value::as_u64)
-                        .filter(|id| *id > 0),
+                    is_final,
+                    sentence_id,
                 })
             }
             other => Ok(Audio3ASRServerEvent::Ignored {
@@ -447,6 +458,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(heartbeat, Audio3ASRServerEvent::Heartbeat);
+    }
+
+    #[test]
+    fn an_empty_real_sentence_begin_preserves_its_boundary() {
+        let event = Audio3ASRServerEventDecoder::decode(
+            r#"{"header":{"event":"result-generated"},"payload":{"output":{"sentence":{"text":"","sentence_begin":true,"sentence_end":false,"sentence_id":8}}}}"#,
+        ).unwrap();
+        assert!(matches!(event, Audio3ASRServerEvent::Transcription {
+            text, is_final: false, sentence_id: Some(8)
+        } if text.is_empty()));
     }
 
     #[test]

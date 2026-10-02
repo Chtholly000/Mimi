@@ -153,6 +153,36 @@ it("keeps the same confirmed long sentence bounded when the next live sentence a
   expect(after.textContent).toContain(confirmed.translation);
 });
 
+it.each(["original", "translation", "bilingual"] as const)("keeps a fitting three-line confirmed phrase readable when the next short phrase starts in %s", async displayMode => {
+  viewportHeight = 480;
+  const source = "The first sentence describes a room. The second describes a door. The last ends with tomorrow.";
+  const translation = "第一句描述房间。第二句描述门。最后一句关于明天。";
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    const line = Number.parseFloat(this.style.lineHeight) || 24;
+    const height = this.textContent === source || this.textContent === translation ? line * 3 : line;
+    return { top: 0, bottom: height, height } as DOMRect;
+  };
+  const phrase = { ...confirmed, source, translation };
+  const timeline = await render([phrase], 18, false, false, displayMode);
+  const row = timeline.querySelector<HTMLElement>('[data-utterance-id="confirmed"]')!;
+  const before = Array.from(row.querySelectorAll<HTMLElement>("[aria-label]"));
+  const heights = before.map(lane => Number.parseFloat(lane.style.height));
+  expect(before.map(lane => lane.textContent)).toEqual(displayMode === "original" ? [source]
+    : displayMode === "translation" ? [translation] : [source, translation]);
+  for (const lane of before) {
+    expect(Number.parseFloat(lane.style.height)).toBe(Number.parseFloat((lane.firstElementChild as HTMLElement).style.lineHeight) * 3);
+  }
+
+  await render([{ ...phrase, presentation: "history" }, live], 18, false, false, displayMode);
+  const previous = timeline.querySelector<HTMLElement>('[data-utterance-id="confirmed"]')!;
+  const after = Array.from(previous.querySelectorAll<HTMLElement>("[aria-label]"));
+  expect(previous).toBe(row);
+  expect(after).toEqual(before);
+  expect(after.map(lane => Number.parseFloat(lane.style.height))).toEqual(heights);
+  expect(previous.textContent).toContain(displayMode === "translation" ? translation : source);
+  expect(timeline.querySelector('[data-utterance-id="live"]')?.textContent).toContain(displayMode === "translation" ? live.translation : live.source);
+});
+
 it("keeps both previous bilingual lanes visible and restores full text on reading intent", async () => {
   measuredHeight = 240;
   const timeline = await render([{ ...confirmed, presentation: "history" }, live]);
@@ -161,7 +191,9 @@ it("keeps both previous bilingual lanes visible and restores full text on readin
   const translation = previous.querySelector<HTMLElement>(`[aria-label="${confirmed.translation}"]`)!;
   expect(source.hidden).toBe(false);
   expect(source.getAttribute("aria-hidden")).toBeNull();
-  expect(translation.style.height).toBe("24px");
+  expect(source.style.height).toBe("44px");
+  expect(translation.style.height).toBe("48px");
+  expect(Number.parseFloat(source.style.height) + Number.parseFloat(translation.style.height) + 2 + 2 + 2).toBeLessThanOrEqual(viewportHeight);
   const newest = timeline.querySelector<HTMLElement>('[data-utterance-id="live"]')!;
   expect(newest.querySelector<HTMLElement>("[aria-label]")!.hidden).toBe(false);
   await act(async () => timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -30 })));
@@ -170,6 +202,8 @@ it("keeps both previous bilingual lanes visible and restores full text on readin
   expect(previous.textContent).toContain(confirmed.translation);
   await act(async () => timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "End" })));
   expect(previous.querySelector<HTMLElement>(`[aria-label="${confirmed.source}"]`)!.hidden).toBe(false);
+  expect(previous.querySelector<HTMLElement>(`[aria-label="${confirmed.source}"]`)!.style.height).toBe("44px");
+  expect(previous.querySelector<HTMLElement>(`[aria-label="${confirmed.translation}"]`)!.style.height).toBe("48px");
 });
 
 it("reveals full confirmed history on upward intent and returns to compact following with End", async () => {

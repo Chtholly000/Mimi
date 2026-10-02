@@ -4,10 +4,8 @@ import {
   AUDIO3_RECOGNITION_LANGUAGE_CODES,
   QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES,
   SOURCE_LANGUAGE_DISPLAY_NAMES,
-  SOURCE_LANGUAGE_QUICK_CASES,
   TARGET_LANGUAGE_DISPLAY_NAMES,
   sourceLanguageStatusDisplayName,
-  targetLanguageAfterQuickSwitch,
 } from "./types";
 
 afterEach(() => setStoredUiLanguage("en"));
@@ -44,11 +42,4 @@ it("updates expanded language labels in place and preserves stage/script distinc
   expect(SOURCE_LANGUAGE_DISPLAY_NAMES.fr).toBe("フランス語");
   expect(TARGET_LANGUAGE_DISPLAY_NAMES.fa).toBe("ペルシア語");
   expect(sourceLanguageStatusDisplayName("fr", null, "zh")).toBe("フランス語");
-});
-
-it("keeps the five compact shortcuts and their legacy Chinese original behavior", () => {
-  expect(SOURCE_LANGUAGE_QUICK_CASES).toEqual(["auto", "ja", "en", "ko", "zh"]);
-  expect(targetLanguageAfterQuickSwitch("zh", "ja", "en")).toBe("original");
-  expect(targetLanguageAfterQuickSwitch("fr", "zh", "original")).toBe("zh");
-  expect(targetLanguageAfterQuickSwitch("fr", "en", "zh_tw")).toBe("zh_tw");
 });

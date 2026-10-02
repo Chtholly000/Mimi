@@ -6,12 +6,15 @@ import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import { useStore } from "../../lib/store";
 import { OverlayControlPanel } from "./OverlayControlPanel";
 import { overlayControlPanelModel } from "./overlayControlModel";
+import { sourceLanguagesForSettings } from "../../lib/providerCapabilities";
+import { SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
 
 vi.mock("./CaptureStatusRow", () => ({ CaptureStatusRow: () => <div className="overlay-control-capture">System sound mix · Receiving sound</div> }));
 
 let host: HTMLDivElement;
 let root: Root;
 let props: Parameters<typeof OverlayControlPanel>[0];
+const scrollIntoView = Object.getOwnPropertyDescriptor(Element.prototype, "scrollIntoView");
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -21,7 +24,8 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
   setStoredUiLanguage("en");
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
-  const settings = { ...useStore.getState().settings, sourceLanguage: "auto" as const };
+  const settings: SettingsSnapshot = { ...useStore.getState().settings, sourceLanguage: "auto", targetLanguage: "zh", languageCapabilities: undefined,
+    profiles: [{ id: "ali", name: "Alibaba Cloud", provider: "alibabaCloud", credentialState: "present" }], activeProfileId: "ali" };
   props = {
     settings, model: overlayControlPanelModel(settings), phase: "listening",
     status: { source: "Automatic", separator: "→", target: "Chinese" },
@@ -34,11 +38,27 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount()); host.remove();
   setStoredUiLanguage("system"); vi.unstubAllGlobals();
+  if (scrollIntoView) Object.defineProperty(Element.prototype, "scrollIntoView", scrollIntoView);
+  else Reflect.deleteProperty(Element.prototype, "scrollIntoView");
 });
 async function mount() { await act(async () => root.render(<OverlayControlPanel {...props} />)); }
 function picker(label: string) { return host.querySelector<HTMLButtonElement>(`[role="combobox"][aria-label="${label}"]`)!; }
 async function key(node: HTMLElement, value: string) {
   await act(async () => node.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true })));
+}
+function configure(draft: Partial<SettingsSnapshot>) {
+  props.settings = { ...props.settings, ...draft };
+  props.model = overlayControlPanelModel(props.settings);
+}
+async function searchSource(query: string) {
+  await act(async () => picker(I18N.overlay.sourceLanguage).click());
+  const search = document.querySelector<HTMLInputElement>("input.mimi-select__search")!;
+  expect(search.getAttribute("aria-label")).toBe(I18N.settings.searchLanguages);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, query);
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  return search;
 }
 
 it.each(["zh", "en", "ja"] as const)("keeps %s controls to two short pickers and single-line switches without a mode grid", async (language) => {
@@ -88,4 +108,84 @@ it("keeps recognition locked during transitions while independent display remain
   await mount();
   expect(picker(I18N.overlay.sourceLanguage).disabled).toBe(true);
   expect(picker(I18N.settings.subtitleDisplay).disabled).toBe(false);
+});
+
+it.each(["zh", "en", "ja"] as const)("offers the same full source list as settings and searches French in %s", async locale => {
+  setStoredUiLanguage(locale);
+  await mount();
+  await act(async () => picker(I18N.overlay.sourceLanguage).click());
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(options).toHaveLength(25);
+  expect(options.map(option => option.textContent)).toEqual(sourceLanguagesForSettings(props.settings)
+    .map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]));
+  expect(document.querySelector("input.mimi-select__search")).not.toBeNull();
+  await key(document.querySelector<HTMLInputElement>("input.mimi-select__search")!, "Escape");
+  await searchSource("fr");
+  const filtered = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(filtered).toHaveLength(1);
+  expect(filtered[0].textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+  await act(async () => filtered[0].click());
+  expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("fr");
+  expect(props.onDismiss).toHaveBeenCalledOnce();
+  expect(document.querySelector('[role="listbox"]')).toBeNull();
+});
+
+it("offers all Original-mode recognition hints including searchable Norwegian", async () => {
+  configure({ targetLanguage: "original" });
+  await mount();
+  await act(async () => picker(I18N.overlay.sourceLanguage).click());
+  expect(document.querySelectorAll('[role="option"]')).toHaveLength(31);
+  const search = document.querySelector<HTMLInputElement>("input.mimi-select__search")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "Norwegian");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const option = document.querySelector<HTMLElement>('[role="option"]')!;
+  expect(option.textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.no);
+  await act(async () => option.click());
+  expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("no");
+});
+
+it.each(["deepL", "deepLX"] as const)("keeps the %s small route list non-searchable and matches settings language labels", async route => {
+  configure({ profiles: [{ ...props.settings.profiles[0], textTranslation: route }] });
+  await mount();
+  await act(async () => picker(I18N.overlay.sourceLanguage).click());
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(options).toHaveLength(5);
+  expect(options.map(option => option.textContent)).toEqual(sourceLanguagesForSettings(props.settings)
+    .map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]));
+  expect(document.querySelector("input.mimi-select__search")).toBeNull();
+  const chinese = options.find(option => option.textContent === SOURCE_LANGUAGE_DISPLAY_NAMES.zh)!;
+  await act(async () => chinese.click());
+  expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("zh");
+});
+
+it("uses native source choices without search for six options and ignores a stale route stamp", async () => {
+  const native = { profileId: "ali", provider: "alibabaCloud", textTranslation: "followService", targetLanguage: "zh",
+    sourceLanguages: ["auto", "ja", "en", "ko", "zh", "fr"], targetLanguages: ["original", "zh", "fr"] } as const;
+  configure({ sourceLanguage: "fr", languageCapabilities: native });
+  await mount();
+  const source = picker(I18N.overlay.sourceLanguage);
+  expect(source.textContent).toContain(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+  await act(async () => source.click());
+  expect(document.querySelectorAll('[role="option"]')).toHaveLength(6);
+  expect(document.querySelector("input.mimi-select__search")).toBeNull();
+  expect(document.querySelector('[role="option"][aria-selected="true"]')?.textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+  await key(source, "Escape");
+  configure({ languageCapabilities: { ...native, profileId: "removed" } });
+  await mount();
+  await act(async () => picker(I18N.overlay.sourceLanguage).click());
+  expect(document.querySelectorAll('[role="option"]')).toHaveLength(25);
+  expect(document.querySelector("input.mimi-select__search")).not.toBeNull();
+});
+
+it("reports an empty language search and Escape returns focus without issuing a command", async () => {
+  await mount();
+  const search = await searchSource("no-matching-language");
+  expect(document.querySelectorAll('[role="option"]')).toHaveLength(0);
+  expect(document.querySelector('.mimi-select__empty[role="status"]')?.textContent).toBe(I18N.settings.noMatchingLanguages);
+  await key(search, "Escape");
+  expect(document.activeElement).toBe(picker(I18N.overlay.sourceLanguage));
+  expect(props.onSwitchSourceLanguage).not.toHaveBeenCalled();
+  expect(props.onDismiss).not.toHaveBeenCalled();
 });

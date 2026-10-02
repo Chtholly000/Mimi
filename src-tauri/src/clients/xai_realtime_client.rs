@@ -83,6 +83,21 @@ impl GrokTurnState {
         *self = Self::default();
     }
 
+    fn clear_content(&mut self) {
+        let discard = self.discard_current_turn
+            || self.item_id.is_some()
+            || self.response_id.is_some()
+            || !self.source.is_empty()
+            || !self.translation.is_empty();
+        let item_id = self
+            .item_id
+            .clone()
+            .or_else(|| self.discarded_item_id.clone());
+        self.reset();
+        self.discard_current_turn = discard;
+        self.discarded_item_id = item_id;
+    }
+
     fn update_source(
         &mut self,
         transcript: String,
@@ -313,6 +328,8 @@ fn is_meaningful(text: &str) -> bool {
 }
 
 struct Inner {
+    // Serializes the content barrier with local assembly, never socket/audio state.
+    content_lock: Mutex<()>,
     sink: Mutex<Option<Sink>>,
     receive_task: Mutex<Option<JoinHandle<()>>>,
     audio_send_lock: Mutex<()>,
@@ -339,6 +356,16 @@ pub struct XAIRealtimeClient {
 }
 
 impl XAIRealtimeClient {
+    pub fn content_revision(&self) -> u64 {
+        self.events.content_revision()
+    }
+
+    pub async fn clear_content(&self) -> u64 {
+        let _content = self.inner.content_lock.lock().await;
+        self.inner.turn.lock().await.clear_content();
+        self.events.advance_content_revision()
+    }
+
     /// Applied before connect so ASR and translation share one immutable route.
     pub fn set_network(
         &mut self,
@@ -374,6 +401,7 @@ impl XAIRealtimeClient {
         Ok(Self {
             network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
+                content_lock: Mutex::new(()),
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
                 audio_send_lock: Mutex::new(()),
@@ -786,6 +814,24 @@ async fn fail_receive_loop(context: &ReceiveContext, code: &str, message: &str) 
 }
 
 async fn handle_server_event(context: &ReceiveContext, event: XAIRealtimeServerEvent) -> bool {
+    let revision = context.events.content_revision();
+    let _content = context.inner.content_lock.lock().await;
+    if context.inner.generation.load(Ordering::SeqCst) != context.generation {
+        return false;
+    }
+    if revision != context.events.content_revision()
+        && matches!(
+            &event,
+            XAIRealtimeServerEvent::SourceTranscriptUpdated { .. }
+                | XAIRealtimeServerEvent::SourceTranscriptCompleted { .. }
+                | XAIRealtimeServerEvent::ResponseStarted { .. }
+                | XAIRealtimeServerEvent::TranslationDelta { .. }
+                | XAIRealtimeServerEvent::TranslationDone { .. }
+        )
+    {
+        return false;
+    }
+
     match event {
         XAIRealtimeServerEvent::SessionCreated => {
             emit_if_current(context, LiveTranslateServerEvent::SessionCreated);
@@ -843,13 +889,11 @@ async fn handle_server_event(context: &ReceiveContext, event: XAIRealtimeServerE
                 .inner
                 .last_response_failed
                 .store(false, Ordering::SeqCst);
-            context
-                .inner
-                .turn
-                .lock()
-                .await
-                .response_started(response_id);
-            emit_if_current(context, LiveTranslateServerEvent::TranslationStarted);
+            let mut turn = context.inner.turn.lock().await;
+            turn.response_started(response_id);
+            if !turn.discard_current_turn {
+                emit_if_current(context, LiveTranslateServerEvent::TranslationStarted);
+            }
         }
         XAIRealtimeServerEvent::TranslationDelta { delta, response_id } => {
             let events = context
@@ -958,6 +1002,54 @@ fn emit_if_current(context: &ReceiveContext, event: LiveTranslateServerEvent) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn clear_waits_for_real_response_boundary_then_accepts_the_next_item() {
+        let (sender, mut receiver) = provider_event_channel();
+        let endpoint = url::Url::parse("ws://127.0.0.1:1/realtime").unwrap();
+        let client = XAIRealtimeClient::with_endpoint(
+            "test-key-not-real",
+            TargetLanguage::Japanese,
+            sender.clone(),
+            endpoint,
+        )
+        .unwrap();
+        {
+            let mut turn = client.inner.turn.lock().await;
+            turn.update_source("old source".into(), Some("old-item".into()), None, true);
+            turn.response_started(Some("old-response".into()));
+            turn.append_translation("old translation".into(), Some("old-response".into()));
+        }
+        sender
+            .send(LiveTranslateServerEvent::Error {
+                code: "transport_error".into(),
+                message: GENERIC_TRANSPORT_ERROR.into(),
+            })
+            .unwrap();
+        assert_eq!(client.clear_content().await, 1);
+        assert_eq!(client.content_revision(), 1);
+        let mut turn = client.inner.turn.lock().await;
+        assert!(turn.source.is_empty() && turn.translation.is_empty());
+        assert!(turn
+            .append_translation("late old".into(), Some("old-response".into()))
+            .is_empty());
+        assert!(turn
+            .complete_translation(Some("late old final".into()), Some("old-response".into()))
+            .is_empty());
+        turn.update_source("new source".into(), Some("new-item".into()), None, true);
+        assert!(turn.response_done(Some("old-response".into())).is_empty());
+        assert!(!turn.discard_current_turn);
+        turn.response_started(Some("new-response".into()));
+        let events =
+            turn.complete_translation(Some("new translation".into()), Some("new-response".into()));
+        assert!(events.iter().any(|event| matches!(event, LiveTranslateServerEvent::SubtitleFinalPair {source,translation,..}
+            if source == "new source" && translation == "new translation")));
+        drop(turn);
+        assert!(matches!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::Error { .. })
+        ));
+    }
+
     use super::*;
     use crate::clients::provider_events::{provider_event_channel, ProviderEventReceiver};
     use base64::Engine;

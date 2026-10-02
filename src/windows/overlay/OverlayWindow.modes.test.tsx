@@ -182,6 +182,19 @@ it("keeps a completed preview pair together during raw ASR corrections and repla
   expect(useStore.getState().session.subtitles.history).toEqual([]);
 });
 
+it.each(modes)("retains the actual projected %s owner when an earlier final arrives while raw ASR is ahead", async displayMode => {
+  const subtitles: SubtitleSnapshot = { ...empty,
+    source: { text: "Latest synthetic raw source C.", isFinal: false, utteranceId: "synthetic-owner-C" },
+    previewPair: { source: "Complete synthetic source B.", translation: "完整合成译文 B。", utteranceId: "synthetic-owner-B" } };
+  await mount(subtitles, displayMode);
+  const liveRow = host.querySelector<HTMLElement>('[data-utterance-id^="live"]')!;
+  expect(liveRow.dataset.utteranceId).toBe(`live-utterance-synthetic-owner-${displayMode === "original" ? "C" : "B"}`);
+  const text = liveRow.textContent;
+  await publish({ ...subtitles, history: [confirmed] });
+  expect(host.querySelector('[data-utterance-id^="live"]')).toBe(liveRow);
+  expect(liveRow.textContent).toBe(text);
+});
+
 it.each(modes)("keeps the original and final history available without a duplicate live row after confirmation in %s mode", async (displayMode) => {
   await mount({ ...empty, source: { text: confirmed.source, isFinal: false },
     previewPair: { source: confirmed.source, translation: confirmed.translation } }, displayMode);
@@ -205,6 +218,25 @@ it("retains the previous confirmed original as well as its translation when the 
   expect(visibleLanes()).toEqual([confirmed.source, "Next raw original."]);
   await mode("translation");
   expect(visibleLanes()).toEqual([confirmed.translation, "下一句完整译文。"]);
+});
+
+it.each(["original", "bilingual"] as const)("keeps a confirmed source out of the live %s tail when the next MT request starts", async displayMode => {
+  const subtitles = { ...empty, source: { text: confirmed.source, isFinal: true },
+    translation: { text: confirmed.translation, isFinal: true }, history: [confirmed] };
+  await mount(subtitles, displayMode);
+  await publish(subtitles, { isTranslationPending: false });
+  const historyRow = host.querySelector('[data-utterance-id="history-10"]');
+  await publish(subtitles, { isTranslationPending: true });
+  expect(host.querySelector('[data-utterance-id="history-10"]')).toBe(historyRow);
+  expect(host.querySelectorAll("[data-utterance-id]")).toHaveLength(1);
+  expect(host.querySelector('[data-utterance-id^="live"]')).toBeNull();
+
+  // An actual new recognition cycle may repeat the exact same lyric. Its
+  // replaceable source draft remains visible instead of being text-deduped.
+  await publish({ ...subtitles, source: { text: confirmed.source, isFinal: false } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(180); });
+  expect(host.querySelectorAll("[data-utterance-id]")).toHaveLength(2);
+  expect(host.querySelector('[data-utterance-id^="live"]')?.textContent).toBe(confirmed.source);
 });
 
 it.each([

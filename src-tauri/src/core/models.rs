@@ -281,23 +281,6 @@ impl SourceLanguage {
             .into_iter()
             .find(|language| *language != Self::Automatic && language.raw_value() == code)
     }
-
-    /// Target-language adjustment applied when the user quick-switches the
-    /// source language from a menu or picker.
-    pub fn target_language_after_quick_switch(
-        self,
-        previous_source: SourceLanguage,
-        current_target: TargetLanguage,
-    ) -> TargetLanguage {
-        if self == SourceLanguage::Chinese {
-            return TargetLanguage::Original;
-        }
-        if previous_source == SourceLanguage::Chinese && current_target == TargetLanguage::Original
-        {
-            return TargetLanguage::SimplifiedChinese;
-        }
-        current_target
-    }
 }
 
 /// A language code reported by the recognition service.
@@ -617,6 +600,12 @@ impl Eq for SubtitlePair {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreviewSubtitlePair {
+    #[serde(
+        default,
+        rename = "utteranceId",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub utterance_id: Option<String>,
     pub source: String,
     pub translation: String,
 }
@@ -650,14 +639,20 @@ impl Default for SubtitleSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubtitleEvent {
     SourceDraft(String),
+    SourceUtteranceDraft {
+        utterance_id: u64,
+        text: String,
+    },
     SourceFinal(String),
     TranslationDraft(String),
     TranslationFinal(String),
     /// Atomically replaces a completed preview without confirming history.
     PreviewPair {
+        source_utterance_id: Option<u64>,
         source: String,
         translation: String,
     },
+    ClearPreview,
     /// Text from a provider that identifies its utterances. `role` selects the
     /// preview line and `utterance_id` is always the *source* utterance id, so
     /// both lines of one utterance carry the same identity.
@@ -677,6 +672,7 @@ pub enum SubtitleEvent {
     /// A reliable final boundary identified within the current generation.
     ConfirmedPair {
         utterance_id: u64,
+        source_utterance_id: Option<u64>,
         source: String,
         translation: String,
     },
@@ -687,6 +683,7 @@ impl SubtitleEvent {
     pub fn text_within_limit(&self) -> bool {
         match self {
             Self::SourceDraft(text)
+            | Self::SourceUtteranceDraft { text, .. }
             | Self::SourceFinal(text)
             | Self::TranslationDraft(text)
             | Self::TranslationFinal(text)
@@ -694,6 +691,7 @@ impl SubtitleEvent {
             Self::PreviewPair {
                 source,
                 translation,
+                ..
             }
             | Self::FinalPair {
                 source,
@@ -704,7 +702,7 @@ impl SubtitleEvent {
                 translation,
                 ..
             } => subtitle_text_within_limit(source) && subtitle_text_within_limit(translation),
-            Self::Clear => true,
+            Self::Clear | Self::ClearPreview => true,
         }
     }
 }
@@ -774,39 +772,6 @@ mod tests {
         assert!(!TargetLanguage::TraditionalChinese.matches_reported_asr(Some("zh")));
         assert!(TargetLanguage::TraditionalChinese.matches_reported_asr(Some("zh-Hant")));
         assert!(!TargetLanguage::TraditionalChinese.matches_reported_asr(Some("unknown")));
-    }
-
-    #[test]
-    fn chinese_quick_switch_shows_original_subtitles() {
-        assert_eq!(
-            SourceLanguage::Chinese.target_language_after_quick_switch(
-                SourceLanguage::Japanese,
-                TargetLanguage::SimplifiedChinese
-            ),
-            TargetLanguage::Original
-        );
-    }
-
-    #[test]
-    fn leaving_chinese_original_mode_restores_chinese_translation() {
-        assert_eq!(
-            SourceLanguage::Japanese.target_language_after_quick_switch(
-                SourceLanguage::Chinese,
-                TargetLanguage::Original
-            ),
-            TargetLanguage::SimplifiedChinese
-        );
-    }
-
-    #[test]
-    fn ordinary_language_switches_preserve_a_custom_target() {
-        assert_eq!(
-            SourceLanguage::English.target_language_after_quick_switch(
-                SourceLanguage::Japanese,
-                TargetLanguage::English
-            ),
-            TargetLanguage::English
-        );
     }
 
     #[test]

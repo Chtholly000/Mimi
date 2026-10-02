@@ -52,6 +52,41 @@ it("switches to bilingual at the latest sentence's start rather than hiding its 
   expect(scrollTop).toBe(220); // source and actual translated line fit; unused compact budget extends below
 });
 
+it.each(["original", "translation", "bilingual"] as const)("reaches the beginning on the first Home after compact %s rows expand", async mode => {
+  await mount();
+  const reading = vi.fn();
+  await render(mode, blocks, 0, reading);
+  const home = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Home" });
+  await act(async () => timeline.dispatchEvent(home));
+  expect(scrollTop).toBe(0);
+  expect(home.defaultPrevented).toBe(true);
+  expect(reading).toHaveBeenLastCalledWith(true);
+  expect(timeline.querySelector("[aria-label]")).toBeNull();
+
+  // Full rows finish measuring after the key event. The old compact-row
+  // anchor must not override explicit Home during this delayed layout.
+  scrollHeight = 800;
+  await act(async () => {
+    resizeRow(timeline.firstElementChild!);
+    timeline.dispatchEvent(new Event("scroll", { bubbles: true }));
+  });
+  expect(scrollTop).toBe(0);
+  expect(reading).toHaveBeenLastCalledWith(true);
+
+  // Ordinary gestures release Home's start intent and keep their own anchor.
+  await act(async () => {
+    timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 45 }));
+    scrollTop = 45; timeline.dispatchEvent(new Event("scroll", { bubbles: true }));
+    resizeRow(timeline.firstElementChild!);
+  });
+  expect(scrollTop).toBe(45);
+  await act(async () => timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Home" })));
+  expect(scrollTop).toBe(0); // Already-open reading needs no second React transition.
+  await act(async () => timeline.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "End" })));
+  expect(scrollTop).toBe(720);
+  expect(reading).toHaveBeenLastCalledWith(false);
+});
+
 it("keeps a live reader's position through equal-length rewraps, growth, modes and confirmation without following the tail", async () => {
   const live: SubtitleBlock = { id: "live", createdAt: null, presentation: "live", streaming: true,
     source: "Long synthetic original. ".repeat(20), translation: "Long synthetic translation. ".repeat(20) };
@@ -197,6 +232,44 @@ it.each(["original", "translation", "bilingual"] as const)("retains a %s reader'
   await render(mode, afterTrim, 1, reading);
   expect(reading).toHaveBeenLastCalledWith(false);
   expect(scrollTop).toBe(620);
+});
+
+it.each(["original", "translation", "bilingual"] as const)("keeps reading the unchanged live %s sentence when an earlier final inserts above it", async mode => {
+  const previous = { source: "Older synthetic original.", translation: "较早合成译文。", createdAt: 1 };
+  const previewB = { source: "Current synthetic original B. ".repeat(20), translation: "当前合成译文 B。".repeat(20), isStreaming: true,
+    utteranceId: "synthetic-epoch:1:B" };
+  const before = buildSubtitleBlocks([previous], mode, previewB);
+  const earlierA = { source: "Earlier synthetic original A.", translation: "较早合成译文 A。", createdAt: 2 };
+  const after = buildSubtitleBlocks([previous, earlierA], mode, previewB);
+  await mount(before);
+  const liveRow = timeline.lastElementChild!;
+  let insertedA = false;
+  scrollHeight = 700;
+  timeline.firstElementChild!.getBoundingClientRect = () => ({ top: -scrollTop, bottom: 100 - scrollTop } as DOMRect);
+  liveRow.getBoundingClientRect = () => ({ top: (insertedA ? 400 : 100) - scrollTop,
+    bottom: (insertedA ? 1000 : 700) - scrollTop } as DOMRect);
+  const reading = vi.fn();
+  await render(mode, before, 0, reading);
+  scrollTop = 130;
+  await act(async () => timeline.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: -30 })));
+
+  // Supply the new final/live row geometry before their layout effects. B's
+  // source and translation do not change; only the earlier A is inserted.
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    if (this.dataset.utteranceId === "history-2") return { top: 100 - scrollTop, bottom: 400 - scrollTop } as DOMRect;
+    if (this.dataset.utteranceId?.startsWith("live")) return { top: 400 - scrollTop, bottom: 1000 - scrollTop } as DOMRect;
+    return originalRect.call(this);
+  };
+  try {
+    insertedA = true; scrollHeight = 1000;
+    await render(mode, after, 0, reading);
+    expect(scrollTop).toBe(430); // Still 30px into B, rather than 30px into A.
+    expect(timeline.lastElementChild).toBe(liveRow);
+    expect(reading).toHaveBeenLastCalledWith(true);
+  } finally {
+    HTMLElement.prototype.getBoundingClientRect = originalRect;
+  }
 });
 
 it("keeps return-to-live intent through later compact row growth, shrink and replacement while preserving a reader on resize", async () => {

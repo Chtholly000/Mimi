@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { I18N } from "../../lib/i18n";
 import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
   type SubtitleSnapshot,
 } from "../../lib/types";
 import {
   buildSubtitleBlocks,
   subtitleLaneBudget,
   computeActivityPhaseFromSignals,
-  sourceLanguageButtonTitle,
   visibleLiveSubtitle,
   visibleLiveSubtitles,
 } from "./overlayModel";
@@ -57,6 +54,16 @@ describe("live presentation epochs", () => {
       expect(buildSubtitleBlocks([second], mode, { ...tail, source: "Corrected live source." }).at(-1)!.id).toBe(liveId([second]));
     }
     expect(liveId([])).toBe("live"); // Clear removes the Timeline; the next empty-history mount starts fresh.
+  });
+  it("keeps an actual live owner through an earlier confirmation and changes it only for another owner", () => {
+    const ownedB = { ...tail, utteranceId: "synthetic-epoch:1:B" };
+    for (const mode of ["original", "translation", "bilingual"] as const) {
+      const id = buildSubtitleBlocks([first], mode, ownedB).at(-1)!.id;
+      expect(buildSubtitleBlocks([first, second], mode, ownedB).at(-1)!.id).toBe(id);
+      expect(buildSubtitleBlocks([second], mode, { ...ownedB, source: "Corrected owner B." }).at(-1)!.id).toBe(id);
+      expect(buildSubtitleBlocks([second], mode, { ...ownedB, utteranceId: "synthetic-epoch:1:C" }).at(-1)!.id).not.toBe(id);
+      expect(buildSubtitleBlocks([], mode, { ...ownedB, utteranceId: "synthetic-epoch:2:B" }).at(-1)!.id).not.toBe(id);
+    }
   });
 });
 
@@ -229,17 +236,6 @@ describe("live subtitle display mode", () => {
         false,
       ),
     ).toBeNull();
-  });
-});
-
-describe("source language labels", () => {
-  it("labels Chinese as original-only only when the active provider supports that mode", () => {
-    expect(sourceLanguageButtonTitle("zh", true)).toBe(
-      I18N.overlay.chineseSource,
-    );
-    expect(sourceLanguageButtonTitle("zh", false)).toBe(
-      SOURCE_LANGUAGE_DISPLAY_NAMES.zh,
-    );
   });
 });
 
@@ -478,6 +474,60 @@ describe("asynchronous bilingual stream arrival", () => {
 });
 
 describe("bilingual preview rows", () => {
+  const confirmed = { source: "Completed synthetic source A.", translation: "已确认的合成译文 A。", createdAt: 1 };
+
+  it.each([
+    { pending: true, timedOut: false },
+    { pending: false, timedOut: true },
+    { pending: false, timedOut: false },
+  ])("does not reopen an atomic-route confirmed source during pending=$pending timeout=$timedOut", ({ pending, timedOut }) => {
+    const snapshot = { ...subtitles({ text: confirmed.source, isFinal: true },
+      { text: confirmed.translation, isFinal: true }, [confirmed]), previewPair: null };
+    for (const subtitleDisplayMode of ["original", "bilingual"] as const) {
+      const previews = visibleLiveSubtitles(snapshot, { ...settings, subtitleDisplayMode }, "en", pending, timedOut, true);
+      expect(previews).toEqual([]);
+      expect(buildSubtitleBlocks(snapshot.history, subtitleDisplayMode)).toHaveLength(1);
+    }
+  });
+
+  it.each(["original", "bilingual"] as const)("keeps a new same-text draft, different final, and identified source on the atomic %s route", subtitleDisplayMode => {
+    for (const source of [
+      { text: confirmed.source, isFinal: false },
+      { text: "Different synthetic source B.", isFinal: true },
+      { text: confirmed.source, isFinal: true, utteranceId: "explicit-new-source" },
+    ]) {
+      const snapshot = { ...subtitles(source, { text: confirmed.translation, isFinal: true }, [confirmed]), previewPair: null };
+      expect(visibleLiveSubtitles(snapshot, { ...settings, subtitleDisplayMode }, "en", true, false, true))
+        .toEqual([{ ...source, kind: "source" }]);
+    }
+  });
+
+  it("does not deduplicate a new completed preview or a non-atomic repeated final by matching its text", () => {
+    const snapshot = { ...subtitles({ text: confirmed.source, isFinal: true },
+      { text: confirmed.translation, isFinal: true }, [confirmed]),
+      previewPair: { source: confirmed.source, translation: confirmed.translation } };
+    expect(visibleLiveSubtitles(snapshot, { ...settings, subtitleDisplayMode: "bilingual" }, "en", true, false, true))
+      .toEqual([
+        { text: confirmed.source, isFinal: false, kind: "source", isStable: true },
+        { text: confirmed.translation, isFinal: false, kind: "translation", isStable: true },
+      ]);
+    expect(visibleLiveSubtitles({ ...snapshot, previewPair: null }, { ...settings, subtitleDisplayMode: "bilingual" }, "en", true, false, false))
+      .toEqual([{ text: confirmed.source, isFinal: true, kind: "source" }]);
+  });
+
+  it("uses the completed pair's owner while recognition has already advanced to another source", () => {
+    const snapshot = { ...subtitles({ text: "Latest raw source C.", isFinal: false, utteranceId: "synthetic-owner-C" }),
+      previewPair: { source: "Completed preview B.", translation: "完整合成预览 B。", utteranceId: "synthetic-owner-B" } };
+    for (const subtitleDisplayMode of ["bilingual", "translation"] as const) {
+      const previews = visibleLiveSubtitles(snapshot, { ...settings, subtitleDisplayMode }, "en", true, false, true);
+      expect(previews.every(preview => preview.utteranceId === "synthetic-owner-B")).toBe(true);
+      expect(previews.map(preview => preview.text)).toEqual(subtitleDisplayMode === "bilingual"
+        ? [snapshot.previewPair.source, snapshot.previewPair.translation] : [snapshot.previewPair.translation]);
+    }
+    expect(visibleLiveSubtitles(snapshot, { ...settings, subtitleDisplayMode: "original" }, "en", true, false, true))
+      .toEqual([{ text: "Latest raw source C.", isFinal: false, kind: "source", utteranceId: "synthetic-owner-C" }]);
+  });
+
   it("previews the original and its streaming translation together", () => {
     expect(visibleLiveSubtitles(
       subtitles(
@@ -546,18 +596,18 @@ describe("bilingual preview rows", () => {
     const bilingual = { ...settings, subtitleDisplayMode: "bilingual" } as const;
 
     expect(visibleLiveSubtitles(streaming("item_a", "item_a"), bilingual, "en", false, false)).toEqual([
-      { text: "Next sentence", isFinal: false, kind: "source" },
-      { text: "下一句", isFinal: false, kind: "translation" },
+      { text: "Next sentence", isFinal: false, kind: "source", utteranceId: "item_a" },
+      { text: "下一句", isFinal: false, kind: "translation", utteranceId: "item_a" },
     ]);
     // The translation still answers the previous sentence: the original stays
     // alone instead of pairing the two streams by arrival order.
     expect(visibleLiveSubtitles(streaming("item_b", "item_a"), bilingual, "en", false, false)).toEqual([
-      { text: "Next sentence", isFinal: false, kind: "source" },
+      { text: "Next sentence", isFinal: false, kind: "source", utteranceId: "item_b" },
     ]);
     // A translation whose utterance is unknown must not stack either: it can
     // still be the previous sentence's text.
     expect(visibleLiveSubtitles(streaming("item_b", null), bilingual, "en", false, false)).toEqual([
-      { text: "Next sentence", isFinal: false, kind: "source" },
+      { text: "Next sentence", isFinal: false, kind: "source", utteranceId: "item_b" },
     ]);
     // Providers without utterance identity keep stacking both streams.
     expect(visibleLiveSubtitles(streaming(null, null), bilingual, "en", false, false)).toEqual([

@@ -35,7 +35,12 @@ interface SubtitleHistoryItem {
 
 export interface SubtitleSnapshot {
   /** One replaceable completed preview; never confirmed history. */
-  previewPair?: { source: string; translation: string } | null;
+  previewPair?: {
+    source: string;
+    translation: string;
+    /** Opaque owner of this completed pair, independent of newer raw ASR. */
+    utteranceId?: string | null;
+  } | null;
   source: SubtitleLineSnapshot;
   translation: SubtitleLineSnapshot;
   history: SubtitleHistoryItem[];
@@ -224,8 +229,8 @@ export type SourceLanguage = "auto" | typeof AUDIO3_RECOGNITION_LANGUAGE_CODES[n
 export type TargetLanguage = "original" | typeof QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES[number];
 export type TranslationMode = "lowLatency" | "highQuality" | "turbo";
 
-/** Compact legacy shortcuts; the full settings selector uses route capabilities. */
-export const SOURCE_LANGUAGE_QUICK_CASES: readonly SourceLanguage[] = [
+/** Conservative ASR scope for translation routes without expanded language mapping. */
+export const LEGACY_SOURCE_LANGUAGE_CASES: readonly SourceLanguage[] = [
   "auto",
   "ja",
   "en",
@@ -408,21 +413,6 @@ export function sourceLanguageStatusDisplayName(
     return I18N.overlay.autoDetecting;
   }
   return `${I18N.overlay.autoDetectedPrefix}${detectedLanguageDisplayName(detectedLanguage)}${I18N.overlay.autoDetectedSuffix}`;
-}
-
-/** Keeps quick source changes paired with a meaningful target language. */
-export function targetLanguageAfterQuickSwitch(
-  language: SourceLanguage,
-  previousSource: SourceLanguage,
-  currentTarget: TargetLanguage,
-): TargetLanguage {
-  if (language === "zh") {
-    return "original";
-  }
-  if (previousSource === "zh" && currentTarget === "original") {
-    return "zh";
-  }
-  return currentTarget;
 }
 
 /** Whether the selected target requires machine translation. */

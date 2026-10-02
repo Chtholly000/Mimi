@@ -8,6 +8,34 @@ import {
 } from "./store";
 
 describe("local preview store", () => {
+  it("clears captions and pending translation without stopping the local preview", async () => {
+    const original = useStore.getState();
+    try {
+      useStore.setState({ session: {
+        ...original.session,
+        status: { kind: "listening" },
+        isActive: true,
+        isTranslationPending: true,
+        isTranslationPreviewPending: true,
+        isTranslationTimedOut: true,
+        translationLatencyMs: 350,
+        translationLatencyKind: "request",
+        translationRecovery: { reason: "rateLimited", retryAfterMs: 4_000, retryScheduled: true },
+        subtitles: { ...original.session.subtitles, source: { text: "synthetic clear fixture", isFinal: false } },
+      } });
+      await useStore.getState().clearSubtitles();
+      const cleared = useStore.getState().session;
+      expect(cleared.status.kind).toBe("listening");
+      expect(cleared.isActive).toBe(true);
+      expect(cleared.subtitles.source.text).toBe("");
+      expect(cleared.isTranslationPending).toBe(false);
+      expect(cleared.isTranslationPreviewPending).toBe(false);
+      expect(cleared.isTranslationTimedOut).toBe(false);
+      expect(cleared.translationRecovery).toBeNull();
+      expect(cleared.translationLatencyMs).toBeNull();
+    } finally { useStore.setState({ session: original.session }); }
+  });
+
   it("defaults proxies to system, rejects authenticated routes and blocks changes while paused", async () => {
     const original = useStore.getState();
     expect(original.settings.networkProxy).toEqual({ mode: "system", url: null });

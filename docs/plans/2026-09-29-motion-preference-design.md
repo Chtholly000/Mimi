@@ -14,8 +14,12 @@ back: the tunable lives in the OS, not in the app.
 Add two animation switches next to the subtitle preview: the breathing light and
 the subtitle motion. Each is a stored `Option<bool>`: `None` (never touched)
 follows the system's reduce-motion preference, an explicit value overrides it.
-The switch shows the resolved value, so what the row says is what the overlay
-does. The overlay resolves both once per render, passes them to `PulseRing` and
+The switch shows the resolved value as a simple on/off choice. The settings UI
+does not offer an unset state or describe it as a third choice. An existing
+unset preference remains compatible with system reduced motion; clicking either
+switch persists an explicit boolean. Status-light motion needs only its switch,
+and subtitle motion has a short description of its visible effect. The overlay
+resolves both once per render, passes them to `PulseRing` and
 `Timeline`, and mirrors the subtitle switch onto `document.body` as
 `motion-reduced` for the CSS animations. The media query stays authoritative for
 the settings window's own chrome, which is not a caption surface.

@@ -61,6 +61,8 @@ type Sink = futures_util::stream::SplitSink<WebSocketStream<MaybeTlsStream<TcpSt
 type Stream = futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
 
 struct Inner {
+    content_lock: Mutex<()>,
+    aligner: Mutex<LiveTranslatePairAligner>,
     sink: Mutex<Option<Sink>>,
     received_session_finished: AtomicBool,
     pong_notify: Notify,
@@ -133,6 +135,17 @@ pub struct LiveTranslateClient {
 }
 
 impl LiveTranslateClient {
+    pub fn content_revision(&self) -> u64 {
+        self.events.content_revision()
+    }
+
+    pub async fn clear_content(&self) -> u64 {
+        let _content = self.inner.content_lock.lock().await;
+        self.inner.aligner.lock().await.clear_content();
+        self.inner.translation_latency.lock().unwrap().value = None;
+        self.events.advance_content_revision()
+    }
+
     /// Applied before connect so ASR and translation share one immutable route.
     pub fn set_network(
         &mut self,
@@ -156,6 +169,8 @@ impl LiveTranslateClient {
         Ok(Self {
             network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
+                content_lock: Mutex::new(()),
+                aligner: Mutex::new(LiveTranslatePairAligner::default()),
                 sink: Mutex::new(None),
                 received_session_finished: AtomicBool::new(false),
                 pong_notify: Notify::new(),
@@ -379,6 +394,8 @@ struct TrackedUtterance {
 /// can still pair after the next source begins without unbounded retention.
 #[derive(Default)]
 struct LiveTranslatePairAligner {
+    // Fixed-size identity tombstones only; never retain cleared subtitle text.
+    discarded_items: VecDeque<String>,
     /// The utterance the recognition stream is currently filling.
     current_source_id: Option<String>,
     utterances: HashMap<String, TrackedUtterance>,
@@ -391,6 +408,33 @@ struct LiveTranslatePairAligner {
 }
 
 impl LiveTranslatePairAligner {
+    fn discard_item(&mut self, item: String) {
+        if !self.discarded_items.contains(&item) {
+            self.discarded_items.push_back(item);
+            while self.discarded_items.len() > MAX_TRACKED_ITEMS {
+                self.discarded_items.pop_front();
+            }
+        }
+    }
+
+    fn clear_content(&mut self) {
+        let old_ids: Vec<_> = self
+            .utterance_order
+            .iter()
+            .chain(self.response_order.iter())
+            .chain(self.current_source_id.iter())
+            .cloned()
+            .collect();
+        for item in old_ids {
+            self.discard_item(item);
+        }
+        self.current_source_id = None;
+        self.utterances.clear();
+        self.utterance_order.clear();
+        self.responses.clear();
+        self.response_order.clear();
+    }
+
     /// Observes one decoded frame and returns the events to forward downstream.
     fn observe(
         &mut self,
@@ -406,8 +450,17 @@ impl LiveTranslatePairAligner {
         identity: &LiveTranslateEventIdentity,
         received_at: Instant,
     ) -> Vec<LiveTranslateServerEvent> {
+        if crate::clients::provider_events::is_content_event(event)
+            && identity
+                .item_id
+                .as_ref()
+                .is_some_and(|item| self.discarded_items.contains(item))
+        {
+            return Vec::new();
+        }
         // A created item links a response item to the input item it answers.
-        if let (Some(item_id), Some(previous_item_id)) = (
+        if let (true, Some(item_id), Some(previous_item_id)) = (
+            matches!(event, LiveTranslateServerEvent::Ignored { kind } if kind == "conversation.item.created"),
             identity.item_id.as_deref(),
             identity.previous_item_id.as_deref(),
         ) {
@@ -430,6 +483,11 @@ impl LiveTranslatePairAligner {
                 let Some(item_id) = identity.item_id.as_deref() else {
                     return vec![event.clone()];
                 };
+                // A new source can legitimately follow an old conversation item.
+                // Only an actual translation may use the response -> source link.
+                self.responses.remove(item_id);
+                self.response_order
+                    .retain(|item| self.responses.contains_key(item));
                 let is_final = matches!(event, LiveTranslateServerEvent::SourceFinal { .. });
                 let mut events = self.start_utterance(item_id);
                 let utterance = self.track(item_id);
@@ -458,6 +516,9 @@ impl LiveTranslatePairAligner {
                 let Some(source_id) = self.responses.get(response_id).cloned() else {
                     return vec![event.clone()];
                 };
+                if self.discarded_items.contains(&source_id) {
+                    return Vec::new();
+                }
                 vec![LiveTranslateServerEvent::UtteranceText {
                     utterance_id: source_id,
                     role: UtteranceRole::Translation,
@@ -476,6 +537,9 @@ impl LiveTranslatePairAligner {
                     // to arrival-order pairing with another utterance.
                     return Vec::new();
                 };
+                if self.discarded_items.contains(&source_id) {
+                    return Vec::new();
+                }
                 // An utterance the recognition stream has already left can no
                 // longer receive its final, so its own text is the best source.
                 let allow_draft_source =
@@ -595,11 +659,14 @@ async fn receive_loop(
     setup: watch::Sender<SetupState>,
     latency_generation: u64,
 ) {
-    let mut aligner = LiveTranslatePairAligner {
-        translation_latency: Arc::clone(&inner.translation_latency),
-        latency_generation,
-        ..Default::default()
-    };
+    {
+        let _content = inner.content_lock.lock().await;
+        *inner.aligner.lock().await = LiveTranslatePairAligner {
+            translation_latency: Arc::clone(&inner.translation_latency),
+            latency_generation,
+            ..Default::default()
+        };
+    }
     while let Some(message) = stream.next().await {
         let decoded = match message {
             Ok(Message::Text(text)) => LiveTranslateServerEvent::decode_with_identity(&text),
@@ -633,7 +700,14 @@ async fn receive_loop(
                 return;
             }
         };
-        for event in aligner.observe(&event, &identity) {
+        let revision = events.content_revision();
+        let _content = inner.content_lock.lock().await;
+        if revision != events.content_revision()
+            && crate::clients::provider_events::is_content_event(&event)
+        {
+            continue;
+        }
+        for event in inner.aligner.lock().await.observe(&event, &identity) {
             if !emit_server_event(&inner, &events, &setup, event) {
                 return;
             }
@@ -721,6 +795,168 @@ fn should_report_transport_end(received_session_finished: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cleared_item_identity_never_filters_lifecycle_or_provider_errors() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        aligner.observe(
+            &LiveTranslateServerEvent::SourceDraft {
+                text: "Synthetic old source".into(),
+                language: None,
+            },
+            &identity("old-source", None),
+        );
+        aligner.clear_content();
+        for wire in [
+            r#"{"type":"session.created","item_id":"old-source","previous_item_id":"old-source"}"#,
+            r#"{"type":"session.updated","item_id":"old-source","previous_item_id":"old-source"}"#,
+            r#"{"type":"session.finished","item_id":"old-source","previous_item_id":"old-source"}"#,
+            r#"{"type":"error","item_id":"old-source","previous_item_id":"old-source","error":{"code":"synthetic_failure","message":"Synthetic fixed error"}}"#,
+        ] {
+            let (event, item) = LiveTranslateServerEvent::decode_with_identity(wire).unwrap();
+            assert_eq!(aligner.observe(&event, &item), vec![event]);
+        }
+        assert!(aligner
+            .observe(
+                &LiveTranslateServerEvent::SourceFinal {
+                    text: "Synthetic old final".into(),
+                    language: None
+                },
+                &identity("old-source", None)
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn session_finish_with_cleared_identity_still_flushes_a_new_valid_tail() {
+        let mut aligner = LiveTranslatePairAligner::default();
+        aligner.observe(
+            &LiveTranslateServerEvent::SourceDraft {
+                text: "Synthetic old source".into(),
+                language: None,
+            },
+            &identity("old-source", None),
+        );
+        aligner.clear_content();
+        aligner.observe(
+            &created_item(),
+            &identity("new-response", Some("new-source")),
+        );
+        aligner.observe(
+            &LiveTranslateServerEvent::SourceDraft {
+                text: "Synthetic new source".into(),
+                language: None,
+            },
+            &identity("new-source", None),
+        );
+        assert!(aligner
+            .observe(
+                &LiveTranslateServerEvent::TranslationFinal("Synthetic new translation".into()),
+                &identity("new-response", None)
+            )
+            .is_empty());
+        let events = aligner.observe(
+            &LiveTranslateServerEvent::SessionFinished,
+            &identity("old-source", Some("old-source")),
+        );
+        assert!(
+            matches!(events.as_slice(), [LiveTranslateServerEvent::SubtitleFinalPair {source,translation,..}, LiveTranslateServerEvent::SessionFinished]
+            if source == "Synthetic new source" && translation == "Synthetic new translation")
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_drops_shared_alignment_and_known_old_identity_without_losing_lifecycle() {
+        let (sender, mut receiver) = provider_event_channel();
+        let client = LiveTranslateClient::new(
+            "test-key-not-real",
+            SourceLanguage::English,
+            TargetLanguage::Japanese,
+            BTreeMap::new(),
+            sender.clone(),
+        )
+        .unwrap();
+        {
+            let mut aligner = client.inner.aligner.lock().await;
+            aligner.observe(
+                &created_item(),
+                &identity("old-response", Some("old-source")),
+            );
+            aligner.observe(
+                &LiveTranslateServerEvent::SourceFinal {
+                    text: "old source".into(),
+                    language: None,
+                },
+                &identity("old-source", None),
+            );
+        }
+        sender
+            .send(LiveTranslateServerEvent::SessionFinished)
+            .unwrap();
+        assert_eq!(client.clear_content().await, 1);
+        assert_eq!(client.content_revision(), 1);
+        let mut aligner = client.inner.aligner.lock().await;
+        assert!(aligner.utterances.is_empty() && aligner.responses.is_empty());
+        assert!(aligner
+            .observe(
+                &LiveTranslateServerEvent::SourceFinal {
+                    text: "old replay".into(),
+                    language: None
+                },
+                &identity("old-source", None)
+            )
+            .is_empty());
+        assert!(aligner
+            .observe(
+                &LiveTranslateServerEvent::TranslationFinal("late old".into()),
+                &identity("old-response", None)
+            )
+            .is_empty());
+        assert!(aligner
+            .observe(
+                &created_item(),
+                &identity("late-old-response", Some("old-source"))
+            )
+            .is_empty());
+        assert!(aligner
+            .observe(
+                &LiveTranslateServerEvent::TranslationDraft("late old".into()),
+                &identity("late-old-response", None)
+            )
+            .is_empty());
+        aligner.observe(&created_item(), &identity("new-source", Some("old-source")));
+        assert!(!aligner
+            .observe(
+                &LiveTranslateServerEvent::SourceDraft {
+                    text: "new source".into(),
+                    language: None
+                },
+                &identity("new-source", None)
+            )
+            .is_empty());
+        aligner.observe(
+            &created_item(),
+            &identity("new-response", Some("new-source")),
+        );
+        aligner.observe(
+            &LiveTranslateServerEvent::SourceFinal {
+                text: "new source".into(),
+                language: None,
+            },
+            &identity("new-source", None),
+        );
+        assert!(aligner.observe(&LiveTranslateServerEvent::TranslationFinal("new translation".into()), &identity("new-response", None)).iter().any(|event| matches!(event,
+            LiveTranslateServerEvent::SubtitleFinalPair {source,translation,..} if source == "new source" && translation == "new translation")));
+        for i in 0..MAX_TRACKED_ITEMS * 3 {
+            aligner.discard_item(format!("old-{i}"));
+        }
+        assert!(aligner.discarded_items.len() <= MAX_TRACKED_ITEMS);
+        drop(aligner);
+        assert_eq!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::SessionFinished)
+        );
+    }
+
     use super::*;
     use crate::clients::provider_events::provider_event_channel;
     use std::collections::HashSet;
@@ -756,6 +992,8 @@ mod tests {
 
     fn test_inner() -> Inner {
         Inner {
+            content_lock: Mutex::new(()),
+            aligner: Mutex::new(LiveTranslatePairAligner::default()),
             sink: Mutex::new(None),
             received_session_finished: AtomicBool::new(false),
             pong_notify: Notify::new(),

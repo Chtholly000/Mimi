@@ -119,10 +119,14 @@ pub fn install_windows_workspace_follower(app: &AppHandle) -> WindowsWorkspaceFo
 tauri_nspanel::tauri_panel! {
     panel!(SubtitleOverlayPanel {
         config: {
-            can_become_key_window: false,
+            // Permit keyboard reading only after a click needs the WebView's
+            // responder. NonactivatingPanel and orderFrontRegardless still
+            // show/refresh subtitles without activating Mimi or stealing key.
+            can_become_key_window: true,
             can_become_main_window: false,
             is_floating_panel: true,
-            hides_on_deactivate: false
+            hides_on_deactivate: false,
+            becomes_key_only_if_needed: true
         }
     })
 
@@ -530,6 +534,10 @@ impl OverlayWindowManager {
             .visible_on_all_workspaces(true);
         #[cfg(target_os = "windows")]
         let builder = builder.focusable(false).focused(false);
+        // A nonactivating panel's first deliberate click must also reach its
+        // WebView control, rather than merely focusing the native window.
+        #[cfg(target_os = "macos")]
+        let builder = builder.accept_first_mouse(true);
 
         match builder.build() {
             Ok(window) => {
@@ -2056,6 +2064,8 @@ impl OverlayControlWindowManager {
         let builder = builder.visible_on_all_workspaces(true);
         #[cfg(target_os = "windows")]
         let builder = builder.focusable(false);
+        #[cfg(target_os = "macos")]
+        let builder = builder.accept_first_mouse(true);
         let builder = match builder.parent(&overlay) {
             Ok(builder) => builder,
             Err(_) => {

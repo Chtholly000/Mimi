@@ -133,6 +133,13 @@ pub enum LiveTranslateServerEvent {
         text: String,
         language: Option<String>,
     },
+    /// A real Audio3 sentence identity, retained on its replaceable draft lane.
+    /// Empty text can mark the recognizer's explicit start of a new sentence.
+    SourceUtteranceDraft {
+        utterance_id: u64,
+        text: String,
+        language: Option<String>,
+    },
     SourceFinal {
         text: String,
         language: Option<String>,
@@ -152,10 +159,13 @@ pub enum LiveTranslateServerEvent {
         request_id: u64,
     },
     SubtitlePreviewPair {
+        source_utterance_id: Option<u64>,
         source: String,
         language: Option<String>,
         translation: String,
     },
+    /// Invalidates only an obsolete preview at a real source sentence boundary.
+    SubtitlePreviewCleared,
     /// Locally generated MT backoff; the system-audio/ASR session stays alive.
     TranslationDeferred(crate::core::diagnostics::TranslationRecovery),
     TranslationDraft(String),
@@ -180,6 +190,7 @@ pub enum LiveTranslateServerEvent {
     /// Reliable final delivery preserves repeated text even without drafts.
     SubtitleConfirmedPair {
         utterance_id: u64,
+        source_utterance_id: Option<u64>,
         source: String,
         language: Option<String>,
         translation: String,
@@ -213,6 +224,7 @@ impl LiveTranslateServerEvent {
         use crate::core::models::subtitle_text_within_limit;
         match self {
             Self::SourceDraft { text, .. }
+            | Self::SourceUtteranceDraft { text, .. }
             | Self::SourceFinal { text, .. }
             | Self::SourceUtteranceFinal { text, .. }
             | Self::UtteranceText { text, .. }

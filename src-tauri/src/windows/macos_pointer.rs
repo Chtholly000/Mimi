@@ -1,8 +1,8 @@
 //! Hover for the nonactivating subtitle panel without activating its app.
 //!
 //! WKWebView's normal tracking is active in a key window; the subtitle panel
-//! deliberately cannot become key. An independent public-AppKit tracking
-//! owner relays only view-local coordinates to that overlay's renderer. It
+//! stays non-key until an explicit click needs its responder. An independent
+//! public-AppKit tracking owner relays only view-local coordinates to that renderer. It
 //! does not replace Tao's window delegate, synthesize clicks, or monitor
 //! events globally. InVisibleRect follows resizing without polling.
 

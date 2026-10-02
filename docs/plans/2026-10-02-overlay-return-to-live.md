@@ -43,15 +43,24 @@ corrections can change its text while the reader keeps a block/pixel anchor.
 Final promotion changes the canonical row ID, so the existing missing-anchor
 policy preserves the current scroll position rather than forcing the tail.
 
-A live row's layout key includes the latest canonical confirmed timestamp.
-Without this epoch, a final and new live row arriving in one snapshot reused
+An identified live row uses the actual projected utterance's opaque owner.
+An earlier final A can insert above an unchanged complete B preview while raw
+recognition is already C. Keeping B's owner preserves its DOM and read anchor
+through that insertion; borrowing C's raw owner would identify the wrong pair.
+The backend supplies a private layout epoch plus actual server source ID and
+changes that epoch at creation, clear and transient reset. The UI treats the
+value as opaque. Original mode uses its raw source owner; translated modes use
+the owner of their complete pair. A new actual owner gets a different key even
+when its words repeat. The stabilizer uses the same projected lane identity.
+
+Legacy snapshots without an owner retain a layout key containing the latest
+canonical confirmed timestamp. Without this epoch, a final and new live row arriving in one snapshot reused
 the key `live`, so restoring the former live anchor moved the reader to the
 new sentence. On confirmation the former key is missing instead, preserving
 the current pixel position; subsequent native scroll notifications capture
 the confirmed row actually visible there. No text matching or arbitrary
-final-to-preview pairing is used. This is presentation identity only: HQ's
-confirmed sequence is not exposed in the current history/preview IPC contract,
-so the UI does not claim to carry a provider utterance ID. Earlier-history
+final-to-preview pairing is used. This fallback is presentation identity only;
+it does not claim to identify the live utterance. Earlier-history
 eviction, display-mode changes and draft revisions keep the same epoch while
 the newest confirmed timestamp stays the same. Clear unmounts the empty
 timeline and the next session starts in following state. A new live key may
@@ -75,6 +84,15 @@ returning. Scroll input is consumed once, with real pointer movements renewing
 a scrollbar drag. Passive notifications can refresh the visible canonical
 anchor while preserving reading. Only a new downward gesture, End, or the
 explicit return action can resume following; no timer guesses user activity.
+
+Home is an explicit reading-at-start intent, rather than an ordinary upward
+gesture. It moves to zero and keeps that target through the compact-to-full
+transition and later row measurements; restoring the former compact sentence
+offset would otherwise move the first Home into the middle of the first row.
+New wheel, touch, pointer or reading-key input releases that target and returns
+to the existing sentence-anchor policy. End and the visible return action still
+restore live following. The focusable timeline uses a thin neutral keyboard-only
+outline instead of WebKit's default focus ring, with a forced-colors fallback.
 
 ## Geometry and copy
 
@@ -113,3 +131,7 @@ Production-model fixtures also confirm a live row while adding the next live
 row in the same snapshot, with revised final wording, in all three modes. They
 keep the viewport on the confirmed row, retain its anchor when older history
 is evicted, and resume compact following only on an explicit return request.
+Identified fixtures also insert a late earlier final above an unchanged live
+owner in all three modes, retaining the same row and reading offset. Projection
+fixtures keep the paired B owner separate from newer raw C recognition, while
+the legacy final-A/new-B epoch regressions remain intact.

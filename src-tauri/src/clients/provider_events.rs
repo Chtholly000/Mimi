@@ -18,7 +18,33 @@ const OVERFLOW_MESSAGE: &str = "Translation event processing fell behind. mimi i
 #[derive(Debug, Clone)]
 struct SequencedEvent {
     sequence: u64,
+    content_revision: u64,
     event: LiveTranslateServerEvent,
+}
+
+/// A local content boundary, independent of the socket/session generation.
+/// Lifecycle and service failures remain meaningful across a content clear.
+#[derive(Debug, Clone)]
+pub struct ProviderEvent {
+    pub content_revision: u64,
+    pub event: LiveTranslateServerEvent,
+}
+
+impl ProviderEvent {
+    pub fn is_content(&self) -> bool {
+        is_content_event(&self.event)
+    }
+}
+
+pub fn is_content_event(event: &LiveTranslateServerEvent) -> bool {
+    !matches!(
+        event,
+        LiveTranslateServerEvent::SessionCreated
+            | LiveTranslateServerEvent::SessionUpdated
+            | LiveTranslateServerEvent::SessionFinished
+            | LiveTranslateServerEvent::Error { .. }
+            | LiveTranslateServerEvent::Ignored { .. }
+    )
 }
 
 struct SenderInner {
@@ -29,6 +55,7 @@ struct SenderInner {
     dispatch: Mutex<()>,
     sequence: AtomicU64,
     failed: AtomicBool,
+    content_revision: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -59,6 +86,8 @@ pub struct ProviderEventReceiver {
     source_pending: Option<SequencedEvent>,
     translation_pending: Option<SequencedEvent>,
     last_delivered_sequence: u64,
+    last_source_final: Option<(u64, u64)>,
+    content_revision: Arc<AtomicU64>,
 }
 
 pub fn provider_event_channel() -> (ProviderEventSender, ProviderEventReceiver) {
@@ -69,6 +98,7 @@ fn provider_event_channel_with_capacity(
     reliable_capacity: usize,
 ) -> (ProviderEventSender, ProviderEventReceiver) {
     assert!(reliable_capacity > 0);
+    let content_revision = Arc::new(AtomicU64::new(0));
     let (reliable_tx, reliable_rx) = mpsc::channel(reliable_capacity);
     let (source_tx, source_rx) = watch::channel(None);
     let (translation_tx, translation_rx) = watch::channel(None);
@@ -83,6 +113,7 @@ fn provider_event_channel_with_capacity(
                 dispatch: Mutex::new(()),
                 sequence: AtomicU64::new(0),
                 failed: AtomicBool::new(false),
+                content_revision: Arc::clone(&content_revision),
             }),
         },
         ProviderEventReceiver {
@@ -98,11 +129,39 @@ fn provider_event_channel_with_capacity(
             source_pending: None,
             translation_pending: None,
             last_delivered_sequence: 0,
+            last_source_final: None,
+            content_revision,
         },
     )
 }
 
 impl ProviderEventSender {
+    pub fn content_revision(&self) -> u64 {
+        self.inner.content_revision.load(Ordering::SeqCst)
+    }
+
+    /// Advances only content: existing lifecycle/terminal events are retained.
+    /// A worker must retain its original revision rather than read this at emit.
+    pub fn advance_content_revision(&self) -> u64 {
+        let _dispatch = self.inner.dispatch.lock().unwrap();
+        let revision = self
+            .inner
+            .content_revision
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
+        self.inner.source_draft.send_replace(None);
+        self.inner.translation_draft.send_replace(None);
+        revision
+    }
+
+    pub fn send_content(
+        &self,
+        expected_revision: u64,
+        event: LiveTranslateServerEvent,
+    ) -> Result<(), ProviderEventSendError> {
+        self.send_if(event, || self.content_revision() == expected_revision)
+    }
+
     pub fn send(&self, event: LiveTranslateServerEvent) -> Result<(), ProviderEventSendError> {
         self.send_if(event, || true)
     }
@@ -139,6 +198,7 @@ impl ProviderEventSender {
             event
         };
         let event = SequencedEvent {
+            content_revision: self.content_revision(),
             sequence: self
                 .inner
                 .sequence
@@ -147,7 +207,8 @@ impl ProviderEventSender {
             event,
         };
         let result = match &event.event {
-            LiveTranslateServerEvent::SourceDraft { .. } => {
+            LiveTranslateServerEvent::SourceDraft { .. }
+            | LiveTranslateServerEvent::SourceUtteranceDraft { .. } => {
                 if self.inner.source_draft.receiver_count() == 0 {
                     return Err(ProviderEventSendError::Closed);
                 }
@@ -203,9 +264,19 @@ impl ProviderEventSender {
 impl ProviderEventReceiver {
     #[cfg(test)]
     pub fn try_recv(&mut self) -> Result<LiveTranslateServerEvent, mpsc::error::TryRecvError> {
+        loop {
+            let event = self.try_recv_unfiltered()?;
+            if self.accepts(&event) {
+                return Ok(event.event);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn try_recv_unfiltered(&mut self) -> Result<ProviderEvent, mpsc::error::TryRecvError> {
         if !self.overflow_delivered && *self.overflow.borrow() {
             self.overflow_delivered = true;
-            return Ok(overflow_event());
+            return Ok(self.control_event(overflow_event()));
         }
         if self.reliable_open {
             match self.reliable.try_recv() {
@@ -233,11 +304,37 @@ impl ProviderEventReceiver {
         }
     }
 
+    #[cfg(test)]
     pub async fn recv(&mut self) -> Option<LiveTranslateServerEvent> {
+        self.recv_with_revision().await.map(|event| event.event)
+    }
+
+    pub async fn recv_with_revision(&mut self) -> Option<ProviderEvent> {
+        loop {
+            let event = self.recv_unfiltered().await?;
+            if self.accepts(&event) {
+                return Some(event);
+            }
+        }
+    }
+
+    fn accepts(&self, event: &ProviderEvent) -> bool {
+        !event.is_content()
+            || event.content_revision == self.content_revision.load(Ordering::SeqCst)
+    }
+
+    fn control_event(&self, event: LiveTranslateServerEvent) -> ProviderEvent {
+        ProviderEvent {
+            content_revision: self.content_revision.load(Ordering::SeqCst),
+            event,
+        }
+    }
+
+    async fn recv_unfiltered(&mut self) -> Option<ProviderEvent> {
         loop {
             if !self.overflow_delivered && *self.overflow.borrow() {
                 self.overflow_delivered = true;
-                return Some(overflow_event());
+                return Some(self.control_event(overflow_event()));
             }
             if self.reliable_open {
                 match self.reliable.try_recv() {
@@ -269,7 +366,7 @@ impl ProviderEventReceiver {
                     match result {
                         Ok(()) if *self.overflow.borrow_and_update() => {
                             self.overflow_delivered = true;
-                            return Some(overflow_event());
+                            return Some(self.control_event(overflow_event()));
                         }
                         Ok(()) => {}
                         Err(_) => self.overflow_open = false,
@@ -316,7 +413,17 @@ impl ProviderEventReceiver {
         );
     }
 
-    fn take_reliable_event(&mut self, event: SequencedEvent) -> LiveTranslateServerEvent {
+    fn take_reliable_event(&mut self, event: SequencedEvent) -> ProviderEvent {
+        match &event.event {
+            LiveTranslateServerEvent::SourceUtteranceFinal { utterance_id, .. }
+            | LiveTranslateServerEvent::SubtitleConfirmedPair {
+                source_utterance_id: Some(utterance_id),
+                ..
+            } => {
+                self.last_source_final = Some((event.sequence, *utterance_id));
+            }
+            _ => {}
+        }
         // Preview activity and completed pairs are FIFO reliable signals,
         // but do not supersede the independently latest ASR/draft lanes.
         // In particular, a Finished immediately after a TranslationDraft
@@ -326,15 +433,26 @@ impl ProviderEventReceiver {
             LiveTranslateServerEvent::PreviewTranslationStarted { .. }
                 | LiveTranslateServerEvent::PreviewTranslationFinished { .. }
                 | LiveTranslateServerEvent::SubtitlePreviewPair { .. }
+                | LiveTranslateServerEvent::SubtitlePreviewCleared
+                | LiveTranslateServerEvent::TranslationStarted
+                | LiveTranslateServerEvent::TranslationDeferred(_)
         ) {
             self.last_delivered_sequence = self.last_delivered_sequence.max(event.sequence);
         }
-        event.event
+        ProviderEvent {
+            content_revision: event.content_revision,
+            event: event.event,
+        }
     }
 
-    fn take_next_draft(&mut self) -> Option<LiveTranslateServerEvent> {
-        self.source_pending
-            .take_if(|event| event.sequence <= self.last_delivered_sequence);
+    fn take_next_draft(&mut self) -> Option<ProviderEvent> {
+        if self
+            .source_pending
+            .as_ref()
+            .is_some_and(|event| self.source_draft_is_obsolete(event))
+        {
+            self.source_pending = None;
+        }
         self.translation_pending
             .take_if(|event| event.sequence <= self.last_delivered_sequence);
 
@@ -349,8 +467,25 @@ impl ProviderEventReceiver {
         } else {
             self.translation_pending.take().unwrap()
         };
-        self.last_delivered_sequence = event.sequence;
-        Some(event.event)
+        self.last_delivered_sequence = self.last_delivered_sequence.max(event.sequence);
+        Some(ProviderEvent {
+            content_revision: event.content_revision,
+            event: event.event,
+        })
+    }
+
+    fn source_draft_is_obsolete(&self, event: &SequencedEvent) -> bool {
+        if event.sequence > self.last_delivered_sequence {
+            return false;
+        }
+        // A previous sentence's final can arrive after the next real begin.
+        // Preserve that newer identity even though its draft sequence is lower;
+        // all other reliable content/lifecycle barriers retain their old rules.
+        !matches!(
+            (&event.event, self.last_source_final),
+            (LiveTranslateServerEvent::SourceUtteranceDraft { utterance_id, .. }, Some((sequence, final_id)))
+                if sequence == self.last_delivered_sequence && *utterance_id > final_id
+        )
     }
 }
 
@@ -382,6 +517,142 @@ fn overflow_event() -> LiveTranslateServerEvent {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn a_previous_identified_final_keeps_the_newer_sentence_draft_but_not_its_own() {
+        for draft_id in [7, 8] {
+            let (sender, mut receiver) = provider_event_channel();
+            let draft = LiveTranslateServerEvent::SourceUtteranceDraft {
+                utterance_id: draft_id,
+                text: "Synthetic repeated lyric".into(),
+                language: None,
+            };
+            sender.send(draft.clone()).unwrap();
+            let final_event = LiveTranslateServerEvent::SourceUtteranceFinal {
+                utterance_id: 7,
+                text: "Synthetic repeated lyric".into(),
+                language: None,
+            };
+            sender.send(final_event.clone()).unwrap();
+            assert_eq!(receiver.try_recv().unwrap(), final_event);
+            if draft_id == 8 {
+                assert_eq!(receiver.try_recv().unwrap(), draft);
+            }
+            assert!(receiver.try_recv().is_err());
+            sender
+                .send(LiveTranslateServerEvent::SourceUtteranceDraft {
+                    utterance_id: 9,
+                    text: "Synthetic cleared draft".into(),
+                    language: None,
+                })
+                .unwrap();
+            sender.advance_content_revision();
+            sender
+                .send(LiveTranslateServerEvent::SessionFinished)
+                .unwrap();
+            assert_eq!(
+                receiver.try_recv().unwrap(),
+                LiveTranslateServerEvent::SessionFinished
+            );
+            assert!(receiver.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_older_hq_confirmation_and_activity_keep_a_queued_newer_source() {
+        let (sender, mut receiver) = provider_event_channel();
+        let draft = LiveTranslateServerEvent::SourceUtteranceDraft {
+            utterance_id: 8,
+            text: "Synthetic newer source".into(),
+            language: None,
+        };
+        sender.send(draft.clone()).unwrap();
+        let confirmed = LiveTranslateServerEvent::SubtitleConfirmedPair {
+            utterance_id: 1,
+            source_utterance_id: Some(7),
+            source: "Synthetic previous source".into(),
+            translation: "Synthetic previous translation".into(),
+            language: None,
+        };
+        for event in [
+            confirmed.clone(),
+            LiveTranslateServerEvent::TranslationStarted,
+            LiveTranslateServerEvent::SubtitlePreviewCleared,
+        ] {
+            sender.send(event.clone()).unwrap();
+            assert_eq!(receiver.try_recv().unwrap(), event);
+        }
+        assert_eq!(receiver.try_recv().unwrap(), draft);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn clear_revision_drops_queued_content_but_keeps_lifecycle_and_popped_stamp() {
+        let (sender, mut receiver) = provider_event_channel();
+        sender
+            .send(LiveTranslateServerEvent::SubtitleFinalPair {
+                source: "old".into(),
+                language: None,
+                translation: "old translation".into(),
+            })
+            .unwrap();
+        let already_popped = receiver.recv_with_revision().await.unwrap();
+        sender
+            .send(LiveTranslateServerEvent::SessionUpdated)
+            .unwrap();
+        sender
+            .send(LiveTranslateServerEvent::SubtitleFinalPair {
+                source: "queued old".into(),
+                language: None,
+                translation: "old".into(),
+            })
+            .unwrap();
+        sender
+            .send(LiveTranslateServerEvent::SourceDraft {
+                text: "old draft".into(),
+                language: None,
+            })
+            .unwrap();
+        let revision = sender.advance_content_revision();
+        assert!(already_popped.is_content());
+        assert_ne!(already_popped.content_revision, revision);
+        sender
+            .send_content(
+                already_popped.content_revision,
+                LiveTranslateServerEvent::TranslationFinal("late old callback".into()),
+            )
+            .unwrap();
+        sender
+            .send_content(
+                revision,
+                LiveTranslateServerEvent::SourceDraft {
+                    text: "new".into(),
+                    language: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::SessionUpdated)
+        );
+        let new = receiver.recv_with_revision().await.unwrap();
+        assert_eq!(new.content_revision, revision);
+        assert!(
+            matches!(new.event, LiveTranslateServerEvent::SourceDraft { text, .. } if text == "new")
+        );
+        assert!(receiver.try_recv().is_err());
+        sender
+            .send(LiveTranslateServerEvent::Error {
+                code: "authentication_error".into(),
+                message: "fixed".into(),
+            })
+            .unwrap();
+        sender.advance_content_revision();
+        assert!(matches!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::Error { .. })
+        ));
+    }
+
     #[test]
     fn oversized_caption_is_not_retained_and_only_a_fixed_error_reaches_the_receiver() {
         let (sender, mut receiver) = provider_event_channel();
@@ -393,6 +664,7 @@ mod tests {
             },
             LiveTranslateServerEvent::TranslationDraft(oversized.clone()),
             LiveTranslateServerEvent::SubtitleConfirmedPair {
+                source_utterance_id: None,
                 utterance_id: 1,
                 source: oversized,
                 language: None,
@@ -568,6 +840,7 @@ mod tests {
             let translation =
                 LiveTranslateServerEvent::TranslationDraft("synthetic translation".into());
             let pair = LiveTranslateServerEvent::SubtitlePreviewPair {
+                source_utterance_id: None,
                 source: "synthetic source".into(),
                 language: Some("en".into()),
                 translation: "synthetic translation".into(),
@@ -601,6 +874,7 @@ mod tests {
     fn final_barrier_remains_ordered_after_preview_signals_and_discards_older_drafts() {
         let (sender, mut receiver) = provider_event_channel();
         let pair = LiveTranslateServerEvent::SubtitlePreviewPair {
+            source_utterance_id: None,
             source: "synthetic source".into(),
             language: Some("en".into()),
             translation: "synthetic preview".into(),

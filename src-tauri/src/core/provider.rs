@@ -248,9 +248,9 @@ impl ProviderCapabilities {
 
         // Dedicated translation services require different explicit source
         // and target languages. Avoid persisting a no-op pair after a source
-        // switch or when loading stale preferences. Alibaba keeps its
-        // separate Original-subtitle mode, so its established behavior is
-        // intentionally left unchanged here.
+        // switch or when loading stale preferences. Routes with a separate
+        // Original-subtitle mode allow same-language selections and retain
+        // the user's explicit target.
         if !self.target_languages.contains(&TargetLanguage::Original)
             && source_matches_target(normalized.source_language, normalized.target_language)
         {
@@ -267,17 +267,13 @@ impl ProviderCapabilities {
         normalized
     }
 
+    /// Source pickers retain the explicit target unless provider normalization
+    /// requires a supported fallback or a different translation language.
     pub fn target_language_after_source_switch(
         &self,
         source_language: SourceLanguage,
-        previous_source: SourceLanguage,
         current_target: TargetLanguage,
     ) -> TargetLanguage {
-        if self.target_languages.contains(&TargetLanguage::Original) {
-            return source_language
-                .target_language_after_quick_switch(previous_source, current_target);
-        }
-
         self.normalize(ProviderPreferences {
             source_language,
             target_language: current_target,
@@ -675,23 +671,70 @@ mod tests {
 
     #[test]
     fn explicit_source_providers_keep_chinese_translation_enabled() {
-        let capabilities = ProviderKind::TencentCloud.capabilities();
+        for provider in [
+            ProviderKind::VolcanoEngine,
+            ProviderKind::TencentCloud,
+            ProviderKind::BaiduTranslate,
+            ProviderKind::DeepLX,
+        ] {
+            let capabilities = provider.capabilities();
+            assert_eq!(
+                capabilities.target_language_after_source_switch(
+                    SourceLanguage::Chinese,
+                    TargetLanguage::English,
+                ),
+                TargetLanguage::English
+            );
+            assert_eq!(
+                capabilities.target_language_after_source_switch(
+                    SourceLanguage::Chinese,
+                    TargetLanguage::SimplifiedChinese,
+                ),
+                TargetLanguage::English
+            );
+        }
+    }
+
+    #[test]
+    fn alibaba_source_selection_preserves_an_explicit_translation_target() {
+        let profile = ServiceProfile::alibaba_default();
+        let capabilities = profile.capabilities(TargetLanguage::English);
         assert_eq!(
             capabilities.target_language_after_source_switch(
                 SourceLanguage::Chinese,
-                SourceLanguage::Japanese,
                 TargetLanguage::English,
             ),
             TargetLanguage::English
         );
-        assert_eq!(
-            capabilities.target_language_after_source_switch(
-                SourceLanguage::Chinese,
-                SourceLanguage::Japanese,
-                TargetLanguage::SimplifiedChinese,
-            ),
-            TargetLanguage::English
-        );
+    }
+
+    #[test]
+    fn alibaba_source_selection_keeps_original_for_audio3_only_languages() {
+        let profile = ServiceProfile::alibaba_default();
+        let capabilities = profile.capabilities(TargetLanguage::Original);
+        for source in [
+            SourceLanguage::Norwegian,
+            SourceLanguage::Romanian,
+            SourceLanguage::Greek,
+            SourceLanguage::Bulgarian,
+            SourceLanguage::Croatian,
+            SourceLanguage::Slovak,
+        ] {
+            let target =
+                capabilities.target_language_after_source_switch(source, TargetLanguage::Original);
+            assert_eq!(target, TargetLanguage::Original);
+            let configuration =
+                crate::core::configuration::LiveTranslationConfiguration::for_provider(
+                    profile.provider,
+                    "synthetic",
+                    source,
+                    target,
+                    TranslationMode::Turbo,
+                );
+            let validated = configuration.validated().unwrap();
+            assert_eq!(validated.source_language, source);
+            assert_eq!(validated.target_language, TargetLanguage::Original);
+        }
     }
 
     #[test]

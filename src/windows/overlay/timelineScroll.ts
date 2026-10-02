@@ -4,8 +4,10 @@ export class TimelineScroll {
   private userScrolling: { top: number; direction: "down" | "pointer" } | null = null;
   private modeAnchor = false;
   private reading: { id: string; offset: number } | null = null;
+  private readingStart = false;
 
   userIntent(element: HTMLElement, direction: "down" | "pointer" = "pointer") {
+    this.readingStart = false;
     this.userScrolling = { top: element.scrollTop, direction };
     this.rememberReading(element);
   }
@@ -17,8 +19,19 @@ export class TimelineScroll {
   /** Enter full confirmed-history reading even if the compact rows do not
    * overflow yet, so an upward wheel/key can reveal a single long sentence. */
   beginReading(element: HTMLElement) {
+    this.readingStart = false;
     this.endUserIntent();
     this.following = false;
+    this.rememberReading(element);
+  }
+
+  /** Explicit Home outranks the old compact-row anchor while full rows finish
+   * measuring. A new gesture releases it back to ordinary sentence reading. */
+  readFromStart(element: HTMLElement) {
+    this.beginReading(element);
+    this.modeAnchor = false;
+    this.readingStart = true;
+    this.move(element, 0, "instant");
     this.rememberReading(element);
   }
 
@@ -30,6 +43,7 @@ export class TimelineScroll {
     this.following = true;
     this.modeAnchor = false;
     this.reading = null;
+    this.readingStart = false;
     this.move(element, element.scrollHeight, "instant");
   }
 
@@ -85,6 +99,11 @@ export class TimelineScroll {
 
   private restoreReading(element: HTMLElement) {
     this.endUserIntent();
+    if (this.readingStart) {
+      this.move(element, 0, "instant");
+      this.rememberReading(element);
+      return;
+    }
     if (!this.reading) return;
     const block = Array.from(element.children).find(child => (child as HTMLElement).dataset.utteranceId === this.reading!.id) as HTMLElement | undefined;
     // A bounded history may evict the old sentence; preserve the current

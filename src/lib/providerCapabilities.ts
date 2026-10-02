@@ -1,7 +1,7 @@
 import {
   AUDIO3_RECOGNITION_LANGUAGE_CODES,
   QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES,
-  SOURCE_LANGUAGE_QUICK_CASES,
+  LEGACY_SOURCE_LANGUAGE_CASES,
   TRANSLATION_MODE_CASES,
   type ProviderCapabilities,
   type ServiceProfile,
@@ -11,7 +11,6 @@ import {
   type TargetLanguage,
   type TextTranslation,
   type TranslationMode,
-  targetLanguageAfterQuickSwitch,
 } from "./types";
 
 type LanguageSettings = Pick<SettingsSnapshot, "profiles" | "activeProfileId"> &
@@ -24,7 +23,7 @@ const ALIBABA_TRANSLATION_SOURCES: readonly SourceLanguage[] = [
 ];
 const ALIBABA_TARGETS: readonly TargetLanguage[] = ["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES];
 const LEGACY_ALIBABA_CAPABILITIES: ProviderCapabilities = {
-  sourceLanguages: SOURCE_LANGUAGE_QUICK_CASES,
+  sourceLanguages: LEGACY_SOURCE_LANGUAGE_CASES,
   targetLanguages: ["original", "zh", "en", "ja"],
   translationModes: TRANSLATION_MODE_CASES,
 };
@@ -45,7 +44,7 @@ export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
 const PROVIDER_CAPABILITIES: Readonly<
   Record<ServiceProvider, ProviderCapabilities>
 > = {
-  deepLX: { sourceLanguages: SOURCE_LANGUAGE_QUICK_CASES, targetLanguages: ["zh", "en", "ja"], translationModes: ["turbo"] },
+  deepLX: { sourceLanguages: LEGACY_SOURCE_LANGUAGE_CASES, targetLanguages: ["zh", "en", "ja"], translationModes: ["turbo"] },
   alibabaCloud: {
     sourceLanguages: ALIBABA_TRANSLATION_SOURCES,
     targetLanguages: ALIBABA_TARGETS,
@@ -167,18 +166,6 @@ export function sourceLanguagesForSettings(
   return capabilitiesForSettings(settings).sourceLanguages;
 }
 
-/** Keep native quick controls compact without hiding an explicitly selected new language. */
-export function quickSourceLanguagesForSettings(
-  settings: LanguageSettings & Pick<SettingsSnapshot, "sourceLanguage">,
-): readonly SourceLanguage[] {
-  const supported = sourceLanguagesForSettings(settings);
-  const choices = SOURCE_LANGUAGE_QUICK_CASES.filter((code) => supported.includes(code));
-  if (!choices.includes(settings.sourceLanguage) && supported.includes(settings.sourceLanguage)) {
-    choices.push(settings.sourceLanguage);
-  }
-  return choices;
-}
-
 export function targetLanguagesForSettings(
   settings: LanguageSettings & Pick<SettingsSnapshot, "sourceLanguage">,
 ): readonly TargetLanguage[] {
@@ -216,17 +203,10 @@ export function targetLanguageAfterSourceSwitch(
   sourceLanguage: SourceLanguage,
 ): TargetLanguage {
   const capabilities = capabilitiesForSettings(settings);
-  if (capabilities.targetLanguages.includes("original")) {
-    return targetLanguageAfterQuickSwitch(
-      sourceLanguage,
-      settings.sourceLanguage,
-      settings.targetLanguage,
-    );
-  }
-
   if (
     capabilities.targetLanguages.includes(settings.targetLanguage) &&
-    !sourceMatchesTarget(sourceLanguage, settings.targetLanguage)
+    (capabilities.targetLanguages.includes("original") ||
+      !sourceMatchesTarget(sourceLanguage, settings.targetLanguage))
   ) {
     return settings.targetLanguage;
   }

@@ -110,6 +110,8 @@ impl TranslationStreamState {
 }
 
 struct Inner {
+    // Serializes the content barrier with local assembly, never socket/audio state.
+    content_lock: Mutex<()>,
     sink: Mutex<Option<Sink>>,
     receive_task: Mutex<Option<JoinHandle<()>>>,
     audio_send_lock: Mutex<()>,
@@ -136,6 +138,19 @@ pub struct AzureOpenAIRealtimeClient {
 }
 
 impl AzureOpenAIRealtimeClient {
+    pub fn content_revision(&self) -> u64 {
+        self.events.content_revision()
+    }
+
+    /// Clears locally accepted subtitles without reconnecting or dropping audio.
+    /// This protocol has no source-turn boundary: future deltas remain valid.
+    pub async fn clear_content(&self) -> u64 {
+        let _content = self.inner.content_lock.lock().await;
+        self.inner.translation_stream.lock().await.reset();
+        self.inner.committer.lock().await.reset();
+        self.events.advance_content_revision()
+    }
+
     /// Applied before connect so ASR and translation share one immutable route.
     pub fn set_network(
         &mut self,
@@ -195,6 +210,7 @@ impl AzureOpenAIRealtimeClient {
         Ok(Self {
             network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
+                content_lock: Mutex::new(()),
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
                 audio_send_lock: Mutex::new(()),
@@ -570,6 +586,22 @@ async fn handle_server_event(
     context: &ReceiveContext,
     event: AzureOpenAIRealtimeServerEvent,
 ) -> bool {
+    let revision = context.events.content_revision();
+    let _content = context.inner.content_lock.lock().await;
+    if context.inner.generation.load(Ordering::SeqCst) != context.generation {
+        return false;
+    }
+    if revision != context.events.content_revision()
+        && matches!(
+            &event,
+            AzureOpenAIRealtimeServerEvent::SourceTranscriptDelta { .. }
+                | AzureOpenAIRealtimeServerEvent::TranslationTranscriptDelta { .. }
+                | AzureOpenAIRealtimeServerEvent::TranslationTranscriptDone { .. }
+        )
+    {
+        return false;
+    }
+
     match event {
         AzureOpenAIRealtimeServerEvent::SessionCreated => {
             emit_if_current(context, LiveTranslateServerEvent::SessionCreated);
@@ -702,6 +734,82 @@ fn emit_if_current(context: &ReceiveContext, event: LiveTranslateServerEvent) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn clear_discards_local_tail_and_queued_content_without_touching_audio_or_lifecycle() {
+        let (sender, mut receiver) = provider_event_channel();
+        let endpoint = url::Url::parse("ws://127.0.0.1:1/realtime").unwrap();
+        let client = AzureOpenAIRealtimeClient::with_endpoint(
+            "test-key-not-real",
+            "test-transcription",
+            TargetLanguage::Japanese,
+            sender.clone(),
+            endpoint,
+        )
+        .unwrap();
+        client.inner.ready.store(true, Ordering::SeqCst);
+        client.inner.generation.store(7, Ordering::SeqCst);
+        *client.inner.pending_audio.lock().await = vec![1, 2, 3];
+        client
+            .inner
+            .committer
+            .lock()
+            .await
+            .append_source_delta("old source", None);
+        client
+            .inner
+            .committer
+            .lock()
+            .await
+            .append_translation_delta("old translation", None);
+        client
+            .inner
+            .translation_stream
+            .lock()
+            .await
+            .append_delta(AzureTranslationStream::DedicatedSession, "old translation");
+        sender
+            .send(LiveTranslateServerEvent::SubtitleFinalPair {
+                source: "old queued source".into(),
+                language: None,
+                translation: "old queued translation".into(),
+            })
+            .unwrap();
+        sender
+            .send(LiveTranslateServerEvent::SessionUpdated)
+            .unwrap();
+        assert_eq!(client.clear_content().await, 1);
+        assert_eq!(client.content_revision(), 1);
+        assert_eq!(client.inner.generation.load(Ordering::SeqCst), 7);
+        assert!(client.inner.ready.load(Ordering::SeqCst));
+        assert_eq!(*client.inner.pending_audio.lock().await, vec![1, 2, 3]);
+        assert!(client.inner.committer.lock().await.finish().is_empty());
+        assert!(client
+            .inner
+            .translation_stream
+            .lock()
+            .await
+            .current_text
+            .is_empty());
+        assert!(client
+            .inner
+            .translation_stream
+            .lock()
+            .await
+            .selected
+            .is_none());
+        assert_eq!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::SessionUpdated)
+        );
+        assert!(receiver.try_recv().is_err());
+        let mut committer = client.inner.committer.lock().await;
+        committer.append_source_delta("new source", None);
+        committer.append_translation_delta("new translation", None);
+        assert!(committer.finish().iter().any(|event| matches!(event,
+            LiveTranslateServerEvent::SubtitleFinalPair {source,translation,..}
+                if source == "new source" && translation == "new translation")));
+    }
+
     use super::*;
     use crate::clients::provider_events::{provider_event_channel, ProviderEventReceiver};
     use base64::Engine;

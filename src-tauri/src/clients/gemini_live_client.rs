@@ -62,6 +62,7 @@ struct GeminiTranscriptPairCommitter {
     source_language: Option<String>,
     translation: String,
     discard_current_turn: bool,
+    turn_complete_received: bool,
 }
 
 impl GeminiTranscriptPairCommitter {
@@ -123,6 +124,7 @@ impl GeminiTranscriptPairCommitter {
         self.source_language = None;
         self.translation.clear();
         self.discard_current_turn = false;
+        self.turn_complete_received = false;
     }
 
     fn exceeded_safety_limit(&self) -> bool {
@@ -141,6 +143,8 @@ impl GeminiTranscriptPairCommitter {
 }
 
 struct Inner {
+    // Serializes the content barrier with local assembly, never socket/audio state.
+    content_lock: Mutex<()>,
     sink: Mutex<Option<Sink>>,
     receive_task: Mutex<Option<JoinHandle<()>>>,
     audio_send_lock: Mutex<()>,
@@ -172,6 +176,34 @@ pub struct GeminiLiveClient {
 }
 
 impl GeminiLiveClient {
+    pub fn content_revision(&self) -> u64 {
+        self.events.content_revision()
+    }
+
+    pub async fn clear_content(&self) -> u64 {
+        let _content = self.inner.content_lock.lock().await;
+        cancel_normal_turn_boundary(&self.inner);
+        let mut committer = self.inner.committer.lock().await;
+        let pending_boundary = committer.turn_complete_received;
+        let active = committer.discard_current_turn
+            || !committer.source.is_empty()
+            || !committer.translation.is_empty();
+        committer.reset();
+        committer.discard_current_turn = active;
+        committer.turn_complete_received = pending_boundary;
+        let revision = self.events.advance_content_revision();
+        // A boundary already observed before Clear still owns its late tails.
+        // Re-arm only that quiet boundary, never create a new server turn.
+        if pending_boundary && !self.inner.is_closing.load(Ordering::SeqCst) {
+            schedule_normal_turn_commit_for(
+                &self.inner,
+                &self.events,
+                self.inner.generation.load(Ordering::SeqCst),
+            );
+        }
+        revision
+    }
+
     /// Applied before connect so ASR and translation share one immutable route.
     pub fn set_network(
         &mut self,
@@ -208,6 +240,7 @@ impl GeminiLiveClient {
         Ok(Self {
             network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
+                content_lock: Mutex::new(()),
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
                 audio_send_lock: Mutex::new(()),
@@ -604,6 +637,21 @@ async fn fail_receive_loop(context: &ReceiveContext, code: &str, message: &str) 
 
 /// Returns true when the receive loop must stop.
 async fn handle_server_event(context: &ReceiveContext, event: GeminiLiveServerEvent) -> bool {
+    let revision = context.events.content_revision();
+    let _content = context.inner.content_lock.lock().await;
+    if context.inner.generation.load(Ordering::SeqCst) != context.generation {
+        return false;
+    }
+    if revision != context.events.content_revision()
+        && matches!(
+            &event,
+            GeminiLiveServerEvent::SourceTranscript { .. }
+                | GeminiLiveServerEvent::TranslationTranscript { .. }
+        )
+    {
+        return false;
+    }
+
     let setup_is_awaiting = *context.setup.borrow() == SetupState::Awaiting;
     if setup_is_awaiting
         && !matches!(
@@ -657,6 +705,7 @@ async fn handle_server_event(context: &ReceiveContext, event: GeminiLiveServerEv
             emit_all_if_current(context, events);
         }
         GeminiLiveServerEvent::TurnComplete => {
+            context.inner.committer.lock().await.turn_complete_received = true;
             if context.inner.is_closing.load(Ordering::SeqCst) {
                 context
                     .inner
@@ -755,6 +804,7 @@ async fn publish_turn_after_transcript_quiet(
 ) -> Option<()> {
     loop {
         let revision = wait_for_transcript_quiet(inner, generation, boundary).await?;
+        let _content = inner.content_lock.lock().await;
         let mut committer = inner.committer.lock().await;
         if !transcript_boundary_is_current(inner, generation, boundary) {
             return None;
@@ -821,16 +871,21 @@ async fn emit_normal_turn_after_transcript_quiet(
 }
 
 fn schedule_normal_turn_commit(context: &ReceiveContext) {
-    let epoch = context
-        .inner
+    schedule_normal_turn_commit_for(&context.inner, &context.events, context.generation);
+}
+
+fn schedule_normal_turn_commit_for(
+    inner: &Arc<Inner>,
+    events: &ProviderEventSender,
+    generation: u64,
+) {
+    let epoch = inner
         .turn_boundary_epoch
         .fetch_add(1, Ordering::SeqCst)
         .wrapping_add(1);
-    context.inner.transcript_notify.notify_waiters();
-
-    let inner = Arc::clone(&context.inner);
-    let events = context.events.clone();
-    let generation = context.generation;
+    inner.transcript_notify.notify_waiters();
+    let inner = Arc::clone(inner);
+    let events = events.clone();
     drop(tokio::spawn(async move {
         emit_normal_turn_after_transcript_quiet(&inner, &events, generation, epoch).await;
     }));
@@ -855,6 +910,72 @@ fn emit_if_current(context: &ReceiveContext, event: LiveTranslateServerEvent) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn clear_keeps_the_observed_quiet_boundary_without_committing_its_old_tail() {
+        let (sender, mut receiver) = provider_event_channel();
+        let client = GeminiLiveClient::with_endpoint(
+            "test-key-not-real",
+            TargetLanguage::Japanese,
+            sender.clone(),
+            url::Url::parse("ws://127.0.0.1:1/live").unwrap(),
+            false,
+        )
+        .unwrap();
+        {
+            let mut committer = client.inner.committer.lock().await;
+            committer.append_source("old source", None);
+            committer.append_translation("old translation");
+            committer.turn_complete_received = true;
+        }
+        let old_epoch = client.inner.turn_boundary_epoch.load(Ordering::SeqCst);
+        sender
+            .send(LiveTranslateServerEvent::SessionUpdated)
+            .unwrap();
+        assert_eq!(client.clear_content().await, 1);
+        assert_eq!(client.content_revision(), 1);
+        assert!(!transcript_boundary_is_current(
+            &client.inner,
+            0,
+            TranscriptBoundary::Normal(old_epoch)
+        ));
+        {
+            let mut committer = client.inner.committer.lock().await;
+            assert!(committer.source.is_empty() && committer.translation.is_empty());
+            assert!(committer.append_source("late old source", None).is_empty());
+            assert!(committer
+                .append_translation("late old translation")
+                .is_empty());
+        }
+        let epoch = client.inner.turn_boundary_epoch.load(Ordering::SeqCst);
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            publish_turn_after_transcript_quiet(
+                &client.inner,
+                &sender,
+                0,
+                TranscriptBoundary::Normal(epoch),
+                false,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let mut committer = client.inner.committer.lock().await;
+        assert!(!committer.discard_current_turn);
+        committer.append_source("new source", None);
+        committer.append_translation("new translation");
+        assert!(
+            matches!(committer.finish_turn().as_slice(), [LiveTranslateServerEvent::SubtitleFinalPair {source,translation,..}]
+            if source == "new source" && translation == "new translation")
+        );
+        drop(committer);
+        assert_eq!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::SessionUpdated)
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
     use super::*;
     use crate::clients::provider_events::{provider_event_channel, ProviderEventReceiver};
     use base64::Engine;

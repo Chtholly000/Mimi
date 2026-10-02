@@ -12,7 +12,6 @@ import type {
 } from "../../lib/types";
 import { I18N } from "../../lib/i18n";
 import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
   TARGET_LANGUAGE_DISPLAY_NAMES,
   sourceLanguageStatusDisplayName,
 } from "../../lib/types";
@@ -40,6 +39,8 @@ export interface LiveTail {
   translation: string | null;
   /** True while a lane is still streaming and may change again. */
   isStreaming: boolean;
+  /** Actual preview owner when supplied; never guessed from matching text. */
+  utteranceId?: string | null;
 }
 
 function isSameLanguageMode(
@@ -271,13 +272,13 @@ export function buildSubtitleBlocks(
     return blocks;
   }
 
-  // This is a layout epoch, not a provider utterance ID. A confirmation can
-  // insert durable rows and a new live tail together; never reuse the old
-  // live reading anchor for that new tail. Use the canonical history identity
-  // even when a display mode omits the last confirmed row.
+  // An identified B remains the same row if a delayed final A inserts above
+  // it. Legacy snapshots lack this owner: keep the canonical history epoch so
+  // a new B cannot inherit A's former live reading anchor.
   const latestConfirmedAt = history.at(-1)?.createdAt;
   blocks.push({
-    id: latestConfirmedAt === undefined ? "live" : `live-after-history-${latestConfirmedAt}`,
+    id: liveTail.utteranceId ? `live-utterance-${liveTail.utteranceId}`
+      : latestConfirmedAt === undefined ? "live" : `live-after-history-${latestConfirmedAt}`,
     createdAt: null,
     presentation: "live",
     source: liveTail.source,
@@ -297,13 +298,14 @@ export function buildSubtitleBlocks(
 function visibleDraft(
   translation: SubtitleSnapshot["translation"],
   history: SubtitleSnapshot["history"],
-): { text: string; isFinal: boolean } | null {
+): { text: string; isFinal: boolean; utteranceId?: string | null } | null {
   if (translation.text === "") return null;
   const currentIsAlreadyInHistory =
     translation.isFinal &&
     history[history.length - 1]?.translation === translation.text;
   if (currentIsAlreadyInHistory) return null;
-  return { text: translation.text, isFinal: translation.isFinal };
+  return { text: translation.text, isFinal: translation.isFinal,
+    ...(translation.utteranceId == null ? {} : { utteranceId: translation.utteranceId }) };
 }
 
 interface LiveSubtitlePreview {
@@ -311,6 +313,7 @@ interface LiveSubtitlePreview {
   isFinal: boolean;
   kind: "translation" | "source";
   isStable?: true;
+  utteranceId?: string | null;
 }
 
 /**
@@ -367,6 +370,7 @@ export function visibleLiveSubtitle(
     // Recognition is also the reading text in an original-target or
     // same-language session. Put it in the visible single-language lane.
     kind: settings.subtitleDisplayMode === "translation" ? "translation" : "source",
+    ...(source.utteranceId == null ? {} : { utteranceId: source.utteranceId }),
   };
 }
 
@@ -390,11 +394,23 @@ export function visibleLiveSubtitles(
   isTranslationTimedOut: boolean,
   preferAtomicPreview = false,
 ): LiveSubtitlePreview[] {
+  // HQ's next request can start before its next raw draft is published. Its
+  // unstamped final is already owned by history, not a newly recognized tail.
+  // Pending/timeout flags cannot reopen it. Preserve real same-text drafts,
+  // identified streams, non-atomic providers, and complete preview pairs.
+  const committedAtomicSource = preferAtomicPreview &&
+    subtitles.source.utteranceId == null && subtitles.source.isFinal &&
+    subtitles.history.at(-1)?.source === subtitles.source.text;
+  if (committedAtomicSource && (settings.subtitleDisplayMode === "original" ||
+    (settings.subtitleDisplayMode === "bilingual" && subtitles.previewPair == null))) {
+    return [];
+  }
   if (preferAtomicPreview && !isSameLanguageMode(settings, detectedLanguage) && settings.subtitleDisplayMode !== "original") {
     const pair = subtitles.previewPair;
     if (pair) {
-      const source: LiveSubtitlePreview = { kind: "source", text: pair.source, isFinal: false, isStable: true };
-      const translation: LiveSubtitlePreview = { kind: "translation", text: pair.translation, isFinal: false, isStable: true };
+      const owner = pair.utteranceId == null ? {} : { utteranceId: pair.utteranceId };
+      const source: LiveSubtitlePreview = { kind: "source", text: pair.source, isFinal: false, isStable: true, ...owner };
+      const translation: LiveSubtitlePreview = { kind: "translation", text: pair.translation, isFinal: false, isStable: true, ...owner };
       return settings.subtitleDisplayMode === "bilingual" ? [source, translation] : [translation];
     }
     // The first recognition may appear before a complete preview exists.
@@ -471,17 +487,6 @@ export function languageStatus(
     separator: I18N.overlay.separator,
     target: TARGET_LANGUAGE_DISPLAY_NAMES[settings.targetLanguage],
   };
-}
-
-export function sourceLanguageButtonTitle(
-  sourceLanguage: SettingsSnapshot["sourceLanguage"],
-  chineseIsOriginalOnly = true,
-): string {
-  return sourceLanguage === "zh"
-    ? chineseIsOriginalOnly
-      ? I18N.overlay.chineseSource
-      : SOURCE_LANGUAGE_DISPLAY_NAMES.zh
-    : SOURCE_LANGUAGE_DISPLAY_NAMES[sourceLanguage];
 }
 
 export function hasSubtitleContent(subtitles: SubtitleSnapshot): boolean {
