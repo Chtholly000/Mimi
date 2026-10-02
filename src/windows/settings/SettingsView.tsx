@@ -4,26 +4,13 @@ import { Switch } from "../../components/Switch";
 import { I18N, setStoredUiLanguage, type UiLanguage } from "../../lib/i18n";
 import { announceSettingsNavigationReady, isTauri, listenSettingsNavigation } from "../../lib/ipc";
 import { selectSessionErrorMessage, selectSessionStatusKind, useStore } from "../../lib/store";
-import {
-  sourceLanguagesForSettings,
-  targetLanguagesForSettings,
-} from "../../lib/providerCapabilities";
-import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
-  TARGET_LANGUAGE_DISPLAY_NAMES,
-  type SettingsSnapshot,
-  type SourceLanguage,
-  type SubtitleAlignment,
-  type TargetLanguage,
-} from "../../lib/types";
-import { sourceLanguageButtonTitle } from "../overlay/overlayModel";
+import type { SubtitleAlignment } from "../../lib/types";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import { subtitleColorHex } from "../../lib/subtitleColor";
 import type { SubtitleDisplayMode } from "../../lib/types";
 import { SubtitleColorControl } from "./SubtitleColorControl";
 import { ServiceProfiles } from "./ServiceProfiles";
 import { SupportDiagnostics } from "./SupportDiagnostics";
-import { WindowsAudioSource } from "./WindowsAudioSource";
 import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
 import { useSettingsTheme } from "./useSettingsTheme";
@@ -83,7 +70,6 @@ export function SettingsView() {
   const start = useStore((state) => state.start);
   const stop = useStore((state) => state.stop);
   const togglePaused = useStore((state) => state.togglePaused);
-  const switchSourceLanguage = useStore((state) => state.switchSourceLanguage);
   const saveSettings = useStore((state) => state.saveSettings);
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
   const quit = useStore((state) => state.quit);
@@ -122,9 +108,6 @@ export function SettingsView() {
     setActiveCategory(activeProfile?.credentialState === "present" ? "subtitles" : "service");
   }, [activeProfile?.credentialState]);
 
-  const sourceLanguages = sourceLanguagesForSettings(settings);
-  const targetLanguages = targetLanguagesForSettings(settings);
-  const chineseIsOriginalOnly = targetLanguages.includes("original");
   const isChangingSession = sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
   const sessionControl = settingsSessionControlState({
     statusKind: sessionStatusKind,
@@ -508,31 +491,9 @@ export function SettingsView() {
             )}
 
             <div id="service-profiles-panel" className={`settings-category-panel${activeCategory !== "service" ? " is-inactive" : ""}`}>
-                <ServiceProfiles settings={settings} sessionIsActive={sessionIsActive} sessionStatusKind={sessionStatusKind} visible={activeCategory === "service"} />
-                <SettingsSection id="translation-languages" title={I18N.settings.subtitleLanguages}>
-                  <WindowsAudioSource />
-                  {activeProfile && <p className="settings-caption language-profile-caption">{I18N.settings.activeProfileLanguages(activeProfile.name)}</p>}
-                  <div className="settings-field-group">
-                    <span className="settings-field-group__label" id="source-language-label">
-                      {I18N.settings.sourceLanguage}
-                    </span>
-                    <div className="source-language-grid" data-count={sourceLanguages.length} role="group" aria-labelledby="source-language-label">
-                      {sourceLanguages.map((language) => (
-                        <SourceLanguageButton key={language} language={language} selected={settings.sourceLanguage === language} chineseIsOriginalOnly={chineseIsOriginalOnly} disabled={isChangingSession || sourceLanguages.length === 1} onSelect={() => void switchSourceLanguage(language)} />
-                      ))}
-                    </div>
-                    <p className="settings-help">{sourceLanguageHelp(sessionStatusKind, settings, chineseIsOriginalOnly)}</p>
-                  </div>
-                  <div className="settings-field-group">
-                    <span className="settings-field-group__label" id="target-language-label">{I18N.settings.translateTo}</span>
-                    <div className="source-language-grid target-language-grid" data-count={targetLanguages.length} role="group" aria-labelledby="target-language-label">
-                      {targetLanguages.map((language) => <button key={language} type="button" className={`source-language-button${settings.targetLanguage === language ? " is-selected" : ""}`} aria-pressed={settings.targetLanguage === language} disabled={sessionIsActive || (settings.sourceLanguage === "zh" && targetLanguages.includes("original"))} onClick={() => { if (language !== settings.targetLanguage) void saveSettings({ targetLanguage: language as TargetLanguage }); }}>
-                        <span>{TARGET_LANGUAGE_DISPLAY_NAMES[language]}</span>
-                        {settings.targetLanguage === language && <Icon name="checkmark-circle" />}
-                      </button>)}
-                    </div>
-                  </div>
-                </SettingsSection>
+                <ServiceProfiles settings={settings} sessionIsActive={sessionIsActive} sessionIsPaused={sessionIsPaused} sessionStatusKind={sessionStatusKind} visible={activeCategory === "service"} />
+                <NetworkProxySettings value={settings.networkProxy} disabled={sessionIsActive || sessionIsPaused || isChangingSession}
+                  onSave={(networkProxy) => saveSettings({ networkProxy })} />
               </div>
 
             <div id="diagnostics-panel" className={`settings-category-panel${activeCategory !== "diagnostics" ? " is-inactive" : ""}`}>
@@ -546,8 +507,6 @@ export function SettingsView() {
               <SettingsSection id="application-settings" title={I18N.settings.appearance}>
                 <AppearancePicker value={theme} onChange={changeTheme} />
               </SettingsSection>
-              <NetworkProxySettings value={settings.networkProxy} disabled={sessionIsActive || sessionIsPaused || isChangingSession}
-                onSave={(networkProxy) => saveSettings({ networkProxy })} />
               <SettingsSection id="application-preferences" title={I18N.settings.preferencesTitle}>
                 <SettingsRow
                   label={I18N.settings.appLanguage}
@@ -664,6 +623,8 @@ function settingsCategoryFromHash(hash: string): SettingsCategory | null {
   switch (hash.replace(/^#/, "")) {
     case CATEGORY_SECTION_IDS.subtitles:
       return "subtitles";
+    case "network-proxy":
+    case "translation-languages":
     case CATEGORY_SECTION_IDS.service:
       return "service";
     case CATEGORY_SECTION_IDS.general:
@@ -677,62 +638,4 @@ function settingsCategoryFromHash(hash: string): SettingsCategory | null {
     default:
       return null;
   }
-}
-
-function SourceLanguageButton({
-  language,
-  selected,
-  chineseIsOriginalOnly,
-  disabled,
-  onSelect,
-}: {
-  language: SourceLanguage;
-  selected: boolean;
-  chineseIsOriginalOnly: boolean;
-  disabled: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={`source-language-button${selected ? " is-selected" : ""}`}
-      aria-pressed={selected}
-      disabled={disabled}
-      title={sourceLanguageButtonHelp(language, chineseIsOriginalOnly)}
-      onClick={onSelect}
-    >
-      <span>{sourceLanguageButtonTitle(language, chineseIsOriginalOnly)}</span>
-      {selected && <Icon name="checkmark-circle" />}
-    </button>
-  );
-}
-
-function sourceLanguageHelp(
-  statusKind: ReturnType<typeof selectSessionStatusKind>,
-  settings: SettingsSnapshot,
-  chineseIsOriginalOnly: boolean,
-): string {
-  if (settings.sourceLanguage === "zh") {
-    if (!chineseIsOriginalOnly) {
-      return statusKind === "listening"
-        ? I18N.settings.recognizingChineseTranslatedListening
-        : I18N.settings.recognizingChineseTranslatedIdle;
-    }
-    return statusKind === "listening"
-      ? I18N.settings.recognizingChineseListening
-      : I18N.settings.recognizingChineseIdle;
-  }
-  if (statusKind === "listening") {
-    return I18N.settings.sourceHelpReconnecting;
-  }
-  return I18N.settings.sourceHelpIdle;
-}
-
-function sourceLanguageButtonHelp(
-  language: SourceLanguage,
-  chineseIsOriginalOnly: boolean,
-): string {
-  return language === "zh" && chineseIsOriginalOnly
-    ? I18N.settings.switchToChineseHelp
-    : I18N.settings.switchToLanguageHelp(SOURCE_LANGUAGE_DISPLAY_NAMES[language]);
 }

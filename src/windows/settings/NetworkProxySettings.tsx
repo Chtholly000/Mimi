@@ -73,6 +73,7 @@ export function NetworkProxySettings({ value = DEFAULT_NETWORK_PROXY, disabled, 
   };
 
   return <SettingsSection id="network-proxy" title={I18N.settings.networkProxyTitle}>
+    <p className="settings-caption network-proxy-scope">{I18N.settings.networkProxyScope}</p>
     <form className="network-proxy-form" aria-busy={busy} onSubmit={(event) => { void save(event); }}>
       <SettingsRow label={I18N.settings.networkProxyMode} description={help} align="start">
         <SettingsSelect label={I18N.settings.networkProxyMode} value={mode} disabled={locked}

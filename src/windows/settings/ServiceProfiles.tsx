@@ -3,9 +3,8 @@ import { profileErrorMessage, diagnosticCopy } from "../../lib/connectionDiagnos
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Icon } from "../../components/Icon";
 import { ProviderIcon } from "../../components/ProviderIcon";
-import { effectiveUiLanguage, I18N, providerDisplayName } from "../../lib/i18n";
+import { I18N, providerDisplayName } from "../../lib/i18n";
 import { SERVICE_PROVIDERS, subtitlePreferencesChanged, textTranslationForProfile } from "../../lib/providerCapabilities";
-import { languageMetadataForProfile, providerLanguageDisplayCode } from "../../lib/providerLanguageMetadata";
 import { DEFAULT_NETWORK_PROXY, networkProxyConfigKey } from "../../lib/networkProxy";
 import {
   buildProviderCredentials,
@@ -25,7 +24,6 @@ import type {
   SessionStateEvent,
   SettingsSnapshot,
 } from "../../lib/types";
-import { SOURCE_LANGUAGE_DISPLAY_NAMES, TARGET_LANGUAGE_DISPLAY_NAMES } from "../../lib/types";
 import { InlineFeedback, SettingsSection } from "./SettingsPrimitives";
 
 import { DestructiveConfirmation } from "./DestructiveConfirmation";
@@ -35,6 +33,7 @@ import { ConnectionCheck } from "./ConnectionCheck";
 import { saveAndSelectProfile } from "./saveAndSelectProfile";
 import { StoredCredentialReveal } from "./StoredCredentialReveal";
 import { SettingsInitializationStatus } from "./SettingsInitializationStatus";
+import { ProfileLanguageSettings } from "./ProfileLanguageSettings";
 
 const CONNECTION_CHECK_TIMEOUT_MS = 30_000;
 
@@ -48,11 +47,13 @@ type PendingConfirmation =
 export function ServiceProfiles({
   settings,
   sessionIsActive,
+  sessionIsPaused = false,
   sessionStatusKind = "idle",
   visible = true,
 }: {
   settings: SettingsSnapshot;
   sessionIsActive: boolean;
+  sessionIsPaused?: boolean;
   sessionStatusKind?: SessionStateEvent["status"]["kind"];
   visible?: boolean;
 }) {
@@ -152,7 +153,8 @@ export function ServiceProfiles({
 
   const SelectedCredentialEditor = selectedProfile && ["alibabaCloud", "deepLX"].includes(selectedProfile.provider) ? AlibabaCredentialEditor : CredentialEditor;
 
-  const mutationsDisabled = sessionIsActive || pendingAction !== null;
+  const requiresStop = sessionIsActive || sessionIsPaused || sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
+  const mutationsDisabled = requiresStop || pendingAction !== null;
   const atProfileLimit = settings.profiles.length >= 20;
 
   const perform = async (
@@ -340,7 +342,7 @@ export function ServiceProfiles({
 
   return (
     <SettingsSection id="service-profiles" title={I18N.settings.serviceProfilesTitle} hideHeading>
-      {sessionIsActive && (
+      {(sessionIsActive || sessionIsPaused) && (
         <InlineFeedback tone="info" icon="lock">
           {I18N.settings.profileMutationsLocked}
         </InlineFeedback>
@@ -383,7 +385,6 @@ export function ServiceProfiles({
                   </div>
                 </div>
                 <p>{profileTitle(selectedProfile) !== profileProviderName(selectedProfile) && <>{profileProviderName(selectedProfile)} · </>}{profileDescription(selectedProfile)}</p>
-                <SupportedProfileLanguages key={selectedProfile.id} profile={selectedProfile} />
               </div>
             </div>
           </div>
@@ -422,6 +423,9 @@ export function ServiceProfiles({
               onCancelDelete={() => setPendingConfirmation(null)}
             />}
           </div>
+          {selectedProfile.id === settings.activeProfileId
+            ? <ProfileLanguageSettings key={selectedProfile.id} settings={settings} disabled={mutationsDisabled} requiresStop={requiresStop} />
+            : <p className="settings-caption service-detail__language-note">{I18N.settings.useProfileForLanguages}</p>}
           <div className="service-detail__actions">
             {selectedProfile.credentialState === "present" &&
               selectedProfile.id !== settings.activeProfileId && (
@@ -749,41 +753,6 @@ function CredentialEditor({
       </details>
     </div>
   );
-}
-
-function SupportedProfileLanguages({ profile }: { profile: ServiceProfile }) {
-  const [expanded, setExpanded] = useState(false);
-  const { appSelectable, providerAvailable } = languageMetadataForProfile(profile);
-  const { recognition, translation } = providerAvailable;
-  const hasProviderLanguages = recognition.languageCodes !== null || translation.languageCodes !== null;
-  return <div className="service-language-support">
-    <span className="service-language-support__label">{I18N.settings.selectableLanguages}</span>
-    <dl className="service-language-selectable">
-      <div><dt>{I18N.settings.sourceLanguage}</dt><dd>{appSelectable.sourceCodes.map((language) => SOURCE_LANGUAGE_DISPLAY_NAMES[language]).join(" · ")}</dd></div>
-      <div><dt>{I18N.settings.translateTo}</dt><dd>{appSelectable.targetCodes.map((language) => TARGET_LANGUAGE_DISPLAY_NAMES[language]).join(" · ")}</dd></div>
-    </dl>
-    {hasProviderLanguages && <details className="service-language-more" onToggle={(event) => setExpanded(event.currentTarget.open)}>
-      <summary>{I18N.settings.moreSupportedLanguages}</summary>
-      {expanded && <>
-        <p className="settings-caption">{I18N.settings.languagesNotIntegrated}</p>
-        <dl className="service-language-provider">
-          {recognition.languageCodes !== null && <div><dt>{I18N.settings.sourceLanguage}</dt><dd data-stage="recognition">{[
-            ...(recognition.automaticDetection === "supported" ? [SOURCE_LANGUAGE_DISPLAY_NAMES.auto] : []),
-            ...providerLanguageNames(recognition.languageCodes, "recognition"),
-          ].join(" · ")}</dd></div>}
-          {translation.languageCodes !== null && <div><dt>{I18N.settings.translateTo}</dt><dd data-stage="translation">{providerLanguageNames(translation.languageCodes, "translation").join(" · ")}</dd></div>}
-        </dl>
-      </>}
-    </details>}
-  </div>;
-}
-
-function providerLanguageNames(codes: readonly string[], stage: "recognition" | "translation"): string[] {
-  const names = new Intl.DisplayNames([effectiveUiLanguage()], { type: "language" });
-  return codes.map((code) => {
-    try { return names.of(providerLanguageDisplayCode(code, stage)) ?? code; }
-    catch { return code; }
-  });
 }
 
 function profileProviderName(profile: ServiceProfile): string {

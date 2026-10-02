@@ -5,18 +5,17 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { diagnosticCopy, profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { I18N, providerDisplayName, setStoredUiLanguage } from "../../lib/i18n";
 import { profileRevealCredential, testProfileConnection } from "../../lib/ipc";
-import { capabilitiesForProvider } from "../../lib/providerCapabilities";
-import { AUDIO3_RECOGNITION_LANGUAGE_CODES, QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES, providerLanguageDisplayCode } from "../../lib/providerLanguageMetadata";
+import { sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import { SOURCE_LANGUAGE_DISPLAY_NAMES, TARGET_LANGUAGE_DISPLAY_NAMES } from "../../lib/types";
 import type { ServiceProfile, SettingsSnapshot } from "../../lib/types";
 import { ServiceProfiles } from "./ServiceProfiles";
 
 const actions = vi.hoisted(() => ({
   createProfile: vi.fn(), updateProfile: vi.fn(), selectProfile: vi.fn(),
-  deleteProfile: vi.fn(), saveProfileCredentials: vi.fn(), deleteProfileAPIKey: vi.fn(),
+  saveSettings: vi.fn(), deleteProfile: vi.fn(), saveProfileCredentials: vi.fn(), deleteProfileAPIKey: vi.fn(),
 }));
 const boot = vi.hoisted(() => ({ initializationStatus: "ready" as "ready" | "loading" | "error", initializationError: null as "timeout" | "unavailable" | null, init: vi.fn() }));
-vi.mock("../../lib/store", () => ({ useStore: (select: (state: typeof actions & typeof boot) => unknown) => select({ ...actions, ...boot }) }));
+vi.mock("../../lib/store", () => ({ useStore: (select: (state: typeof actions & typeof boot & { settings: { windowsAudioSource: string }; session: { isActive: boolean; isPaused: boolean } }) => unknown) => select({ ...actions, ...boot, settings: { windowsAudioSource: "" }, session: { isActive: false, isPaused: false } }) }));
 vi.mock("../../lib/ipc", () => ({ isTauri: false, testProfileConnection: vi.fn(), profileRevealCredential: vi.fn() }));
 
 const profile: ServiceProfile = { id: "synthetic", name: "Alibaba", provider: "alibabaCloud", credentialState: "unavailable" };
@@ -82,7 +81,7 @@ async function chooseCustomTranslation() {
     advanced.open = true;
     advanced.dispatchEvent(new Event("toggle"));
   });
-  await act(() => host.querySelector<HTMLButtonElement>('[role="combobox"]')!.click());
+  await act(() => host.querySelector<HTMLButtonElement>('.settings-advanced [role="combobox"]')!.click());
   const custom = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === I18N.settings.textTranslationCustom)!;
   await act(() => custom.click());
 }
@@ -198,7 +197,8 @@ it.each(["zh", "en", "ja"] as const)("groups the service identity, credential st
   expect(identity.querySelector(".service-detail__title .credential-badge")?.textContent).toBe(I18N.settings.credentialPresent);
   expect(identity.querySelector(".service-detail__title .profile-active-badge")?.textContent).toBe(I18N.settings.activeProfile);
   expect(identity.querySelector(".service-detail__copy > p")?.textContent).toContain(I18N.settings.providerOpenAIDescription);
-  expect(identity.querySelector(".service-language-support")).not.toBeNull();
+  expect(identity.querySelector(".service-language-support")).toBeNull();
+  expect(host.querySelector(".service-detail__configuration #translation-languages")).not.toBeNull();
   const connection = host.querySelector(".service-detail__connection")!;
   expect(connection.querySelector(".connection-check")).not.toBeNull();
   expect(connection.querySelector(".credential-panel__saved-actions")?.textContent).toContain(I18N.settings.replaceCredentials);
@@ -246,57 +246,37 @@ it("offers the small name-save action only for a draft change, without touching 
   expect(actions.updateProfile).not.toHaveBeenCalled();
 });
 
-it.each(["alibabaCloud", "openAIRealtime", "volcanoEngine", "tencentCloud", "baiduTranslate"] as const)("lists only the exact app-selectable %s languages without inventing auto recognition", async (provider) => {
-  await render({ ...settings, profiles: [{ ...profile, provider }] });
+it.each(["openAIRealtime", "volcanoEngine", "tencentCloud", "baiduTranslate"] as const)("makes supported %s languages directly selectable in the active service", async (provider) => {
+  const snapshot = { ...settings, profiles: [{ ...profile, provider }] };
+  await render(snapshot);
   await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
-  const languages = [...host.querySelectorAll(".service-language-selectable dd")].map((node) => node.textContent);
-  const capability = capabilitiesForProvider(provider);
-  expect(host.querySelector(".service-language-support__label")?.textContent).toBe(I18N.settings.selectableLanguages);
-  expect(languages).toEqual([
-    capability.sourceLanguages.map((language) => SOURCE_LANGUAGE_DISPLAY_NAMES[language]).join(" · "),
-    capability.targetLanguages.map((language) => TARGET_LANGUAGE_DISPLAY_NAMES[language]).join(" · "),
+  const groups = [...host.querySelectorAll("#translation-languages [role=group]")];
+  expect(groups.map(group => [...group.querySelectorAll("button span")].map(node => node.textContent))).toEqual([
+    sourceLanguagesForSettings(snapshot).map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]),
+    targetLanguagesForSettings(snapshot).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]),
   ]);
+  expect(host.querySelector(".service-language-more")).toBeNull();
+  expect(testProfileConnection).not.toHaveBeenCalled();
   expect(profileRevealCredential).not.toHaveBeenCalled();
-  expect(host.querySelector(".service-language-provider")).toBeNull();
-  if (provider !== "alibabaCloud") expect(host.querySelector(".service-language-more")).toBeNull();
 });
 
-it.each(["zh", "en", "ja"] as const)("keeps documented provider languages collapsed and names them accurately in %s", async (language) => {
-  setStoredUiLanguage(language);
-  await render();
+it.each(["deepL", "deepLX"] as const)("keeps %s choices scoped to the actual translation route", async (textTranslation) => {
+  const snapshot = { ...settings, profiles: [{ ...profile, textTranslation }] };
+  await render(snapshot);
   await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
-  const names = new Intl.DisplayNames([language], { type: "language" });
-  const selectedBefore = [...host.querySelectorAll(".service-language-selectable dd")].map((node) => node.textContent);
-  const more = host.querySelector<HTMLDetailsElement>(".service-language-more")!;
-  expect(more.querySelector("summary")?.textContent).toBe(I18N.settings.moreSupportedLanguages);
-  expect(more.open).toBe(false);
-  expect(more.querySelector(".service-language-provider")).toBeNull();
-  await act(() => { more.open = true; more.dispatchEvent(new Event("toggle")); });
-  expect(more.querySelector("p")?.textContent).toBe(I18N.settings.languagesNotIntegrated);
-  expect(more.querySelector('[data-stage="recognition"]')?.textContent).toBe([
-    SOURCE_LANGUAGE_DISPLAY_NAMES.auto,
-    ...AUDIO3_RECOGNITION_LANGUAGE_CODES.map((code) => names.of(providerLanguageDisplayCode(code, "recognition"))),
-  ].join(" · "));
-  expect(more.querySelector('[data-stage="translation"]')?.textContent).toBe(QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES.map((code) => names.of(providerLanguageDisplayCode(code, "translation"))).join(" · "));
-  expect(more.querySelector('[data-stage="translation"]')?.textContent).toContain(names.of("zh-Hant"));
-  expect(more.querySelector('[data-stage="translation"]')?.textContent).toContain(names.of("fa"));
-  expect([...host.querySelectorAll(".service-language-selectable dd")].map((node) => node.textContent)).toEqual(selectedBefore);
-  expect(host.querySelectorAll(".service-language-support button, .service-language-support select")).toHaveLength(0);
+  expect(host.querySelectorAll("#translation-languages [role=combobox]")).toHaveLength(0);
+  const groups = [...host.querySelectorAll("#translation-languages [role=group]")];
+  expect(groups[1].textContent).toBe(targetLanguagesForSettings(snapshot).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]).join(""));
   expect(testProfileConnection).not.toHaveBeenCalled();
-  expect(actions.updateProfile).not.toHaveBeenCalled();
-  await act(() => { more.open = false; more.dispatchEvent(new Event("toggle")); });
-  expect(more.querySelector(".service-language-provider")).toBeNull();
 });
 
-it.each(["deepL", "deepLX"] as const)("does not invent a complete target list for the %s translation route", async (textTranslation) => {
-  await render({ ...settings, profiles: [{ ...profile, textTranslation }] });
-  await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
-  const more = host.querySelector<HTMLDetailsElement>(".service-language-more")!;
-  await act(() => { more.open = true; more.dispatchEvent(new Event("toggle")); });
-  expect(more.querySelector('[data-stage="recognition"]')).not.toBeNull();
-  expect(more.querySelector('[data-stage="translation"]')).toBeNull();
-  expect(more.textContent).not.toContain(new Intl.DisplayNames(["en"], { type: "language" }).of("fa"));
-  expect(testProfileConnection).not.toHaveBeenCalled();
+it("does not edit the active service's global languages from another profile's detail", async () => {
+  await render({ ...settings, profiles: [profile, { ...profile, id: "other", name: "Other", credentialState: "present" }] });
+  await act(() => host.querySelectorAll<HTMLButtonElement>(".service-row__edit")[1].click());
+  expect(host.querySelector("#translation-languages")).toBeNull();
+  expect(host.textContent).toContain(I18N.settings.useProfileForLanguages);
+  expect(host.querySelector(".service-detail__actions")?.textContent).toContain(I18N.settings.useProfile);
+  expect(actions.saveSettings).not.toHaveBeenCalled();
 });
 
 it("keeps profile rename and delete actions reachable without opening another panel", async () => {

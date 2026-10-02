@@ -1,25 +1,25 @@
 # Provider-aware language controls
 
-## Status: pending implementation
+## Status: implemented; verification in progress
 
-This note records the requested selectable language expansion. No selector,
-Rust language enum, protocol, or capability is expanded by this document. The
-current priority remains installed-app subtitle correctness and the explicitly
-requested local-development credential option. Resume implementation only after
-that work is accepted.
+This phase follows the subtitle read-position acceptance merged in PR #97.
+Language choices now live inside the active service detail, alongside its name,
+credentials, and text-translation route. Global proxy settings appear below the
+service section with an explicit all-services scope. Large language catalogs
+use a searchable picker; small catalogs remain direct buttons. The previous
+read-only list of additional languages is removed.
 
-## Current application boundary
+The typed source and target catalogs preserve existing keys while covering the
+Audio3 and Lite scopes below. Native snapshots include active profile ID,
+provider, text-translation route, target, and resolved language options. The
+frontend accepts this snapshot only when its route stamp matches; older
+snapshots use the equivalent local resolver.
 
-`SourceLanguage` accepts only `auto`, `zh`, `en`, `ja`, and `ko`.
-`TargetLanguage` accepts only `original`, `zh`, `en`, and `ja`. The Rust serde
-implementation, TypeScript unions, preference validation, provider capabilities,
-and protocol language-name mappings all enforce this boundary. Existing wire
-keys must remain unchanged.
-
-`src/lib/providerLanguageMetadata.ts` deliberately distinguishes application
-selections from documented provider availability. The expanded information in
-service details is display metadata; it cannot safely become clickable language
-options without completing the typed and protocol paths below.
+Explicit source and target settings are independent: choosing Chinese in this
+form no longer forces Original. Existing overlay/tray source shortcuts retain
+their compact behavior and include a currently selected extended language.
+Settings edits require a stopped session. Transient connection checks disable
+controls without incorrectly telling users to stop an already stopped session.
 
 ## Verified upstream scope
 
@@ -56,18 +56,18 @@ simplified-Chinese target and `zh_tw` is a distinct traditional-Chinese target.
 
 ## Route-aware selection
 
-| Active route | Planned explicit source controls | Planned target controls |
+| Active route | Explicit source controls | Target controls |
 | --- | --- | --- |
 | Alibaba + Follow Service/Lite | 24-code intersection, plus Automatic | Lite's 31 targets, plus Original |
-| Alibaba + Original/no translation | Audio3's 30 codes, plus Automatic | Original; switching to translation must validate the source again |
+| Alibaba + Original/no translation | Audio3's 30 codes, plus Automatic | All targets remain available; changing to translation normalizes an unsupported source before any request |
 | Alibaba + official DeepL | Existing selections until DeepL resource capabilities and wire mappings are implemented | Do not inherit Lite's target catalog |
 | Alibaba + custom translation service | Existing conservatively supported selections | Do not infer capabilities from an arbitrary endpoint |
 | Other speech providers | Existing per-provider selections | Existing per-provider selections |
 
-The current configuration validates only `provider.capabilities()`. Official
+Previously, configuration validated only `provider.capabilities()`. Official
 DeepL uses the same effective Alibaba speech provider as Follow Service.
 Consequently, expanding Alibaba's global capability vector alone would also
-expand the wrong text-translation route. Introduce a shared profile/route
+expand the wrong text-translation route. The implementation uses shared profile/route
 capability resolution used by settings normalization, configuration validation,
 connection probes, and frontend selectors. Provider metadata, selected route,
 and actual model must agree. Route changes must normalize unsupported saved
@@ -84,7 +84,7 @@ response protocol actually provides it; do not guess from recognized text or
 manufacture an identity. Unknown language retains the current automatic MT path
 and an actual unsupported-service response must remain an explicit failure.
 
-## Smallest coherent implementation
+## Implementation boundaries
 
 1. Extend typed source/target models and serde while preserving all existing
    keys. Source models may include all 30 Audio3 codes to support Original;
@@ -123,4 +123,5 @@ and an actual unsupported-service response must remain an explicit failure.
   source/target pairs. Automated payload fixtures do not establish recognition
   or translation quality for all added languages, or native acceptance on every OS.
 
-No implementation or additional-language native acceptance is complete yet.
+Automated and native acceptance results will be recorded in the development
+report after the final source revision passes the canonical check.
