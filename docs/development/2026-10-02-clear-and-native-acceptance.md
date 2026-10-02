@@ -11,12 +11,15 @@ the checks below. The later repeated-caption and sudden-split fix is pushed as
 exact-source CI and representative signed-native checks passed as recorded below.
 Slow/fast speech, song, repeated speech, three display modes, interaction and
 ordinary-reopen preference restoration have been checked with the stated limits.
-The user authorized a v1.5.6 release; synchronized version files and
-[bilingual release notes](../releases/v1.5.6.md) accompany this pre-release
-acceptance record. Formal assets and publication status are established
-separately by the [v1.5.6 release page](https://github.com/yuxino/mimi/releases/tag/v1.5.6)
-and its exact-tag CI, not by this development acceptance. The older baseline
-results do not verify the later application fix.
+The user subsequently stopped the v1.5.6 release after another live-song
+reproduction. PR #99 is a draft; no merge, v1.5.6 tag or release has occurred.
+The Queen concert exposed previous-row one-line clipping and a confirmed old
+preview surviving a newer raw source. These require further fixes and native
+acceptance. The version files and [bilingual release notes](../releases/v1.5.6.md)
+are preparation only. Earlier controlled-sample results do not establish
+acceptance for this concert, and publication requires renewed user authorization.
+The subsequent [concert reproduction report](2026-10-02-queen-live-reproduction.md)
+records the narrow fixes, rejected segmentation trial and remaining limitation.
 
 ## Changes under verification
 

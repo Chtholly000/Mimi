@@ -2,7 +2,7 @@
 
 更新时间：2026-10-02。字幕及恢复修复 [PR #96](https://github.com/yuxino/mimi/pull/96)、[PR #97](https://github.com/yuxino/mimi/pull/97) 已合入 main，详见[字幕真机验收](2026-10-02-resumed-native-acceptance.md)。语言选择、服务归组与代理入口的 [PR #98](https://github.com/yuxino/mimi/pull/98) 也已合入（`351a5ca`），最新检查和代表性语言实测见[服务语言验收](2026-10-02-service-language-acceptance.md)。清除屏障与剩余原生操作的后续验收见[清除与原生操作验收](2026-10-02-clear-and-native-acceptance.md)：`b7713df` 签名基线的单击清除、Home/End 及 Windows/Linux 包启动记录保留为历史证据。重复字幕/突然分句修复的新源 `997bc523934228fe0747d63e8cb8b357f4820880` 已通过完整本地检查（774 Rust / 1 忽略、695 前端 / 76 文件）、准确源两条 CI，以及签名 Mac 的快慢语音、歌曲、连续重复语音、三种模式、清除和阅读操作的代表性验收；最终退出与普通重开已恢复最新用户偏好，具体证据等级和限制见后续验收报告。
 
-用户已授权本次发布 v1.5.6，版本文件及[双语发布说明](../releases/v1.5.6.md)与本记录一起审核。本报告属于发布前开发验收；正式签名、统一桌面/Android 包、公开资产、Contributors 及发布状态以 [v1.5.6 release 页](https://github.com/yuxino/mimi/releases/tag/v1.5.6)和准确 tag CI 为准，不由开发验收推断已发布。此前“不发布”的范围只描述早期基线；以下表格保留首轮记录，后续记录优先。
+**最新状态：用户已叫停 v1.5.6 发布。PR #99 已转为草稿，尚未合并、打 tag 或发布。** 皇后乐队现场视频再次复现上一句被强制压成一行，以及新原文已经开始、旧译文刚确认时残留重复预览的问题；两项已补代码修复，详细证据与仍未解决的歌曲识别问题见[现场歌曲复现报告](2026-10-02-queen-live-reproduction.md)。以下结果保留为此前受控样本的证据，不能当作这段现场歌曲已验收。版本文件与[双语发布说明](../releases/v1.5.6.md)仅为准备材料，恢复发布需用户重新授权。
 
 准确源的 [CI 36973326403](https://github.com/yuxino/mimi/actions/runs/36973326403) 已全部通过：macOS 774/1 忽略，Windows x64/ARM64 各 775/2，Linux 760/4，前端 695（76 文件）；Linux 三项隔离 smoke 各 1 项通过、WASAPI 4 项通过，scope/MSRV/格式/clippy/Intel 检查和汇总均成功。ARM64 应用编译/原生启动、bundle、正式发布与 publication 步骤均跳过。公网 HTTPS 及 Windows 真实音频设备测试保留忽略，Linux 三项环境测试虽在 bulk 忽略，但已单独通过。[Android 36973326168](https://github.com/yuxino/mimi/actions/runs/36973326168) 也已成功，debug/release 单元测试、lint 和 instrumentation APK 编译通过；验收 APK、一次性测试签名及两个上传步骤按 PR 条件跳过，没有正式签名 APK 或设备验收结论。
 

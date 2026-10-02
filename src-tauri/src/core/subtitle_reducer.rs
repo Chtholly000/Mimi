@@ -221,6 +221,10 @@ impl SubtitleReducer {
                             .preview_source_utterance_id
                             .is_some_and(|id| id > final_id)
                 });
+                let newer_preview_visible = source_utterance_id.is_some_and(|final_id| {
+                    self.preview_source_utterance_id
+                        .is_some_and(|id| id > final_id)
+                });
                 if let Some(id) = source_utterance_id {
                     self.last_confirmed_source_id = Some(
                         self.last_confirmed_source_id
@@ -232,6 +236,12 @@ impl SubtitleReducer {
                 if !newer_source_visible {
                     self.snapshot.source = SubtitleLine::new(source.clone(), true);
                     self.snapshot.translation = SubtitleLine::new(translation.clone(), true);
+                }
+                // Raw B may arrive (including an empty begin) before A's
+                // final HTTP completes, while the complete preview still
+                // belongs to A. Only that preview's own identity can keep it
+                // out of A's confirmation cleanup; a newer raw owner cannot.
+                if !newer_preview_visible {
                     self.snapshot.preview_pair = None;
                     self.preview_source_utterance_id = None;
                 }
@@ -422,6 +432,52 @@ mod tests {
         });
         assert_eq!(reducer.snapshot.source.text, "Synthetic new task");
         assert_ne!(reducer.snapshot.source.utterance_id, before_reset);
+    }
+
+    #[test]
+    fn confirming_a_preview_clears_it_while_retaining_the_next_raw_sentence() {
+        for next_source in ["", "Next sentence begins"] {
+            let mut reducer = SubtitleReducer::default();
+            reducer.apply(SubtitleEvent::SourceUtteranceDraft {
+                utterance_id: 7,
+                text: "Earlier partial sentence".into(),
+            });
+            reducer.apply(SubtitleEvent::PreviewPair {
+                source_utterance_id: Some(7),
+                source: "Earlier partial sentence".into(),
+                translation: "较早的完整预览".into(),
+            });
+            reducer.apply(SubtitleEvent::SourceUtteranceDraft {
+                utterance_id: 8,
+                text: next_source.into(),
+            });
+            let newer_raw = reducer.snapshot.source.clone();
+
+            reducer.apply(SubtitleEvent::ConfirmedPair {
+                utterance_id: 1,
+                source_utterance_id: Some(7),
+                source: "Earlier corrected complete sentence.".into(),
+                translation: "较早句子的最终译文。".into(),
+            });
+
+            assert_eq!(reducer.snapshot.source, newer_raw);
+            assert!(!reducer.snapshot.source.is_final);
+            assert!(
+                reducer.snapshot.preview_pair.is_none(),
+                "a newer raw sentence cannot keep the confirmed sentence's old preview"
+            );
+            assert_eq!(reducer.snapshot.history.len(), 1);
+            assert_eq!(
+                reducer.snapshot.history[0].source,
+                "Earlier corrected complete sentence."
+            );
+            assert_eq!(
+                reducer.snapshot.history[0].translation,
+                "较早句子的最终译文。"
+            );
+            assert_eq!(reducer.preview_source_utterance_id, None);
+            assert_eq!(reducer.latest_source_utterance_id, Some(8));
+        }
     }
 
     #[test]

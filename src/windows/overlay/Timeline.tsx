@@ -234,9 +234,9 @@ export const Timeline = memo(function Timeline({
             return current[kind] === height ? previous : { ...current, [kind]: height };
           });
         };
-        // Previous sentences retain one line in each selected language.
-        // Bilingual must not silently remove its original while following.
-        const previousReference = compact && !isLast;
+        // A new sentence must not collapse the previous phrase to its last
+        // word. Every following row keeps the viewport's bounded lane budget;
+        // the timeline's outer scroll chooses which rows remain in view.
         return (
           <div
             key={block.id}
@@ -293,7 +293,7 @@ export const Timeline = memo(function Timeline({
                 <Lane
                   text={block.source}
                   kind="source"
-                  lines={compact && budget.source > 0 ? previousReference ? 1 : budget.source : null}
+                  lines={compact && budget.source > 0 ? budget.source : null}
                   fontSize={fontSize}
                   alignment={alignment}
                   displayMode={displayMode}
@@ -309,7 +309,7 @@ export const Timeline = memo(function Timeline({
                 <Lane
                   text={block.translation}
                   kind="translation"
-                  lines={compact && budget.translation > 0 ? previousReference ? 1 : budget.translation : null}
+                  lines={compact && budget.translation > 0 ? budget.translation : null}
                   fontSize={fontSize}
                   alignment={alignment}
                   displayMode={displayMode}

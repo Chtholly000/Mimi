@@ -34,7 +34,13 @@ from the newest draft revision.
 Preview and confirmed events retain an optional actual source ID internally.
 The reducer uses bounded private source/preview watermarks: an older final appends
 history but does not overwrite a newer raw source or completed preview. The
-completed preview has an optional opaque `utteranceId`, also used by identified
+two owners are checked independently. If a complete preview belongs to A7,
+raw B8 arrives (even with empty text), and A7 later confirms, retain raw B8 but
+clear the already-confirmed A7 preview. A newer raw source must not keep an
+older preview visible beside its own durable history. A completed B8 preview
+still survives an older A7 confirmation. This decision uses actual IDs, not
+text-prefix similarity, so repeated lyrics with different IDs remain distinct.
+The completed preview has an optional opaque `utteranceId`, also used by identified
 raw sources in the existing source field. Its real server ID and a private layout
 epoch keep a newer preview's reading key stable when an older final appends to
 history. Clear, reducer creation and connection reset refresh that epoch; no text
@@ -54,7 +60,16 @@ and no extra request is introduced to discover identity.
 Focused fixtures cover late same/older-ID drafts, empty new begins, same-ID
 revisions, newer drafts delivered before older finals through the bounded
 transport, preservation of a newer completed pair during an older confirmation,
-distinct-ID repeated lyrics, Clear/reconnect ownership and late callbacks.
+independent cleanup of a confirmed preview while the next raw sentence has
+already begun (empty and nonempty B8 cases), distinct-ID repeated lyrics,
+Clear/reconnect ownership and late callbacks.
+
+The live-song duplicate was observable after pausing, but the content-free log
+showed the server final completing before the pause request. The pause path
+disconnects instead of generating a fallback final. The pure event regression
+reproduces the owner condition; existing logs do not expose sentence IDs and
+cannot establish the exact private-audio event sequence. This correction is
+not described as a pause-fallback repair or a recognition-quality improvement.
 
 This preserves actual service sentence boundaries. It does not repair ASR text
 that overlaps across genuinely different IDs, guess missing words, align two

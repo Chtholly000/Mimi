@@ -74,6 +74,17 @@ the visible return-to-live action, or returning to the bottom resumes
 compact following. A ResizeObserver gives each bilingual lane the number of whole lines that
 fit the actual body height, including 1+1 in short windows. Absent source text
 leaves the available space to translation.
+Each following row uses that viewport-sized bounded lane budget. Starting the
+next short phrase no longer overrides the preceding confirmed row to one line
+per language: a three-line English phrase could otherwise turn into only its
+last word despite spare body space. The complete text was still in the DOM;
+this was a presentation cut, not stabilization or history truncation. The
+outer timeline continues to scroll to the latest tail, so older rows can leave
+the viewport naturally. Long preceding paragraphs still have finite lane
+heights, and only explicit reading opens their full text. Three-mode component
+fixtures reproduce the former three-lines-to-one transition with measured line
+heights, then verify that fitting lines survive the next phrase without
+remounting; short-window bounds and reading/End behavior remain covered.
 The native minimum expanded height is 136px so the controls and default-sized
 bilingual lanes fit; the collapsed strip keeps its existing smaller height.
 Complete text stays available in the DOM/accessibility tree and local history
