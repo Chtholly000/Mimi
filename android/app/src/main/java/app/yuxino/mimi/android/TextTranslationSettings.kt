@@ -68,7 +68,7 @@ internal class TextTranslationSettings(private val activity: AppCompatActivity, 
         }
         actions.addView(check)
         fields.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-        fields.addView(result, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8); bottomMargin = dp(12) })
+        fields.addView(result, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.END; topMargin = dp(8); bottomMargin = dp(12) })
         fields.visibility = if (enabled) View.VISIBLE else View.GONE
         root.addView(fields)
         val watcher = object : TextWatcher {
