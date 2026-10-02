@@ -1,6 +1,6 @@
 # Provider-aware language controls
 
-## Status: implemented; verification in progress
+## Status: implemented and verified
 
 This phase follows the subtitle read-position acceptance merged in PR #97.
 Language choices now live inside the active service detail, alongside its name,
@@ -123,5 +123,6 @@ and an actual unsupported-service response must remain an explicit failure.
   source/target pairs. Automated payload fixtures do not establish recognition
   or translation quality for all added languages, or native acceptance on every OS.
 
-Automated and native acceptance results will be recorded in the development
-report after the final source revision passes the canonical check.
+PR #98 is merged. Canonical checks and representative signed-macOS source/target
+tests passed; see the [acceptance report](../development/2026-10-02-service-language-acceptance.md)
+for exact source revision, measurements, CI results, and remaining limits.
