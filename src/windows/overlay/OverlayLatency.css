@@ -16,6 +16,8 @@
 }
 .overlay-latency > span:not(.overlay-latency__separator) { display: flex; align-items: baseline; gap: 5px; }
 .overlay-latency strong { font-weight: 600; font-variant-numeric: tabular-nums; }
+.overlay-latency strong[data-tone="warning"] { color: #FFB852; }
+.overlay-latency strong[data-tone="slow"] { color: #FF8A80; }
 .overlay-latency__separator { opacity: 0.55; }
 .overlay-status-row {
   position: absolute;
@@ -67,8 +69,4 @@
   line-height: 12px;
   color: rgba(255, 255, 255, 0.9);
   text-align: left;
-}
-[data-presentation="background-blend"] .overlay-latency {
-  color: rgba(255, 255, 255, 0.9);
-  text-shadow: 0 1px 3px #000, 0 0 5px #000;
 }

@@ -246,11 +246,12 @@ export function OverlayWindow() {
 
   function renderStatusLine() {
     const returnToLive = readingHistory && blocks.length > 0 && !presentationCollapsed;
-    if (!session.isActive && !sessionAction.pending && !sessionAction.failed && !returnToLive) return null;
+    const showTiming = session.isActive && !blendsWithBackground;
+    if (!showTiming && !sessionAction.pending && !sessionAction.failed && !returnToLive) return null;
     return <div className="overlay-status-row" style={{ top: topChromeLayout.topBandHeight - 14 }}>
       {sessionAction.pending || sessionAction.failed ? <div role={sessionAction.failed ? "alert" : "status"} className="overlay-action-feedback">
         {sessionAction.pending ? I18N.overlay.connecting : I18N.overlay.controlActionFailed}
-      </div> : <OverlayLatency session={session} translationRequired={settings.targetLanguage !== "original"} />}
+      </div> : showTiming ? <OverlayLatency session={session} translationRequired={settings.targetLanguage !== "original"} /> : null}
       {returnToLive && <button type="button" className="overlay-return-to-live" onClick={() => {
         setReadingHistory(false);
         setFollowTailRequest(request => request + 1);

@@ -165,8 +165,16 @@ dash; MT recovery displays a short explicit rate-limit/retry status. Unsupported
 or inactive observations show an em dash. Timings are
 content-free and clear across inactive/paused/error/reconnecting or stale
 generations; original-only mode has no translation sample. Immersive mode
-keeps the requested status/timings without a background panel, and its help
-text describes this presentation in all three UI languages. Characters per second is omitted:
+hides the API and translation timing row. It retains explicit control-action
+feedback and the return-to-live reading action without introducing another
+panel or shifting the subtitle content origin.
+Only completed numeric samples receive a presentation color: API measurements
+are neutral below 500ms, amber from 500ms, and pale red from 1500ms; translation
+request/follow measurements are neutral below 1000ms, amber from 1000ms, and
+pale red from 3000ms. These are UI experience bands, not network-only RTT,
+end-to-end subtitle latency, provider SLAs, or failure classifications. Pending,
+recovery and inactive labels stay neutral rather than inheriting stale samples.
+Characters per second is omitted:
 provider batching and sentence length make it less useful than elapsed time
 for diagnosing the user's reported delays.
 

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setStoredUiLanguage } from "../../lib/i18n";
 import type { SessionStateEvent } from "../../lib/types";
 import { OverlayLatency } from "./OverlayLatency";
-import { formatLatency } from "./latencyFormat";
+import { formatLatency, latencyTone } from "./latencyFormat";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -27,10 +27,49 @@ async function render(overrides: Partial<SessionStateEvent> = {}) {
 
 describe("overlay timing observations", () => {
   it("keeps unavailable and invalid samples distinct from a measured zero", () => {
-    for (const value of [null, undefined, Number.NaN, Number.POSITIVE_INFINITY, -1]) expect(formatLatency(value)).toBe("—");
+    for (const value of [null, undefined, Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      expect(formatLatency(value)).toBe("—");
+      expect(latencyTone(value, "api")).toBe("neutral");
+      expect(latencyTone(value, "translation")).toBe("neutral");
+    }
     expect(formatLatency(0)).toBe("0 ms");
     expect(formatLatency(238)).toBe("238 ms");
     expect(formatLatency(1250)).toBe("1.3 s");
+  });
+  it.each([
+    [0, 0, "neutral", "neutral"],
+    [499, 999, "neutral", "neutral"],
+    [500, 1_000, "warning", "warning"],
+    [1_499, 2_999, "warning", "warning"],
+    [1_500, 3_000, "slow", "slow"],
+  ] as const)("grades actual API %ims and translation %ims with their own bands", async (apiLatencyMs, translationLatencyMs, apiTone, translationTone) => {
+    await render({ apiLatencyMs, translationLatencyMs, translationLatencyKind: "request" });
+    const samples = host.querySelectorAll("strong");
+    expect(samples[0].dataset.tone).toBe(apiTone);
+    expect(samples[1].dataset.tone).toBe(translationTone);
+    expect(samples[0].textContent).toBe(formatLatency(apiLatencyMs));
+    expect(samples[1].textContent).toBe(formatLatency(translationLatencyMs));
+  });
+  it("never uses a previous slow sample to color pending, recovery, or inactive states", async () => {
+    const samples = { apiLatencyMs: 2_000, translationLatencyMs: 4_000 };
+    for (const state of [
+      { isTranslationPending: true },
+      { isTranslationPreviewPending: true },
+      { translationRecovery: { reason: "rateLimited" as const, retryAfterMs: 1_000, retryScheduled: false } },
+      { translationRecovery: { reason: "temporarilyUnavailable" as const, retryAfterMs: 1_000 } },
+    ]) {
+      await render({ ...samples, ...state });
+      expect(host.querySelectorAll("strong")[0].dataset.tone).toBe("slow");
+      expect(host.querySelectorAll("strong")[1].dataset.tone).toBe("neutral");
+      expect(host.querySelectorAll("strong")[1].textContent).not.toBe("4.0 s");
+    }
+    for (const state of [
+      { isPaused: true }, { status: { kind: "connecting" as const } },
+      { status: { kind: "error" as const, message: "unavailable" } },
+    ]) {
+      await render({ ...samples, ...state });
+      expect(Array.from(host.querySelectorAll("strong"), sample => sample.dataset.tone)).toEqual(["neutral", "neutral"]);
+    }
   });
   it("shows missing measurements without inventing a timing", async () => {
     await render();

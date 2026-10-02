@@ -152,3 +152,43 @@ it.each(["zh", "en", "ja"] as const)("keeps the return action beside timings and
   expect(returnButton()).toBeNull();
   expect(row.querySelector('[role="alert"]')).not.toBeNull();
 });
+
+it.each(["zh", "en", "ja"] as const)("hides immersive timings while retaining bilingual reading and return to live in %s", async language => {
+  vi.stubGlobal("innerWidth", 360); setStoredUiLanguage(language);
+  useStore.setState(state => ({ session: { ...state.session, apiLatencyMs: 1_500, translationLatencyMs: 3_000 },
+    settings: { ...state.settings, subtitleBlendsWithBackground: true } }));
+  await mount();
+  expect(host.querySelector('[data-testid="overlay-latency"]')).toBeNull();
+  expect(host.querySelector(".overlay-status-row")).toBeNull();
+  expect(timeline().textContent).toContain(confirmed.source);
+  expect(timeline().textContent).toContain(confirmed.translation);
+  await readHistory();
+  expect(returnButton()?.textContent).toBe(I18N.overlay.returnToLive);
+  expect(host.querySelector('[data-testid="overlay-latency"]')).toBeNull();
+  await act(async () => returnButton()!.click());
+  expect(returnButton()).toBeNull();
+  expect(host.querySelector(".overlay-status-row")).toBeNull();
+  expect(timeline().scrollTop).toBe(249);
+  await act(async () => useStore.setState(state => ({ settings: { ...state.settings, subtitleBlendsWithBackground: false } })));
+  expect(host.querySelector('[data-testid="overlay-latency"]')).not.toBeNull();
+  expect(Array.from(host.querySelectorAll(".overlay-latency strong"), element => (element as HTMLElement).dataset.tone)).toEqual(["slow", "slow"]);
+});
+
+it("retains pending and failed action feedback after enabling immersion without restoring timings", async () => {
+  let fail!: (error: Error) => void;
+  useStore.setState({ togglePaused: () => new Promise<void>((_resolve, reject) => { fail = reject; }) });
+  await mount();
+  await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${I18N.overlay.pause}"]`)!.click());
+  await act(async () => useStore.setState(state => ({ settings: { ...state.settings, subtitleBlendsWithBackground: true } })));
+  expect(host.querySelector('[data-testid="overlay-latency"]')).toBeNull();
+  expect(host.querySelector(".overlay-action-feedback")?.getAttribute("role")).toBe("status");
+  await act(async () => fail(new Error("synthetic-action-failure")));
+  expect(host.querySelector(".overlay-action-feedback")?.getAttribute("role")).toBe("alert");
+  await readHistory();
+  expect(returnButton()).not.toBeNull();
+  expect(host.querySelector('[data-testid="overlay-latency"]')).toBeNull();
+  await act(async () => returnButton()!.click());
+  expect(host.querySelector(".overlay-action-feedback")?.getAttribute("role")).toBe("alert");
+  await act(async () => useStore.setState(state => ({ session: { ...state.session, isPaused: true } })));
+  expect(host.querySelector(".overlay-status-row")).toBeNull();
+});
