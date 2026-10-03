@@ -26,10 +26,11 @@ impl OpenAICompatibleClient {
         source: SourceLanguage,
         target: TargetLanguage,
     ) -> Result<Self, OpenAICompatibleError> {
+        if api_key.chars().any(char::is_control) {
+            return Err(OpenAICompatibleError::APIKey);
+        }
         let api_key = api_key.trim();
-        if api_key.is_empty()
-            || api_key.len() > 4096
-            || api_key.chars().any(char::is_control)
+        if api_key.len() > 4096
             || reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}")).is_err()
         {
             return Err(OpenAICompatibleError::APIKey);
@@ -73,20 +74,17 @@ impl OpenAICompatibleClient {
             &self.model,
         )?;
         tokio::time::timeout(self.timeout, async {
-            let response = self
-                .client
-                .post(self.endpoint.clone())
-                .bearer_auth(&self.api_key)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|error| {
-                    if error.is_timeout() {
-                        OpenAICompatibleError::Timeout
-                    } else {
-                        OpenAICompatibleError::Connection
-                    }
-                })?;
+            let mut request = self.client.post(self.endpoint.clone()).json(&body);
+            if !self.api_key.is_empty() {
+                request = request.bearer_auth(&self.api_key);
+            }
+            let response = request.send().await.map_err(|error| {
+                if error.is_timeout() {
+                    OpenAICompatibleError::Timeout
+                } else {
+                    OpenAICompatibleError::Connection
+                }
+            })?;
             if !response.status().is_success() {
                 return Err(OpenAICompatibleError::Rejected(response.status().as_u16()));
             }
@@ -350,10 +348,16 @@ mod tests {
                     .unwrap();
                 ready_tx.send(()).unwrap();
                 let mut buffer = [0; 1];
-                tokio::time::timeout(Duration::from_secs(2), socket.read(&mut buffer))
+                // Cancellation may close TCP with FIN or RST; both prove the
+                // stalled transport ended. Other errors and timeouts still fail.
+                match tokio::time::timeout(Duration::from_secs(2), socket.read(&mut buffer))
                     .await
                     .unwrap()
-                    .unwrap()
+                {
+                    Ok(count) => count,
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => 0,
+                    Err(error) => panic!("unexpected transport close error: {error}"),
+                }
             });
             let task =
                 tokio::spawn(async move { client.translate("Synthetic source", None).await });
@@ -365,6 +369,79 @@ mod tests {
                 assert_eq!(task.await.unwrap(), Err(OpenAICompatibleError::Timeout));
             }
             assert_eq!(server.await.unwrap(), 0);
+        }
+    }
+    #[tokio::test]
+    async fn chatmock_can_translate_without_a_bearer_key_and_never_exposes_reasoning() {
+        let (mut client, server) = fixture(
+            200,
+            r#"{"choices":[{"finish_reason":"stop","message":{"content":"<think>Synthetic reasoning.</think> Synthetic translation"}}]}"#,
+            false,
+            "",
+        ).await;
+        client.api_key.clear();
+        let anonymous = OpenAICompatibleClient::new(
+            client.endpoint.as_str(),
+            "",
+            "synthetic-model",
+            SourceLanguage::Automatic,
+            TargetLanguage::Japanese,
+        )
+        .unwrap();
+        assert!(anonymous.api_key.is_empty());
+        assert_eq!(
+            client.translate("Synthetic source", None).await.unwrap(),
+            "Synthetic translation"
+        );
+        let request = server.await.unwrap();
+        assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        let body: serde_json::Value =
+            serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["stream"], false);
+        assert!(!body.as_object().unwrap().contains_key("reasoning_compat"));
+    }
+
+    #[tokio::test]
+    async fn chatmock_malformed_or_incomplete_reasoning_fails_without_provider_content() {
+        for body in [
+            r#"{"choices":[{"finish_reason":"stop","message":{"content":"<think>private unfinished reasoning"}}]}"#,
+            r#"{"choices":[{"finish_reason":null,"message":{"content":"private unfinished text"}}]}"#,
+            r#"{"choices":[{"finish_reason":"tool_calls","message":{"content":"private tool description"}}]}"#,
+        ] {
+            let (client, server) = fixture(200, body, false, "").await;
+            let error = client
+                .translate("Synthetic source", None)
+                .await
+                .unwrap_err();
+            assert_eq!(error, OpenAICompatibleError::Response);
+            assert!(!error.to_string().contains("private"));
+            server.await.unwrap();
+        }
+    }
+
+    #[test]
+    fn optional_bearer_keys_remain_bounded_and_reject_control_characters() {
+        for key in ["", "  ", "synthetic-key"] {
+            assert!(OpenAICompatibleClient::new(
+                "http://127.0.0.1:8000/v1",
+                key,
+                "synthetic-model",
+                SourceLanguage::English,
+                TargetLanguage::Japanese
+            )
+            .is_ok());
+        }
+        for key in ["\n", "synthetic\r\nkey", &"x".repeat(4097)] {
+            assert!(matches!(
+                OpenAICompatibleClient::new(
+                    "http://127.0.0.1:8000/v1",
+                    key,
+                    "synthetic-model",
+                    SourceLanguage::English,
+                    TargetLanguage::Japanese
+                ),
+                Err(OpenAICompatibleError::APIKey)
+            ));
         }
     }
 }

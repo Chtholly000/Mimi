@@ -94,6 +94,8 @@ pub enum ProviderCredentials {
         token: String,
         #[serde(default)]
         model: String,
+        #[serde(default)]
+        clear_token: bool,
     },
     DeepLX {
         asr_api_key: String,
@@ -105,6 +107,12 @@ pub enum ProviderCredentials {
         api_key: String,
     },
     OpenAICompatible {
+        asr_api_key: String,
+        endpoint: String,
+        api_key: String,
+        model: String,
+    },
+    ChatMock {
         asr_api_key: String,
         endpoint: String,
         api_key: String,
@@ -150,6 +158,11 @@ pub enum TextTranslationCredentials {
         model: String,
         api_key: String,
     },
+    ChatMock {
+        endpoint: String,
+        model: String,
+        api_key: String,
+    },
 }
 
 impl fmt::Debug for TextTranslationCredentials {
@@ -168,6 +181,7 @@ impl TextTranslationCredentials {
             Self::DeepL { .. } => TextTranslation::DeepL,
             Self::DeepLX { .. } => TextTranslation::DeepLX,
             Self::OpenAICompatible { .. } => TextTranslation::OpenAICompatible,
+            Self::ChatMock { .. } => TextTranslation::ChatMock,
         }
     }
 
@@ -208,7 +222,19 @@ impl TextTranslationCredentials {
                     .to_string(),
                 model: crate::core::protocols::openai_compatible::validate_model(model)
                     .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleModel)?,
-                api_key: required(api_key)?,
+                api_key: optional_openai_compatible_key(api_key)?,
+            }),
+            Self::ChatMock {
+                endpoint,
+                model,
+                api_key,
+            } => Ok(Self::ChatMock {
+                endpoint: crate::core::protocols::openai_compatible::endpoint(endpoint)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleEndpoint)?
+                    .to_string(),
+                model: crate::core::protocols::openai_compatible::validate_model(model)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleModel)?,
+                api_key: optional_openai_compatible_key(api_key)?,
             }),
         }
     }
@@ -256,13 +282,15 @@ impl ProviderCredentials {
                 Field::ApiKey,
                 Self::DeepL { asr_api_key, .. }
                 | Self::DeepLX { asr_api_key, .. }
-                | Self::OpenAICompatible { asr_api_key, .. },
+                | Self::OpenAICompatible { asr_api_key, .. }
+                | Self::ChatMock { asr_api_key, .. },
             ) if profile.provider == ProviderKind::AlibabaCloud => asr_api_key,
             (
                 Field::AsrApiKey,
                 Self::DeepL { asr_api_key, .. }
                 | Self::DeepLX { asr_api_key, .. }
-                | Self::OpenAICompatible { asr_api_key, .. },
+                | Self::OpenAICompatible { asr_api_key, .. }
+                | Self::ChatMock { asr_api_key, .. },
             ) if matches!(
                 profile.provider,
                 ProviderKind::AlibabaCloud | ProviderKind::DeepLX
@@ -314,6 +342,13 @@ impl ProviderCredentials {
             {
                 api_key
             }
+            (Field::Token, Self::ChatMock { api_key, .. })
+                if profile.provider.supports_text_translation()
+                    && profile.text_translation() == TextTranslation::ChatMock
+                    && expected_text_translation == Some(TextTranslation::ChatMock) =>
+            {
+                api_key
+            }
             _ => return Err(ProviderCredentialsError::InvalidRevealField),
         };
         if value.chars().count() > MAXIMUM_CREDENTIAL_FIELD_LENGTH
@@ -336,6 +371,7 @@ impl ProviderCredentials {
             Self::DeepLX { .. } => "deeplx",
             Self::DeepL { .. } => "deepl",
             Self::OpenAICompatible { .. } => "openai_compatible",
+            Self::ChatMock { .. } => "chat_mock",
             Self::ApiKey { .. } => "api_key",
             Self::CustomSpeech { .. } => "custom_speech",
             Self::AzureOpenAI { .. } => "azure_openai",
@@ -384,7 +420,24 @@ impl ProviderCredentials {
                 endpoint: crate::core::protocols::openai_compatible::endpoint(endpoint)
                     .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleEndpoint)?
                     .to_string(),
-                api_key: required_field(api_key, provider)?,
+                api_key: optional_openai_compatible_key(api_key)?,
+                model: crate::core::protocols::openai_compatible::validate_model(model)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleModel)?,
+            }),
+            (
+                ProviderKind::AlibabaCloud,
+                Self::ChatMock {
+                    asr_api_key,
+                    endpoint,
+                    api_key,
+                    model,
+                },
+            ) => Ok(Self::ChatMock {
+                asr_api_key: required_field(asr_api_key, provider)?,
+                endpoint: crate::core::protocols::openai_compatible::endpoint(endpoint)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleEndpoint)?
+                    .to_string(),
+                api_key: optional_openai_compatible_key(api_key)?,
                 model: crate::core::protocols::openai_compatible::validate_model(model)
                     .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleModel)?,
             }),
@@ -514,7 +567,8 @@ impl ProviderCredentials {
             Self::ApiKey { api_key } => Some(api_key),
             Self::DeepLX { asr_api_key, .. }
             | Self::DeepL { asr_api_key, .. }
-            | Self::OpenAICompatible { asr_api_key, .. } => Some(asr_api_key),
+            | Self::OpenAICompatible { asr_api_key, .. }
+            | Self::ChatMock { asr_api_key, .. } => Some(asr_api_key),
             _ => None,
         }
     }
@@ -528,6 +582,7 @@ impl ProviderCredentials {
             | Self::DeepLX { .. }
             | Self::DeepL { .. }
             | Self::OpenAICompatible { .. }
+            | Self::ChatMock { .. }
             | Self::TencentCloud { .. }
             | Self::BaiduTranslate { .. } => None,
         }
@@ -562,6 +617,17 @@ impl ProviderCredentials {
             _ => None,
         }
     }
+}
+
+/// No-auth OpenAI-compatible destinations still have a validated endpoint and model.
+/// Never substitute a recognition key for an empty text-service key.
+fn optional_openai_compatible_key(value: &str) -> Result<String, ProviderCredentialsError> {
+    if value.chars().any(char::is_control)
+        || value.trim().chars().count() > MAXIMUM_CREDENTIAL_FIELD_LENGTH
+    {
+        return Err(ProviderCredentialsError::InvalidField);
+    }
+    Ok(value.trim().to_owned())
 }
 
 fn required_field(value: &str, provider: ProviderKind) -> Result<String, ProviderCredentialsError> {
@@ -713,14 +779,15 @@ mod tests {
             TextTranslationCredentials::DeepL { api_key: "".into() }.validated(),
             Err(ProviderCredentialsError::MissingTextTranslation)
         );
-        assert_eq!(
-            TextTranslationCredentials::OpenAICompatible {
-                endpoint: "https://destination.example/v1".into(),
-                model: "model".into(),
-                api_key: "".into()
-            }
-            .validated(),
-            Err(ProviderCredentialsError::MissingTextTranslation)
+        let anonymous = TextTranslationCredentials::OpenAICompatible {
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+            model: "model".into(),
+            api_key: "".into(),
+        }
+        .validated()
+        .unwrap();
+        assert!(
+            matches!(anonymous, TextTranslationCredentials::OpenAICompatible { api_key, .. } if api_key.is_empty())
         );
     }
 
@@ -818,6 +885,7 @@ mod tests {
             endpoint: String::new(),
             token: "synthetic-request".into(),
             model: String::new(),
+            clear_token: false,
         };
         assert_eq!(
             request.revealed_field(
@@ -845,7 +913,14 @@ mod tests {
     fn alibaba_translation_request_is_write_only_and_debug_redacted() {
         let request: ProviderCredentials = serde_json::from_str(r#"{"kind":"alibabaTranslation","apiKey":"","textTranslation":"deepLX","endpoint":"https://example.com","token":"synthetic-token"}"#).unwrap();
         assert!(
-            matches!(&request, ProviderCredentials::AlibabaTranslation { api_key, text_translation: TextTranslation::DeepLX, .. } if api_key.is_empty())
+            matches!(&request, ProviderCredentials::AlibabaTranslation { api_key, text_translation: TextTranslation::DeepLX, clear_token: false, .. } if api_key.is_empty())
+        );
+        let clear_request: ProviderCredentials = serde_json::from_str(r#"{"kind":"alibabaTranslation","apiKey":"","textTranslation":"openAICompatible","endpoint":"","token":"","clearToken":true}"#).unwrap();
+        let encoded = serde_json::to_value(&clear_request).unwrap();
+        assert_eq!(encoded["clearToken"], true);
+        assert_eq!(
+            serde_json::from_value::<ProviderCredentials>(encoded).unwrap(),
+            clear_request
         );
         assert!(request
             .encode_for_keychain(ProviderKind::AlibabaCloud)
@@ -986,13 +1061,6 @@ mod tests {
                 "synthetic",
                 "model",
                 ProviderCredentialsError::InvalidOpenAICompatibleEndpoint,
-            ),
-            (
-                "asr",
-                "https://example.com/v1",
-                "",
-                "model",
-                ProviderCredentialsError::Missing(ProviderKind::AlibabaCloud),
             ),
             (
                 "asr",
@@ -1191,5 +1259,120 @@ mod tests {
                 ProviderKind::TencentCloud
             ))
         ));
+    }
+    #[test]
+    fn anonymous_openai_compatible_keys_are_isolated_from_required_recognition_credentials() {
+        let credentials = ProviderCredentials::OpenAICompatible {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+            api_key: String::new(),
+            model: "synthetic-model".into(),
+        }
+        .validated_for(ProviderKind::AlibabaCloud)
+        .unwrap();
+        assert_eq!(credentials.alibaba_key(), Some("synthetic-asr"));
+        assert!(
+            matches!(credentials, ProviderCredentials::OpenAICompatible { api_key, .. } if api_key.is_empty())
+        );
+        for key in [
+            "\n".into(),
+            "bad\r\nkey".into(),
+            "x".repeat(MAXIMUM_CREDENTIAL_FIELD_LENGTH + 1),
+        ] {
+            assert_eq!(
+                TextTranslationCredentials::OpenAICompatible {
+                    endpoint: "http://127.0.0.1:8000/v1".into(),
+                    model: "synthetic-model".into(),
+                    api_key: key,
+                }
+                .validated(),
+                Err(ProviderCredentialsError::InvalidField)
+            );
+        }
+        assert_eq!(
+            ProviderCredentials::DeepL {
+                asr_api_key: "asr".into(),
+                api_key: String::new()
+            }
+            .validated_for(ProviderKind::AlibabaCloud),
+            Err(ProviderCredentialsError::Missing(
+                ProviderKind::AlibabaCloud
+            ))
+        );
+    }
+    #[test]
+    fn chatmock_credentials_keep_route_identity_and_scoped_optional_authentication() {
+        let text = TextTranslationCredentials::ChatMock {
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+            model: "synthetic-model".into(),
+            api_key: "".into(),
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(text.translation(), TextTranslation::ChatMock);
+        let request: ProviderCredentials = serde_json::from_value(serde_json::json!({
+            "kind":"alibabaTranslation", "apiKey":"", "textTranslation":"chatMock", "endpoint":"", "token":"", "model":"", "clearToken":true
+        })).unwrap();
+        assert!(matches!(
+            request,
+            ProviderCredentials::AlibabaTranslation {
+                text_translation: TextTranslation::ChatMock,
+                clear_token: true,
+                ..
+            }
+        ));
+        let credentials = ProviderCredentials::ChatMock {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+            api_key: "synthetic-chatmock".into(),
+            model: "synthetic-model".into(),
+        }
+        .validated_for(ProviderKind::AlibabaCloud)
+        .unwrap();
+        assert_eq!(credentials.alibaba_key(), Some("synthetic-asr"));
+        assert_eq!(credentials.direct_api_key(), None);
+        assert_eq!(
+            serde_json::to_value(&credentials).unwrap()["kind"],
+            "chatMock"
+        );
+        assert!(!format!("{credentials:?}").contains("synthetic"));
+        let mut profile = ServiceProfile::alibaba_default();
+        profile.text_translation = Some(TextTranslation::ChatMock);
+        assert_eq!(
+            credentials.revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::ChatMock)
+            ),
+            Ok(Some("synthetic-chatmock"))
+        );
+        assert!(credentials
+            .revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::OpenAICompatible)
+            )
+            .is_err());
+        profile.text_translation = Some(TextTranslation::OpenAICompatible);
+        assert!(credentials
+            .revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::OpenAICompatible)
+            )
+            .is_err());
+        for (endpoint, model, key) in [
+            ("http://remote.example/v1", "model", ""),
+            ("http://127.0.0.1:8000/v1", "", ""),
+            ("http://127.0.0.1:8000/v1", "model", "bad\nkey"),
+        ] {
+            assert!(TextTranslationCredentials::ChatMock {
+                endpoint: endpoint.into(),
+                model: model.into(),
+                api_key: key.into()
+            }
+            .validated()
+            .is_err());
+        }
     }
 }

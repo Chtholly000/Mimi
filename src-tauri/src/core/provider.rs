@@ -190,7 +190,7 @@ fn alibaba_capabilities(route: TextTranslation, target: TargetLanguage) -> Provi
     }
     if matches!(
         route,
-        TextTranslation::DeepL | TextTranslation::OpenAICompatible
+        TextTranslation::DeepL | TextTranslation::OpenAICompatible | TextTranslation::ChatMock
     ) {
         return ProviderCapabilities {
             source_languages: vec![
@@ -377,6 +377,14 @@ pub enum TextTranslation {
     DeepLX,
     #[serde(rename = "openAICompatible")]
     OpenAICompatible,
+    #[serde(rename = "chatMock")]
+    ChatMock,
+}
+
+impl TextTranslation {
+    pub const fn uses_chat_completions(self) -> bool {
+        matches!(self, Self::OpenAICompatible | Self::ChatMock)
+    }
 }
 
 /// Non-secret metadata for one named provider configuration.
@@ -441,6 +449,7 @@ impl ServiceProfile {
                 TextTranslation::DeepLX
                     | TextTranslation::DeepL
                     | TextTranslation::OpenAICompatible
+                    | TextTranslation::ChatMock
             )
         ) && !self.provider.supports_text_translation()
         {
@@ -486,7 +495,8 @@ impl ServiceProfile {
                 ProviderKind::DeepLX,
                 TextTranslation::FollowService
                 | TextTranslation::DeepL
-                | TextTranslation::OpenAICompatible,
+                | TextTranslation::OpenAICompatible
+                | TextTranslation::ChatMock,
             ) => ProviderKind::AlibabaCloud,
             _ => self.provider,
         }
@@ -574,6 +584,41 @@ mod tests {
             assert!(!caps.source_languages.contains(&SourceLanguage::French));
             assert!(!caps.target_languages.contains(&TargetLanguage::French));
         }
+    }
+
+    #[test]
+    fn chatmock_has_its_own_wire_identity_without_changing_generic_profiles() {
+        for provider in [
+            ProviderKind::AlibabaCloud,
+            ProviderKind::DeepLX,
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let mut generic = ServiceProfile::new("synthetic", "Synthetic", provider).unwrap();
+            generic.text_translation = Some(TextTranslation::OpenAICompatible);
+            let mut chatmock = generic.clone();
+            chatmock.text_translation = Some(TextTranslation::ChatMock);
+            assert_eq!(
+                serde_json::to_value(&generic).unwrap()["textTranslation"],
+                "openAICompatible"
+            );
+            assert_eq!(
+                serde_json::to_value(&chatmock).unwrap()["textTranslation"],
+                "chatMock"
+            );
+            let decoded: ServiceProfile =
+                serde_json::from_value(serde_json::to_value(&chatmock).unwrap()).unwrap();
+            assert_eq!(decoded.validated().unwrap(), chatmock);
+            assert_eq!(chatmock.effective_provider(), generic.effective_provider());
+            assert_eq!(
+                chatmock.capabilities(TargetLanguage::SimplifiedChinese),
+                generic.capabilities(TargetLanguage::SimplifiedChinese)
+            );
+        }
+        let mut unsupported =
+            ServiceProfile::new("other", "Other", ProviderKind::OpenAIRealtime).unwrap();
+        unsupported.text_translation = Some(TextTranslation::ChatMock);
+        assert!(unsupported.validated().is_err());
     }
 
     #[test]

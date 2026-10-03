@@ -440,7 +440,7 @@ it.each(["openAIRealtime", "volcanoEngine", "tencentCloud", "baiduTranslate"] as
   expect(profileRevealCredential).not.toHaveBeenCalled();
 });
 
-it.each(["deepL", "deepLX", "openAICompatible"] as const)("keeps %s choices scoped to the actual translation route", async (textTranslation) => {
+it.each(["deepL", "deepLX", "openAICompatible", "chatMock"] as const)("keeps %s choices scoped to the actual translation route", async (textTranslation) => {
   const snapshot = { ...settings, profiles: [{ ...profile, textTranslation }] };
   await render(snapshot);
   await act(() => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());

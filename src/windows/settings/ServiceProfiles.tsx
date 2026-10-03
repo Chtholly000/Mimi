@@ -529,7 +529,7 @@ export function ServiceProfiles({
                   <span className="service-row__copy">
                     <strong>{profileTitle(profile)}</strong>
                     {profileSecondaryLabel(profile) && <span className="service-row__provider">{profileSecondaryLabel(profile)}</span>}
-                    {textTranslationForProfile(profile) !== "followService" && <span className="service-row__translation"><ProviderIcon provider={textTranslationForProfile(profile) as "deepL" | "deepLX" | "openAICompatible"} size={32} /><span>{I18N.settings.textTranslationLabel} · {translationName(profile)}</span></span>}
+                    {textTranslationForProfile(profile) !== "followService" && <span className="service-row__translation"><ProviderIcon provider={textTranslationForProfile(profile) as "deepL" | "deepLX" | "openAICompatible" | "chatMock"} size={32} /><span>{I18N.settings.textTranslationLabel} · {translationName(profile)}</span></span>}
                   </span>
                   <span className="service-row__state">
                     <CredentialBadge state={credentialStateForTarget(profile, settings.targetLanguage)} />
@@ -795,12 +795,12 @@ function profileTitle(profile: ServiceProfile): string {
 function profileDescription(profile: ServiceProfile): string {
   if (isCustomSpeechProvider(profile.provider)) return [I18N.settings.customSpeechDescription, I18N.settings.customSpeechLanguages].join("\n");
   const translation = textTranslationForProfile(profile);
-  return translation === "deepL" ? I18N.settings.deepLChain : translation === "deepLX" ? I18N.settings.deepLXChain : translation === "openAICompatible" ? I18N.settings.openAICompatibleChain : providerDescription(profile.provider);
+  return translation === "deepL" ? I18N.settings.deepLChain : translation === "deepLX" ? I18N.settings.deepLXChain : (translation === "openAICompatible" || translation === "chatMock") ? I18N.settings.openAICompatibleChain : providerDescription(profile.provider);
 }
 
 function translationName(profile: ServiceProfile): string {
   const translation = textTranslationForProfile(profile);
-  return translation === "deepL" ? "DeepL" : translation === "deepLX" ? "DeepLX" : translation === "openAICompatible" ? I18N.settings.textTranslationOpenAICompatible : profileProviderName(profile);
+  return translation === "deepL" ? "DeepL" : translation === "deepLX" ? "DeepLX" : translation === "chatMock" ? "ChatMock" : translation === "openAICompatible" ? I18N.settings.textTranslationOpenAICompatible : profileProviderName(profile);
 }
 
 function profileSecondaryLabel(profile: ServiceProfile): string | null {

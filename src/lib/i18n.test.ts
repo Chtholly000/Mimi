@@ -56,5 +56,13 @@ it("keeps the text destination labels short in all UI languages", () => {
     expect(I18N.settings.openAICompatibleRequirements).toContain("choices[0].message.content");
     expect(I18N.settings.openAICompatibleRequired).not.toBe("");
     expect(I18N.settings.openAICompatibleAddressKey).not.toBe("");
+    expect(I18N.settings.textTranslationOpenAICompatible).not.toContain("ChatMock");
+    expect(I18N.settings.chatMockSetup).toContain("/v1/models");
+    expect(I18N.settings.chatMockModelPlaceholder).toContain("ChatMock");
+    expect(I18N.settings.chatMockSetup).toContain("http://127.0.0.1:8000/v1");
+    expect(I18N.settings.chatMockSetup).toContain("ChatGPT");
+    expect(I18N.settings.optionalTranslationKeyPlaceholder).not.toBe("");
+    expect(I18N.settings.noTranslationKeyPlaceholder).not.toBe("");
+    expect(I18N.settings.removeTranslationApiKey).not.toBe(I18N.settings.cancelTranslationKeyRemoval);
   }
 });

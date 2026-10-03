@@ -134,6 +134,56 @@ fields and are written to the app's external `files/ui-preview` directory. Pass
 `-e demo true` for a paced walkthrough suitable for emulator screen recording;
 it demonstrates the labeled sample, not live translation.
 
+## Independent text translation
+
+In Services → Alibaba Cloud, **Text translation** offers the built-in translation,
+**DeepL**, **DeepLX**, **ChatMock**, **OpenAI compatible**, and **No translation (original only)**.
+Independent modes use Alibaba Cloud's `qwen3-asr-flash-realtime` for recognition; the selected
+text service translates confirmed text. Original-only mode makes no text translation request.
+Enable that ASR model for your Alibaba key. Other speech providers keep their built-in translation. This is not an OpenAI Realtime endpoint override.
+
+- **DeepL** needs a separate DeepL API key. Mimi chooses the official Free endpoint for
+  keys ending in `:fx`, otherwise the Pro endpoint. No custom URL or model is needed.
+- **DeepLX** needs your service address and an optional Bearer token. Mimi appends
+  `/translate` when missing; the service must accept `text`, `source_lang`, `target_lang`
+  and return integer `code: 200` with translated text in `data`.
+- **ChatMock** starts with `http://127.0.0.1:8000/v1`. Enter a model ID from your running
+  server; Mimi does not choose a model or enable local HTTP for you.
+- **OpenAI compatible** takes your service endpoint, model and optional key, with no
+  ChatMock address prefilled. Each translator retains its own encrypted configuration.
+
+The old combined entry remains **OpenAI compatible**, including its selected state,
+endpoint, model and key. Nothing is copied to the new ChatMock entry or inferred from a
+localhost URL. Select ChatMock and configure it separately to use the new entry.
+
+Run [ChatMock](https://github.com/RayBytes/ChatMock) yourself and enter its `/v1` base URL
+(or full `/v1/chat/completions` URL), a model ID from its `/v1/models`, and an optional
+Bearer key if your reverse proxy requires one. The endpoint must accept non-streaming
+Chat Completions (`model`, `messages`, `stream: false`) and return a final
+`choices[0].message.content`. Recommended ChatMock options are
+`--reasoning-compat legacy --reasoning-summary none`; Mimi also removes complete leading
+`<think>` blocks and rejects missing final text.
+The local address describes where the ChatMock API runs. Translation models are still
+called online through the account signed in to ChatMock; they do not run on the phone or computer.
+
+Use HTTPS for computers and servers, including LAN addresses. With explicit local HTTP
+permission, only `localhost`, `127.0.0.1`, `[::1]` and Android emulator host `10.0.2.2`
+are supported. On a phone, localhost is the phone itself. For USB development, `adb reverse
+tcp:8000 tcp:8000` can make the computer's local ChatMock service available at
+`http://127.0.0.1:8000/v1` on the phone. Do not use a ChatGPT password or session token as
+Mimi's API key; account login stays in your ChatMock installation.
+
+**Test translation** sends a fixed example through the same HTTP path as subtitles and
+shows elapsed milliseconds. It does not save the draft or send system audio. **Save and use**
+commits both stages; back discards changes. Translation keys have independent encrypted
+storage and are not reused when the destination changes. Help icons open the requirements
+without persistent explanatory paragraphs in the editor.
+
+The final-only translation queue is bounded and serial, with a 45-second deadline from
+enqueue through completion, including time spent waiting. Failure, deadline expiry, backlog overflow or session
+stop cancels pending work; late results cannot enter a newer session. These checks do not
+prove a live DeepL, DeepLX or ChatMock account or physical Android device until those are tested separately.
+
 ## Architecture
 
 ```

@@ -1,6 +1,9 @@
 # Android icon attribution
 
-The service cloud, language and wave icons are adapted from Lucide 1.31.0 into Android vector drawables.
+The service cloud, language, caption and wave icons are adapted from Lucide 1.31.0 into Android vector drawables.
+
+Provider brand marks reuse the existing desktop assets documented in
+[provider-brand-assets.md](../docs/development/provider-brand-assets.md). SVG exports preserve the original artwork and colors; transparent padding is normalized for consistent Android display sizes.
 
 ISC License
 

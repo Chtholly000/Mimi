@@ -179,16 +179,29 @@ describe("local preview store", () => {
     });
     try {
       const credentials = { kind: "alibabaTranslation" as const, apiKey: "", textTranslation: "openAICompatible" as const, endpoint: "https://synthetic.example/v1", token: "synthetic-translation-key", model: "synthetic-model" };
-      for (const field of ["endpoint", "token", "model"] as const) {
+      for (const field of ["endpoint", "model"] as const) {
         await expect(useStore.getState().saveProfileCredentials(profile.id, { ...credentials, [field]: "" })).rejects.toThrow("credential-empty");
       }
       const saved = await useStore.getState().saveProfileCredentials(profile.id, credentials);
       expect(saved.profiles[0].textTranslation).toBe("openAICompatible");
       expect(JSON.stringify(saved)).not.toMatch(/synthetic-translation-key|synthetic-model|synthetic.example/);
       await expect(useStore.getState().saveProfileCredentials(profile.id, { ...credentials, endpoint: "", token: "", model: "new-model" })).resolves.toMatchObject({ profiles: [{ textTranslation: "openAICompatible" }] });
-      await expect(useStore.getState().saveProfileCredentials(profile.id, { ...credentials, token: "" })).rejects.toThrow("credential-empty");
+      await expect(useStore.getState().saveProfileCredentials(profile.id, { ...credentials, token: "" })).resolves.toMatchObject({ profiles: [{ textTranslation: "openAICompatible" }] });
     } finally {
       useStore.setState({ settings: original.settings, session: original.session });
     }
   });
+});
+
+
+it.each(["chatMock", "openAICompatible"] as const)("preview accepts keyless %s without changing speech credentials", async (textTranslation) => {
+  const original = useStore.getState();
+  const profile = { ...original.settings.profiles[0], provider: "alibabaCloud" as const, credentialState: "present" as const, textTranslation: "followService" as const };
+  try {
+    useStore.setState({ settings: { ...original.settings, profiles: [profile] }, session: { ...original.session, isActive: false, isPaused: false, status: { kind: "idle" } } });
+    const credentials = { kind: "alibabaTranslation" as const, apiKey: "", textTranslation, endpoint: "http://127.0.0.1:8000/v1", model: "", token: "" };
+    await expect(useStore.getState().saveProfileCredentials(profile.id, credentials)).rejects.toThrow("credential-empty");
+    await useStore.getState().saveProfileCredentials(profile.id, { ...credentials, model: "synthetic-model" });
+    expect(useStore.getState().settings.profiles[0]).toMatchObject({ textTranslation, credentialState: "present" });
+  } finally { useStore.setState(original); }
 });
