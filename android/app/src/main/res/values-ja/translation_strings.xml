@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version='1.0' encoding='utf-8'?>
 <resources xmlns:tools="http://schemas.android.com/tools">
     <string name="translation_title">テキスト翻訳</string>
     <string name="translation_speech_title">音声認識 · Alibaba Cloud</string>
@@ -7,7 +7,7 @@
     <string name="translation_chatmock">ChatMock / OpenAI 互換</string>
     <string name="translation_endpoint">翻訳 URL</string>
     <string name="translation_model">翻訳モデル</string>
-    <string name="translation_key">翻訳 API キー（任意）</string>
+    <string name="translation_key">翻訳 API キー</string>
     <string name="translation_key_optional">認証が不要な場合は空欄</string>
     <string name="translation_local_http">ローカル HTTP を許可（暗号化なし）</string>
     <string name="translation_remove_key">キーを削除</string>
@@ -17,16 +17,32 @@
     <string name="translation_check_failure">テスト失敗 · %1$d ms。URL、モデル、キー、サーバーの状態を確認してください。</string>
     <string name="translation_required">翻訳 URL とモデルを入力してください。</string>
     <string name="translation_invalid">URL またはモデルが無効です。HTTPS を使用してください。ローカルアドレスの HTTP は許可が必要です。URL に認証情報、クエリ、フラグメントは含められません。</string>
-    <string name="translation_help_title">ChatMock の接続要件</string>
-    <!-- Literal CLI options must keep their double hyphens. -->
-    <string name="translation_help" tools:ignore="TypographyDashes">Alibaba Cloud が音声を認識し、ChatMock が認識済みテキストを翻訳します。有効にすると qwen3-asr-flash-realtime を使用するため、Alibaba アカウントでこのモデルを利用可能にしてください。音声認識とテキスト翻訳のキーは別々です。\n\n自分の PC またはサーバーで ChatMock を起動し、/v1 ベース URL または完全な /v1/chat/completions URL を入力します。モデル ID は /v1/models で確認できます。model、messages、stream: false を受け付け、choices[0].message.content を返す必要があります。\n\nスマートフォンの 127.0.0.1 は端末自身です。PC やサーバーには到達可能な HTTPS URL で接続します。ローカル HTTP は暗号化されないため、明示的な許可が必要です。localhost、127.0.0.1、[::1]、エミュレーターホストの 10.0.2.2 のみ対応します。開発時には adb reverse で PC のポートを端末に転送できます。認証が不要ならキーは空欄にします。URL を変更すると保存済みキーは引き継ぎません。\n\nChatMock は --reasoning-compat legacy --reasoning-summary none での起動を推奨します。テストは固定の例文を送り、所要時間を表示します。システム音声の送信や設定の保存は行いません。「保存して使用」で設定が有効になり、キーはこの端末の暗号化ストレージに保存されます。</string>
-    <string name="translation_session_failed">テキスト翻訳に失敗しました。ChatMock の設定を確認し、再接続してください。</string>
-    <string name="translation_service_name">Alibaba Cloud + ChatMock</string>
+    <string name="translation_help_title">テキスト翻訳のヘルプ</string>
+    <string name="translation_help" tools:ignore="TypographyDashes">ChatMock など、OpenAI Chat Completions 互換のテキスト翻訳サービスを使用します。/v1 ベース URL または完全な /v1/chat/completions URL とモデル ID を入力します。model、messages、stream: false を受け付け、完全な choices[0].message.content を返す必要があります。認証が不要ならキーは空欄にします。\n\nChatMock は自分の PC またはサーバーで起動します。モデル ID は /v1/models で確認できます。起動オプションは --reasoning-compat legacy --reasoning-summary none を推奨します。</string>
+    <string name="translation_session_failed">テキスト翻訳に失敗しました。選択したサービスの設定を確認し、再接続してください。</string>
+    <string name="translation_service_name">Alibaba Cloud + %1$s</string>
     <string name="translation_check_auth">認証失敗 · %1$d ms。翻訳キーとサービスの利用権限を確認してください。</string>
     <string name="translation_check_not_found">エンドポイントまたはモデルが見つかりません · %1$d ms。URL とモデル名を確認してください。</string>
     <string name="translation_check_busy">リクエスト制限 · %1$d ms。利用枠を確認するか、後でもう一度お試しください。</string>
     <string name="translation_check_timeout">タイムアウト · %1$d ms。ネットワークやサーバーの応答時間を確認してください。</string>
-    <string name="translation_check_response">互換性のない応答 · %1$d ms。完全な Chat Completions の翻訳テキストが必要です。</string>
-    <string name="translation_key_saved">翻訳 API キー（保存済み）</string>
+    <string name="translation_check_response">互換性のない応答 · %1$d ms。サービスの種類と翻訳データを確認してください。</string>
     <string name="translation_saved_field">%1$s（保存済み）</string>
+    <string name="translation_none">翻訳しない（原文のみ）</string>
+    <string name="translation_deepl">DeepL</string>
+    <string name="translation_deeplx">DeepLX</string>
+    <string name="translation_deepl_key">DeepL API キー</string>
+    <string name="translation_token">Bearer トークン</string>
+    <string name="translation_deeplx_endpoint">DeepLX サービス URL</string>
+    <string name="translation_endpoint_required">翻訳 URL を入力してください。</string>
+    <string name="translation_key_required">DeepL API キーを入力してください。</string>
+    <string name="translation_key_invalid">キーの形式が無効です。入力し直してください。</string>
+    <string name="translation_help_builtin">Alibaba Cloud の内蔵リアルタイムサービスで音声認識と翻訳を行います。上の音声サービスの API キーを使用します。「保存して使用」で設定が有効になります。</string>
+    <string name="translation_help_none">認識した原文のみを表示し、テキスト翻訳サービスは呼び出しません。音声認識には Alibaba Cloud の qwen3-asr-flash-realtime を使用します。アカウントでこのモデルを利用可能にしてください。「保存して使用」で有効になります。</string>
+    <string name="translation_help_speech">Alibaba Cloud が音声を認識し、選択したテキスト翻訳サービスに認識済みの文字だけを送ります。音声認識には qwen3-asr-flash-realtime を使用するため、Alibaba アカウントで利用可能にしてください。音声認識と各翻訳サービスのキーは別々に保存します。</string>
+    <string name="translation_help_deepl">DeepL 公式の翻訳 API を、専用の DeepL API キーで使用します。末尾が :fx の Free キーでは api-free.deepl.com、それ以外は api.deepl.com を使用します。公式 URL は自動で選ばれるため、URL やモデルの入力は不要です。音声サービスのキーは流用しません。</string>
+    <string name="translation_help_deeplx">自分で用意した DeepLX サービスに接続します。/translate で終わる翻訳 URL を入力してください。この末尾がない場合は自動で追加します。モデルは不要です。Bearer 認証が必要な場合のみトークンを入力します。\n\ntext、source_lang、target_lang を受け付け、code: 200 と data の翻訳テキストを返す必要があります。DeepLX と DeepL 公式 API は URL と認証方式が異なります。</string>
+    <string name="translation_help_network">リモートサービスには HTTPS を使用します。スマートフォンの 127.0.0.1 は端末自身です。暗号化されないローカル HTTP は許可が必要で、localhost、127.0.0.1、[::1]、エミュレーターホストの 10.0.2.2 のみ対応します。開発時は adb reverse で PC のポートを転送できます。サービスや URL を変えても別サービスや旧接続先のキーは流用しません。</string>
+    <string name="translation_help_save">テストは固定の例文を送り、実際の所要時間を表示します。音声の送信や設定の保存は行いません。サービスを切り替えても編集中の入力は保持します。「保存して使用」で選択中のサービスだけを保存します。キーはこの端末の暗号化ストレージに保存します。</string>
+    <string name="translation_service_custom">カスタム翻訳</string>
+    <string name="translation_service_original">Alibaba Cloud（原文のみ）</string>
 </resources>

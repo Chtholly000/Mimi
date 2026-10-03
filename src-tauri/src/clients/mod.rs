@@ -22,3 +22,6 @@ pub mod connection_diagnostics;
 
 pub mod deepl_client;
 pub mod deeplx_client;
+
+#[cfg(test)]
+mod translation_contract_tests;

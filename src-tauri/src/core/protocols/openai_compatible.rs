@@ -141,11 +141,12 @@ pub fn decode(bytes: &[u8]) -> Result<String, OpenAICompatibleError> {
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
         .ok_or(OpenAICompatibleError::Response)?;
-    if matches!(
-        choice.get("finish_reason").and_then(Value::as_str),
-        Some("length" | "content_filter")
-    ) {
-        return Err(OpenAICompatibleError::Response);
+    // Some compatible services omit finish_reason. An explicit unfinished,
+    // filtered or tool-only completion must never become a durable subtitle.
+    match choice.get("finish_reason") {
+        None => {}
+        Some(Value::String(reason)) if reason == "stop" => {}
+        _ => return Err(OpenAICompatibleError::Response),
     }
     let text = choice
         .get("message")
@@ -155,7 +156,19 @@ pub fn decode(bytes: &[u8]) -> Result<String, OpenAICompatibleError> {
     if text.len() > MAX_TRANSLATION_BYTES {
         return Err(OpenAICompatibleError::TooLarge);
     }
-    let text = text.trim();
+    let mut text = text.trim();
+    // ChatMock's default non-streaming format prepends a reasoning block. Only
+    // complete leading blocks are removable; never display an unfinished or
+    // nested block as translated speech. Separate reasoning fields are ignored.
+    while let Some(reasoning) = text.strip_prefix("<think>") {
+        let Some((reasoning, translation)) = reasoning.split_once("</think>") else {
+            return Err(OpenAICompatibleError::Response);
+        };
+        if reasoning.contains("<think>") {
+            return Err(OpenAICompatibleError::Response);
+        }
+        text = translation.trim_start();
+    }
     if text.is_empty() {
         return Err(OpenAICompatibleError::Response);
     }
@@ -313,5 +326,74 @@ mod tests {
                 Err(OpenAICompatibleError::Response)
             );
         }
+    }
+    #[test]
+    fn chatmock_reasoning_is_not_displayed_as_translation() {
+        for content in [
+            "<think>Synthetic reasoning.</think> Synthetic translation ",
+            " <think>First.</think>\n<think>Second.</think>\nSynthetic translation ",
+            "Synthetic translation",
+        ] {
+            let body = json!({"choices":[{"finish_reason":"stop","message":{
+                "content":content,"reasoning":"Private reasoning","reasoning_summary":"Private summary"
+            }}]}).to_string();
+            assert_eq!(decode(body.as_bytes()).unwrap(), "Synthetic translation");
+        }
+        for content in [
+            "<think>unfinished",
+            "<think>only thoughts</think>",
+            "<think>outer<think>inner</think>remainder</think>text",
+        ] {
+            let body = json!({"choices":[{"finish_reason":"stop","message":{"content":content}}]})
+                .to_string();
+            assert_eq!(
+                decode(body.as_bytes()),
+                Err(OpenAICompatibleError::Response)
+            );
+        }
+        // Tags inside translated text are not a leading protocol envelope.
+        let body = json!({"choices":[{"message":{"content":"Synthetic <think> literal text"}}]})
+            .to_string();
+        assert_eq!(
+            decode(body.as_bytes()).unwrap(),
+            "Synthetic <think> literal text"
+        );
+    }
+
+    #[test]
+    fn explicit_unfinished_or_tool_results_are_rejected_but_omitted_status_stays_compatible() {
+        for reason in [
+            Value::Null,
+            json!("length"),
+            json!("content_filter"),
+            json!("tool_calls"),
+            json!("function_call"),
+            json!("unknown"),
+            json!(123),
+        ] {
+            let body = json!({"choices":[{"finish_reason":reason,"message":{"content":"Synthetic result"}}]}).to_string();
+            assert_eq!(
+                decode(body.as_bytes()),
+                Err(OpenAICompatibleError::Response)
+            );
+        }
+        for choice in [
+            json!({"message":{"content":"Synthetic result"}}),
+            json!({"finish_reason":"stop","message":{"content":"Synthetic result"}}),
+        ] {
+            assert_eq!(
+                decode(json!({"choices":[choice]}).to_string().as_bytes()).unwrap(),
+                "Synthetic result"
+            );
+        }
+        let oversized = format!("<think>{}</think>Result", "x".repeat(MAX_TRANSLATION_BYTES));
+        assert_eq!(
+            decode(
+                json!({"choices":[{"message":{"content":oversized}}]})
+                    .to_string()
+                    .as_bytes()
+            ),
+            Err(OpenAICompatibleError::TooLarge)
+        );
     }
 }

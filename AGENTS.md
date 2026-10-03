@@ -51,6 +51,13 @@ Preserve these product constraints:
 - A normal credential snapshot may read each profile API key once, but must not touch migration-only Keychain items after a profile-scoped key exists. Keep non-secret migration bookkeeping off the steady-state authorization path.
 - Never delete and recreate a Keychain credential to refresh its ACL, widen an item or keychain to allow-all, or fabricate a Team ID for a self-signed build. Preserve the same service/account and update its secret in place. Password-free Keychain continuity across rebuilt binaries requires an Apple-issued signing identity with a stable Team ID; the current self-signed identities guarantee a stable designated requirement for TCC, not that stronger Keychain property.
 
+## PC and Android parity
+
+- Maintain shared provider behavior through `shared/translation-contracts.json`, consumed by Rust and Kotlin tests. A provider/API fix must update the common fixtures and both implementations together; do not treat a passing test on one platform as proof for the other.
+- Keep text translation separate from recognition on both platforms. Protocols, optional authentication, response filtering, source/result pairing, cancellation, and final deadlines must follow the same contract where the feature exists.
+- Keep platform-native UI and capture implementations. Record intentional feature or resource-limit differences in [platform parity](docs/development/platform-parity.md); do not silently imply an Android feature exists because desktop supports it.
+- Shared fixture and provider changes trigger both desktop and Android CI. Verify both suites before publishing their changes.
+
 ## Verification
 
 Run the repository check from the repository root:

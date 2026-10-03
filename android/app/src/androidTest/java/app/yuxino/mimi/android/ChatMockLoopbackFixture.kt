@@ -14,7 +14,8 @@ import kotlin.concurrent.thread
 
 /** Fixed synthetic HTTP exchange, bound to device loopback and never to external interfaces. */
 internal class ChatMockLoopbackFixture : Closeable {
-    private class Exchange(val model: String, val status: Int = 200, val mayCancel: Boolean = false) {
+    private class Exchange(val model: String = "", val status: Int = 200, val mayCancel: Boolean = false,
+        val deepLX: Boolean = false, val bodyCode: Int = 200) {
         val received = CountDownLatch(1)
         val release = CountDownLatch(1)
         val completed = CountDownLatch(1)
@@ -24,9 +25,12 @@ internal class ChatMockLoopbackFixture : Closeable {
         Exchange("synthetic-success"),
         Exchange("synthetic-slow", mayCancel = true),
         Exchange("synthetic-auth", status = 401),
+        Exchange(deepLX = true),
+        Exchange(deepLX = true, bodyCode = 456),
     )
     private val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).apply { soTimeout = 10_000 }
     val baseUrl = "http://127.0.0.1:${server.localPort}/v1"
+    val deepLXUrl = "http://127.0.0.1:${server.localPort}/translate"
     @Volatile private var failure: Throwable? = null
     @Volatile private var closed = false
     @Volatile private var activeSocket: Socket? = null
@@ -40,7 +44,7 @@ internal class ChatMockLoopbackFixture : Closeable {
                         verifyRequest(socket, exchange)
                         exchange.received.countDown()
                         check(exchange.release.await(10, TimeUnit.SECONDS)) { "Fixture response was never released" }
-                        try { respond(socket, exchange.status) }
+                        try { respond(socket, exchange) }
                         catch (error: IOException) { if (!exchange.mayCancel) throw error }
                     }
                 } finally {
@@ -70,7 +74,7 @@ internal class ChatMockLoopbackFixture : Closeable {
 
     private fun verifyRequest(socket: Socket, exchange: Exchange) {
         val input = BufferedInputStream(socket.getInputStream())
-        check(line(input) == "POST /v1/chat/completions HTTP/1.1") { "Unexpected translation request method or path" }
+        check(line(input) == "POST ${if (exchange.deepLX) "/translate" else "/v1/chat/completions"} HTTP/1.1") { "Unexpected translation request method or path" }
         val headers = mutableMapOf<String, String>()
         var headerBytes = 0
         while (true) {
@@ -82,7 +86,8 @@ internal class ChatMockLoopbackFixture : Closeable {
             check(separator > 0) { "Malformed fixture request header" }
             headers[header.substring(0, separator).lowercase()] = header.substring(separator + 1).trim()
         }
-        check("authorization" !in headers) { "Keyless fixture received an authorization credential" }
+        if (exchange.deepLX) check(headers["authorization"] == "Bearer synthetic-deeplx-local-token") { "DeepLX request used the wrong provider token" }
+        else check("authorization" !in headers) { "Keyless fixture received an authorization credential" }
         val size = headers["content-length"]?.toIntOrNull() ?: error("Fixture request has no bounded body length")
         check(size in 1..8_192) { "Fixture request body exceeded the limit" }
         val body = ByteArray(size)
@@ -93,6 +98,13 @@ internal class ChatMockLoopbackFixture : Closeable {
             count += read
         }
         val json = JSONObject(body.toString(Charsets.UTF_8))
+        if (exchange.deepLX) {
+            check(json.getString("text") == "Hello." && json.getString("source_lang") == "EN" && json.getString("target_lang") == "ZH") {
+                "DeepLX check did not use its fixed example and language protocol"
+            }
+            check(!json.has("model") && !json.has("messages")) { "DeepLX received an OpenAI request" }
+            return
+        }
         check(json.getString("model") == exchange.model) { "Connection check ignored the draft model" }
         check(!json.getBoolean("stream")) { "Connection check unexpectedly requested streaming" }
         val messages = json.getJSONArray("messages")
@@ -115,8 +127,11 @@ internal class ChatMockLoopbackFixture : Closeable {
         return bytes.toString(Charsets.US_ASCII.name()).removeSuffix("\r")
     }
 
-    private fun respond(socket: Socket, status: Int) {
-        val body = (if (status == 200)
+    private fun respond(socket: Socket, exchange: Exchange) {
+        val status = exchange.status
+        val body = (if (exchange.deepLX)
+            """{"code":${exchange.bodyCode},"data":"Synthetic translation."}"""
+        else if (status == 200)
             """{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Synthetic translation."}}]}"""
         else """{"error":{"message":"synthetic-server-detail-must-not-display"}}""").toByteArray(Charsets.UTF_8)
         val reason = if (status == 200) "OK" else "Unauthorized"

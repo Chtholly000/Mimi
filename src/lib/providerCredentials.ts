@@ -125,7 +125,7 @@ export function buildProviderCredentials(
 }
 
 /** Alibaba retains its profile-scoped key; an empty replacement reuses it natively. */
-export function buildAlibabaTranslationCredentials(profile: ServiceProfile, draft: CredentialDraft, translation: TextTranslation): ProviderCredentialsInput | null {
+export function buildAlibabaTranslationCredentials(profile: ServiceProfile, draft: CredentialDraft, translation: TextTranslation, clearToken = false): ProviderCredentialsInput | null {
   const custom = isCustomSpeechProvider(profile.provider);
   if (!custom && profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") return null;
   if (!custom && !draft.apiKey.trim() && profile.credentialState !== "present") return null;
@@ -133,15 +133,15 @@ export function buildAlibabaTranslationCredentials(profile: ServiceProfile, draf
   const keepsSavedDestination = (custom ? profile.textCredentialState : profile.credentialState) === "present" && translation === savedTranslation;
   if (translation === "deepLX" && !draft.endpoint.trim() && !keepsSavedDestination) return null;
   if (translation === "deepL" && !draft.token.trim() && !keepsSavedDestination) return null;
-  if (translation === "openAICompatible" && !keepsSavedDestination && (!draft.endpoint.trim() || !draft.token.trim() || !draft.model.trim())) return null;
-  if (translation === "openAICompatible" && draft.endpoint.trim() && !draft.token.trim()) return null;
+  if (translation === "openAICompatible" && !keepsSavedDestination && (!draft.endpoint.trim() || !draft.model.trim())) return null;
   return {
     kind: "alibabaTranslation",
     apiKey: custom ? "" : draft.apiKey.trim(),
     textTranslation: translation,
     endpoint: translation === "deepLX" || translation === "openAICompatible" ? draft.endpoint.trim() : "",
-    token: translation === "followService" ? "" : draft.token.trim(),
+    token: translation === "followService" || (translation === "openAICompatible" && clearToken) ? "" : draft.token.trim(),
     model: translation === "openAICompatible" ? draft.model.trim() : "",
+    ...(translation === "openAICompatible" && clearToken ? { clearToken: true } : {}),
   };
 }
 

@@ -39,6 +39,7 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
   const [endpointInvalid, setEndpointInvalid] = useState(false);
   const [modelInvalid, setModelInvalid] = useState(false);
   const [revealEpoch, setRevealEpoch] = useState(0);
+  const [clearTranslationToken, setClearTranslationToken] = useState(false);
   const endpointRef = useRef<HTMLInputElement>(null);
   const modelRef = useRef<HTMLInputElement>(null);
   const feedbackRef = useRef<HTMLDivElement>(null);
@@ -50,9 +51,10 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
     setDraft((current) => ({ ...current, endpoint: "", token: "", model: "" }));
     setEndpointInvalid(false);
     setModelInvalid(false);
+    setClearTranslationToken(false);
   }
-  const credentials = buildAlibabaTranslationCredentials(profile, draft, translation);
-  const dirty = !saved || editingKey || translation !== savedTranslation || !!draft.endpoint || !!draft.token || !!draft.model;
+  const credentials = buildAlibabaTranslationCredentials(profile, draft, translation, clearTranslationToken);
+  const dirty = !saved || editingKey || translation !== savedTranslation || !!draft.endpoint || !!draft.token || !!draft.model || clearTranslationToken;
   const compatible = translation === "openAICompatible";
   const keepsSavedDestination = saved && translation === savedTranslation;
   const destinationKeyLabel = translation === "deepL" ? I18N.settings.deepLApiKey : compatible ? I18N.settings.openAICompatibleApiKey : I18N.settings.deepLXToken;
@@ -86,6 +88,7 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
     setEditingKey(false);
     setEndpointInvalid(false);
     setModelInvalid(false);
+    setClearTranslationToken(false);
   };
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -104,8 +107,8 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
     void onSave(credentials).then((result) => { if (result) discard(); });
   };
 
-  const translationHelp = textOnly ? [I18N.settings.customSpeechTranslationHelp, ...(compatible ? [I18N.settings.openAICompatibleRequirements, I18N.settings.openAICompatibleLanguages] : [])].join("\n") : translation === "followService" ? I18N.settings.textTranslationDefault
-    : compatible ? [I18N.settings.openAICompatibleChain, I18N.settings.openAICompatibleRequirements, I18N.settings.openAICompatibleLanguages].join("\n")
+  const translationHelp = textOnly ? [I18N.settings.customSpeechTranslationHelp, ...(compatible ? [I18N.settings.openAICompatibleRequirements, I18N.settings.chatMockSetup, I18N.settings.openAICompatibleLanguages] : [])].join("\n") : translation === "followService" ? I18N.settings.textTranslationDefault
+    : compatible ? [I18N.settings.openAICompatibleChain, I18N.settings.openAICompatibleRequirements, I18N.settings.chatMockSetup, I18N.settings.openAICompatibleLanguages].join("\n")
     : translation === "deepL" ? I18N.settings.deepLChain : I18N.settings.deepLXChain;
   const translationOptions = [
     { value: "followService", label: textOnly ? I18N.settings.customSpeechNoTranslation : I18N.settings.textTranslationFollow, icon: textOnly ? <Icon name="captions-bubble" /> : <ProviderIcon provider="alibabaCloud" size={32} /> },
@@ -133,7 +136,7 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
       <header className="service-stage__heading">
         <h3 id={`${inputId}-translation-title`}>{I18N.settings.textTranslationLabel}</h3>
         <div className="service-stage__actions">
-          {textConnectionCheck?.(translation !== savedTranslation || !!draft.endpoint.trim() || !!draft.token.trim() || !!draft.model.trim() || (!textOnly && translation === "followService" && !!draft.apiKey.trim()))}
+          {textConnectionCheck?.(translation !== savedTranslation || !!draft.endpoint.trim() || !!draft.token.trim() || !!draft.model.trim() || clearTranslationToken || (!textOnly && translation === "followService" && !!draft.apiKey.trim()))}
           <SettingsHelp text={translationHelp} label={I18N.settings.helpLabel} />
         </div>
       </header>
@@ -155,9 +158,14 @@ export function AlibabaCredentialEditor({ profile, inputId, disabled, busy, visi
         </label>}
         <div className="settings-field">
           <span className="service-stage__field-label"><label htmlFor={`${inputId}-token`}>{destinationKeyLabel}</label>{compatible && <SettingsHelp id={`${inputId}-compatible-required`} text={keepsSavedDestination ? I18N.settings.openAICompatibleAddressKey : I18N.settings.openAICompatibleRequired} label={I18N.settings.helpLabel} />}</span>
-          <input id={`${inputId}-token`} type="password" autoComplete="new-password" spellCheck={false} disabled={disabled} required={compatible && (!keepsSavedDestination || !!draft.endpoint.trim())} value={draft.token} placeholder={translation === "deepL" || compatible ? keepsSavedDestination && !draft.endpoint.trim() ? I18N.settings.savedTranslationKeyPlaceholder : I18N.settings.apiKeyPlaceholder : undefined} aria-describedby={compatible ? `${inputId}-compatible-required ${noteId}` : noteId} onChange={(event) => setDraft((current) => ({ ...current, token: event.target.value }))} />
+          <input id={`${inputId}-token`} type="password" autoComplete="new-password" spellCheck={false} disabled={disabled || clearTranslationToken} value={draft.token} placeholder={compatible ? clearTranslationToken ? I18N.settings.noTranslationKeyPlaceholder : keepsSavedDestination && !draft.endpoint.trim() ? I18N.settings.savedTranslationKeyPlaceholder : I18N.settings.optionalTranslationKeyPlaceholder : translation === "deepL" ? keepsSavedDestination ? I18N.settings.savedTranslationKeyPlaceholder : I18N.settings.apiKeyPlaceholder : undefined} aria-describedby={compatible ? `${inputId}-compatible-required ${noteId}` : noteId} onChange={(event) => setDraft((current) => ({ ...current, token: event.target.value }))} />
           {saved && savedTranslation === translation && translation !== "openAICompatible" && visible && !busy && !confirmingDelete && <StoredCredentialReveal key={`${profile.id}:${translation}:${revealEpoch}`} profileId={profile.id} field="token" textTranslation={translation} label={destinationKeyLabel} disabled={disabled} />}
         </div>
+        {compatible && keepsSavedDestination && <span className="credential-form__actions">
+          <button type="button" className="settings-button settings-button--quiet settings-button--compact" disabled={disabled} aria-pressed={clearTranslationToken} onClick={() => { setClearTranslationToken((current) => !current); setDraft((current) => ({ ...current, token: "" })); }}>
+            <Icon name="key" />{clearTranslationToken ? I18N.settings.cancelTranslationKeyRemoval : I18N.settings.removeTranslationApiKey}
+          </button>
+        </span>}
       </div>}
     </section>
   </>;

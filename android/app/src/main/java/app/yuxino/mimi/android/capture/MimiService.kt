@@ -49,6 +49,8 @@ import app.yuxino.mimi.android.provider.EngineListener
 import app.yuxino.mimi.android.provider.OpenAIRealtimeEngine
 import app.yuxino.mimi.android.provider.ProviderEngine
 import app.yuxino.mimi.android.provider.SubtitleBus
+import app.yuxino.mimi.android.provider.TextTranslationProvider
+import app.yuxino.mimi.android.provider.createTranslationClient
 import app.yuxino.mimi.android.resample.StreamResampler
 import kotlin.concurrent.thread
 
@@ -102,6 +104,7 @@ class MimiService : Service() {
     private var previewMode = false
     private var immersiveSession = false
     private var sessionSourceLanguage = "auto"
+    private var sessionOriginalOnly = false
     private var statusView: TextView? = null
     private var historyView: TextView? = null
     private var sourceView: TextView? = null
@@ -259,6 +262,7 @@ class MimiService : Service() {
             getSystemService(android.os.PowerManager::class.java).isInteractive &&
             !getSystemService(android.app.KeyguardManager::class.java).isDeviceLocked) { "capture_permission_or_lock_changed" }
         val sessionGeneration = ++generation
+        sessionOriginalOnly = false
         SubtitleBus.clear()
         SubtitleBus.setHistoryLimit(SettingsStore.historyLines(this))
         val callback = object : MediaProjection.Callback() {
@@ -287,10 +291,13 @@ class MimiService : Service() {
             val sourceLang = SettingsStore.sourceLang(this)
             sessionSourceLanguage = sourceLang
             val targetLang = SettingsStore.targetLang(this)
-            val customTranslation = provider == SettingsStore.PROVIDER_DASHSCOPE && SettingsStore.useChatMockTranslation(this)
-            if (customTranslation) {
+            val textProvider = if (provider == SettingsStore.PROVIDER_DASHSCOPE) SettingsStore.textTranslationProvider(this)
+                else TextTranslationProvider.BUILTIN
+            val independentTranslation = textProvider != TextTranslationProvider.BUILTIN
+            sessionOriginalOnly = textProvider == TextTranslationProvider.NONE
+            if (independentTranslation && !sessionOriginalOnly) {
                 textTranslation = app.yuxino.mimi.android.provider.TranslationPipeline(
-                    app.yuxino.mimi.android.provider.OpenAITranslationClient(SettingsStore.translationConfiguration(this)),
+                    createTranslationClient(SettingsStore.translationConfiguration(this)),
                     sourceLang, targetLang, object : app.yuxino.mimi.android.provider.TranslationPipeline.Listener {
                         override fun onTranslation(source: String, language: String?, translation: String, elapsedMs: Long) = dispatch {
                             SubtitleBus.onTranslatedSource(source, language, translation)
@@ -307,21 +314,26 @@ class MimiService : Service() {
                 override fun onSessionReady() = dispatch { Log.i(TAG, "session ready") }
                 override fun onSourceDraft(text: String, language: String?) = dispatch {
                     cancelAutoHide()
-                    if (customTranslation) SubtitleBus.onUntranslatedSource(text, language, false)
+                    if (independentTranslation) SubtitleBus.onUntranslatedSource(text, language, false)
                     else SubtitleBus.onSourceDraft(text, language)
                 }
                 override fun onSourceFinal(text: String, language: String?) = dispatch {
                     cancelAutoHide()
-                    if (customTranslation) {
-                        SubtitleBus.onUntranslatedSource(text, language, true)
-                        textTranslation?.submit(text, language)
+                    if (independentTranslation) {
+                        if (sessionOriginalOnly) {
+                            SubtitleBus.onOriginalSource(text, language)
+                            scheduleAutoHide()
+                        } else {
+                            SubtitleBus.onUntranslatedSource(text, language, true)
+                            textTranslation?.submit(text, language)
+                        }
                     } else SubtitleBus.onSourceFinal(text, language)
                 }
                 override fun onTranslationDraft(text: String) = dispatch {
-                    if (!customTranslation) { cancelAutoHide(); SubtitleBus.onTranslationDraft(text) }
+                    if (!independentTranslation) { cancelAutoHide(); SubtitleBus.onTranslationDraft(text) }
                 }
                 override fun onTranslationFinal(text: String) = dispatch {
-                    if (!customTranslation) { SubtitleBus.onTranslationFinal(text); scheduleAutoHide() }
+                    if (!independentTranslation) { SubtitleBus.onTranslationFinal(text); scheduleAutoHide() }
                 }
                 override fun onError(code: String, message: String) = dispatch {
                     // Provider error bodies can echo user content or credentials.
@@ -333,14 +345,14 @@ class MimiService : Service() {
             }
             engine = when (provider) {
                 SettingsStore.PROVIDER_OPENAI -> OpenAIRealtimeEngine(listener)
-                SettingsStore.PROVIDER_DASHSCOPE -> DashScopeEngine(listener, transcriptionOnly = customTranslation)
+                SettingsStore.PROVIDER_DASHSCOPE -> DashScopeEngine(listener, transcriptionOnly = independentTranslation)
                 else -> app.yuxino.mimi.android.provider.StreamingServiceEngine(SettingsStore.configuration(this), listener)
             }
             engine?.setHotwords(SettingsStore.hotwords(this))
             engine?.start(
                 apiKey, sourceLang, targetLang,
                 SettingsStore.baseUrl(this, provider),
-                if (customTranslation) "" else SettingsStore.model(this, provider),
+                if (independentTranslation) "" else SettingsStore.model(this, provider),
             )
         }
 
@@ -591,7 +603,12 @@ class MimiService : Service() {
         // Observe the real overlay drawing once per overlay, without accumulating listeners.
         val renderGeneration = generation
         overlayView?.viewTreeObserver?.addOnDrawListener {
-            val caption = if (expanded) expandedTranslationView else translationView
+            val caption = when {
+                sessionOriginalOnly && expanded -> expandedSourceView
+                sessionOriginalOnly -> sourceView
+                expanded -> expandedTranslationView
+                else -> translationView
+            }
             val newlyComplete = synchronized(firstRunEvidence) {
                 val wasComplete = firstRunEvidence.complete
                 if (generation == renderGeneration && isRunning && caption != null) {
@@ -715,7 +732,8 @@ class MimiService : Service() {
             setOnClickListener { setImmersiveMode(true) }
         }
         val route = panelButton(
-            "${languageName(sessionSourceLanguage)} → ${languageName(SettingsStore.targetLang(this))}",
+            if (sessionOriginalOnly) languageName(sessionSourceLanguage)
+            else "${languageName(sessionSourceLanguage)} → ${languageName(SettingsStore.targetLang(this))}",
         ).apply {
             contentDescription = getString(R.string.overlay_language_description)
             maxLines = 1
@@ -911,24 +929,24 @@ class MimiService : Service() {
             visibility = if (history.isEmpty()) View.GONE else View.VISIBLE
             maxLines = maxOf(maxHistory, 1) * 3
             text = history.joinToString("\n\n") { pair ->
-                "${pair.source}\n${pair.translation}"
+                if (pair.translation.isEmpty()) pair.source else "${pair.source}\n${pair.translation}"
             }
         }
-        // Live display: translation line always; the source line joins only
-        // when the speech is English (detected or configured).
+        // Translation sessions keep their established bilingual display. Original-only
+        // sessions always show the recognized text regardless of its language.
         val liveVisible = !SubtitleBus.liveHidden
         val sourceIsEnglish =
             sessionSourceLanguage == "en" ||
                 SubtitleBus.detectedSourceLanguage?.startsWith("en") == true
         sourceView?.apply {
-            visibility = if (liveVisible && sourceIsEnglish) View.VISIBLE else View.GONE
+            visibility = if (liveVisible && (sourceIsEnglish || sessionOriginalOnly)) View.VISIBLE else View.GONE
             text = when {
                 SubtitleBus.sourceDraft.isNotEmpty() -> SubtitleBus.sourceDraft
                 else -> SubtitleBus.sourceFinal
             }
         }
         translationView?.apply {
-            visibility = if (liveVisible) View.VISIBLE else View.GONE
+            visibility = if (liveVisible && !sessionOriginalOnly) View.VISIBLE else View.GONE
             text = when {
                 SubtitleBus.translationDraft.isNotEmpty() -> SubtitleBus.translationDraft
                 else -> SubtitleBus.translationFinal
@@ -940,7 +958,7 @@ class MimiService : Service() {
             text = SubtitleBus.sourceDraft.ifEmpty { SubtitleBus.sourceFinal }
         }
         expandedTranslationView?.apply {
-            visibility = if (liveVisible) View.VISIBLE else View.GONE
+            visibility = if (liveVisible && !sessionOriginalOnly) View.VISIBLE else View.GONE
             text = SubtitleBus.translationDraft.ifEmpty { SubtitleBus.translationFinal }
         }
         if (expanded) resizeExpandedOverlay(history.size)

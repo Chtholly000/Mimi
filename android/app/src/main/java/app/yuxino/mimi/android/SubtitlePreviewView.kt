@@ -66,7 +66,8 @@ class SubtitlePreviewView @JvmOverloads constructor(
         exampleLabel.setText(R.string.preview_edit)
     }
 
-    fun configure(fontSize: Int, color: Int, opacity: Int, backgroundAlpha: Int, targetLang: String, immersive: Boolean) {
+    fun configure(fontSize: Int, color: Int, opacity: Int, backgroundAlpha: Int, targetLang: String, immersive: Boolean, originalOnly: Boolean = false) {
+        translation.visibility = if (originalOnly) GONE else VISIBLE
         source.setText(if (targetLang == "en") R.string.preview_zh else R.string.preview_source)
         translation.setText(when (targetLang) {
             "en" -> R.string.preview_en

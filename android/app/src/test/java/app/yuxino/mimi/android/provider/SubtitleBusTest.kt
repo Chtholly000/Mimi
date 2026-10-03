@@ -95,4 +95,26 @@ class SubtitleBusTest {
         assertTrue(SubtitleBus.historySnapshot().isEmpty())
         SubtitleBus.clear()
     }
+    @Test fun originalOnlyClearsTranslationAndRequiresExplicitHistoryOptIn() {
+        SubtitleBus.onTranslatedSource("Old source", "en", "旧译文")
+        SubtitleBus.onOriginalSource("新しい字幕。", "ja")
+        assertEquals("新しい字幕", SubtitleBus.sourceFinal)
+        assertEquals("", SubtitleBus.translationFinal)
+        assertEquals("ja", SubtitleBus.detectedSourceLanguage)
+        assertTrue(SubtitleBus.historySnapshot().isEmpty())
+        SubtitleBus.setHistoryLimit(2)
+        repeat(3) { SubtitleBus.onOriginalSource("source $it", "en") }
+        assertEquals(listOf(SubtitleBus.Pair("source 1", ""), SubtitleBus.Pair("source 2", "")), SubtitleBus.historySnapshot())
+        SubtitleBus.setHistoryLimit(0)
+        assertTrue(SubtitleBus.historySnapshot().isEmpty())
+    }
+
+    @Test fun originalOnlyDisplayAndHistoryStayBounded() {
+        SubtitleBus.setHistoryLimit(1)
+        SubtitleBus.onOriginalSource("a".repeat(220) + "RECENT", "en")
+        assertEquals(200, SubtitleBus.sourceFinal.length)
+        assertEquals(SubtitleBus.Pair(SubtitleBus.sourceFinal, ""), SubtitleBus.historySnapshot().single())
+        assertTrue(SubtitleBus.sourceFinal.endsWith("RECENT"))
+    }
+
 }

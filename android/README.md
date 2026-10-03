@@ -134,12 +134,21 @@ fields and are written to the app's external `files/ui-preview` directory. Pass
 `-e demo true` for a paced walkthrough suitable for emulator screen recording;
 it demonstrates the labeled sample, not live translation.
 
-## ChatMock text translation
+## Independent text translation
 
-In Services → Alibaba Cloud, choose **ChatMock / OpenAI compatible** under **Text translation**.
-Alibaba Cloud performs recognition with `qwen3-asr-flash-realtime`; ChatMock translates its
-confirmed text. Enable that ASR model for your Alibaba key. Other speech providers keep their
-built-in translation. This is not an OpenAI Realtime endpoint override.
+In Services → Alibaba Cloud, **Text translation** offers the built-in translation,
+**DeepL**, **DeepLX**, **ChatMock / OpenAI compatible**, and **No translation (original only)**.
+Independent modes use Alibaba Cloud's `qwen3-asr-flash-realtime` for recognition; the selected
+text service translates confirmed text. Original-only mode makes no text translation request.
+Enable that ASR model for your Alibaba key. Other speech providers keep their built-in translation. This is not an OpenAI Realtime endpoint override.
+
+- **DeepL** needs a separate DeepL API key. Mimi chooses the official Free endpoint for
+  keys ending in `:fx`, otherwise the Pro endpoint. No custom URL or model is needed.
+- **DeepLX** needs your service address and an optional Bearer token. Mimi appends
+  `/translate` when missing; the service must accept `text`, `source_lang`, `target_lang`
+  and return integer `code: 200` with translated text in `data`.
+- **ChatMock / OpenAI compatible** takes an independent endpoint, model and optional key.
+  Each translator retains its own encrypted configuration when switching services.
 
 Run [ChatMock](https://github.com/RayBytes/ChatMock) yourself and enter its `/v1` base URL
 (or full `/v1/chat/completions` URL), a model ID from its `/v1/models`, and an optional
@@ -162,9 +171,10 @@ commits both stages; back discards changes. Translation keys have independent en
 storage and are not reused when the destination changes. Help icons open the requirements
 without persistent explanatory paragraphs in the editor.
 
-The final-only translation queue is bounded and serial. Failure, backlog overflow or session
+The final-only translation queue is bounded and serial, with a 45-second deadline from
+enqueue through completion, including time spent waiting. Failure, deadline expiry, backlog overflow or session
 stop cancels pending work; late results cannot enter a newer session. These checks do not
-prove a live ChatMock account or physical Android device until those are tested separately.
+prove a live DeepL, DeepLX or ChatMock account or physical Android device until those are tested separately.
 
 ## Architecture
 

@@ -21,7 +21,9 @@ class ScopeTests(unittest.TestCase):
         self.assertFalse(result["arm_bundle"])
 
     def test_shared_native_contract_tests_every_platform_without_packages(self):
-        for path in ["src-tauri/src/settings_store.rs", "src-tauri/Cargo.lock", ".github/workflows/ci.yml", "scripts/ci-scope.py"]:
+        for path in ["src-tauri/src/settings_store.rs", "src-tauri/Cargo.lock", ".github/workflows/ci.yml", "scripts/ci-scope.py",
+                     "shared/translation-contracts.json",
+                     "android/app/src/main/java/app/yuxino/mimi/android/provider/DeepLTranslationClient.kt"]:
             result = module.plan([path])
             self.assertEqual(result["rust_os"], module.ALL_OS)
             self.assertFalse(result["bundle"])

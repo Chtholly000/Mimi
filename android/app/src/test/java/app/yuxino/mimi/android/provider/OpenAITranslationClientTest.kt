@@ -215,4 +215,67 @@ class OpenAITranslationClientTest {
             assertTrue(result.elapsedMs >= 50)
         }
     }
+    @Test fun officialDeepLRequestsReachOnlyTheSelectedOfficialOriginWithItsOwnAuthScheme() {
+        for ((key, officialUrl) in listOf("synthetic:fx" to "https://api-free.deepl.com/v2/translate", "synthetic" to "https://api.deepl.com/v2/translate")) {
+            val auth = AtomicReference<String>()
+            val requestPath = AtomicReference<String>()
+            val payload = AtomicReference<JSONObject>()
+            val originalUrl = AtomicReference<String>()
+            Fixture { exchange ->
+                auth.set(exchange.requestHeaders["authorization"])
+                requestPath.set(exchange.requestPath)
+                payload.set(JSONObject(exchange.requestBody.bufferedReader().readText()))
+                exchange.reply(200, """{"translations":[{"text":"你好。"}]}""")
+            }.use { fixture ->
+                // Test-only transport routing; production configuration cannot override DeepL's origin.
+                val transport = OkHttpClient.Builder().addInterceptor { chain ->
+                    val request = chain.request()
+                    originalUrl.set(request.url.toString())
+                    chain.proceed(request.newBuilder().url(fixture.endpoint.removeSuffix("/v1") + request.url.encodedPath).build())
+                }.build()
+                val client = DeepLTranslationClient(TranslationConfiguration(endpoint = "https://untrusted.test", apiKey = key, provider = TextTranslationProvider.DEEPL), transport)
+                val result = await(client::check) as TranslationResult.Success
+                assertEquals(officialUrl, originalUrl.get())
+                assertEquals("/v2/translate", requestPath.get())
+                assertEquals("DeepL-Auth-Key $key", auth.get())
+                assertEquals("Hello.", payload.get().getJSONArray("text").getString(0))
+                assertEquals("EN", payload.get().getString("source_lang"))
+                assertEquals("ZH", payload.get().getString("target_lang"))
+                assertEquals("你好。", result.text)
+            }
+        }
+    }
+
+    @Test fun deepLXUsesItsOwnJsonShapeAndOptionalBearerToken() {
+        for (token in listOf("", "synthetic-token")) {
+            val auth = AtomicReference<String>()
+            val payload = AtomicReference<JSONObject>()
+            val path = AtomicReference<String>()
+            Fixture { exchange ->
+                auth.set(exchange.requestHeaders["authorization"])
+                payload.set(JSONObject(exchange.requestBody.bufferedReader().readText()))
+                path.set(exchange.requestPath)
+                exchange.reply(200, """{"code":200,"data":"你好。"}""")
+            }.use { fixture ->
+                val client = DeepLXTranslationClient(TranslationConfiguration(fixture.endpoint, apiKey = token, allowLocalHttp = true, provider = TextTranslationProvider.DEEPLX))
+                val result = await(client::check) as TranslationResult.Success
+                assertEquals(if (token.isEmpty()) null else "Bearer $token", auth.get())
+                assertEquals("/v1/translate", path.get())
+                assertEquals("Hello.", payload.get().getString("text"))
+                assertEquals("EN", payload.get().getString("source_lang"))
+                assertEquals("ZH", payload.get().getString("target_lang"))
+                assertEquals("你好。", result.text)
+            }
+        }
+    }
+
+    @Test fun deepLXBodyRejectionNeverBecomesSubtitleText() {
+        Fixture { it.reply(200, """{"code":429,"data":"private provider error"}""") }.use { fixture ->
+            val client = DeepLXTranslationClient(TranslationConfiguration(fixture.endpoint, allowLocalHttp = true, provider = TextTranslationProvider.DEEPLX))
+            val result = await(client::check) as TranslationResult.Failure
+            assertEquals("translation_rejected_429", result.code)
+            assertFalse(result.toString().contains("private provider error"))
+        }
+    }
+
 }

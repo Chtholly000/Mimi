@@ -145,6 +145,7 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         ServiceSettingsUi.renderList(this, findViewById(R.id.service_panel))
+        refreshPreview()
     }
 
     override fun onDestroy() {
@@ -172,7 +173,7 @@ class SettingsActivity : AppCompatActivity() {
         findViewById<SubtitlePreviewView>(R.id.subtitle_preview).configure(
             fontSeek.progress, SettingsStore.COLOR_PRESETS[colorIndex].toInt(),
             opacitySeek.progress, bgAlphaSeek.progress,
-            SettingsStore.targetLang(this), immersive,
+            SettingsStore.targetLang(this), immersive, SettingsStore.originalTextOnly(this),
         )
     }
 

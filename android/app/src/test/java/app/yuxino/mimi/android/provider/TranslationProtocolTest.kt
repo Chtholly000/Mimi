@@ -19,9 +19,13 @@ class TranslationProtocolTest {
 
     @Test fun baseAndFullEndpointsResolveToTheSameDestination() {
         val expected = "https://example.test/v1/chat/completions"
-        listOf("https://example.test", "https://example.test/v1", "https://example.test/v1/", expected).forEach {
+        listOf("https://example.test/v1", "https://example.test/v1/", expected).forEach {
             assertEquals(expected, normalizeTranslationEndpoint(configuration(it)))
         }
+        assertEquals("https://example.test/chat/completions",
+            normalizeTranslationEndpoint(configuration("https://example.test")))
+        assertEquals("https://example.test/proxy/chat/completions",
+            normalizeTranslationEndpoint(configuration("https://example.test/proxy")))
         assertEquals("https://example.test/proxy/v1/chat/completions",
             normalizeTranslationEndpoint(configuration("https://example.test/proxy/v1")))
     }
@@ -39,7 +43,7 @@ class TranslationProtocolTest {
 
     @Test fun destinationCannotContainUserInfoQueryFragmentOrAnotherProtocol() {
         listOf("https://user:secret@example.test/v1", "https://@example.test/v1", "https://example.test/v1?key=secret",
-            "https://example.test/v1#secret", "wss://example.test/v1", "https:example.test/v1", "https://example.test/unknown").forEach {
+            "https://example.test/v1#secret", "wss://example.test/v1", "https:example.test/v1").forEach {
             rejects("translation_endpoint") { normalizeTranslationEndpoint(configuration(it)) }
         }
     }

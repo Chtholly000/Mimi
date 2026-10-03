@@ -22,6 +22,7 @@ import androidx.appcompat.app.AppCompatDelegate
 import app.yuxino.mimi.android.capture.MimiService
 import app.yuxino.mimi.android.provider.ServiceConfiguration
 import app.yuxino.mimi.android.provider.ServiceProvider
+import app.yuxino.mimi.android.provider.TextTranslationProvider
 import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.textfield.TextInputLayout
 import java.io.File
@@ -33,7 +34,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
     private var screenshots = 0
     private var savedFixture = false
     private var connectionFixture = false
-    private val activities = mutableListOf<ServiceSettingsActivity>()
+    private val activities = mutableListOf<Activity>()
 
     fun run(arguments: Bundle?) {
         theme = arguments?.getString("theme") ?: "light"
@@ -51,7 +52,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
                 SettingsStore.configuration(context, provider).credentials.values.all(String::isBlank)
             }) { "Use a dedicated blank emulator for ChatMock UI checks" }
             check(!SettingsStore.useChatMockTranslation(context)) { "Use a blank ChatMock configuration" }
-            check(SettingsStore.translationConfiguration(context).apiKey.isBlank()) { "Use a blank ChatMock key" }
+            check(TextTranslationProvider.entries.all { SettingsStore.translationConfiguration(context, it).apiKey.isBlank() }) { "Use blank translation keys" }
             onUi {
                 if (locale != null) {
                     if (Build.VERSION.SDK_INT >= 33) localeManager?.applicationLocales = LocaleList.forLanguageTags(locale)
@@ -61,6 +62,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
                     AppCompatDelegate.MODE_NIGHT_YES else AppCompatDelegate.MODE_NIGHT_NO)
             }
             if (connectionFixture) checkConnection() else {
+                runTextTranslationStorageChecks(context)
                 checkForms()
                 if (savedFixture) checkSavedCredentials()
             }
@@ -78,7 +80,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
         }
         instrumentation.finish(if (failure == null) Activity.RESULT_OK else Activity.RESULT_CANCELED, Bundle().apply {
             putString("stream", if (failure == null && connectionFixture)
-                "ChatMock connection UI passed ($theme): $screenshots native screenshots; local HTTP fixture, no external provider or audio; real POST, progress/duration, cancelled stale response and 401 guidance verified; no credentials or configuration saved.\n"
+                "Text translation connection UI passed ($theme): $screenshots native screenshots; local HTTP fixture, no external provider or audio; OpenAI/DeepLX POST, progress/duration, cancelled stale response, 401 and quota guidance verified; no credentials or configuration saved.\n"
             else if (failure == null)
                 "ChatMock settings passed ($theme): $screenshots native screenshots; independent recognition/translation fields, local validation, help dialog and discarded drafts; ${if (savedFixture) "synthetic save/reopen/key-isolation fixture restored" else "no credentials saved"}; no provider request or capture started.\n"
             else "ChatMock settings failed: ${failure.javaClass.simpleName}: ${failure.message}\n")
@@ -89,6 +91,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
     private fun checkConnection() {
         val originalSpeech = SettingsStore.configuration(context, ServiceProvider.DASHSCOPE)
         val originalTranslation = SettingsStore.translationConfiguration(context)
+        val originalTranslations = TextTranslationProvider.entries.associateWith { SettingsStore.translationConfiguration(context, it) }
         val originalProvider = SettingsStore.provider(context)
         val originalEnabled = SettingsStore.useChatMockTranslation(context)
         ChatMockLoopbackFixture().use { server ->
@@ -150,12 +153,34 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
             assertTimedResult(editor, R.string.translation_check_auth)
             capture("chatmock-check-auth-$theme")
             server.awaitResponse(2)
+            onUi { field<Spinner>(editor, "translation-mode").setSelection(3) }
+            instrumentation.waitForIdleSync()
+            onUi {
+                check(!field<View>(editor, "translation-model").isShown)
+                check(field<TextInputEditText>(editor, "translation-key").text.isNullOrBlank())
+                field<TextInputEditText>(editor, "translation-endpoint").setText(server.deepLXUrl)
+                field<TextInputEditText>(editor, "translation-key").setText("synthetic-deeplx-local-token")
+                field<CheckBox>(editor, "translation-local-http").isChecked = true
+            }
+            click(editor, "translation-check")
+            server.awaitRequest(3); server.releaseResponse(3)
+            awaitCheckResult(editor)
+            assertTimedResult(editor, R.string.translation_check_success)
+            capture("translation-deeplx-check-success-$theme")
+            server.awaitResponse(3)
+            click(editor, "translation-check")
+            server.awaitRequest(4); server.releaseResponse(4)
+            awaitCheckResult(editor)
+            assertTimedResult(editor, R.string.translation_check_busy)
+            capture("translation-deeplx-check-quota-$theme")
+            server.awaitResponse(4)
             server.assertHealthy()
             onUi { editor.finish() }
             instrumentation.waitForIdleSync()
         }
         check(sameSpeechConfiguration(SettingsStore.configuration(context, ServiceProvider.DASHSCOPE), originalSpeech))
         check(SettingsStore.translationConfiguration(context) == originalTranslation)
+        check(TextTranslationProvider.entries.all { SettingsStore.translationConfiguration(context, it) == originalTranslations[it] })
         check(SettingsStore.provider(context) == originalProvider && SettingsStore.useChatMockTranslation(context) == originalEnabled)
         check(!MimiService.isRunning) { "Connection check started capture" }
     }
@@ -190,11 +215,13 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
     private fun checkForms() {
         val originalSpeech = SettingsStore.configuration(context, ServiceProvider.DASHSCOPE)
         val originalTranslation = SettingsStore.translationConfiguration(context)
+        val originalTranslations = TextTranslationProvider.entries.associateWith { SettingsStore.translationConfiguration(context, it) }
         val originalProvider = SettingsStore.provider(context)
         val originalEnabled = SettingsStore.useChatMockTranslation(context)
         fun unchanged() {
             check(sameSpeechConfiguration(SettingsStore.configuration(context, ServiceProvider.DASHSCOPE), originalSpeech)) { "Draft changed speech credentials" }
             check(SettingsStore.translationConfiguration(context) == originalTranslation) { "Draft changed translation settings" }
+            check(TextTranslationProvider.entries.all { SettingsStore.translationConfiguration(context, it) == originalTranslations[it] }) { "A draft changed another translator" }
             check(SettingsStore.useChatMockTranslation(context) == originalEnabled) { "Draft enabled ChatMock" }
             check(SettingsStore.provider(context) == originalProvider) { "Draft changed active service" }
             check(!MimiService.isRunning) { "Settings started an audio session" }
@@ -205,7 +232,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
         val speechKey = field<TextInputEditText>(editor, "credential-apiKey")
         val translationKey = field<TextInputEditText>(editor, "translation-key")
         onUi {
-            check(mode.selectedItemPosition == 0 && mode.count == 2) { "Built-in translation must remain the default" }
+            check(mode.selectedItemPosition == 0 && mode.count == 5) { "Built-in translation must remain the default among five text choices" }
             check(!translationKey.isShown) { "Custom fields must follow the selected translation mode" }
             checkSecretField(speechKey)
             checkSecretField(translationKey)
@@ -222,6 +249,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
         show(editor, "translation-endpoint")
         assertHorizontalFit(editor, "translation-mode", "translation-endpoint", "translation-model", "translation-key")
         capture("chatmock-fields-$theme")
+        checkProviderDrafts(editor)
 
         click(editor, "translation-help")
         onUi {
@@ -311,14 +339,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
     }
 
     /** Opt-in fixture: only synthetic keys on an already-verified blank emulator. */
-    private fun checkSavedCredentials() {
-        val originalSpeech = SettingsStore.configuration(context, ServiceProvider.DASHSCOPE)
-        val originalTranslation = SettingsStore.translationConfiguration(context)
-        val originalEnabled = SettingsStore.useChatMockTranslation(context)
-        val originalProvider = SettingsStore.provider(context)
-        val originalSource = SettingsStore.sourceLang(context)
-        val originalTarget = SettingsStore.targetLang(context)
-        val originalHotwords = SettingsStore.hotwordsText(context)
+    private fun checkSavedCredentials() = withTextTranslationSettingsSnapshot(context) {
         try {
             val editor = open(ServiceProvider.DASHSCOPE)
             onUi { field<Spinner>(editor, "translation-mode").setSelection(1) }
@@ -356,7 +377,42 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
             check(SettingsStore.translationConfiguration(context).apiKey == "synthetic-saved-translation-key") {
                 "Unsaved removal deleted the stored key"
             }
+            val deepL = open(ServiceProvider.DASHSCOPE)
+            onUi { field<Spinner>(deepL, "translation-mode").setSelection(2) }
+            instrumentation.waitForIdleSync()
+            onUi {
+                checkSecretField(field(deepL, "translation-key"))
+                field<TextInputEditText>(deepL, "translation-key").setText("synthetic-deepl-saved:fx")
+                check(deepL.findViewById<View>(R.id.save).performClick())
+            }
+            instrumentation.waitForIdleSync()
+            check(deepL.isFinishing && SettingsStore.textTranslationProvider(context) == TextTranslationProvider.DEEPL)
+            check(SettingsStore.translationConfiguration(context, TextTranslationProvider.OPENAI_COMPATIBLE).apiKey == "synthetic-saved-translation-key")
+            val deepLX = open(ServiceProvider.DASHSCOPE)
+            onUi {
+                checkSecretField(field(deepLX, "translation-key"))
+                check(!field<View>(deepLX, "translation-endpoint").isShown)
+                check(!field<View>(deepLX, "translation-remove-key").isShown)
+            }
+            show(deepLX, "translation-key")
+            capture("translation-deepl-saved-$theme")
+            onUi { field<Spinner>(deepLX, "translation-mode").setSelection(3) }
+            instrumentation.waitForIdleSync()
+            onUi {
+                checkSecretField(field(deepLX, "translation-key"))
+                field<TextInputEditText>(deepLX, "translation-endpoint").setText("https://deeplx.example.invalid/translate")
+                field<TextInputEditText>(deepLX, "translation-key").setText("synthetic-deeplx-saved")
+                check(deepLX.findViewById<View>(R.id.save).performClick())
+            }
+            instrumentation.waitForIdleSync()
+            check(deepLX.isFinishing && SettingsStore.textTranslationProvider(context) == TextTranslationProvider.DEEPLX)
+            check(SettingsStore.translationConfiguration(context, TextTranslationProvider.DEEPL).apiKey == "synthetic-deepl-saved:fx")
             val changed = open(ServiceProvider.DASHSCOPE)
+            onUi { checkSecretField(field(changed, "translation-key")) }
+            show(changed, "translation-key")
+            capture("translation-deeplx-saved-$theme")
+            onUi { field<Spinner>(changed, "translation-mode").setSelection(1) }
+            instrumentation.waitForIdleSync()
             onUi {
                 field<TextInputEditText>(changed, "translation-endpoint").setText("https://other.example.invalid/v1")
                 check(changed.findViewById<View>(R.id.save).performClick())
@@ -368,18 +424,111 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
                 "Changing translation destination changed the speech key"
             }
             check(!MimiService.isRunning)
+            val appearance = (instrumentation.startActivitySync(Intent(context, SettingsActivity::class.java)
+                .putExtra("settings_section", "appearance").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as SettingsActivity).also { activities += it }
+            instrumentation.waitForIdleSync()
+            onUi { check(previewTranslation(appearance).visibility == View.VISIBLE) }
+            val originalOnly = open(ServiceProvider.DASHSCOPE)
+            onUi { field<Spinner>(originalOnly, "translation-mode").setSelection(4) }
+            instrumentation.waitForIdleSync()
+            onUi {
+                check(!field<View>(originalOnly, "translation-check").isShown)
+                check(originalOnly.findViewById<View>(R.id.save).performClick())
+            }
+            instrumentation.waitForIdleSync()
+            check(originalOnly.isFinishing && SettingsStore.originalTextOnly(context))
+            check(SettingsStore.translationConfiguration(context, TextTranslationProvider.DEEPLX).apiKey == "synthetic-deeplx-saved")
+            onUi { check(previewTranslation(appearance).visibility == View.GONE) { "Returning from original-only save left a translated appearance preview" } }
+            capture("translation-original-appearance-$theme")
+            val firstRun = context.getSharedPreferences("first_run", 0)
+            val hadSeen = firstRun.contains("seen")
+            val oldSeen = firstRun.getBoolean("seen", false)
+            try {
+                check(firstRun.edit().putBoolean("seen", true).commit())
+                val home = (instrumentation.startActivitySync(Intent(context, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity).also { activities += it }
+                instrumentation.waitForIdleSync()
+                onUi {
+                    check(!home.findViewById<View>(R.id.target_language_action).isEnabled) { "Original-only mode still offers a target language" }
+                    check(home.findViewById<TextView>(R.id.target_summary).text.toString() == context.getString(R.string.translation_none))
+                    check(previewTranslation(home).visibility == View.GONE) { "Original-only home shows a sample translation" }
+                }
+                capture("translation-original-home-$theme")
+                onUi { home.finish() }
+            } finally {
+                check(firstRun.edit().apply { if (hadSeen) putBoolean("seen", oldSeen) else remove("seen") }.commit())
+            }
         } finally {
             onUi { activities.forEach { if (!it.isFinishing) it.finish() } }
-            check(SettingsStore.saveConfiguration(context, originalSpeech, originalTranslation, originalEnabled)) { "Failed to restore synthetic fixture" }
-            SettingsStore.setProvider(context, originalProvider)
-            SettingsStore.setSourceLang(context, originalSource)
-            SettingsStore.setTargetLang(context, originalTarget)
-            SettingsStore.setHotwords(context, originalHotwords)
-            check(SettingsStore.flushPendingWritesForTests(context)) { "Fixture restoration did not reach disk" }
-            check(sameSpeechConfiguration(SettingsStore.configuration(context, ServiceProvider.DASHSCOPE), originalSpeech))
-            check(SettingsStore.translationConfiguration(context) == originalTranslation)
-            check(SettingsStore.useChatMockTranslation(context) == originalEnabled)
         }
+    }
+
+    private fun checkProviderDrafts(editor: ServiceSettingsActivity) {
+        fun select(position: Int) {
+            onUi { field<Spinner>(editor, "translation-mode").setSelection(position) }
+            instrumentation.waitForIdleSync()
+            onUi {
+                val label = field<Spinner>(editor, "translation-mode").selectedView as TextView
+                val icon = checkNotNull(label.compoundDrawablesRelative[0]) { "Translation choice has no icon" }
+                val size = (24 * label.resources.displayMetrics.density).toInt()
+                check(icon.bounds.width() == size && icon.bounds.height() == size) { "Translation icons use inconsistent dimensions" }
+                check(label.textSize / label.resources.displayMetrics.scaledDensity >= 16f)
+            }
+        }
+        onUi {
+            field<TextInputEditText>(editor, "translation-endpoint").setText("https://draft.example.invalid/v1")
+            field<TextInputEditText>(editor, "translation-model").setText("draft-model")
+            field<TextInputEditText>(editor, "translation-key").setText("synthetic-openai-draft")
+        }
+        select(2)
+        onUi {
+            check(!field<View>(editor, "translation-endpoint").isShown && !field<View>(editor, "translation-model").isShown)
+            check(!field<View>(editor, "translation-local-http").isShown)
+            checkSecretField(field(editor, "translation-key"))
+        }
+        click(editor, "translation-check")
+        onUi {
+            check(field<TextView>(editor, "translation-status").text.toString() == context.getString(R.string.translation_key_required))
+        }
+        show(editor, "translation-check")
+        capture("translation-deepl-$theme")
+        onUi { field<TextInputEditText>(editor, "translation-key").setText("synthetic-deepl-draft:fx") }
+        select(3)
+        onUi {
+            check(field<View>(editor, "translation-endpoint").isShown && !field<View>(editor, "translation-model").isShown)
+            check(field<View>(editor, "translation-local-http").isShown)
+            checkSecretField(field(editor, "translation-key"))
+            check(field<TextInputEditText>(editor, "translation-endpoint").text.isNullOrBlank())
+            field<TextInputEditText>(editor, "translation-endpoint").setText("https://deeplx.example.invalid/translate")
+            field<TextInputEditText>(editor, "translation-key").setText("synthetic-deeplx-draft")
+        }
+        show(editor, "translation-endpoint")
+        capture("translation-deeplx-$theme")
+        select(4)
+        onUi {
+            check(!field<View>(editor, "translation-key").isShown && !field<View>(editor, "translation-endpoint").isShown)
+            check(!field<View>(editor, "translation-check").isShown) { "Original-only mode offers a translation request" }
+        }
+        show(editor, "translation-mode")
+        capture("translation-original-only-$theme")
+        select(2)
+        onUi { check(field<TextInputEditText>(editor, "translation-key").text.toString() == "synthetic-deepl-draft:fx") }
+        select(3)
+        onUi {
+            check(field<TextInputEditText>(editor, "translation-key").text.toString() == "synthetic-deeplx-draft")
+            check(field<TextInputEditText>(editor, "translation-endpoint").text.toString() == "https://deeplx.example.invalid/translate")
+        }
+        select(1)
+        onUi {
+            check(field<TextInputEditText>(editor, "translation-endpoint").text.toString() == "https://draft.example.invalid/v1")
+            check(field<TextInputEditText>(editor, "translation-model").text.toString() == "draft-model")
+            check(field<TextInputEditText>(editor, "translation-key").text.toString() == "synthetic-openai-draft")
+        }
+    }
+
+    private fun previewTranslation(activity: Activity): View = SubtitlePreviewView::class.java.getDeclaredField("translation").run {
+        isAccessible = true
+        get(activity.findViewById<SubtitlePreviewView>(R.id.subtitle_preview)) as View
     }
 
     private fun sameSpeechConfiguration(actual: ServiceConfiguration, expected: ServiceConfiguration): Boolean =

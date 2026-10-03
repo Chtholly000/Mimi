@@ -115,6 +115,23 @@ object SubtitleBus {
         notifyListeners()
     }
 
+    /** Original-only finals retain history only under the existing explicit history opt-in. */
+    fun onOriginalSource(source: String, language: String?) {
+        val text = lastSentence(source)
+        if (text.isBlank()) return
+        synchronized(this) {
+            sourceFinal = text; sourceDraft = ""
+            translationFinal = ""; translationDraft = ""
+            detectedSourceLanguage = normalizeLang(language) ?: detectedSourceLanguage
+            liveHidden = false
+            if (historyLimit > 0) {
+                if (history.size >= historyLimit) history.removeFirst()
+                history.addLast(Pair(text, ""))
+            }
+        }
+        notifyListeners()
+    }
+
     /** The request owns its source; no FIFO inference across asynchronous provider events. */
     fun onTranslatedSource(source: String, language: String?, translation: String) {
         val sourceText = lastSentence(source)

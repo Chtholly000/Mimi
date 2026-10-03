@@ -17,10 +17,21 @@ import com.google.android.material.textfield.TextInputLayout
 
 /** A draft only. ServiceSettingsActivity commits this alongside the speech configuration. */
 internal class TextTranslationSettings(private val activity: AppCompatActivity, private val onModeChange: (Boolean) -> Unit = {}) {
-    private val saved = SettingsStore.translationConfiguration(activity)
+    private class Draft(val saved: TranslationConfiguration) {
+        var endpoint = saved.endpoint
+        var model = saved.model
+        var key = ""
+        var localHttp = saved.allowLocalHttp
+        var forgetKey = false
+    }
+    private val providers = listOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.OPENAI_COMPATIBLE,
+        TextTranslationProvider.DEEPL, TextTranslationProvider.DEEPLX, TextTranslationProvider.NONE)
+    private val drafts = providers.associateWith { Draft(SettingsStore.translationConfiguration(activity, it)) }
+    private var selected = SettingsStore.textTranslationProvider(activity)
+    private var rendering = false
     private val root = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
     private val fields = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-    private val mode = Spinner(activity).apply { tag = "translation-mode"; background = null }
+    private val mode = Spinner(activity).apply { tag = "translation-mode"; background = null; setPadding(0, 0, 0, 0) }
     private val inputLayouts = mutableMapOf<TextInputEditText, TextInputLayout>()
     private val endpoint = field(R.string.translation_endpoint, "translation-endpoint")
     private val model = field(R.string.translation_model, "translation-model")
@@ -36,97 +47,165 @@ internal class TextTranslationSettings(private val activity: AppCompatActivity, 
         tag = "translation-check"; setText(R.string.translation_check); setIconResource(R.drawable.ic_check)
         textSize = 16f; isAllCaps = false; cornerRadius = dp(12)
     }
-    private var forgetKey = false
+    private val removeKey = MaterialButton(activity, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
+        tag = "translation-remove-key"; setText(R.string.translation_remove_key); textSize = 16f; isAllCaps = false
+    }
     private var request: TranslationCall? = null
     private var generation = 0
-    val enabled: Boolean get() = mode.selectedItemPosition == 1
+    val enabled: Boolean get() = selected != TextTranslationProvider.BUILTIN
     val view: View get() = root
 
     init {
         val header = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL }
         header.addView(ServiceSettingsUi.label(activity, activity.getString(R.string.translation_title), 18f), LinearLayout.LayoutParams(0, -2, 1f))
-        header.addView(helpButton(activity, R.string.translation_help_title, R.string.translation_help, "translation-help"), LinearLayout.LayoutParams(dp(48), dp(48)))
+        header.addView(helpButton(activity, R.string.translation_help_title, R.string.translation_help_builtin, "translation-help").apply {
+            setOnClickListener { showHelp() }
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
         root.addView(header)
-        mode.adapter = ArrayAdapter(activity, R.layout.mimi_spinner_item,
-            listOf(activity.getString(R.string.translation_builtin), activity.getString(R.string.translation_chatmock))).apply {
-            setDropDownViewResource(R.layout.mimi_spinner_dropdown)
-        }
+        mode.adapter = TranslationProviderAdapter(activity, providers)
         mode.contentDescription = activity.getString(R.string.translation_title)
-        mode.setSelection(if (SettingsStore.useChatMockTranslation(activity)) 1 else 0)
+        mode.setSelection(providers.indexOf(selected))
         root.addView(mode, LinearLayout.LayoutParams(-1, dp(56)).apply { bottomMargin = dp(16) })
-        endpoint.setText(saved.endpoint); inputLayouts.getValue(endpoint).placeholderText = "https://example.com/v1"
-        model.setText(saved.model)
-        updateKeyLabel()
-        localHttp.isChecked = saved.allowLocalHttp
         fields.addView(localHttp, LinearLayout.LayoutParams(-1, -2))
         val actions = LinearLayout(activity).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
-        if (saved.apiKey.isNotEmpty()) {
-            actions.addView(MaterialButton(activity, null, com.google.android.material.R.attr.borderlessButtonStyle).apply {
-                tag = "translation-remove-key"; setText(R.string.translation_remove_key); textSize = 16f; isAllCaps = false
-                setOnClickListener { forgetKey = true; key.setText(""); updateKeyLabel(); visibility = View.GONE; invalidateCheck() }
-            })
-        }
+        actions.addView(removeKey)
         actions.addView(check)
         fields.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
         fields.addView(result, LinearLayout.LayoutParams(-2, -2).apply { gravity = Gravity.END; topMargin = dp(8); bottomMargin = dp(12) })
-        fields.visibility = if (enabled) View.VISIBLE else View.GONE
         root.addView(fields)
         val watcher = object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                invalidateCheck()
-                updateKeyLabel()
+                if (rendering) return
+                rememberDraft(); invalidateCheck(); updateKeyLabel()
             }
             override fun afterTextChanged(s: Editable?) = Unit
         }
         listOf(endpoint, model, key).forEach { it.addTextChangedListener(watcher) }
-        localHttp.setOnCheckedChangeListener { _, _ -> invalidateCheck() }
+        localHttp.setOnCheckedChangeListener { _, _ -> if (!rendering) { rememberDraft(); invalidateCheck() } }
+        removeKey.setOnClickListener {
+            drafts.getValue(selected).forgetKey = true
+            key.setText(""); rememberDraft(); updateKeyLabel(); invalidateCheck()
+        }
         mode.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                fields.visibility = if (enabled) View.VISIBLE else View.GONE
-                invalidateCheck(); onModeChange(enabled)
+                if (providers[position] != selected) {
+                    rememberDraft(); selected = providers[position]; renderDraft()
+                }
             }
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
         }
         check.setOnClickListener { checkConnection() }
+        renderDraft()
+    }
+
+    private fun rememberDraft() {
+        if (rendering || !hasNetworkProvider()) return
+        drafts.getValue(selected).apply {
+            endpoint = this@TextTranslationSettings.endpoint.text.toString()
+            model = this@TextTranslationSettings.model.text.toString()
+            key = this@TextTranslationSettings.key.text.toString()
+            localHttp = this@TextTranslationSettings.localHttp.isChecked
+        }
+    }
+
+    private fun renderDraft() {
+        invalidateCheck(); rendering = true
+        val state = drafts.getValue(selected)
+        endpoint.setText(state.endpoint); model.setText(state.model); key.setText(state.key)
+        localHttp.isChecked = state.localHttp
+        fields.visibility = if (hasNetworkProvider()) View.VISIBLE else View.GONE
+        val customEndpoint = selected in listOf(TextTranslationProvider.OPENAI_COMPATIBLE, TextTranslationProvider.DEEPLX)
+        inputLayouts.getValue(endpoint).visibility = if (customEndpoint) View.VISIBLE else View.GONE
+        inputLayouts.getValue(endpoint).hint = activity.getString(if (selected == TextTranslationProvider.DEEPLX) R.string.translation_deeplx_endpoint else R.string.translation_endpoint)
+        inputLayouts.getValue(endpoint).placeholderText = if (selected == TextTranslationProvider.DEEPLX) "https://example.com/translate" else "https://example.com/v1"
+        inputLayouts.getValue(model).visibility = if (selected == TextTranslationProvider.OPENAI_COMPATIBLE) View.VISIBLE else View.GONE
+        localHttp.visibility = if (customEndpoint) View.VISIBLE else View.GONE
+        rendering = false
+        updateKeyLabel(); onModeChange(enabled)
     }
 
     fun draft(): TranslationConfiguration? {
-        if (!enabled) return saved
-        val config = TranslationConfiguration(endpoint.text.toString().trim(), model.text.toString().trim(),
-            key.text.toString().trim().ifBlank { if (!forgetKey && sameDestination()) saved.apiKey else "" }, localHttp.isChecked)
-        if (config.endpoint.isBlank() || config.model.isBlank()) {
+        rememberDraft()
+        if (!hasNetworkProvider()) return TranslationConfiguration(provider = selected)
+        val state = drafts.getValue(selected)
+        val config = TranslationConfiguration(
+            endpoint = if (selected == TextTranslationProvider.DEEPL) "" else state.endpoint.trim(),
+            model = if (selected == TextTranslationProvider.OPENAI_COMPATIBLE) state.model.trim() else "",
+            apiKey = state.key.trim().ifBlank { if (reusesSavedKey(state)) state.saved.apiKey else "" },
+            allowLocalHttp = selected != TextTranslationProvider.DEEPL && state.localHttp,
+            provider = selected,
+        )
+        if (selected == TextTranslationProvider.DEEPL && config.apiKey.isBlank()) {
+            showError(R.string.translation_key_required); return null
+        }
+        if (selected != TextTranslationProvider.DEEPL && config.endpoint.isBlank()) {
+            showError(R.string.translation_endpoint_required); return null
+        }
+        if (selected == TextTranslationProvider.OPENAI_COMPATIBLE && config.model.isBlank()) {
             showError(R.string.translation_required); return null
         }
         try { validateTranslationConfiguration(config) }
-        catch (_: IllegalArgumentException) { showError(R.string.translation_invalid); return null }
+        catch (error: IllegalArgumentException) {
+            showError(if (error.message == "translation_key") R.string.translation_key_invalid else R.string.translation_invalid)
+            return null
+        }
         return config
     }
 
     private fun updateKeyLabel() {
-        val hasSavedKey = !forgetKey && saved.apiKey.isNotBlank() && sameDestination()
-        inputLayouts.getValue(key).hint = activity.getString(if (hasSavedKey) R.string.translation_key_saved else R.string.translation_key)
-        inputLayouts.getValue(key).placeholderText = activity.getString(if (hasSavedKey) R.string.service_secret_saved else R.string.translation_key_optional)
+        val state = drafts.getValue(selected)
+        val hasSavedKey = reusesSavedKey(state)
+        val label = activity.getString(when (selected) {
+            TextTranslationProvider.DEEPL -> R.string.translation_deepl_key
+            TextTranslationProvider.DEEPLX -> R.string.translation_token
+            else -> R.string.translation_key
+        })
+        inputLayouts.getValue(key).hint = if (hasSavedKey && state.key.isBlank()) activity.getString(R.string.translation_saved_field, label) else label
+        inputLayouts.getValue(key).placeholderText = when {
+            hasSavedKey && state.key.isBlank() -> activity.getString(R.string.service_secret_saved)
+            selected == TextTranslationProvider.DEEPL -> null
+            else -> activity.getString(R.string.translation_key_optional)
+        }
+        removeKey.visibility = if (hasSavedKey && selected != TextTranslationProvider.DEEPL) View.VISIBLE else View.GONE
     }
 
-    private fun sameDestination(): Boolean = endpoint.text.toString().trim() == saved.endpoint.trim()
+    private fun hasNetworkProvider() = selected !in listOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.NONE)
+    private fun reusesSavedKey(state: Draft) = !state.forgetKey && state.saved.apiKey.isNotBlank() &&
+        (selected == TextTranslationProvider.DEEPL || state.endpoint.trim() == state.saved.endpoint.trim())
+
+    private fun showHelp() {
+        val body = when (selected) {
+            TextTranslationProvider.BUILTIN -> activity.getString(R.string.translation_help_builtin)
+            TextTranslationProvider.NONE -> activity.getString(R.string.translation_help_none)
+            else -> activity.getString(R.string.translation_help_speech) + "\n\n" + activity.getString(when (selected) {
+                TextTranslationProvider.DEEPL -> R.string.translation_help_deepl
+                TextTranslationProvider.DEEPLX -> R.string.translation_help_deeplx
+                else -> R.string.translation_help
+            }) + (if (selected == TextTranslationProvider.DEEPL) "" else "\n\n" + activity.getString(R.string.translation_help_network)) +
+                "\n\n" + activity.getString(R.string.translation_help_save)
+        }
+        MaterialAlertDialogBuilder(activity).setTitle(translationProviderLabel(selected)).setMessage(body)
+            .setPositiveButton(android.R.string.ok, null).show()
+    }
 
     private fun checkConnection() {
         val config = draft() ?: return
+        if (!hasNetworkProvider()) return
         val epoch = ++generation
         request?.cancel()
         check.isEnabled = false; check.setText(R.string.translation_checking)
         result.visibility = View.GONE
-        request = OpenAITranslationClient(config).check { outcome -> activity.runOnUiThread {
+        request = createTranslationClient(config).check { outcome -> activity.runOnUiThread {
             if (epoch != generation || activity.isDestroyed || activity.isFinishing) return@runOnUiThread
             request = null; check.isEnabled = true; check.setText(R.string.translation_check)
             result.visibility = View.VISIBLE
             result.text = when (outcome) {
                 is TranslationResult.Success -> activity.getString(R.string.translation_check_success, outcome.elapsedMs)
                 is TranslationResult.Failure -> activity.getString(when (outcome.code) {
-                    "translation_http_401", "translation_http_403" -> R.string.translation_check_auth
-                    "translation_http_404" -> R.string.translation_check_not_found
-                    "translation_http_429" -> R.string.translation_check_busy
+                    "translation_http_401", "translation_http_403", "translation_rejected_401", "translation_rejected_403" -> R.string.translation_check_auth
+                    "translation_http_404", "translation_rejected_404" -> R.string.translation_check_not_found
+                    "translation_http_429", "translation_http_456", "translation_rejected_429", "translation_rejected_456" -> R.string.translation_check_busy
                     "translation_timeout" -> R.string.translation_check_timeout
                     "translation_response", "translation_empty_response", "translation_incomplete", "translation_too_large" -> R.string.translation_check_response
                     else -> R.string.translation_check_failure
@@ -166,6 +245,14 @@ internal class TextTranslationSettings(private val activity: AppCompatActivity, 
         fields.addView(box, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
         return edit
     }
+}
+
+internal fun translationProviderLabel(provider: TextTranslationProvider): Int = when (provider) {
+    TextTranslationProvider.BUILTIN -> R.string.translation_builtin
+    TextTranslationProvider.NONE -> R.string.translation_none
+    TextTranslationProvider.OPENAI_COMPATIBLE -> R.string.translation_chatmock
+    TextTranslationProvider.DEEPL -> R.string.translation_deepl
+    TextTranslationProvider.DEEPLX -> R.string.translation_deeplx
 }
 
 internal fun helpButton(activity: AppCompatActivity, title: Int, body: Int, tag: String): ImageButton = ImageButton(activity).apply {

@@ -36,3 +36,11 @@ Theme selection uses inherited `--provider-light-display`,
 `--provider-dark-display`, and `--provider-backing-background` properties.
 Portalled service menus copy these properties from their trigger so their
 artwork keeps the settings window's selected theme outside its DOM ancestor.
+
+## Android reuse
+
+Android reuses these same marks in the service list, editor headings and text-translation
+selector. SVGs become equivalent vector drawables or 128-pixel PNG exports; source fills
+and geometry remain unchanged. Transparent padding is normalized for consistent visible
+size. Supplied OpenAI/DeepL dark variants and the DeepLX white backing remain theme-aware.
+Existing raster brand assets are copied directly. See `android/THIRD_PARTY_NOTICES.md`.

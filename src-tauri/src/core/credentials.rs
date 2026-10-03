@@ -94,6 +94,8 @@ pub enum ProviderCredentials {
         token: String,
         #[serde(default)]
         model: String,
+        #[serde(default)]
+        clear_token: bool,
     },
     DeepLX {
         asr_api_key: String,
@@ -208,7 +210,7 @@ impl TextTranslationCredentials {
                     .to_string(),
                 model: crate::core::protocols::openai_compatible::validate_model(model)
                     .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleModel)?,
-                api_key: required(api_key)?,
+                api_key: optional_openai_compatible_key(api_key)?,
             }),
         }
     }
@@ -384,7 +386,7 @@ impl ProviderCredentials {
                 endpoint: crate::core::protocols::openai_compatible::endpoint(endpoint)
                     .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleEndpoint)?
                     .to_string(),
-                api_key: required_field(api_key, provider)?,
+                api_key: optional_openai_compatible_key(api_key)?,
                 model: crate::core::protocols::openai_compatible::validate_model(model)
                     .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleModel)?,
             }),
@@ -564,6 +566,17 @@ impl ProviderCredentials {
     }
 }
 
+/// No-auth OpenAI-compatible destinations still have a validated endpoint and model.
+/// Never substitute a recognition key for an empty text-service key.
+fn optional_openai_compatible_key(value: &str) -> Result<String, ProviderCredentialsError> {
+    if value.chars().any(char::is_control)
+        || value.trim().chars().count() > MAXIMUM_CREDENTIAL_FIELD_LENGTH
+    {
+        return Err(ProviderCredentialsError::InvalidField);
+    }
+    Ok(value.trim().to_owned())
+}
+
 fn required_field(value: &str, provider: ProviderKind) -> Result<String, ProviderCredentialsError> {
     let value = value.trim();
     if value.is_empty() {
@@ -713,14 +726,15 @@ mod tests {
             TextTranslationCredentials::DeepL { api_key: "".into() }.validated(),
             Err(ProviderCredentialsError::MissingTextTranslation)
         );
-        assert_eq!(
-            TextTranslationCredentials::OpenAICompatible {
-                endpoint: "https://destination.example/v1".into(),
-                model: "model".into(),
-                api_key: "".into()
-            }
-            .validated(),
-            Err(ProviderCredentialsError::MissingTextTranslation)
+        let anonymous = TextTranslationCredentials::OpenAICompatible {
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+            model: "model".into(),
+            api_key: "".into(),
+        }
+        .validated()
+        .unwrap();
+        assert!(
+            matches!(anonymous, TextTranslationCredentials::OpenAICompatible { api_key, .. } if api_key.is_empty())
         );
     }
 
@@ -818,6 +832,7 @@ mod tests {
             endpoint: String::new(),
             token: "synthetic-request".into(),
             model: String::new(),
+            clear_token: false,
         };
         assert_eq!(
             request.revealed_field(
@@ -845,7 +860,14 @@ mod tests {
     fn alibaba_translation_request_is_write_only_and_debug_redacted() {
         let request: ProviderCredentials = serde_json::from_str(r#"{"kind":"alibabaTranslation","apiKey":"","textTranslation":"deepLX","endpoint":"https://example.com","token":"synthetic-token"}"#).unwrap();
         assert!(
-            matches!(&request, ProviderCredentials::AlibabaTranslation { api_key, text_translation: TextTranslation::DeepLX, .. } if api_key.is_empty())
+            matches!(&request, ProviderCredentials::AlibabaTranslation { api_key, text_translation: TextTranslation::DeepLX, clear_token: false, .. } if api_key.is_empty())
+        );
+        let clear_request: ProviderCredentials = serde_json::from_str(r#"{"kind":"alibabaTranslation","apiKey":"","textTranslation":"openAICompatible","endpoint":"","token":"","clearToken":true}"#).unwrap();
+        let encoded = serde_json::to_value(&clear_request).unwrap();
+        assert_eq!(encoded["clearToken"], true);
+        assert_eq!(
+            serde_json::from_value::<ProviderCredentials>(encoded).unwrap(),
+            clear_request
         );
         assert!(request
             .encode_for_keychain(ProviderKind::AlibabaCloud)
@@ -986,13 +1008,6 @@ mod tests {
                 "synthetic",
                 "model",
                 ProviderCredentialsError::InvalidOpenAICompatibleEndpoint,
-            ),
-            (
-                "asr",
-                "https://example.com/v1",
-                "",
-                "model",
-                ProviderCredentialsError::Missing(ProviderKind::AlibabaCloud),
             ),
             (
                 "asr",
@@ -1191,5 +1206,45 @@ mod tests {
                 ProviderKind::TencentCloud
             ))
         ));
+    }
+    #[test]
+    fn anonymous_openai_compatible_keys_are_isolated_from_required_recognition_credentials() {
+        let credentials = ProviderCredentials::OpenAICompatible {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+            api_key: String::new(),
+            model: "synthetic-model".into(),
+        }
+        .validated_for(ProviderKind::AlibabaCloud)
+        .unwrap();
+        assert_eq!(credentials.alibaba_key(), Some("synthetic-asr"));
+        assert!(
+            matches!(credentials, ProviderCredentials::OpenAICompatible { api_key, .. } if api_key.is_empty())
+        );
+        for key in [
+            "\n".into(),
+            "bad\r\nkey".into(),
+            "x".repeat(MAXIMUM_CREDENTIAL_FIELD_LENGTH + 1),
+        ] {
+            assert_eq!(
+                TextTranslationCredentials::OpenAICompatible {
+                    endpoint: "http://127.0.0.1:8000/v1".into(),
+                    model: "synthetic-model".into(),
+                    api_key: key,
+                }
+                .validated(),
+                Err(ProviderCredentialsError::InvalidField)
+            );
+        }
+        assert_eq!(
+            ProviderCredentials::DeepL {
+                asr_api_key: "asr".into(),
+                api_key: String::new()
+            }
+            .validated_for(ProviderKind::AlibabaCloud),
+            Err(ProviderCredentialsError::Missing(
+                ProviderKind::AlibabaCloud
+            ))
+        );
     }
 }

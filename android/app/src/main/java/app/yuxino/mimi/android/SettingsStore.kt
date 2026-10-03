@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import app.yuxino.mimi.android.provider.TextTranslationProvider
+import app.yuxino.mimi.android.provider.TranslationConfiguration
+import app.yuxino.mimi.android.provider.validateTranslationConfiguration
 
 /** EncryptedSharedPreferences-backed settings (API key stays in Android Keystore-backed storage). */
 object SettingsStore {
@@ -100,26 +103,66 @@ object SettingsStore {
         }
         editor.putString(KEY_BASE_URL_PREFIX + config.provider.id, config.endpoint.trim())
         editor.putString(KEY_MODEL_PREFIX + config.provider.id, config.model.trim())
-        if (config.provider == app.yuxino.mimi.android.provider.ServiceProvider.DASHSCOPE && translationEnabled != null) {
-            requireNotNull(translation)
-            if (translationEnabled) app.yuxino.mimi.android.provider.validateTranslationConfiguration(translation)
-            editor.putBoolean("chatmock_enabled", translationEnabled)
-                .putString("chatmock_endpoint", translation.endpoint)
-                .putString("chatmock_model", translation.model)
-                .putString("chatmock_api_key", translation.apiKey)
-                .putBoolean("chatmock_local_http", translation.allowLocalHttp)
+        if (config.provider == app.yuxino.mimi.android.provider.ServiceProvider.DASHSCOPE && translation != null) {
+            val selected = if (translationEnabled == false) TextTranslationProvider.BUILTIN else translation.provider
+            if (selected != TextTranslationProvider.BUILTIN) validateTranslationConfiguration(translation)
+            // Copy the old ChatMock draft once, even when saving a different translator first.
+            // Reads do not migrate or enable anything; Save and use is the only write boundary.
+            val preferences = get(context)
+            val openAIPrefix = translationPrefix(TextTranslationProvider.OPENAI_COMPATIBLE)
+            if (!preferences.contains(openAIPrefix + "endpoint") && preferences.contains("chatmock_endpoint")) {
+                writeTranslation(editor, translationConfiguration(context, TextTranslationProvider.OPENAI_COMPATIBLE))
+            }
+            if (translation.provider !in setOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.NONE)) {
+                writeTranslation(editor, translation)
+            }
+            editor.putString("text_translation_provider", selected.storageId)
+            listOf("chatmock_enabled", "chatmock_endpoint", "chatmock_model", "chatmock_api_key", "chatmock_local_http")
+                .forEach(editor::remove)
         }
         return editor.commit()
     }
 
-    fun useChatMockTranslation(context: Context): Boolean = get(context).getBoolean("chatmock_enabled", false)
+    fun textTranslationProvider(context: Context): TextTranslationProvider {
+        val preferences = get(context)
+        val stored = preferences.getString("text_translation_provider", null)
+        if (stored != null) return TextTranslationProvider.fromStorageId(stored)
+        return if (preferences.getBoolean("chatmock_enabled", false)) TextTranslationProvider.OPENAI_COMPATIBLE
+            else TextTranslationProvider.BUILTIN
+    }
 
-    fun translationConfiguration(context: Context) = app.yuxino.mimi.android.provider.TranslationConfiguration(
-        get(context).getString("chatmock_endpoint", "").orEmpty(),
-        get(context).getString("chatmock_model", "").orEmpty(),
-        get(context).getString("chatmock_api_key", "").orEmpty(),
-        get(context).getBoolean("chatmock_local_http", false),
-    )
+    fun originalTextOnly(context: Context): Boolean =
+        provider(context) == PROVIDER_DASHSCOPE && textTranslationProvider(context) == TextTranslationProvider.NONE
+
+    fun useChatMockTranslation(context: Context): Boolean =
+        textTranslationProvider(context) == TextTranslationProvider.OPENAI_COMPATIBLE
+
+    fun translationConfiguration(context: Context, provider: TextTranslationProvider = textTranslationProvider(context)): TranslationConfiguration {
+        if (provider in setOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.NONE)) {
+            return TranslationConfiguration(provider = provider)
+        }
+        val preferences = get(context)
+        val prefix = translationPrefix(provider)
+        // Only the OpenAI-compatible provider owns the previous ChatMock credentials.
+        val legacy = provider == TextTranslationProvider.OPENAI_COMPATIBLE && !preferences.contains(prefix + "endpoint")
+        return TranslationConfiguration(
+            endpoint = preferences.getString(if (legacy) "chatmock_endpoint" else prefix + "endpoint", "").orEmpty(),
+            model = preferences.getString(if (legacy) "chatmock_model" else prefix + "model", "").orEmpty(),
+            apiKey = preferences.getString(if (legacy) "chatmock_api_key" else prefix + "api_key", "").orEmpty(),
+            allowLocalHttp = preferences.getBoolean(if (legacy) "chatmock_local_http" else prefix + "local_http", false),
+            provider = provider,
+        )
+    }
+
+    private fun translationPrefix(provider: TextTranslationProvider) = "text_translation_${provider.storageId}_"
+
+    private fun writeTranslation(editor: SharedPreferences.Editor, configuration: TranslationConfiguration) {
+        val prefix = translationPrefix(configuration.provider)
+        editor.putString(prefix + "endpoint", configuration.endpoint)
+            .putString(prefix + "model", configuration.model)
+            .putString(prefix + "api_key", configuration.apiKey)
+            .putBoolean(prefix + "local_http", configuration.allowLocalHttp)
+    }
 
     fun activateProvider(context: Context, provider: app.yuxino.mimi.android.provider.ServiceProvider): Boolean {
         if (!isConfigured(context, provider)) return false

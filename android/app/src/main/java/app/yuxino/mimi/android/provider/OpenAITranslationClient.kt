@@ -29,19 +29,37 @@ interface TranslationClient {
         targetLanguage: String,
         callback: (TranslationResult) -> Unit,
     ): TranslationCall
+
+    /** Same request, parser and authentication as subtitle translation, using fixed synthetic text. */
+    fun check(callback: (TranslationResult) -> Unit): TranslationCall = translate("Hello.", "en", "zh", callback)
 }
 
-/** A single bounded, non-streaming Chat Completions request. Never follows redirects with credentials. */
+/** A single bounded, non-streaming Chat Completions request. */
 class OpenAITranslationClient(
     private val configuration: TranslationConfiguration,
-    client: OkHttpClient = OkHttpClient.Builder()
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(35, TimeUnit.SECONDS)
-        .build(),
+    client: OkHttpClient = defaultTranslationHttpClient(),
 ) : TranslationClient {
+    private val transport = BoundedTranslationHttpClient(client)
+
+    override fun translate(text: String, sourceLanguage: String, targetLanguage: String, callback: (TranslationResult) -> Unit): TranslationCall =
+        transport.execute({
+            require(configuration.provider == TextTranslationProvider.OPENAI_COMPATIBLE) { "translation_provider" }
+            val endpoint = validateTranslationConfiguration(configuration)
+            translationJsonRequest(endpoint, buildTranslationRequest(configuration.model.trim(), text, sourceLanguage, targetLanguage))
+                .apply {
+                    if (configuration.apiKey.isNotBlank()) header("Authorization", "Bearer ${configuration.apiKey.trim()}")
+                }.build()
+        }, ::decodeTranslationResponse, callback)
+}
+
+internal fun defaultTranslationHttpClient(): OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(10, TimeUnit.SECONDS)
+    .readTimeout(30, TimeUnit.SECONDS)
+    .callTimeout(35, TimeUnit.SECONDS)
+    .build()
+
+/** Shared transport policy for all independent text translators; errors never include response content. */
+internal class BoundedTranslationHttpClient(client: OkHttpClient = defaultTranslationHttpClient()) {
     private val client = client.newBuilder()
         .followRedirects(false)
         .followSslRedirects(false)
@@ -51,23 +69,15 @@ class OpenAITranslationClient(
         .callTimeout((client.callTimeoutMillis.takeIf { it in 1..35_000 } ?: 35_000).toLong(), TimeUnit.MILLISECONDS)
         .build()
 
-    override fun translate(
-        text: String,
-        sourceLanguage: String,
-        targetLanguage: String,
+    fun execute(
+        buildRequest: () -> Request,
+        decodeResponse: (String) -> String,
         callback: (TranslationResult) -> Unit,
     ): TranslationCall {
         val startedAt = System.nanoTime()
         fun elapsed() = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt).coerceAtLeast(0)
         val request = try {
-            val endpoint = validateTranslationConfiguration(configuration)
-            val payload = buildTranslationRequest(configuration.model.trim(), text, sourceLanguage, targetLanguage)
-            Request.Builder().url(endpoint)
-                .header("Cache-Control", "no-store")
-                .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                .apply {
-                    if (configuration.apiKey.isNotBlank()) header("Authorization", "Bearer ${configuration.apiKey.trim()}")
-                }.build()
+            buildRequest()
         } catch (error: IllegalArgumentException) {
             callback(TranslationResult.Failure(safeTranslationError(error), elapsed()))
             return TranslationCall { }
@@ -96,7 +106,7 @@ class OpenAITranslationClient(
                             val source = body.source()
                             source.request(MAX_TRANSLATION_RESPONSE_BYTES + 1L)
                             require(source.buffer.size <= MAX_TRANSLATION_RESPONSE_BYTES) { "translation_too_large" }
-                            TranslationResult.Success(decodeTranslationResponse(source.readUtf8()), elapsed())
+                            TranslationResult.Success(decodeResponse(source.readUtf8()), elapsed())
                         } catch (error: IOException) {
                             TranslationResult.Failure(if (error is InterruptedIOException) "translation_timeout" else "translation_network", elapsed())
                         } catch (error: Exception) {
@@ -112,19 +122,32 @@ class OpenAITranslationClient(
             call.cancel()
         }
     }
+}
 
-    /** Uses exactly the same endpoint, model, auth and parsing as a real subtitle translation. */
-    fun check(callback: (TranslationResult) -> Unit): TranslationCall =
-        translate("Hello.", "en", "zh", callback)
+internal fun translationJsonRequest(endpoint: String, payload: JSONObject): Request.Builder =
+    Request.Builder().url(endpoint).header("Cache-Control", "no-store")
+        .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+
+internal fun boundedTranslationText(value: Any): String {
+    require(value is String) { "translation_response" }
+    val text = value.trim()
+    require(text.isNotEmpty()) { "translation_empty_response" }
+    require(text.length <= MAX_TRANSLATION_TEXT_CHARS) { "translation_too_large" }
+    return text
+}
+
+internal fun boundedTranslationInput(input: String): String {
+    val text = input.trim()
+    require(text.isNotEmpty()) { "translation_empty_source" }
+    require(text.length <= MAX_TRANSLATION_TEXT_CHARS) { "translation_too_large" }
+    return text
 }
 
 internal const val MAX_TRANSLATION_TEXT_CHARS = 4096
 internal const val MAX_TRANSLATION_RESPONSE_BYTES = 64L * 1024
 
 internal fun buildTranslationRequest(model: String, input: String, sourceLanguage: String, targetLanguage: String): JSONObject {
-    val text = input.trim()
-    require(text.isNotEmpty()) { "translation_empty_source" }
-    require(text.length <= MAX_TRANSLATION_TEXT_CHARS) { "translation_too_large" }
+    val text = boundedTranslationInput(input)
     val source = translationLanguage(sourceLanguage, allowAuto = true)
     val target = translationLanguage(targetLanguage, allowAuto = false)
     // Keep the prompt identical to the desktop OpenAI-compatible translator.
@@ -147,7 +170,8 @@ private fun translationLanguage(code: String, allowAuto: Boolean): String = when
 internal fun decodeTranslationResponse(body: String): String {
     require(body.toByteArray(Charsets.UTF_8).size <= MAX_TRANSLATION_RESPONSE_BYTES) { "translation_too_large" }
     val choice = JSONObject(body).getJSONArray("choices").getJSONObject(0)
-    require(choice.optString("finish_reason") == "stop") { "translation_incomplete" }
+    // Some compatible services omit this field; an explicit unfinished result remains invalid.
+    require(!choice.has("finish_reason") || choice.opt("finish_reason") == "stop") { "translation_incomplete" }
     val content = choice.getJSONObject("message").get("content")
     require(content is String) { "translation_response" }
     var text = content.trim()
@@ -156,13 +180,12 @@ internal fun decodeTranslationResponse(body: String): String {
         require(end >= 0 && !text.substring("<think>".length, end).contains("<think>")) { "translation_incomplete" }
         text = text.substring(end + "</think>".length).trimStart()
     }
-    require(text.isNotBlank()) { "translation_empty_response" }
-    require(text.length <= MAX_TRANSLATION_TEXT_CHARS) { "translation_too_large" }
-    return text
+    return boundedTranslationText(text)
 }
 
 private fun safeTranslationError(error: Exception): String = error.message?.takeIf {
     it in setOf("translation_endpoint", "translation_https_required", "translation_model", "translation_key",
         "translation_language", "translation_empty_source", "translation_too_large", "translation_response",
-        "translation_incomplete", "translation_empty_response")
+        "translation_incomplete", "translation_empty_response", "translation_provider") ||
+        it.matches(Regex("translation_rejected_[0-9]{1,5}"))
 } ?: "translation_response"
