@@ -23,7 +23,7 @@ internal class TranslationProviderAdapter(context: Context, private val provider
         val row = this as TextView
         val iconResource = when (providers[position]) {
             TextTranslationProvider.BUILTIN -> R.drawable.ic_translation_alibaba
-            TextTranslationProvider.OPENAI_COMPATIBLE -> R.drawable.ic_service_languages
+            TextTranslationProvider.CHAT_MOCK, TextTranslationProvider.OPENAI_COMPATIBLE -> R.drawable.ic_service_languages
             TextTranslationProvider.DEEPL -> R.drawable.ic_translation_deepl
             TextTranslationProvider.DEEPLX -> R.drawable.ic_translation_deeplx
             TextTranslationProvider.NONE -> R.drawable.ic_translation_captions

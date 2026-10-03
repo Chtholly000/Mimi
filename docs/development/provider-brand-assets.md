@@ -25,7 +25,7 @@ claim an independently designed mark or affiliation with DeepL. The
 [current upstream repository](https://github.com/OwO-Network/DLX) was renamed
 to DLX and removed DeepL branding; this asset does not identify that newer brand.
 
-OpenAI-compatible text translation uses the neutral Lucide `Languages` glyph.
+ChatMock and OpenAI-compatible text translation use the neutral Lucide `Languages` glyph.
 Compatibility identifies an API format, not OpenAI ownership or affiliation.
 
 Recognition and text translation call sites resolve their service separately.

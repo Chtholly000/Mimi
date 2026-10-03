@@ -115,3 +115,29 @@ request shapes, response rejection/cleanup, endpoint normalization, optional Aut
 model UTF-8 byte limits and credential Unicode-scalar limits in one place. Provider/shared
 changes trigger both CI paths. See [platform parity](../development/platform-parity.md)
 for the maintained feature table, intentional OS differences and required review checks.
+
+
+## Separate ChatMock preset
+
+Expose **ChatMock** and **OpenAI compatible** as separate text translation choices on
+both platforms. Both reuse the existing Chat Completions transport, scheduling,
+response cleanup and validation. A new ChatMock draft pre-fills
+`http://127.0.0.1:8000/v1`; the model remains required and has no assumed default.
+Saved destinations are never replaced by that preset on reopen. Selecting a choice
+only edits a draft; saving remains explicit.
+
+Persist the distinct `chatMock` route and keep its destination credentials separate
+from `openAICompatible`. Existing combined-entry configurations remain under the
+OpenAI-compatible route without inferring a service brand, migrating secrets, or
+changing their endpoint. Unsaved destination data never crosses choices: desktop clears it on a choice
+change, while Android keeps separate in-editor drafts until save or cancellation.
+Neither behavior changes speech credentials. Both routes share cancellation
+and final-priority translation behavior, while their budget contexts stay isolated.
+
+Use a compact help icon for setup and requirements. Explain that localhost refers
+to the device running Mimi: the PC itself on desktop, and the phone/emulator on
+Android. Connecting Android to a computer requires that computer's accessible HTTPS
+service or an explicit USB port reverse; never silently widen HTTP exposure or
+switch on the existing local HTTP allowance. Keep Chinese, English and Japanese in
+sync. Tests cover default filling, cancellation, preserved saved endpoints, separate
+storage and route switching, plus shared real-loopback protocol coverage.

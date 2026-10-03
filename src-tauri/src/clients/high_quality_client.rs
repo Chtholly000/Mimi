@@ -558,6 +558,11 @@ impl HighQualityTranslationClient {
                     endpoint,
                     model,
                     api_key,
+                }
+                | TextTranslationCredentials::ChatMock {
+                    endpoint,
+                    model,
+                    api_key,
                 } => TextTranslationClient::OpenAICompatible(
                     crate::clients::openai_compatible_client::OpenAICompatibleClient::new(
                         endpoint, api_key, model, source, target,
@@ -2385,14 +2390,27 @@ mod tests {
 
     #[tokio::test]
     async fn custom_recognition_uses_its_independent_chat_key_and_preserves_final_order() {
+        assert_independent_chat_final_order(false).await;
+        assert_independent_chat_final_order(true).await;
+    }
+
+    async fn assert_independent_chat_final_order(chatmock: bool) {
         use tokio::io::AsyncWriteExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let mut configuration =
             custom_configuration(ProviderKind::CustomDashScopeASR, TargetLanguage::Japanese);
-        configuration.text_credentials = Some(TextTranslationCredentials::OpenAICompatible {
-            endpoint: format!("http://{}/v1", listener.local_addr().unwrap()),
-            model: "synthetic-translation-model".into(),
-            api_key: "synthetic-translation-key".into(),
+        configuration.text_credentials = Some(if chatmock {
+            TextTranslationCredentials::ChatMock {
+                endpoint: format!("http://{}/v1", listener.local_addr().unwrap()),
+                model: "synthetic-translation-model".into(),
+                api_key: "synthetic-translation-key".into(),
+            }
+        } else {
+            TextTranslationCredentials::OpenAICompatible {
+                endpoint: format!("http://{}/v1", listener.local_addr().unwrap()),
+                model: "synthetic-translation-model".into(),
+                api_key: "synthetic-translation-key".into(),
+            }
         });
         let server = tokio::spawn(async move {
             for index in 1..=2 {

@@ -97,7 +97,7 @@ class SharedTranslationContractTest {
         }
         val limits = contract.getJSONObject("configurationLimits")
         val limit = limits.getInt("credentialUnicodeScalars")
-        for (provider in listOf(TextTranslationProvider.DEEPL, TextTranslationProvider.DEEPLX, TextTranslationProvider.OPENAI_COMPATIBLE)) {
+        for (provider in listOf(TextTranslationProvider.DEEPL, TextTranslationProvider.DEEPLX, TextTranslationProvider.OPENAI_COMPATIBLE, TextTranslationProvider.CHAT_MOCK)) {
             assertTrue(provider.name, credentialsAccepted(provider, "s".repeat(limit)))
             assertFalse(provider.name, credentialsAccepted(provider, "s".repeat(limit + 1)))
             if (provider != TextTranslationProvider.DEEPL) {

@@ -20,6 +20,30 @@ import java.util.concurrent.atomic.AtomicReference
 class OpenAITranslationClientTest {
     private val validResponse = """{"choices":[{"finish_reason":"stop","message":{"content":"<think>synthetic reasoning</think>你好。"}}]}"""
 
+    @Test fun chatMockIsAnIndependentSelectionUsingTheSameProductionProtocol() {
+        assertEquals(TextTranslationProvider.CHAT_MOCK, TextTranslationProvider.fromStorageId("chatMock"))
+        assertEquals(TextTranslationProvider.OPENAI_COMPATIBLE, TextTranslationProvider.fromStorageId("openaiCompatible"))
+        assertNotEquals(TextTranslationProvider.CHAT_MOCK.storageId, TextTranslationProvider.OPENAI_COMPATIBLE.storageId)
+        for (provider in listOf(TextTranslationProvider.CHAT_MOCK, TextTranslationProvider.OPENAI_COMPATIBLE)) {
+            Fixture { exchange ->
+                assertEquals("POST", exchange.requestMethod)
+                assertEquals("/v1/chat/completions", exchange.requestPath)
+                assertNull(exchange.requestHeaders["authorization"])
+                val body = JSONObject(exchange.requestBody.reader().readText())
+                assertEquals("synthetic-model", body.getString("model"))
+                assertFalse(body.getBoolean("stream"))
+                exchange.reply(200, validResponse)
+            }.use { fixture ->
+                val configuration = TranslationConfiguration(fixture.endpoint, "synthetic-model", allowLocalHttp = true, provider = provider)
+                val result = await(createTranslationClient(configuration)::check)
+                assertTrue(result is TranslationResult.Success)
+                assertEquals("你好。", (result as TranslationResult.Success).text)
+                assertTrue(runCatching { validateTranslationConfiguration(configuration.copy(model = "")) }.isFailure)
+                assertTrue(runCatching { validateTranslationConfiguration(configuration.copy(allowLocalHttp = false)) }.isFailure)
+            }
+        }
+    }
+
     private class Exchange(private val socket: Socket) : AutoCloseable {
         val requestMethod: String
         val requestPath: String
@@ -34,7 +58,8 @@ class OpenAITranslationClientTest {
                 val bytes = ByteArrayOutputStream()
                 while (true) {
                     val value = input.read()
-                    check(value >= 0) { "Unexpected request EOF" }
+                    // Timeout/cancellation can close the socket before all request headers arrive.
+                    if (value < 0) throw java.io.EOFException("HTTP request ended")
                     if (value == 10) return bytes.toString("US-ASCII").removeSuffix("\r")
                     check(bytes.size() < 8_192) { "Oversized request header" }
                     bytes.write(value)

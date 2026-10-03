@@ -7,9 +7,12 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 enum class TextTranslationProvider(val storageId: String) {
     BUILTIN("builtin"),
     NONE("none"),
+    CHAT_MOCK("chatMock"),
     OPENAI_COMPATIBLE("openaiCompatible"),
     DEEPL("deepL"),
     DEEPLX("deepLX");
+
+    val usesOpenAIProtocol: Boolean get() = this == CHAT_MOCK || this == OPENAI_COMPATIBLE
 
     companion object {
         fun fromStorageId(id: String): TextTranslationProvider = entries.firstOrNull { it.storageId == id } ?: BUILTIN
@@ -36,7 +39,7 @@ fun normalizeTranslationEndpoint(config: TranslationConfiguration): String = whe
         val path = url.encodedPath.trimEnd('/')
         url.newBuilder().encodedPath(if (path.endsWith("/translate")) path else "$path/translate").build().toString()
     }
-    TextTranslationProvider.OPENAI_COMPATIBLE -> {
+    TextTranslationProvider.CHAT_MOCK, TextTranslationProvider.OPENAI_COMPATIBLE -> {
         val url = validatedTranslationUrl(config)
         val path = url.encodedPath.trimEnd('/')
         val completedPath = if (path.endsWith("/chat/completions")) path else "$path/chat/completions"
@@ -62,18 +65,18 @@ private fun isLocalTranslationHost(host: String): Boolean =
 internal fun validateTranslationConfiguration(config: TranslationConfiguration): String {
     if (config.provider == TextTranslationProvider.BUILTIN || config.provider == TextTranslationProvider.NONE) return ""
     val endpoint = normalizeTranslationEndpoint(config)
-    if (config.provider == TextTranslationProvider.OPENAI_COMPATIBLE) {
+    if (config.provider.usesOpenAIProtocol) {
         require(config.model.trim().toByteArray(Charsets.UTF_8).size in 1..256 && config.model.none { it.isISOControl() }) { "translation_model" }
     }
     val key = config.apiKey.trim()
     // Match desktop saved credentials: Unicode scalar count, optional blank keys and trimmed values.
-    val checkedKey = if (config.provider == TextTranslationProvider.OPENAI_COMPATIBLE) config.apiKey else key
+    val checkedKey = if (config.provider.usesOpenAIProtocol) config.apiKey else key
     require(key.codePointCount(0, key.length) <= 1024 && checkedKey.none { it.isISOControl() }) { "translation_key" }
     return endpoint
 }
 
 fun createTranslationClient(config: TranslationConfiguration): TranslationClient = when (config.provider) {
-    TextTranslationProvider.OPENAI_COMPATIBLE -> OpenAITranslationClient(config)
+    TextTranslationProvider.CHAT_MOCK, TextTranslationProvider.OPENAI_COMPATIBLE -> OpenAITranslationClient(config)
     TextTranslationProvider.DEEPL -> DeepLTranslationClient(config)
     TextTranslationProvider.DEEPLX -> DeepLXTranslationClient(config)
     TextTranslationProvider.BUILTIN, TextTranslationProvider.NONE -> throw IllegalArgumentException("translation_provider")

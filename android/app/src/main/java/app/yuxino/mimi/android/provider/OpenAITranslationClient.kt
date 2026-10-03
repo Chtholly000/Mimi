@@ -43,7 +43,7 @@ class OpenAITranslationClient(
 
     override fun translate(text: String, sourceLanguage: String, targetLanguage: String, callback: (TranslationResult) -> Unit): TranslationCall =
         transport.execute({
-            require(configuration.provider == TextTranslationProvider.OPENAI_COMPATIBLE) { "translation_provider" }
+            require(configuration.provider.usesOpenAIProtocol) { "translation_provider" }
             val endpoint = validateTranslationConfiguration(configuration)
             translationJsonRequest(endpoint, buildTranslationRequest(configuration.model.trim(), text, sourceLanguage, targetLanguage))
                 .apply {

@@ -39,6 +39,13 @@ internal fun runTextTranslationStorageChecks(context: Context) {
         apiKey = "synthetic-storage-openai-key",
         provider = TextTranslationProvider.OPENAI_COMPATIBLE,
     )
+    val chatMock = TranslationConfiguration(
+        endpoint = "http://127.0.0.1:8000/v1",
+        model = "synthetic-chatmock-model",
+        apiKey = "synthetic-chatmock-key",
+        allowLocalHttp = true,
+        provider = TextTranslationProvider.CHAT_MOCK,
+    )
     fun save(configuration: TranslationConfiguration) {
         check(SettingsStore.saveConfiguration(context, speech, configuration)) { "Synthetic translation save failed" }
         check(SettingsStore.textTranslationProvider(context) == configuration.provider) { "Saved translation mode was lost" }
@@ -66,8 +73,11 @@ internal fun runTextTranslationStorageChecks(context: Context) {
             val beforeRead = snapshot()
             check(SettingsStore.textTranslationProvider(context) == if (enabled)
                 TextTranslationProvider.OPENAI_COMPATIBLE else TextTranslationProvider.BUILTIN)
-            check(SettingsStore.useChatMockTranslation(context) == enabled)
+            check(!SettingsStore.useChatMockTranslation(context)) { "Legacy combined settings were relabelled as ChatMock" }
             check(SettingsStore.translationConfiguration(context, TextTranslationProvider.OPENAI_COMPATIBLE) == legacy)
+            check(SettingsStore.translationConfiguration(context, TextTranslationProvider.CHAT_MOCK) == TranslationConfiguration(provider = TextTranslationProvider.CHAT_MOCK)) {
+                "The separate ChatMock entry borrowed legacy compatible settings"
+            }
             check(SettingsStore.translationConfiguration(context, TextTranslationProvider.DEEPL).apiKey.isEmpty())
             check(SettingsStore.translationConfiguration(context, TextTranslationProvider.DEEPLX).apiKey.isEmpty())
             check(snapshot() == beforeRead) { "Reading legacy text settings wrote or enabled a configuration" }
@@ -80,9 +90,14 @@ internal fun runTextTranslationStorageChecks(context: Context) {
             "The first DeepL save lost the previous ChatMock configuration"
         }
         check(preferences.all.keys.none { it.startsWith("chatmock_") }) { "Explicit save left legacy text settings behind" }
+        save(chatMock)
+        check(SettingsStore.useChatMockTranslation(context))
+        check(SettingsStore.translationConfiguration(context, TextTranslationProvider.OPENAI_COMPATIBLE) == legacy) {
+            "Saving the new ChatMock entry overwrote the legacy compatible service"
+        }
         save(deepLX)
         save(openAI)
-        val networkConfigurations = listOf(deepL, deepLX, openAI)
+        val networkConfigurations = listOf(deepL, deepLX, openAI, chatMock)
         fun assertNetworkConfigurations() {
             for (configuration in networkConfigurations) {
                 check(SettingsStore.translationConfiguration(context, configuration.provider) == configuration) {

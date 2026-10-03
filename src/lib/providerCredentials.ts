@@ -4,7 +4,7 @@ import type {
   TextTranslation,
   ServiceProvider,
 } from "./types";
-import { isCustomSpeechProvider } from "./providerCapabilities";
+import { isChatCompletionsTranslation, isCustomSpeechProvider } from "./providerCapabilities";
 
 export type CredentialFieldName =
   | "asrApiKey"
@@ -124,6 +124,8 @@ export function buildProviderCredentials(
   }
 }
 
+export const CHATMOCK_DEFAULT_ENDPOINT = "http://127.0.0.1:8000/v1";
+
 /** Alibaba retains its profile-scoped key; an empty replacement reuses it natively. */
 export function buildAlibabaTranslationCredentials(profile: ServiceProfile, draft: CredentialDraft, translation: TextTranslation, clearToken = false): ProviderCredentialsInput | null {
   const custom = isCustomSpeechProvider(profile.provider);
@@ -133,15 +135,15 @@ export function buildAlibabaTranslationCredentials(profile: ServiceProfile, draf
   const keepsSavedDestination = (custom ? profile.textCredentialState : profile.credentialState) === "present" && translation === savedTranslation;
   if (translation === "deepLX" && !draft.endpoint.trim() && !keepsSavedDestination) return null;
   if (translation === "deepL" && !draft.token.trim() && !keepsSavedDestination) return null;
-  if (translation === "openAICompatible" && !keepsSavedDestination && (!draft.endpoint.trim() || !draft.model.trim())) return null;
+  if (isChatCompletionsTranslation(translation) && !keepsSavedDestination && (!draft.endpoint.trim() || !draft.model.trim())) return null;
   return {
     kind: "alibabaTranslation",
     apiKey: custom ? "" : draft.apiKey.trim(),
     textTranslation: translation,
-    endpoint: translation === "deepLX" || translation === "openAICompatible" ? draft.endpoint.trim() : "",
-    token: translation === "followService" || (translation === "openAICompatible" && clearToken) ? "" : draft.token.trim(),
-    model: translation === "openAICompatible" ? draft.model.trim() : "",
-    ...(translation === "openAICompatible" && clearToken ? { clearToken: true } : {}),
+    endpoint: translation === "deepLX" || isChatCompletionsTranslation(translation) ? draft.endpoint.trim() : "",
+    token: translation === "followService" || (isChatCompletionsTranslation(translation) && clearToken) ? "" : draft.token.trim(),
+    model: isChatCompletionsTranslation(translation) ? draft.model.trim() : "",
+    ...(isChatCompletionsTranslation(translation) && clearToken ? { clearToken: true } : {}),
   };
 }
 

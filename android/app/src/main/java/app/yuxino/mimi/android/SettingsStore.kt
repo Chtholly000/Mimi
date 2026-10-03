@@ -135,7 +135,7 @@ object SettingsStore {
         provider(context) == PROVIDER_DASHSCOPE && textTranslationProvider(context) == TextTranslationProvider.NONE
 
     fun useChatMockTranslation(context: Context): Boolean =
-        textTranslationProvider(context) == TextTranslationProvider.OPENAI_COMPATIBLE
+        textTranslationProvider(context) == TextTranslationProvider.CHAT_MOCK
 
     fun translationConfiguration(context: Context, provider: TextTranslationProvider = textTranslationProvider(context)): TranslationConfiguration {
         if (provider in setOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.NONE)) {
@@ -143,7 +143,8 @@ object SettingsStore {
         }
         val preferences = get(context)
         val prefix = translationPrefix(provider)
-        // Only the OpenAI-compatible provider owns the previous ChatMock credentials.
+        // The old combined entry could hold any compatible service. Keep it generic;
+        // never infer ChatMock from its URL or copy its key into the new ChatMock entry.
         val legacy = provider == TextTranslationProvider.OPENAI_COMPATIBLE && !preferences.contains(prefix + "endpoint")
         return TranslationConfiguration(
             endpoint = preferences.getString(if (legacy) "chatmock_endpoint" else prefix + "endpoint", "").orEmpty(),

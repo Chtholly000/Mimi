@@ -158,7 +158,7 @@ export type ServiceProvider =
   | "customOpenAIASR"
   | "deepLX";
 
-export type TextTranslation = "followService" | "deepL" | "deepLX" | "openAICompatible";
+export type TextTranslation = "followService" | "deepL" | "deepLX" | "openAICompatible" | "chatMock";
 
 /** Write-only payload sent to the native secure credential store. */
 export type ProviderCredentialsInput =

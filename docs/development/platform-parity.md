@@ -8,12 +8,17 @@ update both implementations and their platform-specific tests in the same change
 
 ## Shared behavior
 
-- DeepL, DeepLX and OpenAI-compatible/ChatMock are text translators, separate from speech
+- DeepL, DeepLX, ChatMock and OpenAI-compatible services are text translators, separate from speech
   recognition. They receive confirmed recognized text and their own credentials.
 - DeepL uses a required API key and the official Free/Pro origin. DeepLX uses its own JSON
   protocol and an optional Bearer token. OpenAI-compatible services allow a blank key when
   authentication is not required; never substitute a speech key or reuse a key after a
   destination change.
+- ChatMock and OpenAI compatible are independent saved choices using one transport. Only
+  a new ChatMock draft defaults to `http://127.0.0.1:8000/v1`; the model remains required.
+  Existing combined-entry settings remain OpenAI compatible, and credentials never move
+  between choices. Localhost means the device running Mimi, while translation models are
+  still called online through the signed-in ChatMock account.
 - Endpoint prefixes are preserved. An OpenAI-compatible base receives `/chat/completions`;
   use an explicit `/v1` base for ChatMock. Complete endpoints remain unchanged. HTTPS is
   the default; each platform's explicit local transport boundary remains enforced.
@@ -30,7 +35,7 @@ update both implementations and their platform-specific tests in the same change
 
 | Area | Desktop | Android |
 | --- | --- | --- |
-| Independent text services | DeepL, DeepLX, OpenAI-compatible/ChatMock; original-only with custom ASR | Same text choices after Alibaba realtime ASR; original-only supported |
+| Independent text services | DeepL, DeepLX, ChatMock, OpenAI compatible; original-only with custom ASR | Same text choices after Alibaba realtime ASR; original-only supported |
 | Recognition selection | Eight built-in services plus custom DashScope/OpenAI ASR | Eight built-in adapters; independent text currently pairs with Alibaba ASR |
 | Built-in Alibaba pipeline | Desktop Audio 3.0/Qwen-MT scheduling | Existing integrated realtime translation adapter |
 | Translation scheduling | Speculative drafts plus prioritized finals and provider recovery | Final-only serial HTTP, one active and four waiting; explicit stop on failure |

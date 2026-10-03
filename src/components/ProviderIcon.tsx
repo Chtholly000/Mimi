@@ -15,7 +15,7 @@ import deepLX from "../assets/providers/deeplx.svg";
 import "./provider-icon.css";
 
 type IconProvider = ServiceProvider | Exclude<TextTranslation, "followService">;
-const PROVIDER_ASSETS: Record<Exclude<IconProvider, "openAICompatible" | "customDashScopeASR" | "customOpenAIASR">, string> = {
+const PROVIDER_ASSETS: Record<Exclude<IconProvider, "openAICompatible" | "chatMock" | "customDashScopeASR" | "customOpenAIASR">, string> = {
   alibabaCloud,
   openAIRealtime: openAI,
   googleGeminiLive: gemini,
@@ -44,7 +44,7 @@ export function ProviderIcon({ provider, size = 36, className }: ProviderIconPro
       aria-hidden="true"
       style={{ width: size, height: size }}
     >
-      {provider === "customDashScopeASR" || provider === "customOpenAIASR" ? <AudioLines className="provider-icon__generic" size={28} strokeWidth={1.5} /> : provider === "openAICompatible" ? (
+      {provider === "customDashScopeASR" || provider === "customOpenAIASR" ? <AudioLines className="provider-icon__generic" size={28} strokeWidth={1.5} /> : (provider === "openAICompatible" || provider === "chatMock") ? (
         <Languages className="provider-icon__generic" size={28} strokeWidth={1.5} />
       ) : <>
         <img

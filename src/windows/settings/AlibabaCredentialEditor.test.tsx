@@ -35,7 +35,7 @@ async function change(selector: string, value: string) {
 function picker() { return host.querySelector<HTMLButtonElement>('.service-stage--translation [role="combobox"]')!; }
 async function chooseTranslation(value: TextTranslation) {
   await act(() => picker().click());
-  const label = value === "openAICompatible" ? I18N.settings.textTranslationOpenAICompatible : value === "deepLX" ? I18N.settings.textTranslationCustom : value === "deepL" ? "DeepL" : I18N.settings.textTranslationFollow;
+  const label = value === "chatMock" ? "ChatMock" : value === "openAICompatible" ? I18N.settings.textTranslationOpenAICompatible : value === "deepLX" ? I18N.settings.textTranslationCustom : value === "deepL" ? "DeepL" : I18N.settings.textTranslationFollow;
   const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === label)!;
   await act(() => option.click());
 }
@@ -306,7 +306,11 @@ it("keeps saved OpenAI-compatible fields write-only and permits changing only th
 });
 
 it("saves a keyless ChatMock destination while keeping its requirements in help", async () => {
-  await render(); await chooseTranslation("openAICompatible");
+  await render(); await chooseTranslation("chatMock");
+  expect(picker().textContent).toBe("ChatMock");
+  expect(host.querySelector<HTMLInputElement>("#test-endpoint")!.value).toBe("http://127.0.0.1:8000/v1");
+  expect(host.querySelector<HTMLInputElement>("#test-model")!.value).toBe("");
+  expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(true);
   const help = host.querySelector(".service-stage--translation .settings-help-control__description")!;
   expect(help.textContent).toContain(I18N.settings.chatMockSetup);
   expect(host.querySelectorAll(".service-stage p")).toHaveLength(0);
@@ -314,7 +318,7 @@ it("saves a keyless ChatMock destination while keeping its requirements in help"
   await change("#test-model", "synthetic-model");
   expect(host.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false);
   await submit();
-  expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ kind: "alibabaTranslation", apiKey: "", textTranslation: "openAICompatible", endpoint: "http://localhost:8080/v1", token: "", model: "synthetic-model" });
+  expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ kind: "alibabaTranslation", apiKey: "", textTranslation: "chatMock", endpoint: "http://localhost:8080/v1", token: "", model: "synthetic-model" });
   expect(profileRevealCredential).not.toHaveBeenCalled();
 });
 
@@ -333,13 +337,13 @@ it("still requires an Alibaba recognition key when the translation service needs
 
 it.each(["customDashScopeASR", "customOpenAIASR"] as const)("saves keyless ChatMock independently from %s recognition", async (provider) => {
   await render({ ...props, profile: { ...profile, provider, credentialState: "missing", speechCredentialState: "present", textCredentialState: "missing" }, textOnly: true });
-  await chooseTranslation("openAICompatible");
+  await chooseTranslation("chatMock");
   expect(host.querySelector("#test-apiKey")).toBeNull();
   expect(host.querySelector(".service-stage--translation .settings-help-control__description")!.textContent).toContain(I18N.settings.chatMockSetup);
   await change("#test-endpoint", "http://127.0.0.1:8080/v1");
   await change("#test-model", "synthetic-model");
   await submit();
-  expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ kind: "alibabaTranslation", apiKey: "", textTranslation: "openAICompatible", endpoint: "http://127.0.0.1:8080/v1", token: "", model: "synthetic-model" });
+  expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ kind: "alibabaTranslation", apiKey: "", textTranslation: "chatMock", endpoint: "http://127.0.0.1:8080/v1", token: "", model: "synthetic-model" });
 });
 
 it("keeps removal of a saved translation key reversible and separate from empty saved fields", async () => {
@@ -418,4 +422,35 @@ it("retains third-party drafts after a storage error and clears them after succe
   expect(host.querySelector<HTMLInputElement>("#test-token")!.value).toBe("");
   expect(host.querySelector<HTMLInputElement>("#test-model")!.value).toBe("");
   expect(host.querySelector<HTMLInputElement>("#test-endpoint")!.value).toBe("");
+});
+
+
+it("keeps generic and ChatMock drafts separate and only presets ChatMock", async () => {
+  await render(); await chooseTranslation("openAICompatible");
+  expect(host.querySelector<HTMLInputElement>("#test-endpoint")!.value).toBe("");
+  expect(host.querySelector(".service-stage--translation .settings-help-control__description")!.textContent).not.toContain(I18N.settings.chatMockSetup);
+  await change("#test-endpoint", "https://synthetic.example/v1");
+  await change("#test-token", "synthetic-other-provider-key");
+  await change("#test-model", "other-model");
+  await chooseTranslation("chatMock");
+  expect(host.querySelector<HTMLInputElement>("#test-endpoint")!.value).toBe("http://127.0.0.1:8000/v1");
+  expect(host.querySelector<HTMLInputElement>("#test-token")!.value).toBe("");
+  expect(host.querySelector<HTMLInputElement>("#test-model")!.value).toBe("");
+  expect(props.onSave).not.toHaveBeenCalled();
+  await change("#test-model", "synthetic-model"); await submit();
+  expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ kind: "alibabaTranslation", apiKey: "", textTranslation: "chatMock", endpoint: "http://127.0.0.1:8000/v1", token: "", model: "synthetic-model" });
+  await chooseTranslation("openAICompatible");
+  expect(host.querySelector<HTMLInputElement>("#test-endpoint")!.value).toBe("");
+  expect(host.querySelector<HTMLInputElement>("#test-model")!.value).toBe("");
+});
+
+it("never replaces a saved ChatMock destination with the local preset on reopen", async () => {
+  await render({ ...props, profile: { ...profile, textTranslation: "chatMock" } });
+  expect(picker().textContent).toBe("ChatMock");
+  expect(host.querySelector<HTMLInputElement>("#test-endpoint")!.value).toBe("");
+  expect(host.querySelector<HTMLInputElement>("#test-endpoint")!.placeholder).toBe(I18N.settings.savedServiceAddressPlaceholder);
+  expect(host.querySelector('button[type="submit"]')).toBeNull();
+  await change("#test-model", "new-model"); await submit();
+  expect(props.onSave).toHaveBeenCalledExactlyOnceWith({ kind: "alibabaTranslation", apiKey: "", textTranslation: "chatMock", endpoint: "", token: "", model: "new-model" });
+  expect(profileRevealCredential).not.toHaveBeenCalled();
 });

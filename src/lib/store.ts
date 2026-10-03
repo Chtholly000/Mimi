@@ -42,6 +42,7 @@ import { setStoredUiLanguage } from "./i18n";
 import {
   capabilitiesForProvider,
   capabilitiesForProfile,
+  isChatCompletionsTranslation,
   isCustomSpeechProvider,
   effectiveProviderForProfile,
   textTranslationForProfile,
@@ -535,8 +536,7 @@ export const useStore = create<StoreState>()((set, get) => ({
       if (isCustomSpeechProvider(profile.provider) ? credentials.apiKey.trim() : !credentials.apiKey.trim() && profile.credentialState !== "present") throw new Error("credential-empty");
       if (credentials.textTranslation === "deepLX" && !credentials.endpoint.trim() && textTranslationForProfile(profile) !== "deepLX") throw new Error("credential-empty");
       if (credentials.textTranslation === "deepL" && !credentials.token.trim() && textTranslationForProfile(profile) !== "deepL") throw new Error("credential-empty");
-      if (credentials.textTranslation === "openAICompatible" && textTranslationForProfile(profile) !== "openAICompatible" && (!credentials.endpoint.trim() || !credentials.token.trim() || !credentials.model.trim())) throw new Error("credential-empty");
-      if (credentials.textTranslation === "openAICompatible" && credentials.endpoint.trim() && !credentials.token.trim()) throw new Error("credential-empty");
+      if (isChatCompletionsTranslation(credentials.textTranslation) && textTranslationForProfile(profile) !== credentials.textTranslation && (!credentials.endpoint.trim() || !credentials.model.trim())) throw new Error("credential-empty");
     } else if (credentials.kind === "customSpeech") {
       const profile = current.profiles.find(profile => profile.id === profileId);
       if (!profile || !isCustomSpeechProvider(profile.provider)) throw new Error("provider-mismatch");

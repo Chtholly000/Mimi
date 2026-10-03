@@ -234,7 +234,8 @@ async fn probe_alibaba(
         ProviderCredentials::ApiKey { api_key } => api_key,
         ProviderCredentials::DeepLX { asr_api_key, .. }
         | ProviderCredentials::DeepL { asr_api_key, .. }
-        | ProviderCredentials::OpenAICompatible { asr_api_key, .. } => asr_api_key,
+        | ProviderCredentials::OpenAICompatible { asr_api_key, .. }
+        | ProviderCredentials::ChatMock { asr_api_key, .. } => asr_api_key,
         _ => return Err(ConnectionCheckReason::InvalidConfiguration),
     };
     let mut asr = Audio3ASRClient::new(key, configuration.source_language)
@@ -308,6 +309,12 @@ async fn probe_text_translation(
                 .map_err(|error| deepl_reason(&error))?
         }
         ProviderCredentials::OpenAICompatible {
+            endpoint,
+            api_key,
+            model,
+            ..
+        }
+        | ProviderCredentials::ChatMock {
             endpoint,
             api_key,
             model,
@@ -454,6 +461,11 @@ async fn probe_independent_text_translation(
                 .map_err(|error| deeplx_reason(&error))
         }
         TextTranslationCredentials::OpenAICompatible {
+            endpoint,
+            model,
+            api_key,
+        }
+        | TextTranslationCredentials::ChatMock {
             endpoint,
             model,
             api_key,
@@ -898,6 +910,11 @@ mod tests {
 
     #[tokio::test]
     async fn custom_chat_probe_checks_the_configured_model_and_rejects_invalid_responses() {
+        assert_chat_probe_contract(false).await;
+        assert_chat_probe_contract(true).await;
+    }
+
+    async fn assert_chat_probe_contract(chatmock: bool) {
         for (status, body, expected) in [
             (
                 200,
@@ -968,11 +985,20 @@ mod tests {
             });
             let configuration = LiveTranslationConfiguration::with_credentials(
                 ProviderKind::AlibabaCloud,
-                ProviderCredentials::OpenAICompatible {
-                    asr_api_key: "fixture-asr".into(),
-                    endpoint: format!("http://{address}/proxy/v1"),
-                    api_key: "fixture-chat-key".into(),
-                    model: "fixture-model".into(),
+                if chatmock {
+                    ProviderCredentials::ChatMock {
+                        asr_api_key: "fixture-asr".into(),
+                        endpoint: format!("http://{address}/proxy/v1"),
+                        api_key: "fixture-chat-key".into(),
+                        model: "fixture-model".into(),
+                    }
+                } else {
+                    ProviderCredentials::OpenAICompatible {
+                        asr_api_key: "fixture-asr".into(),
+                        endpoint: format!("http://{address}/proxy/v1"),
+                        api_key: "fixture-chat-key".into(),
+                        model: "fixture-model".into(),
+                    }
                 },
                 SourceLanguage::Automatic,
                 TargetLanguage::Japanese,

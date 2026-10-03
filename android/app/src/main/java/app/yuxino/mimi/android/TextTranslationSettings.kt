@@ -18,14 +18,16 @@ import com.google.android.material.textfield.TextInputLayout
 /** A draft only. ServiceSettingsActivity commits this alongside the speech configuration. */
 internal class TextTranslationSettings(private val activity: AppCompatActivity, private val onModeChange: (Boolean) -> Unit = {}) {
     private class Draft(val saved: TranslationConfiguration) {
-        var endpoint = saved.endpoint
+        var endpoint = saved.endpoint.ifBlank {
+            if (saved.provider == TextTranslationProvider.CHAT_MOCK) "http://127.0.0.1:8000/v1" else ""
+        }
         var model = saved.model
         var key = ""
         var localHttp = saved.allowLocalHttp
         var forgetKey = false
     }
-    private val providers = listOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.OPENAI_COMPATIBLE,
-        TextTranslationProvider.DEEPL, TextTranslationProvider.DEEPLX, TextTranslationProvider.NONE)
+    private val providers = listOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.DEEPL, TextTranslationProvider.DEEPLX,
+        TextTranslationProvider.CHAT_MOCK, TextTranslationProvider.OPENAI_COMPATIBLE, TextTranslationProvider.NONE)
     private val drafts = providers.associateWith { Draft(SettingsStore.translationConfiguration(activity, it)) }
     private var selected = SettingsStore.textTranslationProvider(activity)
     private var rendering = false
@@ -115,11 +117,11 @@ internal class TextTranslationSettings(private val activity: AppCompatActivity, 
         endpoint.setText(state.endpoint); model.setText(state.model); key.setText(state.key)
         localHttp.isChecked = state.localHttp
         fields.visibility = if (hasNetworkProvider()) View.VISIBLE else View.GONE
-        val customEndpoint = selected in listOf(TextTranslationProvider.OPENAI_COMPATIBLE, TextTranslationProvider.DEEPLX)
+        val customEndpoint = selected.usesOpenAIProtocol || selected == TextTranslationProvider.DEEPLX
         inputLayouts.getValue(endpoint).visibility = if (customEndpoint) View.VISIBLE else View.GONE
         inputLayouts.getValue(endpoint).hint = activity.getString(if (selected == TextTranslationProvider.DEEPLX) R.string.translation_deeplx_endpoint else R.string.translation_endpoint)
         inputLayouts.getValue(endpoint).placeholderText = if (selected == TextTranslationProvider.DEEPLX) "https://example.com/translate" else "https://example.com/v1"
-        inputLayouts.getValue(model).visibility = if (selected == TextTranslationProvider.OPENAI_COMPATIBLE) View.VISIBLE else View.GONE
+        inputLayouts.getValue(model).visibility = if (selected.usesOpenAIProtocol) View.VISIBLE else View.GONE
         localHttp.visibility = if (customEndpoint) View.VISIBLE else View.GONE
         rendering = false
         updateKeyLabel(); onModeChange(enabled)
@@ -131,7 +133,7 @@ internal class TextTranslationSettings(private val activity: AppCompatActivity, 
         val state = drafts.getValue(selected)
         val config = TranslationConfiguration(
             endpoint = if (selected == TextTranslationProvider.DEEPL) "" else state.endpoint.trim(),
-            model = if (selected == TextTranslationProvider.OPENAI_COMPATIBLE) state.model.trim() else "",
+            model = if (selected.usesOpenAIProtocol) state.model.trim() else "",
             apiKey = state.key.trim().ifBlank { if (reusesSavedKey(state)) state.saved.apiKey else "" },
             allowLocalHttp = selected != TextTranslationProvider.DEEPL && state.localHttp,
             provider = selected,
@@ -142,7 +144,7 @@ internal class TextTranslationSettings(private val activity: AppCompatActivity, 
         if (selected != TextTranslationProvider.DEEPL && config.endpoint.isBlank()) {
             showError(R.string.translation_endpoint_required); return null
         }
-        if (selected == TextTranslationProvider.OPENAI_COMPATIBLE && config.model.isBlank()) {
+        if (selected.usesOpenAIProtocol && config.model.isBlank()) {
             showError(R.string.translation_required); return null
         }
         try { validateTranslationConfiguration(config) }
@@ -181,6 +183,7 @@ internal class TextTranslationSettings(private val activity: AppCompatActivity, 
             else -> activity.getString(R.string.translation_help_speech) + "\n\n" + activity.getString(when (selected) {
                 TextTranslationProvider.DEEPL -> R.string.translation_help_deepl
                 TextTranslationProvider.DEEPLX -> R.string.translation_help_deeplx
+                TextTranslationProvider.CHAT_MOCK -> R.string.translation_help_chatmock
                 else -> R.string.translation_help
             }) + (if (selected == TextTranslationProvider.DEEPL) "" else "\n\n" + activity.getString(R.string.translation_help_network)) +
                 "\n\n" + activity.getString(R.string.translation_help_save)
@@ -250,7 +253,8 @@ internal class TextTranslationSettings(private val activity: AppCompatActivity, 
 internal fun translationProviderLabel(provider: TextTranslationProvider): Int = when (provider) {
     TextTranslationProvider.BUILTIN -> R.string.translation_builtin
     TextTranslationProvider.NONE -> R.string.translation_none
-    TextTranslationProvider.OPENAI_COMPATIBLE -> R.string.translation_chatmock
+    TextTranslationProvider.CHAT_MOCK -> R.string.translation_chatmock
+    TextTranslationProvider.OPENAI_COMPATIBLE -> R.string.translation_openai_compatible
     TextTranslationProvider.DEEPL -> R.string.translation_deepl
     TextTranslationProvider.DEEPLX -> R.string.translation_deeplx
 }

@@ -96,7 +96,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
         val originalEnabled = SettingsStore.useChatMockTranslation(context)
         ChatMockLoopbackFixture().use { server ->
             val editor = open(ServiceProvider.DASHSCOPE)
-            onUi { field<Spinner>(editor, "translation-mode").setSelection(1) }
+            onUi { selectMode(editor, TextTranslationProvider.CHAT_MOCK) }
             instrumentation.waitForIdleSync()
             onUi {
                 field<TextInputEditText>(editor, "translation-endpoint").setText(server.baseUrl)
@@ -153,7 +153,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
             assertTimedResult(editor, R.string.translation_check_auth)
             capture("chatmock-check-auth-$theme")
             server.awaitResponse(2)
-            onUi { field<Spinner>(editor, "translation-mode").setSelection(3) }
+            onUi { selectMode(editor, TextTranslationProvider.DEEPLX) }
             instrumentation.waitForIdleSync()
             onUi {
                 check(!field<View>(editor, "translation-model").isShown)
@@ -232,23 +232,38 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
         val speechKey = field<TextInputEditText>(editor, "credential-apiKey")
         val translationKey = field<TextInputEditText>(editor, "translation-key")
         onUi {
-            check(mode.selectedItemPosition == 0 && mode.count == 5) { "Built-in translation must remain the default among five text choices" }
+            check(mode.selectedItemPosition == 0 && mode.count == 6) { "Built-in translation must remain the default among six text choices" }
+            check((0 until mode.count).map { mode.getItemAtPosition(it).toString() } ==
+                listOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.DEEPL, TextTranslationProvider.DEEPLX,
+                    TextTranslationProvider.CHAT_MOCK, TextTranslationProvider.OPENAI_COMPATIBLE, TextTranslationProvider.NONE)
+                    .map { editor.getString(translationProviderLabel(it)) }) { "Text services are not in the expected order" }
             check(!translationKey.isShown) { "Custom fields must follow the selected translation mode" }
             checkSecretField(speechKey)
             checkSecretField(translationKey)
             check(speechKey !== translationKey) { "Recognition and translation share a credential input" }
         }
         capture("chatmock-builtin-$theme")
-        onUi { mode.setSelection(1) }
+        onUi { check(mode.performClick()) }
+        instrumentation.waitForIdleSync()
+        capture("translation-provider-menu-$theme")
+        instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        instrumentation.waitForIdleSync()
+        onUi { selectMode(editor, TextTranslationProvider.CHAT_MOCK) }
         instrumentation.waitForIdleSync()
         unchanged()
         onUi {
             check(translationKey.isShown) { "ChatMock selection did not reveal its fields" }
+            check(mode.selectedItem.toString() == "ChatMock") { "ChatMock must have its own entry" }
+            check(field<TextInputEditText>(editor, "translation-endpoint").text.toString() == "http://127.0.0.1:8000/v1")
+            check(field<TextInputEditText>(editor, "translation-model").text.isNullOrBlank()) { "ChatMock must not guess a model" }
             check(!field<CheckBox>(editor, "translation-local-http").isChecked) { "HTTP must require explicit consent" }
         }
         show(editor, "translation-endpoint")
         assertHorizontalFit(editor, "translation-mode", "translation-endpoint", "translation-model", "translation-key")
         capture("chatmock-fields-$theme")
+        click(editor, "translation-check")
+        onUi { check(field<TextView>(editor, "translation-status").text.toString() == context.getString(R.string.translation_required)) }
+        unchanged()
         checkProviderDrafts(editor)
 
         click(editor, "translation-help")
@@ -342,7 +357,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
     private fun checkSavedCredentials() = withTextTranslationSettingsSnapshot(context) {
         try {
             val editor = open(ServiceProvider.DASHSCOPE)
-            onUi { field<Spinner>(editor, "translation-mode").setSelection(1) }
+            onUi { selectMode(editor, TextTranslationProvider.CHAT_MOCK) }
             instrumentation.waitForIdleSync()
             onUi {
                 field<TextInputEditText>(editor, "credential-apiKey").setText("synthetic-saved-speech-key")
@@ -363,7 +378,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
             }
             val reopened = open(ServiceProvider.DASHSCOPE)
             onUi {
-                check(field<Spinner>(reopened, "translation-mode").selectedItemPosition == 1)
+                check(field<Spinner>(reopened, "translation-mode").selectedItem.toString() == "ChatMock")
                 checkSecretField(field(reopened, "credential-apiKey"))
                 checkSecretField(field(reopened, "translation-key"))
                 check(field<TextInputEditText>(reopened, "translation-endpoint").text.toString() == "https://chatmock.example.invalid/v1")
@@ -377,8 +392,23 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
             check(SettingsStore.translationConfiguration(context).apiKey == "synthetic-saved-translation-key") {
                 "Unsaved removal deleted the stored key"
             }
+            val compatible = open(ServiceProvider.DASHSCOPE)
+            onUi { selectMode(compatible, TextTranslationProvider.OPENAI_COMPATIBLE) }
+            instrumentation.waitForIdleSync()
+            onUi {
+                check(field<TextInputEditText>(compatible, "translation-endpoint").text.isNullOrBlank()) { "Generic entry inherited ChatMock's address" }
+                check(field<TextInputEditText>(compatible, "translation-model").text.isNullOrBlank())
+                checkSecretField(field(compatible, "translation-key"))
+                field<TextInputEditText>(compatible, "translation-endpoint").setText("https://compatible.example.invalid/v1")
+                field<TextInputEditText>(compatible, "translation-model").setText("synthetic-compatible-model")
+                field<TextInputEditText>(compatible, "translation-key").setText("synthetic-compatible-key")
+                check(compatible.findViewById<View>(R.id.save).performClick())
+            }
+            instrumentation.waitForIdleSync()
+            check(compatible.isFinishing && SettingsStore.textTranslationProvider(context) == TextTranslationProvider.OPENAI_COMPATIBLE)
+            check(SettingsStore.translationConfiguration(context, TextTranslationProvider.CHAT_MOCK).apiKey == "synthetic-saved-translation-key")
             val deepL = open(ServiceProvider.DASHSCOPE)
-            onUi { field<Spinner>(deepL, "translation-mode").setSelection(2) }
+            onUi { selectMode(deepL, TextTranslationProvider.DEEPL) }
             instrumentation.waitForIdleSync()
             onUi {
                 checkSecretField(field(deepL, "translation-key"))
@@ -387,7 +417,8 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
             }
             instrumentation.waitForIdleSync()
             check(deepL.isFinishing && SettingsStore.textTranslationProvider(context) == TextTranslationProvider.DEEPL)
-            check(SettingsStore.translationConfiguration(context, TextTranslationProvider.OPENAI_COMPATIBLE).apiKey == "synthetic-saved-translation-key")
+            check(SettingsStore.translationConfiguration(context, TextTranslationProvider.CHAT_MOCK).apiKey == "synthetic-saved-translation-key")
+            check(SettingsStore.translationConfiguration(context, TextTranslationProvider.OPENAI_COMPATIBLE).apiKey == "synthetic-compatible-key")
             val deepLX = open(ServiceProvider.DASHSCOPE)
             onUi {
                 checkSecretField(field(deepLX, "translation-key"))
@@ -396,7 +427,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
             }
             show(deepLX, "translation-key")
             capture("translation-deepl-saved-$theme")
-            onUi { field<Spinner>(deepLX, "translation-mode").setSelection(3) }
+            onUi { selectMode(deepLX, TextTranslationProvider.DEEPLX) }
             instrumentation.waitForIdleSync()
             onUi {
                 checkSecretField(field(deepLX, "translation-key"))
@@ -411,7 +442,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
             onUi { checkSecretField(field(changed, "translation-key")) }
             show(changed, "translation-key")
             capture("translation-deeplx-saved-$theme")
-            onUi { field<Spinner>(changed, "translation-mode").setSelection(1) }
+            onUi { selectMode(changed, TextTranslationProvider.CHAT_MOCK) }
             instrumentation.waitForIdleSync()
             onUi {
                 field<TextInputEditText>(changed, "translation-endpoint").setText("https://other.example.invalid/v1")
@@ -420,6 +451,9 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
             instrumentation.waitForIdleSync()
             check(changed.isFinishing)
             check(SettingsStore.translationConfiguration(context).apiKey.isBlank()) { "Changing destinations forwarded the saved translation key" }
+            check(SettingsStore.translationConfiguration(context, TextTranslationProvider.OPENAI_COMPATIBLE).apiKey == "synthetic-compatible-key") {
+                "Changing a ChatMock address affected the generic compatible key"
+            }
             check(SettingsStore.configuration(context, ServiceProvider.DASHSCOPE).value("apiKey") == "synthetic-saved-speech-key") {
                 "Changing translation destination changed the speech key"
             }
@@ -429,7 +463,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
             instrumentation.waitForIdleSync()
             onUi { check(previewTranslation(appearance).visibility == View.VISIBLE) }
             val originalOnly = open(ServiceProvider.DASHSCOPE)
-            onUi { field<Spinner>(originalOnly, "translation-mode").setSelection(4) }
+            onUi { selectMode(originalOnly, TextTranslationProvider.NONE) }
             instrumentation.waitForIdleSync()
             onUi {
                 check(!field<View>(originalOnly, "translation-check").isShown)
@@ -464,8 +498,8 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
     }
 
     private fun checkProviderDrafts(editor: ServiceSettingsActivity) {
-        fun select(position: Int) {
-            onUi { field<Spinner>(editor, "translation-mode").setSelection(position) }
+        fun select(provider: TextTranslationProvider) {
+            onUi { selectMode(editor, provider) }
             instrumentation.waitForIdleSync()
             onUi {
                 val label = field<Spinner>(editor, "translation-mode").selectedView as TextView
@@ -478,9 +512,23 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
         onUi {
             field<TextInputEditText>(editor, "translation-endpoint").setText("https://draft.example.invalid/v1")
             field<TextInputEditText>(editor, "translation-model").setText("draft-model")
-            field<TextInputEditText>(editor, "translation-key").setText("synthetic-openai-draft")
+            field<TextInputEditText>(editor, "translation-key").setText("synthetic-chatmock-draft")
         }
-        select(2)
+        select(TextTranslationProvider.OPENAI_COMPATIBLE)
+        onUi {
+            check(field<Spinner>(editor, "translation-mode").selectedItem.toString() == context.getString(R.string.translation_openai_compatible))
+            check(field<TextInputEditText>(editor, "translation-endpoint").text.isNullOrBlank())
+            check(field<TextInputEditText>(editor, "translation-model").text.isNullOrBlank())
+            checkSecretField(field(editor, "translation-key"))
+        }
+        show(editor, "translation-endpoint")
+        capture("translation-compatible-fields-$theme")
+        onUi {
+            field<TextInputEditText>(editor, "translation-endpoint").setText("https://compatible.example.invalid/v1")
+            field<TextInputEditText>(editor, "translation-model").setText("compatible-draft-model")
+            field<TextInputEditText>(editor, "translation-key").setText("synthetic-compatible-draft")
+        }
+        select(TextTranslationProvider.DEEPL)
         onUi {
             check(!field<View>(editor, "translation-endpoint").isShown && !field<View>(editor, "translation-model").isShown)
             check(!field<View>(editor, "translation-local-http").isShown)
@@ -493,7 +541,7 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
         show(editor, "translation-check")
         capture("translation-deepl-$theme")
         onUi { field<TextInputEditText>(editor, "translation-key").setText("synthetic-deepl-draft:fx") }
-        select(3)
+        select(TextTranslationProvider.DEEPLX)
         onUi {
             check(field<View>(editor, "translation-endpoint").isShown && !field<View>(editor, "translation-model").isShown)
             check(field<View>(editor, "translation-local-http").isShown)
@@ -504,26 +552,39 @@ internal class ChatMockSettingsChecks(private val instrumentation: Instrumentati
         }
         show(editor, "translation-endpoint")
         capture("translation-deeplx-$theme")
-        select(4)
+        select(TextTranslationProvider.NONE)
         onUi {
             check(!field<View>(editor, "translation-key").isShown && !field<View>(editor, "translation-endpoint").isShown)
             check(!field<View>(editor, "translation-check").isShown) { "Original-only mode offers a translation request" }
         }
         show(editor, "translation-mode")
         capture("translation-original-only-$theme")
-        select(2)
+        select(TextTranslationProvider.DEEPL)
         onUi { check(field<TextInputEditText>(editor, "translation-key").text.toString() == "synthetic-deepl-draft:fx") }
-        select(3)
+        select(TextTranslationProvider.DEEPLX)
         onUi {
             check(field<TextInputEditText>(editor, "translation-key").text.toString() == "synthetic-deeplx-draft")
             check(field<TextInputEditText>(editor, "translation-endpoint").text.toString() == "https://deeplx.example.invalid/translate")
         }
-        select(1)
+        select(TextTranslationProvider.CHAT_MOCK)
         onUi {
             check(field<TextInputEditText>(editor, "translation-endpoint").text.toString() == "https://draft.example.invalid/v1")
             check(field<TextInputEditText>(editor, "translation-model").text.toString() == "draft-model")
-            check(field<TextInputEditText>(editor, "translation-key").text.toString() == "synthetic-openai-draft")
+            check(field<TextInputEditText>(editor, "translation-key").text.toString() == "synthetic-chatmock-draft")
         }
+        select(TextTranslationProvider.OPENAI_COMPATIBLE)
+        onUi {
+            check(field<TextInputEditText>(editor, "translation-endpoint").text.toString() == "https://compatible.example.invalid/v1")
+            check(field<TextInputEditText>(editor, "translation-model").text.toString() == "compatible-draft-model")
+            check(field<TextInputEditText>(editor, "translation-key").text.toString() == "synthetic-compatible-draft")
+        }
+        select(TextTranslationProvider.CHAT_MOCK)
+    }
+
+    private fun selectMode(activity: Activity, provider: TextTranslationProvider) {
+        val mode = field<Spinner>(activity, "translation-mode")
+        val label = activity.getString(translationProviderLabel(provider))
+        mode.setSelection((0 until mode.count).single { mode.getItemAtPosition(it).toString() == label })
     }
 
     private fun previewTranslation(activity: Activity): View = SubtitlePreviewView::class.java.getDeclaredField("translation").run {
