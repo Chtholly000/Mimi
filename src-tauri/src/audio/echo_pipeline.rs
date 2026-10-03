@@ -50,12 +50,18 @@ impl Shared {
 
     fn reserve(self: &Arc<Self>, source: AudioSource, bytes: usize) -> Option<ByteLease> {
         let index = source_index(source);
-        self.queued_bytes[index]
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
-                used.checked_add(bytes)
-                    .filter(|sum| *sum <= self.byte_limit)
-            })
-            .ok()?;
+        let queued_bytes = &self.queued_bytes[index];
+        let mut used = queued_bytes.load(Ordering::SeqCst);
+        loop {
+            let next = used
+                .checked_add(bytes)
+                .filter(|sum| *sum <= self.byte_limit)?;
+            match queued_bytes.compare_exchange_weak(used, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => break,
+                Err(current) => used = current,
+            }
+        }
         Some(ByteLease {
             shared: Arc::clone(self),
             index,
