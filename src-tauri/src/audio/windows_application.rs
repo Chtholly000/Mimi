@@ -175,6 +175,9 @@ impl WindowsApplicationCapture {
 
 #[implement(IActivateAudioInterfaceCompletionHandler)]
 struct Activation {
+    // Windows retains the completion handler until activation finishes, so
+    // cancellation cannot outlive the process-loopback parameter storage.
+    params: AUDIOCLIENT_ACTIVATION_PARAMS,
     tx: Mutex<Option<mpsc::Sender<windows::core::Result<AgileReference<IAudioClient>>>>>,
 }
 impl IActivateAudioInterfaceCompletionHandler_Impl for Activation_Impl {
@@ -221,7 +224,7 @@ fn open(
         .ok()
         .map_err(|_| SystemAudioCaptureError::NativeStartFailed)?;
     let com = Com;
-    let mut params = AUDIOCLIENT_ACTIVATION_PARAMS {
+    let params = AUDIOCLIENT_ACTIVATION_PARAMS {
         ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
         Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
             ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
@@ -230,25 +233,27 @@ fn open(
             },
         },
     };
+    let (tx, rx) = mpsc::channel();
+    let activation = windows::core::ComObject::new(Activation {
+        params,
+        tx: Mutex::new(Some(tx)),
+    });
+    let params = &activation.get().params;
     let variant = PROPVARIANT {
         Anonymous: PROPVARIANT_0 {
             Anonymous: std::mem::ManuallyDrop::new(PROPVARIANT_0_0 {
                 vt: VT_BLOB,
                 Anonymous: PROPVARIANT_0_0_0 {
                     blob: BLOB {
-                        cbSize: std::mem::size_of_val(&params) as u32,
-                        pBlobData: &mut params as *mut _ as *mut u8,
+                        cbSize: std::mem::size_of_val(params) as u32,
+                        pBlobData: params as *const _ as *mut u8,
                     },
                 },
                 ..Default::default()
             }),
         },
     };
-    let (tx, rx) = mpsc::channel();
-    let handler: IActivateAudioInterfaceCompletionHandler = Activation {
-        tx: Mutex::new(Some(tx)),
-    }
-    .into();
+    let handler = activation.to_interface::<IActivateAudioInterfaceCompletionHandler>();
     let _operation = unsafe {
         ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
