@@ -304,6 +304,7 @@ rm -rf "$BUILD_APP"
 mkdir -p "$BUILD_APP/Contents/MacOS" "$BUILD_APP/Contents/Resources"
 cp "$PROJECT_DIR/src-tauri/target/release/mimi" "$BUILD_APP/Contents/MacOS/mimi"
 cp "$PROJECT_DIR/src-tauri/icons/icon.icns" "$BUILD_APP/Contents/Resources/icon.icns"
+cp "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" "$BUILD_APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 chmod 755 "$BUILD_APP/Contents/MacOS/mimi"
 
 cat > "$BUILD_APP/Contents/Info.plist" <<PLIST
