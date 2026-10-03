@@ -23,19 +23,10 @@
 
 Mimi shows live subtitles in a floating window for films, live streams, lessons, and games playing on your computer. Your chosen cloud service transcribes the selected audio or translates it into the languages supported by your selected service. The name `mimi` means “ear” in Japanese.
 
-<!-- project-demo-v1 -->
-## Demo
-
-https://github.com/user-attachments/assets/5acd46bb-e6b5-4bb5-b280-d70d4e0cdbb4
-
-<p align="center">A 4K / 60 fps tour of service setup, subtitle controls, and Immersive Mode in the macOS app, with English narration, captions, and original film audio.</p>
-<p align="center"><a href="https://mimi.yuxino.cn/en/?lang=en#demo">Watch in English</a> · <a href="https://mimi.yuxino.cn/?lang=zh#demo">观看中文版</a> · <a href="docs/demos/full-tour-4k.md">Video details and credits</a></p>
-<!-- /project-demo-v1 -->
-
 ## Features
 
 - **Live subtitles and translation** — system audio is on by default. Desktop microphone input and its controls are temporarily unavailable. A saved microphone or both-input selection is changed to system audio on startup, with audio recording switched off; explicitly enable recording again if needed.
-- **Service configurations** — save and switch between services without repeatedly entering credentials.
+- **Service configurations** — save and switch between built-in services or custom live speech recognition, with independent text translation where supported.
 - **Subtitle overlay** — move, resize, collapse, pause, enable click-through, or use Immersive Mode. New installations start at 659×328 with font size 16; saved window size and font preferences are preserved.
 - **Updates** — check and install updates in Settings on macOS, Windows installers, and Linux AppImage. Windows ZIP and Linux .deb builds link to Releases for manual updates.
 - **Save & export** — under Settings → Save & export, choose whether to save confirmed subtitles or record system audio as WAV. Browse saved sessions, then export TXT / WAV or delete a session. Both switches are off by default.
@@ -96,7 +87,7 @@ previews the recognized original while a translation is pending.
 
 ## Contributors
 
-Thanks to everyone contributing to Mimi. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved.
+Thanks to everyone who tries Mimi, reports issues, shares it, or contributes PRs. See [CONTRIBUTING.md](CONTRIBUTING.md) to get involved.
 
 Special thanks to [@yebuwudong](https://github.com/yebuwudong) for contributing the native [Android port in PR #37](https://github.com/yuxino/mimi/pull/37). [Download Android](https://github.com/yuxino/mimi/releases/latest); see its [setup and verification notes](android/README.md).
 
@@ -107,12 +98,12 @@ Special thanks to [@yebuwudong](https://github.com/yebuwudong) for contributing 
   <a href="https://github.com/yebuwudong"><img src="docs/assets/contributors/yebuwudong.svg" width="64" height="64" alt="@yebuwudong"></a>
 </p>
 
-[View GitHub's contribution history](https://github.com/yuxino/mimi/graphs/contributors). The wall reflects publicly attributed contributions on the default branch; pending work is listed separately.
+[View GitHub's contribution history](https://github.com/yuxino/mimi/graphs/contributors).
 
-Currently under review: [@LLLin000's subtitle animation #67](https://github.com/yuxino/mimi/pull/67) and [Windows audio update #89](https://github.com/yuxino/mimi/pull/89), included in [integration acceptance #88](https://github.com/yuxino/mimi/pull/88).
+Thanks to [@LLLin000](https://github.com/LLLin000) for [subtitle animation](https://github.com/yuxino/mimi/pull/67) and [Windows audio improvements](https://github.com/yuxino/mimi/pull/89).
 
-## Community links
+## Community
 
-[LINUX DO](https://linux.do/)
+Thanks also to the people in [V2EX](https://www.v2ex.com/), [LINUX DO](https://linux.do/), [Appinn](https://meta.appinn.net/), [NodeLoc](https://www.nodeloc.com/), [Solo](https://solo.xin/), [Xinquji](https://xinquji.com/posts/859305), and [Eleduck](https://eleduck.com/) who tried Mimi, shared feedback, or told others about it.
 
 [MIT](LICENSE) © 2026 yuxino

@@ -23,19 +23,10 @@
 
 Mimi 为电脑上播放的电影、直播、网课和游戏显示实时悬浮字幕。你选择的云服务会识别所选输入的音频，或将其翻译成当前服务支持的语言。`mimi` 在日语中意为“耳朵”。
 
-<!-- project-demo-v1 -->
-## 演示
-
-https://github.com/user-attachments/assets/342c049c-1bed-44da-b4d2-ba55dad1a49c
-
-<p align="center">在 macOS 应用中演示服务配置、字幕控制和沉浸模式。4K / 60 帧，含中文旁白、字幕与电影原声。</p>
-<p align="center"><a href="https://mimi.yuxino.cn/en/?lang=en#demo">Watch in English</a> · <a href="https://mimi.yuxino.cn/?lang=zh#demo">观看中文版</a> · <a href="docs/demos/full-tour-4k.md">演示说明与来源</a></p>
-<!-- /project-demo-v1 -->
-
 ## 功能
 
 - **实时字幕与翻译** — 系统声音默认开启。桌面麦克风输入及其操作入口暂时不可用；启动时会把旧的麦克风或双路输入设置改为系统音频，并关闭录音，需要录制时请重新明确开启。
-- **服务配置** — 保存并切换多套服务配置，无需反复填写凭证。
+- **服务配置** — 保存并切换内置服务或自定义实时语音识别配置；支持的识别服务可独立选择文字翻译。
 - **字幕浮窗** — 支持移动、缩放、收起、暂停、点击穿透和沉浸模式。新安装默认尺寸为 659×328、字号为 16；已有窗口尺寸和字号设置会保留。
 - **版本更新** — macOS、Windows 安装版和 Linux AppImage 可在设置中检查并安装更新；Windows ZIP 和 Linux .deb 提供 Releases 手动更新入口。
 - **保存与导出** — 在「设置 → 保存与导出」选择保存已确认的字幕或将系统音频录制为 WAV。可查看已保存的记录，并导出 TXT / WAV 或删除记录；两个开关默认关闭。
@@ -93,7 +84,7 @@ macOS 使用 **⌘⇧B**，Windows/Linux X11 使用 **Ctrl+Shift+B** 快速切�
 
 ## 贡献者
 
-感谢每一位参与 Mimi 的朋友。想一起改进？欢迎阅读 [贡献指南](CONTRIBUTING.md)。
+感谢每一位试用、反馈、分享或提交 PR 的朋友。欢迎阅读 [贡献指南](CONTRIBUTING.md)一起改进。
 
 特别感谢 [@yebuwudong](https://github.com/yebuwudong) 在 [PR #37](https://github.com/yuxino/mimi/pull/37) 中贡献原生 Android 版本。[下载 Android](https://github.com/yuxino/mimi/releases/latest)，配置方式和已验证范围见 [Android 说明](android/README.md)。
 
@@ -104,12 +95,12 @@ macOS 使用 **⌘⇧B**，Windows/Linux X11 使用 **Ctrl+Shift+B** 快速切�
   <a href="https://github.com/yebuwudong"><img src="docs/assets/contributors/yebuwudong.svg" width="64" height="64" alt="@yebuwudong"></a>
 </p>
 
-[查看 GitHub 贡献记录](https://github.com/yuxino/mimi/graphs/contributors)。头像墙按默认分支的公开贡献归属核对，尚未合入的工作另列。
+[查看 GitHub 贡献记录](https://github.com/yuxino/mimi/graphs/contributors)。
 
-正在审阅：[@LLLin000 的字幕动效 #67](https://github.com/yuxino/mimi/pull/67) 与 [Windows 音源改进 #89](https://github.com/yuxino/mimi/pull/89)，已纳入 [集成验收 #88](https://github.com/yuxino/mimi/pull/88)。
+感谢 [@LLLin000](https://github.com/LLLin000) 贡献[字幕动效](https://github.com/yuxino/mimi/pull/67)和 [Windows 音源改进](https://github.com/yuxino/mimi/pull/89)。
 
-## 社区友链
+## 社区致谢
 
-[LINUX DO](https://linux.do/)
+也感谢 [V2EX](https://www.v2ex.com/)、[LINUX DO](https://linux.do/)、[小众软件](https://meta.appinn.net/)、[NodeLoc](https://www.nodeloc.com/)、[Solo](https://solo.xin/)、[新趣集](https://xinquji.com/posts/859305)和[电鸭](https://eleduck.com/)社区朋友的试用、反馈与分享。
 
 [MIT](LICENSE) © 2026 yuxino
