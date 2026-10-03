@@ -105,6 +105,8 @@ export interface SettingsSnapshot {
   translationMode: TranslationMode;
   /** 14..20 */
   fontSize: number;
+  /** 0..100, background only. */
+  subtitleBackgroundOpacity: number;
   subtitleColor: SubtitleColor;
   subtitleAlignment: SubtitleAlignment;
   subtitleDisplayMode: SubtitleDisplayMode;
@@ -147,6 +149,7 @@ export interface SettingsDraft {
   targetLanguage?: TargetLanguage;
   translationMode?: TranslationMode;
   fontSize?: number;
+  subtitleBackgroundOpacity?: number;
   subtitleColor?: SubtitleColor;
   subtitleAlignment?: SubtitleAlignment;
   subtitleDisplayMode?: SubtitleDisplayMode;

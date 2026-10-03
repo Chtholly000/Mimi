@@ -178,6 +178,8 @@ pub struct Preferences {
     pub target_language: TargetLanguage,
     pub translation_mode: TranslationMode,
     pub font_size: f64,
+    /// Background opacity in percent; independent of subtitle text.
+    pub subtitle_background_opacity: u8,
     pub subtitle_color: SubtitleColor,
     pub subtitle_alignment: SubtitleAlignment,
     pub subtitle_display_mode: SubtitleDisplayMode,
@@ -211,6 +213,7 @@ impl Default for Preferences {
             target_language: TargetLanguage::SimplifiedChinese,
             translation_mode: TranslationMode::Turbo,
             font_size: DEFAULT_FONT_SIZE,
+            subtitle_background_opacity: 80,
             subtitle_color: SubtitleColor::White,
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
@@ -592,7 +595,11 @@ impl SettingsStore {
         let font_size = prefs
             .font_size
             .clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end());
-        let prefs = Preferences { font_size, ..prefs };
+        let prefs = Preferences {
+            font_size,
+            subtitle_background_opacity: prefs.subtitle_background_opacity.min(100),
+            ..prefs
+        };
 
         let catalog_path = app_config_dir.join(PROFILE_CATALOG_FILE);
         let (catalog, catalog_write_blocked, should_create_catalog) =
@@ -722,7 +729,11 @@ impl SettingsStore {
         let font_size = prefs
             .font_size
             .clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end());
-        *store.prefs.lock().unwrap() = Preferences { font_size, ..prefs };
+        *store.prefs.lock().unwrap() = Preferences {
+            font_size,
+            subtitle_background_opacity: prefs.subtitle_background_opacity.min(100),
+            ..prefs
+        };
         Ok(store)
     }
 
@@ -769,6 +780,7 @@ impl SettingsStore {
         next.font_size = next
             .font_size
             .clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end());
+        next.subtitle_background_opacity = next.subtitle_background_opacity.min(100);
         next.network_proxy = next
             .network_proxy
             .validate()
@@ -6282,6 +6294,7 @@ mod tests {
     fn legacy_preferences_default_to_centered_card_presentation() {
         let preferences: Preferences = serde_json::from_str("{}").unwrap();
 
+        assert_eq!(preferences.subtitle_background_opacity, 80);
         assert_eq!(preferences.subtitle_color, SubtitleColor::White);
         assert_eq!(preferences.subtitle_alignment, SubtitleAlignment::Center);
         assert_eq!(
@@ -6373,6 +6386,31 @@ mod tests {
             assert_eq!(prefs.subtitle_animation, Some(true));
         }
         assert!(fake.state.lock().unwrap().loads.is_empty());
+    }
+
+    #[test]
+    fn subtitle_background_opacity_persists_and_is_bounded_on_save_and_load() {
+        let directory = std::env::temp_dir().join(format!(
+            "mimi-background-opacity-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.clone(), Box::new(fake.clone()));
+        for (input, expected) in [(0, 0), (35, 35), (100, 100), (255, 100)] {
+            store
+                .save_preferences(|prefs| prefs.subtitle_background_opacity = input)
+                .unwrap();
+            let reloaded = SettingsStore::at_path(directory.clone(), Box::new(fake.clone()));
+            assert_eq!(reloaded.preferences().subtitle_background_opacity, expected);
+        }
+        std::fs::write(
+            directory.join("preferences.json"),
+            br#"{"subtitle_background_opacity":255}"#,
+        )
+        .unwrap();
+        let reloaded = SettingsStore::at_path(directory.clone(), Box::new(fake));
+        assert_eq!(reloaded.preferences().subtitle_background_opacity, 100);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
