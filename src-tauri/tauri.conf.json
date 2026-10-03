@@ -34,6 +34,9 @@
     "createUpdaterArtifacts": true,
     "targets": "all",
     "category": "Utility",
+    "resources": {
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+    },
     "shortDescription": "Live translated subtitles for anything playing on your device.",
     "longDescription": "Turn Chinese, Japanese, English, or Korean audio playing on your device into live subtitles, with optional translation into Simplified Chinese, English, or Japanese.",
     "icon": [
@@ -44,7 +47,8 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "entitlements": "Entitlements.plist"
     },
     "windows": {
       "webviewInstallMode": {

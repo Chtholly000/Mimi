@@ -5,6 +5,7 @@ import { expect, it, vi } from "vitest";
 import { setStoredUiLanguage } from "../../lib/i18n";
 import { useStore } from "../../lib/store";
 import { LanguageStatusCapsule } from "./LanguageStatusCapsule";
+import { audioInputLabel } from "../../lib/audioInput";
 
 it.each([
   { label: "explicit off", reduced: false, pulseAnimation: false },
@@ -38,6 +39,43 @@ it.each([
     await act(async () => root.unmount());
     host.remove();
     vi.unstubAllGlobals();
+  }
+});
+
+it.each(["zh", "en", "ja"] as const)("identifies selected inputs and prioritizes lifecycle feedback in %s", async language => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+  setStoredUiLanguage(language);
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    for (const audioInput of ["system", "microphone", "both"] as const) {
+      const props = {
+        phase: "listening" as const, status: { source: "Auto", separator: "→", target: "Chinese" },
+        settings: { ...useStore.getState().settings, audioInput },
+        isPaused: false, isWaitingForFinalTranslation: false, expanded: false, onToggle: () => {},
+      };
+      await act(async () => root.render(<LanguageStatusCapsule {...props} />));
+      const sources = host.querySelector('[role="img"]')!;
+      expect(sources.getAttribute("aria-label")).toBe(audioInputLabel(audioInput));
+      expect(sources.querySelectorAll("svg")).toHaveLength(audioInput === "both" ? 2 : 1);
+      expect(host.querySelector("button")!.title).toContain(audioInputLabel(audioInput));
+      expect(host.querySelector("button")!.getAttribute("aria-label")).toContain(audioInputLabel(audioInput));
+
+      await act(async () => root.render(<LanguageStatusCapsule {...props} phase="connecting" isPaused isWaitingForFinalTranslation />));
+      const connecting = host.querySelector('.overlay-control-island__phase')!.textContent;
+      expect(connecting).toBe({ en: "Connecting", zh: "连接中", ja: "接続中" }[language]);
+      await act(async () => root.render(<LanguageStatusCapsule {...props} phase="connecting" isStopping />));
+      expect(host.querySelector('.overlay-control-island__phase')!.textContent)
+        .toBe({ en: "Stopping", zh: "停止中", ja: "終了中" }[language]);
+      await act(async () => root.render(<LanguageStatusCapsule {...props} isPaused />));
+      expect(host.querySelector('.overlay-control-island__phase')!.textContent)
+        .toBe({ en: "Paused", zh: "暂停", ja: "一時停止" }[language]);
+    }
+  } finally {
+    await act(async () => root.unmount());
+    host.remove(); setStoredUiLanguage("system"); vi.unstubAllGlobals();
   }
 });
 

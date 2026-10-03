@@ -1,5 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { hexToRgba } from "../../lib/types";
+import { I18N } from "../../lib/i18n";
 import { subtitleColorHex } from "../../lib/subtitleColor";
 import type { SettingsSnapshot, SubtitleAlignment, SubtitleColor } from "../../lib/types";
 import { observeTimelineResize } from "./timelineResize";
@@ -73,6 +74,7 @@ export const Timeline = memo(function Timeline({
     return (last?.source?.length ?? 0) + (last?.translation?.length ?? 0);
   }, [blocks]);
   const blockLayoutKey = useMemo(() => JSON.stringify(blocks.map(block => block.id)), [blocks]);
+  const liveBlockCount = blocks.filter(block => block.presentation === "live").length;
   const prevBlockCountRef = useRef(blocks.length);
   const previousModeRef = useRef(displayMode);
   const modeChangedRef = useRef(false);
@@ -217,12 +219,16 @@ export const Timeline = memo(function Timeline({
         // committed utterance replaces the live row it was already visible as,
         // so animating it again would blink the text the user is reading.
         const entering = block.presentation === "live";
-        const availableLaneHeight = viewportHeight === null ? null
-          : viewportHeight - paddingTop - paddingBottom - (block.source !== null && block.translation !== null ? laneGap : 0);
+        // Two independent live sources share the visible lane budget, so a
+        // long microphone preview cannot push system speech out of view.
+        const blockViewportHeight = viewportHeight === null ? null
+          : compact && block.presentation === "live" && liveBlockCount > 1 ? viewportHeight / liveBlockCount : viewportHeight;
+        const availableLaneHeight = blockViewportHeight === null ? null
+          : blockViewportHeight - paddingTop - paddingBottom - (block.source !== null && block.translation !== null ? laneGap : 0);
         // A bilingual original keeps its reference font while waiting for MT.
         // Only its line budget changes when the translation takes its space.
-        const sourceScale = subtitleSourceScale(viewportHeight === null ? null
-          : viewportHeight - paddingTop - paddingBottom - (displayMode === "bilingual" ? laneGap : 0));
+        const sourceScale = subtitleSourceScale(blockViewportHeight === null ? null
+          : blockViewportHeight - paddingTop - paddingBottom - (displayMode === "bilingual" ? laneGap : 0));
         // When the original has not arrived, the translation owns the full
         // viewport rather than reserving height for an absent reference lane.
         const budgetMode = displayMode === "bilingual" && block.source === null ? "translation" : displayMode;
@@ -289,7 +295,12 @@ export const Timeline = memo(function Timeline({
                 {formatTimestamp(block.createdAt)}
               </span>
             ) : null}
-            <div style={{ display: "flex", flexDirection: "column", gap: laneGap }}>
+            <div style={{ display: "flex", gap: block.audioSource ? 10 : 0, alignItems: "flex-start" }}>
+              {block.audioSource && <span className="subtitle-audio-source" style={{
+                fontSize, lineHeight: SUBTITLE_LINE_HEIGHT, fontWeight: 500, flexShrink: 0,
+                color: "rgba(255,255,255,0.78)", textShadow: blendsWithBackground ? IMMERSIVE_TEXT_SHADOW : undefined,
+              }}>{block.audioSource === "system" ? I18N.settings.audioInputSystem : I18N.settings.audioInputMicrophone}</span>}
+            <div style={{ display: "flex", flexDirection: "column", gap: laneGap, minWidth: 0, flex: 1 }}>
               {block.source !== null && displayMode !== "translation" ? (
                 <Lane
                   text={block.source}
@@ -321,6 +332,7 @@ export const Timeline = memo(function Timeline({
                   onMeasure={height => measureLane("translation", height)}
                 />
               ) : null}
+            </div>
             </div>
             {/* The separator belongs to the sentence above: it fades and
                 scrolls away with it, and Immersive Mode keeps space only. */}

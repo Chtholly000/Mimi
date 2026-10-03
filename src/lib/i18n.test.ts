@@ -66,3 +66,13 @@ it("keeps the text destination labels short in all UI languages", () => {
     expect(I18N.settings.removeTranslationApiKey).not.toBe(I18N.settings.cancelTranslationKeyRemoval);
   }
 });
+
+it("explains the recording scope and explicit source change in all UI languages", () => {
+  for (const language of ["zh", "en", "ja"] as const) {
+    setStoredUiLanguage(language);
+    expect(I18N.settings.audioInputSystem).not.toBe(I18N.settings.audioInputMicrophone);
+    expect(I18N.settings.recordSessionAudioHelp).toContain({ en: "microphone", zh: "麦克风", ja: "マイク" }[language]);
+    expect(I18N.settings.audioInputHelp).toContain({ en: "recording off", zh: "关闭录音", ja: "録音はオフ" }[language]);
+    expect(I18N.settings.sessionMicrophoneEnabled).toContain(I18N.settings.audioInputMicrophone);
+  }
+});

@@ -174,3 +174,39 @@ describe("history operation state", () => {
     await search("Synthetic"); expect(host.textContent).toContain("Synthetic A");
   });
 });
+
+
+it("selects a separate recording for playback and export, and discards stale playback after switching sources", async () => {
+  const objectUrl = vi.fn(() => "blob:synthetic-microphone");
+  vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: objectUrl, revokeObjectURL: vi.fn() }));
+  Element.prototype.scrollIntoView = vi.fn();
+  ipc.sessionHistoryList.mockResolvedValue([{ id: "dual", count: 1, hasAudio: true, audioSources: ["system", "microphone"], startedAtMs: 1_700_000_000_000 }]);
+  await act(async () => root.render(<SessionExport visible={false} />));
+  await act(async () => root.render(<SessionExport visible />)); await flush();
+  await select(1);
+  const pending = deferred();
+  ipc.sessionHistoryAudio.mockReturnValueOnce(pending.promise);
+  await click(button(I18N.settings.historyPlayAudio));
+  expect(ipc.sessionHistoryAudio).toHaveBeenCalledWith("dual", "system");
+  await click(host.querySelector<HTMLElement>('[role="combobox"]')!);
+  await click(document.querySelectorAll<HTMLElement>('[role="option"]')[1]);
+  await act(async () => pending.resolve(new ArrayBuffer(4)));
+  expect(objectUrl).not.toHaveBeenCalled();
+  ipc.sessionHistoryAudio.mockResolvedValueOnce(new ArrayBuffer(4));
+  await click(button(I18N.settings.historyPlayAudio));
+  expect(ipc.sessionHistoryAudio).toHaveBeenLastCalledWith("dual", "microphone");
+  expect(host.querySelector("audio")?.src).toBe("blob:synthetic-microphone");
+  await click(button(I18N.settings.exportAudio));
+  expect(ipc.sessionExport).toHaveBeenLastCalledWith("audio", "dual", "microphone");
+  vi.unstubAllGlobals();
+});
+
+it("automatically uses the actual single microphone recording instead of assuming system audio", async () => {
+  ipc.sessionHistoryList.mockResolvedValue([{ id: "mic", count: 1, hasAudio: true, audioSources: ["microphone"], startedAtMs: 1_700_000_000_000 }]);
+  await act(async () => root.render(<SessionExport visible={false} />));
+  await act(async () => root.render(<SessionExport visible />)); await flush();
+  await select(1);
+  expect(host.querySelector('[role="combobox"]')).toBeNull();
+  await click(button(I18N.settings.exportAudio));
+  expect(ipc.sessionExport).toHaveBeenLastCalledWith("audio", "mic", "microphone");
+});

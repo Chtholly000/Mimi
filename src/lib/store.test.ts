@@ -8,6 +8,40 @@ import {
 } from "./store";
 
 describe("local preview store", () => {
+  it.each([false, true])("switches the preview inputs without losing confirmed text or changing pause=%s", async isPaused => {
+    const original = useStore.getState();
+    const session = { ...original.session, status: { kind: "listening" as const }, isActive: true, isPaused,
+      subtitles: { ...original.session.subtitles, history: [{ audioSource: "system" as const, source: "Synthetic source.", translation: "Synthetic translation.", createdAt: 1 }] },
+    };
+    try {
+      useStore.setState({ session, settings: { ...original.settings, audioInput: "system", recordSessionAudio: true } });
+      await useStore.getState().switchAudioInput("both");
+      expect(useStore.getState().settings).toMatchObject({ audioInput: "both", recordSessionAudio: false });
+      expect(useStore.getState().session).toBe(session);
+      useStore.setState({ session: { ...session, status: { kind: "connecting" } } });
+      await expect(useStore.getState().switchAudioInput("system")).rejects.toThrow("audio_input_switch_busy");
+      expect(useStore.getState().settings.audioInput).toBe("both");
+    } finally { useStore.setState(original, true); }
+  });
+  it("defaults to system audio, preserves explicit microphone selection, and requires stopping before a change", async () => {
+    const original = useStore.getState();
+    expect(original.settings.audioInput).toBe("system");
+    try {
+      await useStore.getState().saveSettings({ audioInput: "microphone" });
+      await useStore.getState().saveSettings({ fontSize: 19 });
+      expect(useStore.getState().settings.audioInput).toBe("microphone");
+      for (const state of [
+        { status: { kind: "listening" as const }, isActive: true, isPaused: false },
+        { status: { kind: "listening" as const }, isActive: false, isPaused: true },
+        { status: { kind: "connecting" as const }, isActive: false, isPaused: false },
+        { status: { kind: "stopping" as const }, isActive: false, isPaused: false },
+      ]) {
+        useStore.setState({ session: { ...original.session, ...state } });
+        await expect(useStore.getState().saveSettings({ audioInput: "system" })).rejects.toThrow("audio_input_change_requires_stop");
+        expect(useStore.getState().settings.audioInput).toBe("microphone");
+      }
+    } finally { useStore.setState({ settings: original.settings, session: original.session }); }
+  });
   it("defaults to showing in the Dock and preserves an explicit hidden choice on unrelated saves", async () => {
     const original = useStore.getState().settings;
     expect(original.showInDock).toBe(true);

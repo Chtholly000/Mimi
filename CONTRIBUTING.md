@@ -16,9 +16,9 @@ Thank you for improving mimi. Small, focused pull requests are the easiest to re
 
 ## 从源码运行 / Run from source
 
-需要 Rust 1.88+，以及 Node.js 20.19.x、22.13+ 或 24+。macOS 还需 Xcode Command Line Tools 和 `mimi Local Development` 签名身份，或显式设置 `MIMI_CODESIGN_IDENTITY`。
+需要 Rust 1.88+，以及 Node.js 20.19.x、22.13+ 或 24+。消回声库的源码构建还需要 C/C++ 编译器、CMake 和 libclang（仅构建时使用）。macOS 还需 Xcode Command Line Tools 和 `mimi Local Development` 签名身份，或显式设置 `MIMI_CODESIGN_IDENTITY`。
 
-Requires Rust 1.88+ and Node.js 20.19.x, 22.13+, or 24+. macOS also needs the Xcode Command Line Tools and a `mimi Local Development` signing identity or an explicit `MIMI_CODESIGN_IDENTITY`.
+Requires Rust 1.88+ and Node.js 20.19.x, 22.13+, or 24+. Building the echo canceller also requires a C/C++ compiler, CMake, and libclang (build time only). macOS also needs the Xcode Command Line Tools and a `mimi Local Development` signing identity or an explicit `MIMI_CODESIGN_IDENTITY`.
 
 ```bash
 git clone https://github.com/yuxino/mimi.git
@@ -27,6 +27,10 @@ npm ci
 npm run tauri:dev        # Windows / Linux
 ./scripts/dev-app.sh     # macOS
 ```
+
+macOS 可通过 `brew install cmake` 安装 CMake；Xcode Command Line Tools 提供编译器和 libclang。Windows 需要 Visual Studio 的 C++ 桌面开发工具、CMake 和 LLVM；若 bindgen 无法找到 `libclang.dll`，将 `LIBCLANG_PATH` 设为 LLVM 的 `bin` 目录。
+
+On macOS, install CMake with `brew install cmake`; Xcode Command Line Tools supply the compiler and libclang. Windows needs Visual Studio Desktop development with C++, CMake, and LLVM. If bindgen cannot locate `libclang.dll`, set `LIBCLANG_PATH` to LLVM’s `bin` directory.
 
 macOS 本机开发可以使用私有、只读的 `.env` 测试凭证，减少重编译后的 API Key 钥匙串授权。仅固定 dev 应用启用，正式版不支持；设置步骤及恢复钥匙串方式见[本机开发凭证](docs/development/local-dev-credentials.md)。
 

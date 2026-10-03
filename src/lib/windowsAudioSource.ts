@@ -26,7 +26,7 @@ export interface AudioSourceSnapshot {
 
 const copy = {
   en: {
-    title: "Sound source", system: "Follow system", unavailable: "Unavailable output",
+    title: "Output device", system: "Follow system", unavailable: "Unavailable output",
     communications: "Follow the communications device (call headset)",
     multimedia: "Follow the media device",
     audible: "Follow the device that is playing",
@@ -39,7 +39,7 @@ const copy = {
     failed: "Sound outputs could not be loaded. Try reopening Settings.",
   },
   zh: {
-    title: "声音来源", system: "跟随系统", unavailable: "不可用的输出设备",
+    title: "输出设备", system: "跟随系统", unavailable: "不可用的输出设备",
     communications: "跟随通信设备（通话耳机）",
     multimedia: "跟随媒体设备",
     audible: "跟随当前有声音的设备",
@@ -52,7 +52,7 @@ const copy = {
     failed: "无法加载声音输出设备，请重新打开设置。",
   },
   ja: {
-    title: "音声の取得元", system: "システムに合わせる", unavailable: "利用できない出力先",
+    title: "出力デバイス", system: "システムに合わせる", unavailable: "利用できない出力先",
     communications: "通信デバイスに合わせる（通話用ヘッドセット）",
     multimedia: "メディアデバイスに合わせる",
     audible: "音が出ているデバイスに合わせる",

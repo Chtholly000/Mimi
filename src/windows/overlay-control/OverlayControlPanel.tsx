@@ -7,6 +7,7 @@ import { I18N } from "../../lib/i18n";
 import {
   isTauri,
   overlayControlSetPanelHeight,
+  type SettingsNavigationTarget,
 } from "../../lib/ipc";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import type { SubtitleDisplayMode } from "../../lib/types";
@@ -38,12 +39,13 @@ interface OverlayControlPanelProps {
   isPaused: boolean;
   isWaitingForFinalTranslation: boolean;
   isChangingSession: boolean;
+  isStopping?: boolean;
   onDismiss: () => void;
   onSwitchSourceLanguage: (language: SourceLanguage) => Promise<void>;
   onSetSubtitleDisplayMode: (mode: SubtitleDisplayMode) => Promise<void>;
   onSetImmersiveMode: (enabled: boolean) => Promise<void>;
   onSetOverlayLocked: (locked: boolean) => Promise<void>;
-  onShowSettings: () => Promise<void>;
+  onShowSettings: (target?: SettingsNavigationTarget) => Promise<void>;
 }
 
 export function OverlayControlPanel({
@@ -54,6 +56,7 @@ export function OverlayControlPanel({
   isPaused,
   isWaitingForFinalTranslation,
   isChangingSession,
+  isStopping = false,
   onDismiss,
   onSwitchSourceLanguage,
   onSetSubtitleDisplayMode,
@@ -146,12 +149,12 @@ export function OverlayControlPanel({
           isPaused={isPaused}
           isWaitingForFinalTranslation={isWaitingForFinalTranslation}
           expanded
+          isStopping={isStopping}
           onToggle={onDismiss}
         />
 
         <CaptureStatusRow
           disabled={pendingAction !== null}
-          onShowAudioSettings={() => performAction("settings", onShowSettings, false)}
         />
 
         <div ref={displayControlRef} className="overlay-control-picker" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>

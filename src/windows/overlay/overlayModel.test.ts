@@ -6,6 +6,7 @@ import {
   buildSubtitleBlocks,
   subtitleLaneBudget,
   computeActivityPhaseFromSignals,
+  pendingSourceTranslation,
   visibleLiveSubtitle,
   visibleLiveSubtitles,
 } from "./overlayModel";
@@ -625,4 +626,17 @@ describe("bilingual preview rows", () => {
       { text: "下一句", isFinal: false, kind: "translation" },
     ]);
   });
+});
+
+
+it("reports translation in one input while the other input already matches the target language", () => {
+  const tracks = ["zh", "en"].map((detectedLanguage, index) => ({
+    audioSource: index ? "microphone" as const : "system" as const,
+    source: { text: "", isFinal: false }, translation: { text: "", isFinal: false }, history: [],
+    detectedLanguage, isTranslationPending: true, isTranslationTimedOut: false,
+  }));
+  const sourceTranslationPending = pendingSourceTranslation({ ...subtitles({ text: "", isFinal: false }), tracks }, settings);
+  expect(sourceTranslationPending).toBe(true);
+  expect(computeActivityPhaseFromSignals({ statusKind: "listening", isPaused: false, detectedLanguage: "zh",
+    isTranslationPending: true, sourceTranslationPending, hasRecognizingSourceDraft: false }, settings)).toBe("translating");
 });

@@ -50,3 +50,9 @@ it("keeps append, clear and bounded trim changes even when the latest pair is un
     expect(incoming.subtitles.history).toBe(history);
   }
 });
+
+it("does not reuse equal text when the source identity changes", () => {
+  const incoming = snapshot();
+  incoming.subtitles.history[0].audioSource = "microphone";
+  expect(shareUnchangedSubtitleHistory(session, incoming)).toBe(incoming);
+});

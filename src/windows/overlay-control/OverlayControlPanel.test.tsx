@@ -9,8 +9,6 @@ import { overlayControlPanelModel } from "./overlayControlModel";
 import { sourceLanguagesForSettings } from "../../lib/providerCapabilities";
 import { SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
 
-vi.mock("./CaptureStatusRow", () => ({ CaptureStatusRow: () => <div className="overlay-control-capture">System sound mix · Receiving sound</div> }));
-
 let host: HTMLDivElement;
 let root: Root;
 let props: Parameters<typeof OverlayControlPanel>[0];
@@ -66,7 +64,7 @@ it.each(["zh", "en", "ja"] as const)("keeps %s controls to two short pickers and
   await mount();
   expect(host.querySelectorAll('[role="combobox"]')).toHaveLength(2);
   expect(host.querySelector('fieldset, .overlay-control-options, .overlay-control-group')).toBeNull();
-  expect(host.querySelectorAll('[role="switch"]')).toHaveLength(2);
+  expect(host.querySelectorAll('[role="switch"]')).toHaveLength(4);
   expect(host.querySelector('.overlay-control-setting small')).toBeNull();
   expect(picker(I18N.overlay.sourceLanguage)).toBe(document.activeElement);
   expect(props.onSwitchSourceLanguage).not.toHaveBeenCalled();
@@ -79,6 +77,16 @@ it("supports keyboard source selection and dismisses only after the command succ
   await key(source, "ArrowDown"); await key(source, "End"); await key(source, "Enter");
   expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith(props.model.sourceOptions.at(-1));
   expect(props.onDismiss).toHaveBeenCalledOnce();
+});
+
+it("shows direct audio switches and keeps More settings at the default destination", async () => {
+  await mount();
+  const audioControls = host.querySelector(".overlay-control-capture")!;
+  expect(audioControls.querySelectorAll('[role="switch"]')).toHaveLength(2);
+  expect(audioControls.querySelector(`button[aria-label="${I18N.settings.audioInputTitle}"]`)).toBeNull();
+  await act(async () => host.querySelector<HTMLButtonElement>(".overlay-control-settings-link")!.click());
+  expect(props.onShowSettings).toHaveBeenCalledExactlyOnceWith();
+  expect(props.onDismiss).not.toHaveBeenCalled();
 });
 
 it("changes subtitle display without closing the panel and lets Escape close only its picker", async () => {
@@ -96,7 +104,7 @@ it("blocks conflicting operations and retains an inline error after a failed tog
   let reject!: (reason: Error) => void;
   props.onSetImmersiveMode = vi.fn(() => new Promise<void>((_resolve, failure) => { reject = failure; }));
   await mount();
-  await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+  await act(async () => host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${I18N.overlay.immersiveMode}"]`)!.click());
   expect([...host.querySelectorAll<HTMLButtonElement>('[role="combobox"], [role="switch"]')].every((button) => button.disabled)).toBe(true);
   await act(async () => reject(new Error("synthetic-toggle-failure")));
   expect(host.querySelector('[role="alert"]')?.textContent).toContain(I18N.overlay.controlActionFailed);

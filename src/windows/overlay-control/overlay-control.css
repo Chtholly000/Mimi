@@ -38,7 +38,7 @@
   border-radius: 11px;
   color: var(--control-text);
   background: var(--control-bg);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1;
   text-align: left;
   cursor: pointer;
@@ -50,6 +50,8 @@
 
 .overlay-control-island {
   width: max-content;
+  /* The subtitle chrome reserves 280px for this native child window. */
+  max-width: 280px;
   opacity: 1;
 }
 
@@ -96,7 +98,7 @@
 .overlay-control-island__summary {
   display: flex;
   min-width: 0;
-  flex: 1 0 auto;
+  flex: 1 1 auto;
   align-items: center;
   gap: 3px;
   color: var(--control-text-muted);
@@ -104,7 +106,10 @@
 }
 
 .overlay-control-island__summary > * {
-  flex: 0 0 auto;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .overlay-control-island__summary > strong {
@@ -138,55 +143,53 @@
 .overlay-control-capture {
   display: flex;
   min-width: 0;
-  min-height: 28px;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px;
-  color: var(--control-text-muted);
-  font-size: 11px;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--control-text);
+  font-size: 12px;
   line-height: 1.4;
 }
 
-.overlay-control-capture__summary {
-  display: flex;
+.overlay-control-capture__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px 32px;
+  min-height: 32px;
   align-items: center;
-  min-width: 0;
-  flex: 1;
-  gap: 4px;
+  gap: 7px;
+  padding: 0 8px;
 }
 
 .overlay-control-capture__source {
+  display: flex;
   min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  align-items: center;
+  gap: 7px;
 }
 
-.overlay-control-capture__observation {
-  min-width: 0;
-  flex: 0 1 auto;
-  max-width: 55%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.overlay-control-capture__source strong {
+  font-size: 12px;
+  font-weight: 600;
 }
 
-.overlay-control-capture__settings {
-  display: grid;
-  width: 24px;
+.overlay-control-capture .overlay-control-capture__toggle {
+  display: flex;
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.overlay-control-capture .settings-help-control__button {
+  width: 20px;
   height: 24px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 0;
-  border-radius: 5px;
-  color: inherit;
-  background: transparent;
-  cursor: pointer;
+  font-size: 12px;
+  color: var(--control-text-faint);
 }
 
-.overlay-control-capture__settings:hover:not(:disabled) {
-  background: var(--control-surface-hover);
+.overlay-control-capture .settings-help-control__button:hover,
+.overlay-control-capture .settings-help-control__button:focus-visible {
+  color: var(--control-text);
 }
 
 .overlay-control-header {
@@ -256,7 +259,7 @@
 
 .overlay-control-setting__copy strong {
   overflow: hidden;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -300,7 +303,7 @@
   gap: 6px;
   border-radius: 7px;
   color: var(--control-text-muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .overlay-control-settings-link > svg {
@@ -316,7 +319,7 @@
   border-radius: 7px;
   color: var(--control-text);
   background: var(--control-surface);
-  font-size: 10.5px;
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
@@ -382,12 +385,12 @@
 }
 .overlay-control-picker > span:first-child {
   min-width: 0;
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--control-text-faint);
 }
 .overlay-control-picker .mimi-select__trigger {
   height: 28px;
   padding: 0 8px;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
 }

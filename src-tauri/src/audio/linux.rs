@@ -1,7 +1,7 @@
 //! Linux system audio through PulseAudio (including PipeWire's PulseAudio
 //! server). Resolve and verify the default output's monitor explicitly; the
-//! default recording source is never opened. The sound server converts the
-//! monitor mix to the requested mono PCM16LE rate.
+//! default recording source is opened only for explicit microphone capture.
+//! The server converts the selected source to the requested mono PCM16LE rate.
 //!
 //! All libpulse objects stay on one worker thread. A nonblocking mainloop
 //! keeps startup, pause/stop and cancelled start futures bounded even when
@@ -12,6 +12,7 @@ use crate::audio::send_pipeline::{AudioIngress, AudioIngressError};
 use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureError, SystemAudioCaptureFailure,
 };
+use crate::core::audio_input::AudioSource;
 use crate::core::diagnostics::milliseconds;
 use crate::pipeline_log;
 use libpulse_binding as pulse;
@@ -89,21 +90,38 @@ impl LinuxSystemAudioCapture {
         failure_tx: CaptureFailureSender,
         format: AudioCaptureFormat,
     ) -> Result<(), SystemAudioCaptureError> {
+        self.start_input(audio_ingress, failure_tx, format, AudioSource::System)
+            .await
+    }
+
+    pub async fn start_input(
+        &self,
+        audio_ingress: AudioIngress,
+        failure_tx: CaptureFailureSender,
+        format: AudioCaptureFormat,
+        input: AudioSource,
+    ) -> Result<(), SystemAudioCaptureError> {
         AudioCaptureFormat::pcm16_mono(format.sample_rate_hz)?;
         let control = self.reserve_worker()?;
         let mut cancel_start = CancelStartOnDrop(Some(Arc::clone(&control)));
         let (ready_tx, ready_rx) = oneshot::channel();
         let worker_control = Arc::clone(&control);
         if std::thread::Builder::new()
-            .name("mimi-system-audio".into())
+            .name(
+                match input {
+                    AudioSource::System => "mimi-system-audio",
+                    AudioSource::Microphone => "mimi-microphone",
+                }
+                .into(),
+            )
             .spawn(move || {
                 // Constructed first, dropped last: finished means libpulse
                 // has disconnected and released the stream and context.
                 let _finished = FinishWorkerOnDrop(Arc::clone(&worker_control));
-                let mut capture = match PulseCapture::connect(&worker_control, format) {
+                let mut capture = match PulseCapture::connect(&worker_control, format, input) {
                     Ok(capture) => capture,
                     Err(error) => {
-                        let _ = ready_tx.send(Err(error));
+                        let _ = ready_tx.send(Err(input_error(input, error)));
                         return;
                     }
                 };
@@ -123,12 +141,15 @@ impl LinuxSystemAudioCapture {
             .is_err()
         {
             control.finished.store(true, Ordering::SeqCst);
-            return Err(SystemAudioCaptureError::NativeStartFailed);
+            return Err(input_error(
+                input,
+                SystemAudioCaptureError::NativeStartFailed,
+            ));
         }
 
         ready_rx
             .await
-            .map_err(|_| SystemAudioCaptureError::NativeStartFailed)??;
+            .map_err(|_| input_error(input, SystemAudioCaptureError::NativeStartFailed))??;
         if control.cancelled.load(Ordering::SeqCst) {
             return Err(SystemAudioCaptureError::StartCancelled);
         }
@@ -170,6 +191,15 @@ impl LinuxSystemAudioCapture {
     }
 }
 
+fn input_error(input: AudioSource, error: SystemAudioCaptureError) -> SystemAudioCaptureError {
+    match (input, error) {
+        (AudioSource::Microphone, SystemAudioCaptureError::NativeStartFailed) => {
+            SystemAudioCaptureError::MicrophoneStartFailed
+        }
+        (_, error) => error,
+    }
+}
+
 struct MonitorSource {
     sink_index: u32,
     source_index: u32,
@@ -187,7 +217,7 @@ struct PulseCapture {
     stream: Stream,
     context: ConnectedContext,
     mainloop: Mainloop,
-    monitor_index: u32,
+    source_index: u32,
     chunk_bytes: usize,
     max_buffer_bytes: usize,
 }
@@ -220,6 +250,7 @@ impl PulseCapture {
     fn connect(
         control: &WorkerControl,
         format: AudioCaptureFormat,
+        input: AudioSource,
     ) -> Result<Self, SystemAudioCaptureError> {
         let deadline = Instant::now() + START_TIMEOUT;
         let mut mainloop =
@@ -241,7 +272,15 @@ impl PulseCapture {
             }
         })?;
 
-        let monitor = resolve_monitor(&mut mainloop, &context, control, deadline)?;
+        let (source_index, source_name) = match input {
+            AudioSource::System => {
+                let monitor = resolve_monitor(&mut mainloop, &context, control, deadline)?;
+                (monitor.source_index, monitor.source_name)
+            }
+            AudioSource::Microphone => {
+                resolve_microphone(&mut mainloop, &context, control, deadline)?
+            }
+        };
         let spec = Spec {
             format: Format::S16le,
             channels: 1,
@@ -249,8 +288,16 @@ impl PulseCapture {
         };
         let chunk_bytes = format.sample_rate_hz as usize * 2 * FRAGMENT_MS / 1000;
         let max_buffer_bytes = format.sample_rate_hz as usize * 2 * MAX_BUFFER_MS / 1000;
-        let mut stream = Stream::new(&mut context, "System audio", &spec, None)
-            .ok_or(SystemAudioCaptureError::NativeStartFailed)?;
+        let mut stream = Stream::new(
+            &mut context,
+            match input {
+                AudioSource::System => "System audio",
+                AudioSource::Microphone => "Microphone",
+            },
+            &spec,
+            None,
+        )
+        .ok_or(SystemAudioCaptureError::NativeStartFailed)?;
         let buffer = BufferAttr {
             maxlength: max_buffer_bytes as u32,
             tlength: u32::MAX,
@@ -260,7 +307,7 @@ impl PulseCapture {
         };
         stream
             .connect_record(
-                Some(&monitor.source_name),
+                Some(&source_name),
                 Some(&buffer),
                 StreamFlags::DONT_MOVE | StreamFlags::ADJUST_LATENCY,
             )
@@ -277,7 +324,7 @@ impl PulseCapture {
                 _ => Ok(None),
             }
         })?;
-        if stream.get_device_index() != Some(monitor.source_index)
+        if stream.get_device_index() != Some(source_index)
             || stream.get_sample_spec() != Some(&spec)
         {
             return Err(SystemAudioCaptureError::UnsupportedAudioFormat);
@@ -287,7 +334,7 @@ impl PulseCapture {
             stream,
             context,
             mainloop,
-            monitor_index: monitor.source_index,
+            source_index,
             chunk_bytes,
             max_buffer_bytes,
         })
@@ -320,7 +367,7 @@ impl PulseCapture {
             if !matches!(poll_result, IterateResult::Success(_))
                 || self.context.get_state() != ContextState::Ready
                 || self.stream.get_state() != StreamState::Ready
-                || self.stream.get_device_index() != Some(self.monitor_index)
+                || self.stream.get_device_index() != Some(self.source_index)
             {
                 return Err(SystemAudioCaptureFailure::NativeStopped);
             }
@@ -455,6 +502,56 @@ fn resolve_monitor(
     Ok(monitor)
 }
 
+/// Resolve only the server's selected recording input. Reject a monitor even
+/// when it is configured as the default source; never silently capture output.
+fn resolve_microphone(
+    mainloop: &mut Mainloop,
+    context: &Context,
+    control: &WorkerControl,
+    deadline: Instant,
+) -> Result<(u32, String), SystemAudioCaptureError> {
+    let source_name = Rc::new(RefCell::new(None));
+    let source_name_result = Rc::clone(&source_name);
+    let _server_operation = context.introspect().get_server_info(move |info| {
+        *source_name_result.borrow_mut() =
+            Some(info.default_source_name.as_deref().map(str::to_owned));
+    });
+    let source_name = wait_for(mainloop, control, deadline, || {
+        check_context(context)?;
+        Ok(source_name.borrow_mut().take())
+    })?
+    .filter(|name| valid_device_name(name))
+    .ok_or(SystemAudioCaptureError::NoMicrophoneDevice)?;
+    let source = Rc::new(RefCell::new(None));
+    let source_result = Rc::clone(&source);
+    let _source_operation =
+        context
+            .introspect()
+            .get_source_info_by_name(&source_name, move |result| match result {
+                ListResult::Item(info) => {
+                    *source_result.borrow_mut() = Some(Some((info.index, info.monitor_of_sink)));
+                }
+                ListResult::Error | ListResult::End => {
+                    if source_result.borrow().is_none() {
+                        *source_result.borrow_mut() = Some(None);
+                    }
+                }
+            });
+    let (index, monitor) = wait_for(mainloop, control, deadline, || {
+        check_context(context)?;
+        Ok(source.borrow_mut().take())
+    })?
+    .ok_or(SystemAudioCaptureError::NoMicrophoneDevice)?;
+    if !is_microphone_source(index, monitor) {
+        return Err(SystemAudioCaptureError::NoMicrophoneDevice);
+    }
+    Ok((index, source_name))
+}
+
+fn is_microphone_source(index: u32, monitor_of_sink: Option<u32>) -> bool {
+    index != u32::MAX && monitor_of_sink.is_none()
+}
+
 fn check_context(context: &Context) -> Result<(), SystemAudioCaptureError> {
     if context.get_state() == ContextState::Ready {
         Ok(())
@@ -566,6 +663,13 @@ mod tests {
         assert!(!monitor.matches(10, Some(4)), "source identity must match");
         assert!(!valid_device_name(""));
         assert!(!valid_device_name("sink\0name"));
+    }
+
+    #[test]
+    fn microphone_requires_a_real_input_and_rejects_output_monitors() {
+        assert!(is_microphone_source(9, None));
+        assert!(!is_microphone_source(9, Some(4)));
+        assert!(!is_microphone_source(u32::MAX, None));
     }
 
     #[test]
@@ -751,11 +855,22 @@ mod tests {
     }
 
     fn play_test_tone() -> (tempfile::NamedTempFile, TestPlayback) {
+        play_test_tone_on("@DEFAULT_SINK@")
+    }
+
+    fn play_test_tone_on(sink: &str) -> (tempfile::NamedTempFile, TestPlayback) {
+        play_test_frequency_on(sink, 997.0)
+    }
+
+    fn play_test_frequency_on(
+        sink: &str,
+        frequency: f64,
+    ) -> (tempfile::NamedTempFile, TestPlayback) {
         let mut audio = tempfile::NamedTempFile::new().unwrap();
         // Synthetic PCM only; never write the audio captured from a device.
         let pcm: Vec<u8> = (0..(48_000 * 8))
             .flat_map(|index| {
-                let phase = std::f64::consts::TAU * 997.0 * f64::from(index) / 48_000.0;
+                let phase = std::f64::consts::TAU * frequency * f64::from(index) / 48_000.0;
                 let sample = ((phase.sin() * 6_000.0) as i16).to_le_bytes();
                 [sample[0], sample[1], sample[0], sample[1]]
             })
@@ -763,13 +878,8 @@ mod tests {
         audio.write_all(&pcm).unwrap();
         audio.flush().unwrap();
         let child = Command::new("paplay")
-            .args([
-                "--raw",
-                "--format=s16le",
-                "--rate=48000",
-                "--channels=2",
-                "--device=@DEFAULT_SINK@",
-            ])
+            .args(["--raw", "--format=s16le", "--rate=48000", "--channels=2"])
+            .arg(format!("--device={sink}"))
             .arg(audio.path())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -780,6 +890,10 @@ mod tests {
     }
 
     fn matches_tone(pcm: &[u8], sample_rate: u32) -> bool {
+        matches_frequency(pcm, sample_rate, 997.0)
+    }
+
+    fn matches_frequency(pcm: &[u8], sample_rate: u32, frequency: f64) -> bool {
         let samples: Vec<f64> = pcm
             .as_chunks::<2>()
             .0
@@ -792,7 +906,7 @@ mod tests {
         let mut energy = 0.0;
         let mut peak: f64 = 0.0;
         for (index, sample) in samples.iter().enumerate() {
-            let phase = std::f64::consts::TAU * 997.0 * index as f64 / f64::from(sample_rate);
+            let phase = std::f64::consts::TAU * frequency * index as f64 / f64::from(sample_rate);
             sine += sample * phase.sin();
             cosine += sample * phase.cos();
             energy += sample * sample;
@@ -843,6 +957,200 @@ mod tests {
         .await
         .expect("the monitor must publish silent PCM and let old sound activity expire");
         eprintln!("linux native rate={rate} stage={stage} pcm=true sound=false");
+    }
+
+    /// Both native streams run concurrently with different synthetic tones.
+    /// Matching the dominant tone rejects swapped streams and mixed PCM.
+    #[tokio::test]
+    #[ignore = "requires an isolated PulseAudio server with mimi-input and paplay"]
+    async fn native_dual_inputs_keep_audio_separate_and_restart() {
+        struct RestoreDefaultSource;
+        impl Drop for RestoreDefaultSource {
+            fn drop(&mut self) {
+                let _ = Command::new("pactl")
+                    .args(["set-default-source", "mimi-microphone.monitor"])
+                    .status();
+            }
+        }
+        let _restore = RestoreDefaultSource;
+        assert!(Command::new("pactl")
+            .args(["set-default-source", "mimi-input"])
+            .status()
+            .unwrap()
+            .success());
+        async fn expect_frequency(rx: &mut mpsc::Receiver<Vec<u8>>, rate: u32, frequency: f64) {
+            tokio::time::timeout(Duration::from_secs(6), async {
+                let mut window = Vec::new();
+                while let Some(pcm) = rx.recv().await {
+                    assert_eq!(pcm.len(), rate as usize * 2 * FRAGMENT_MS / 1000);
+                    window.extend(pcm);
+                    if window.len() >= rate as usize / 2 {
+                        if matches_frequency(&window, rate, frequency) {
+                            return;
+                        }
+                        window.clear();
+                    }
+                }
+                panic!("independent capture ended before its assigned tone arrived");
+            })
+            .await
+            .expect("each source must retain its own dominant tone");
+        }
+        let system = LinuxSystemAudioCapture::new();
+        let microphone = LinuxSystemAudioCapture::new();
+        for rate in [16_000, 24_000] {
+            let (system_pipeline, mut system_rx) = recording_pipeline();
+            let (mic_pipeline, mut mic_rx) = recording_pipeline();
+            let (system_failure, mut system_failures) = CaptureFailureSender::channel();
+            let (mic_failure, mut mic_failures) = CaptureFailureSender::channel();
+            let format = AudioCaptureFormat::pcm16_mono(rate).unwrap();
+            system
+                .start_input(
+                    system_pipeline.ingress().unwrap(),
+                    system_failure,
+                    format,
+                    AudioSource::System,
+                )
+                .await
+                .unwrap();
+            microphone
+                .start_input(
+                    mic_pipeline.ingress().unwrap(),
+                    mic_failure,
+                    format,
+                    AudioSource::Microphone,
+                )
+                .await
+                .unwrap();
+            let (_output_audio, output_playback) = play_test_frequency_on("mimi-output", 997.0);
+            let (_input_audio, input_playback) = play_test_frequency_on("mimi-microphone", 613.0);
+            tokio::join!(
+                expect_frequency(&mut system_rx, rate, 997.0),
+                expect_frequency(&mut mic_rx, rate, 613.0)
+            );
+            // Releasing one native worker must not terminate the other lane.
+            system.stop().await;
+            assert!(system_pipeline.finish(Duration::from_secs(1)).await);
+            while system_rx.try_recv().is_ok() {}
+            while mic_rx.try_recv().is_ok() {}
+            expect_frequency(&mut mic_rx, rate, 613.0).await;
+            assert!(system_rx.try_recv().is_err());
+            microphone.stop().await;
+            assert!(mic_pipeline.finish(Duration::from_secs(1)).await);
+            assert!(system_failures.try_recv().is_err());
+            assert!(mic_failures.try_recv().is_err());
+            drop(output_playback);
+            drop(input_playback);
+            eprintln!("linux native dual rate={rate} isolated=true restart=true");
+        }
+    }
+
+    /// The private server exposes a non-monitor recording source backed by a
+    /// separate synthetic sink. This proves microphone mode neither accepts
+    /// a default monitor nor substitutes the audible output mix.
+    #[tokio::test]
+    #[ignore = "requires an isolated PulseAudio server with mimi-input and paplay"]
+    async fn native_microphone_captures_only_explicit_input_and_restarts() {
+        fn set_default_source(source: &str) {
+            assert!(Command::new("pactl")
+                .args(["set-default-source", source])
+                .status()
+                .unwrap()
+                .success());
+        }
+        struct RestoreDefaultSource;
+        impl Drop for RestoreDefaultSource {
+            fn drop(&mut self) {
+                set_default_source("mimi-microphone.monitor");
+            }
+        }
+        let _restore = RestoreDefaultSource;
+        let capture = LinuxSystemAudioCapture::new();
+        set_default_source("mimi-microphone.monitor");
+        let (pipeline, _rx) = recording_pipeline();
+        let (failure, _) = CaptureFailureSender::channel();
+        assert_eq!(
+            capture
+                .start_input(
+                    pipeline.ingress().unwrap(),
+                    failure,
+                    AudioCaptureFormat::pcm16_mono(16_000).unwrap(),
+                    AudioSource::Microphone
+                )
+                .await,
+            Err(SystemAudioCaptureError::NoMicrophoneDevice)
+        );
+        capture.stop().await;
+        pipeline.stop();
+
+        set_default_source("mimi-input");
+        for rate in [16_000, 24_000] {
+            let (pipeline, mut rx) = recording_pipeline();
+            let (failure, mut failures) = CaptureFailureSender::channel();
+            tokio::time::timeout(
+                Duration::from_secs(7),
+                capture.start_input(
+                    pipeline.ingress().unwrap(),
+                    failure,
+                    AudioCaptureFormat::pcm16_mono(rate).unwrap(),
+                    AudioSource::Microphone,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            expect_native_silence(&pipeline, &mut rx, rate, "microphone-before-playback").await;
+            let (_output_audio, output_playback) = play_test_tone();
+            // Drain a full half-second while output is audible: microphone
+            // mode must not capture that independently playing system tone.
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
+            let mut silent_frames = 0;
+            while let Ok(Some(pcm)) = tokio::time::timeout_at(deadline, rx.recv()).await {
+                assert!(pcm
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .all(|sample| i16::from_le_bytes(*sample).unsigned_abs() <= 2));
+                silent_frames += 1;
+            }
+            assert!(
+                silent_frames >= 5,
+                "microphone must supply silent PCM while system output is audible"
+            );
+            drop(output_playback);
+
+            let (_input_audio, input_playback) = play_test_tone_on("mimi-microphone");
+            tokio::time::timeout(Duration::from_secs(6), async {
+                let mut window = Vec::new();
+                while let Some(pcm) = rx.recv().await {
+                    assert_eq!(pcm.len(), rate as usize * 2 * FRAGMENT_MS / 1000);
+                    window.extend(pcm);
+                    if window.len() >= rate as usize / 2 {
+                        if matches_tone(&window, rate) {
+                            return;
+                        }
+                        window.clear();
+                    }
+                }
+                panic!("microphone capture ended before its input tone arrived");
+            })
+            .await
+            .expect("default input must contain its 997 Hz tone at the provider rate");
+            drop(input_playback);
+            tokio::time::timeout(Duration::from_secs(1), capture.stop())
+                .await
+                .expect("stop releases input without waiting for audio");
+            while rx.try_recv().is_ok() {}
+            tokio::time::sleep(Duration::from_millis(75)).await;
+            while rx.try_recv().is_ok() {}
+            tokio::time::sleep(Duration::from_millis(75)).await;
+            assert!(
+                rx.try_recv().is_err(),
+                "stopped microphone must emit no new PCM"
+            );
+            assert!(failures.try_recv().is_err());
+            pipeline.stop();
+        }
     }
 
     /// Run under scripts/linux-audio-smoke.sh: it supplies a private server,

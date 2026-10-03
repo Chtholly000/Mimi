@@ -27,6 +27,7 @@ import { SettingsHelp } from "./SettingsHelp";
 import { SettingsConfirmation } from "./DestructiveConfirmation";
 import { SettingsInitializationStatus } from "./SettingsInitializationStatus";
 import { NetworkProxySettings } from "./NetworkProxySettings";
+import { AudioInputSettings } from "./AudioInputSettings";
 import "./settings.css";
 
 type SettingsCategory = "subtitles" | "service" | "general" | "export" | "diagnostics" | "guide";
@@ -378,6 +379,7 @@ export function SettingsView() {
             )}
 
             <div id="service-profiles-panel" className={`settings-category-panel${activeCategory !== "service" ? " is-inactive" : ""}`}>
+                <AudioInputSettings />
                 <ServiceProfiles settings={settings} sessionIsActive={sessionIsActive} sessionIsPaused={sessionIsPaused} sessionStatusKind={sessionStatusKind} visible={activeCategory === "service"} />
                 <NetworkProxySettings value={settings.networkProxy} disabled={sessionIsActive || sessionIsPaused || isChangingSession}
                   onSave={(networkProxy) => saveSettings({ networkProxy })} />

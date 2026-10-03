@@ -123,7 +123,11 @@ export function Tooltip({ label, popupClassName, children }: TooltipProps) {
         }
       }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") dismiss();
+        if (event.key === "Escape" && open) {
+          event.preventDefault();
+          event.stopPropagation();
+          dismiss();
+        }
       }}
     >
       {children(open ? id : undefined, isHovered)}

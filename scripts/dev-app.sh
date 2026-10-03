@@ -304,6 +304,7 @@ rm -rf "$BUILD_APP"
 mkdir -p "$BUILD_APP/Contents/MacOS" "$BUILD_APP/Contents/Resources"
 cp "$PROJECT_DIR/src-tauri/target/release/mimi" "$BUILD_APP/Contents/MacOS/mimi"
 cp "$PROJECT_DIR/src-tauri/icons/icon.icns" "$BUILD_APP/Contents/Resources/icon.icns"
+cp "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" "$BUILD_APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 chmod 755 "$BUILD_APP/Contents/MacOS/mimi"
 
 cat > "$BUILD_APP/Contents/Info.plist" <<PLIST
@@ -338,13 +339,17 @@ cat > "$BUILD_APP/Contents/Info.plist" <<PLIST
   <key>NSScreenCaptureUsageDescription</key>
   <string>mimi uses ScreenCaptureKit only to capture system audio for live subtitles.</string>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>mimi captures system audio only to create live subtitles.</string>
+  <string>mimi captures system audio to create live subtitles. Audio is saved locally only when you enable audio recording.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>mimi uses your microphone for live subtitles only when you select Microphone as the audio input and start subtitles.</string>
 </dict>
 </plist>
 PLIST
 
 plutil -lint "$BUILD_APP/Contents/Info.plist" >/dev/null
-codesign --force --deep --timestamp=none --sign "$IDENTITY" "$BUILD_APP"
+codesign --force --deep --timestamp=none \
+  --entitlements "$PROJECT_DIR/src-tauri/Entitlements.plist" \
+  --sign "$IDENTITY" "$BUILD_APP"
 codesign --verify --deep --strict "$BUILD_APP"
 
 NEW_REQUIREMENT="$(designated_requirement "$BUILD_APP")"

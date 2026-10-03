@@ -2,12 +2,12 @@
 
 ## Project
 
-Mimi is a Tauri v2 desktop app (Rust backend + React/TypeScript frontend) that listens to system audio playing on macOS, Windows, or Linux and shows live translated subtitles in a floating always-on-top overlay. It supports built-in service profiles and custom live speech recognition with independent text translation, plus optional, explicitly enabled session recording and export.
+Mimi is a Tauri v2 desktop app (Rust backend + React/TypeScript frontend) that listens to system audio and/or an explicitly selected microphone on macOS, Windows, or Linux and shows live translated subtitles in a floating always-on-top overlay. It supports built-in service profiles and custom live speech recognition with independent text translation, plus optional, explicitly enabled session recording and export.
 
 Preserve these product constraints:
 
-- Capture system audio only. Do not add microphone capture unless the task explicitly requires it.
-- Subtitle history retention and system-audio recording are off by default. When enabled, save bounded confirmed subtitles and/or system audio to private local session files as content arrives. Do not keep full session transcripts or PCM recordings in memory; only bounded overlay display content and size/limit metadata may remain there. New sessions and normal exit finalize the local files. Disabling an option clears its current-session content; saved sessions require explicit deletion. Never add microphone capture.
+- Capture system audio by default. Microphone capture requires explicit selection and starting a session. Allow either or both sources, with independent capture, bounded queues, recognition sessions and subtitle state. Never mix sources, silently fall back, or request microphone permission for system-only sessions. Changing selected sources requires stopping and clears the audio-recording opt-in. Preserve source identity in subtitles and recordings.
+- Subtitle history retention and selected-input audio recording are off by default. When enabled, save bounded confirmed subtitles and/or selected audio to private local session files as content arrives. Do not keep full session transcripts or PCM recordings in memory; only bounded overlay display content and size/limit metadata may remain there. New sessions and normal exit finalize the local files. Disabling an option clears its current-session content; saved sessions require explicit deletion.
 - Store production API credentials in the OS keychain only (macOS Keychain / Windows Credential Manager / Linux Secret Service via `keyring`). Never add source-controlled or process-environment credential fallbacks. The explicitly requested local macOS dev exception is the default-off `local-dev-credentials` feature, further gated by `app.yuxino.mimi.dev` and non-UI-only mode: a private, validated, read-only app-config `.env` may replace Keychain without fallback or migration. Keep this exception isolated; see [local development credentials](docs/development/local-dev-credentials.md).
 - Keep diagnostics content-free: timing, counts, language codes, status codes, and sanitized error labels are acceptable; recognized or translated text is not.
 
@@ -15,7 +15,7 @@ Preserve these product constraints:
 
 - `src-tauri/src/core/`: UI-independent models, configuration, wire protocols, subtitle assembly, text segmentation, and pipeline diagnostics. Pure Rust, fully unit-tested.
 - `src-tauri/src/clients/`: tokio network clients (Alibaba live translate/Audio 3.0/Qwen-MT pipelines and OpenAI Realtime translation).
-- `src-tauri/src/audio/`: system-audio capture (macOS ScreenCaptureKit via `screen-capture-kit`, Windows WASAPI loopback via `cpal` + `rubato`), Linux PulseAudio / PipeWire-Pulse output monitors, and the bounded PCM send pipeline.
+- `src-tauri/src/audio/`: system-audio capture (macOS ScreenCaptureKit via `screen-capture-kit`, Windows WASAPI loopback via `cpal` + `rubato`), Linux PulseAudio / PipeWire-Pulse output monitors, optional default microphone capture, and the bounded PCM send pipeline.
 - `src-tauri/src/session_manager.rs`: session lifecycle — start/stop/pause/resume, language/mode switching, health checks, automatic reconnection, state events.
 - `src-tauri/src/settings_store.rs`: preferences/profile JSON in the app config directory + provider/profile-scoped keychain credential storage.
 - `src-tauri/src/{commands,windows,lib}.rs`: IPC commands, overlay/tray-panel window management, tray/shortcut wiring.
@@ -70,7 +70,7 @@ It runs `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, and the f
 
 Additional checks by change type:
 
-- UI changes: on macOS run `./scripts/dev-app.sh` and inspect the settings window, tray panel, and overlay in normal, empty, error, paused, collapsed, translating, and long-subtitle states. This launches a signed bundle from one canonical path so macOS does not treat every rebuild as a new app and repeat privacy prompts. Use `./scripts/dev-app.sh --ui-only` for credential-free UI smoke tests; UI-test mode must not access provider networks or start system-audio capture. On Windows, use `npm run tauri:dev`.
+- UI changes: on macOS run `./scripts/dev-app.sh` and inspect the settings window, tray panel, and overlay in normal, empty, error, paused, collapsed, translating, and long-subtitle states. This launches a signed bundle from one canonical path so macOS does not treat every rebuild as a new app and repeat privacy prompts. Use `./scripts/dev-app.sh --ui-only` for credential-free UI smoke tests; UI-test mode must not access provider networks or start any audio capture. On Windows, use `npm run tauri:dev`.
 - Latency or streaming changes: measure against a real session for the affected provider (user-supplied OS-keychain credentials) and report timing diagnostics as well as correctness tests.
 - Packaging or signing changes: read `docs/development/common-regressions.md`, run `./scripts/package-app.sh`, and verify the resulting app opens without replacing an installed app of a different designated requirement. Windows packaging is verified on a Windows machine (or CI). Never commit `dist/`, `src-tauri/target/`, or signing identities.
 

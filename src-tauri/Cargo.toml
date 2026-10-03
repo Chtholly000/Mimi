@@ -49,6 +49,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 rubato = "5"
+# Local SpeexDSP linear echo cancellation; wrapped with checked frame sizes.
+aec-rs-sys = "=1.0.0"
 tauri-plugin-dialog = "2"
 time = "0.3"
 tempfile = "3"
@@ -57,6 +59,7 @@ tempfile = "3"
 minisign-verify = "0.2.5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+cpal = "0.18"
 block2 = "0.6"
 screen-capture-kit = "0.7.1"
 core-media = "0.8"

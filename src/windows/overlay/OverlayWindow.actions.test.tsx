@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import { useStore } from "../../lib/store";
 import { OverlayWindow } from "./OverlayWindow";
+import { audioInputLabel } from "../../lib/audioInput";
 
 vi.mock("../../lib/ipc", async (original) => ({
   ...await original<typeof import("../../lib/ipc")>(),
@@ -36,6 +37,20 @@ afterEach(async () => {
   host.remove(); useStore.setState(initial, true); setStoredUiLanguage("system"); vi.unstubAllGlobals();
 });
 function button(label: string) { return host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!; }
+
+it.each(["system", "microphone", "both"] as const)("keeps %s sources identifiable in the collapsed and paused surface", async audioInput => {
+  vi.stubGlobal("innerHeight", 54);
+  vi.stubGlobal("innerWidth", 280);
+  useStore.setState(state => ({ session: { ...state.session, isOverlayCollapsed: true, isPaused: true },
+    settings: { ...state.settings, audioInput },
+  }));
+  await act(async () => root.render(<OverlayWindow />));
+  expect(host.querySelector('[role="group"]')?.getAttribute("aria-label")).toContain(audioInputLabel(audioInput));
+  expect(host.querySelector('[role="img"]')?.getAttribute("aria-label")).toBe(audioInputLabel(audioInput));
+  expect(host.querySelector<HTMLElement>('[role="img"]')?.style.color).toContain("rgba(255,255,255,0.82)");
+  expect(button(I18N.overlay.resume)).not.toBeNull();
+  expect(button(I18N.overlay.expandSubtitle)).not.toBeNull();
+});
 
 it.each([
   ["setOverlayCollapsed", () => I18N.overlay.collapseSubtitle],

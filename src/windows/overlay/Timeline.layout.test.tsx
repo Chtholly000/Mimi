@@ -377,3 +377,17 @@ it("stops an active glide and keeps further growth still when motion is disabled
   expect(transforms.mock.calls.map(([value]) => value)).toEqual(["translateY(0)", "translateY(0)"]);
   transforms.mockRestore();
 });
+
+it("shares the visible space between both long live sources with normal-sized source labels", async () => {
+  viewportHeight = 130;
+  measuredHeight = 240;
+  const tracks = (["system", "microphone"] as const).map(audioSource => ({
+    ...live, id: audioSource, audioSource, source: confirmed.source, translation: confirmed.translation,
+  }));
+  const timeline = await render(tracks, 18);
+  const rows = [...timeline.querySelectorAll<HTMLElement>("[data-utterance-id]")];
+  const heights = rows.map(row => [...row.querySelectorAll<HTMLElement>("[aria-label]")]
+    .reduce((sum, lane) => sum + Number.parseFloat(lane.style.height), 0));
+  expect(heights.reduce((sum, height) => sum + height + 7, 0)).toBeLessThanOrEqual(viewportHeight);
+  for (const row of rows) expect(row.querySelector<HTMLElement>(".subtitle-audio-source")?.style.fontSize).toBe("18px");
+});

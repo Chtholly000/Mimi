@@ -1,5 +1,6 @@
 import { audio3ErrorMessage } from "./audio3Errors";
 import { audioSourceErrorMessage } from "./windowsAudioSource";
+import { audioInputErrorMessage } from "./audioInput";
 import { credentialErrorMessage } from "./connectionDiagnostics";
 import { shareUnchangedSubtitleHistory } from "./sessionSnapshot";
 import { DEFAULT_NETWORK_PROXY, validateNetworkProxy } from "./networkProxy";
@@ -31,6 +32,7 @@ import {
   sessionStart,
   sessionStop,
   sessionSwitchSourceLanguage,
+  sessionSwitchAudioInput,
   sessionSwitchTranslationMode,
   sessionTogglePaused,
   settingsGet,
@@ -58,6 +60,7 @@ import {
   SnapshotResponseGate,
 } from "./settingsState";
 import type {
+  AudioInput,
   ProviderCredentialsInput,
   SessionStateEvent,
   SettingsDraft,
@@ -114,6 +117,7 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   uiLanguage: null,
   retainSessionHistory: false,
   recordSessionAudio: false,
+  audioInput: "system",
   windowsAudioSource: "",
   showInDock: true,
   networkProxy: DEFAULT_NETWORK_PROXY,
@@ -132,6 +136,7 @@ interface StoreState {
   togglePaused: () => Promise<void>;
   clearSubtitles: () => Promise<void>;
   switchSourceLanguage: (language: SourceLanguage) => Promise<void>;
+  switchAudioInput: (input: AudioInput) => Promise<void>;
   switchTranslationMode: (mode: TranslationMode) => Promise<void>;
   saveSettings: (draft: SettingsDraft) => Promise<void>;
   createProfile: (
@@ -171,13 +176,14 @@ export function selectSessionStatusKind(state: SessionStoreSlice) {
 
 export function selectSessionErrorMessage(state: SessionStoreSlice) {
   return state.session.status.kind === "error"
-    ? credentialErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? audio3ErrorMessage(state.session.status.message) ?? state.session.status.message
+    ? credentialErrorMessage(state.session.status.message) ?? audioInputErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? audio3ErrorMessage(state.session.status.message) ?? state.session.status.message
     : null;
 }
 
 export function selectHasRecognizingSourceDraft(state: SessionStoreSlice) {
   const source = state.session.subtitles.source;
-  return source.text !== "" && !source.isFinal;
+  return (source.text !== "" && !source.isFinal) ||
+    (state.session.subtitles.tracks?.some(track => track.source.text !== "" && !track.source.isFinal) ?? false);
 }
 
 const settingsSaveCoordinator = new SettingsSaveCoordinator();
@@ -394,8 +400,25 @@ export const useStore = create<StoreState>()((set, get) => ({
     }));
   },
 
+  switchAudioInput: async (input) => {
+    const current = get();
+    if (input === (current.settings.audioInput ?? "system")) return;
+    if (sessionSettingsAreChanging(current.session)) throw new Error("audio_input_switch_busy");
+    if (isTauri) {
+      await sessionSwitchAudioInput(input);
+      return;
+    }
+    // The browser preview preserves the live/paused state and confirmed text,
+    // just as the native reconfiguration path does. It never opens devices.
+    set(state => ({ settings: mergeSettingsSnapshot(state.settings, { audioInput: input }) }));
+  },
+
   saveSettings: async (draft) => {
     const previous = get().settings;
+    if (draft.audioInput !== undefined && draft.audioInput !== (previous.audioInput ?? "system") &&
+      (get().session.isActive || get().session.isPaused || sessionSettingsAreChanging(get().session))) {
+      throw new Error("audio_input_change_requires_stop");
+    }
     if (!isTauri) {
       if (draft.networkProxy !== undefined && (get().session.isActive || get().session.isPaused || sessionSettingsAreChanging(get().session))) {
         throw new Error("network_proxy_change_requires_stop");

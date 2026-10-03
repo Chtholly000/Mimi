@@ -17,6 +17,7 @@ import {
   computeActivityPhaseFromSignals,
   isWaitingForFinalTranslation,
   languageStatus,
+  pendingSourceTranslation,
 } from "../overlay/overlayModel";
 import { LanguageStatusCapsule } from "./LanguageStatusCapsule";
 import { OverlayControlPanel } from "./OverlayControlPanel";
@@ -33,6 +34,7 @@ export function OverlayControlWindow() {
   const isTranslationPending = useStore(
     (state) => state.session.isTranslationPending,
   );
+  const sourceTranslationPending = useStore(state => pendingSourceTranslation(state.session.subtitles, state.settings));
   const isTranslationPreviewPending = useStore((state) => state.session.isTranslationPreviewPending);
   const hasRecognizingSourceDraft = useStore(
     selectHasRecognizingSourceDraft,
@@ -107,14 +109,15 @@ export function OverlayControlWindow() {
       isPaused: sessionIsPaused,
       detectedLanguage,
       isTranslationPending,
+      sourceTranslationPending,
       isTranslationPreviewPending,
       hasRecognizingSourceDraft,
     },
     settings,
   );
-  const status = languageStatus(settings, detectedLanguage);
+  const status = languageStatus(settings, settings.audioInput === "both" ? null : detectedLanguage);
   if (status === null) return null;
-  const isWaiting = isWaitingForFinalTranslation(
+  const isWaiting = sourceTranslationPending ?? isWaitingForFinalTranslation(
     settings,
     detectedLanguage,
     isTranslationPending,
@@ -134,6 +137,7 @@ export function OverlayControlWindow() {
           isPaused={sessionIsPaused}
           isWaitingForFinalTranslation={isWaiting}
           isChangingSession={isChangingSession}
+          isStopping={sessionStatusKind === "stopping"}
           onDismiss={dismiss}
           onSwitchSourceLanguage={switchSourceLanguage}
           onSetSubtitleDisplayMode={(subtitleDisplayMode) => saveSettings({ subtitleDisplayMode })}
@@ -155,6 +159,7 @@ export function OverlayControlWindow() {
           isPaused={sessionIsPaused}
           isWaitingForFinalTranslation={isWaiting}
           expanded={false}
+          isStopping={sessionStatusKind === "stopping"}
           onToggle={toggle}
           onWidthChange={isTauri ? reportIslandWidth : undefined}
         />

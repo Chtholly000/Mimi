@@ -27,6 +27,7 @@ fn fresh_layout_epoch() -> u64 {
 const MAX_PREVIEW_TEXT_BYTES: usize = crate::core::models::MAX_SUBTITLE_TEXT_BYTES;
 
 pub struct SubtitleReducer {
+    pub audio_source: crate::core::audio_input::AudioSource,
     pub snapshot: SubtitleSnapshot,
     pub archive: super::session_archive::TranscriptArchive,
     max_history_count: usize,
@@ -41,6 +42,7 @@ pub struct SubtitleReducer {
 impl SubtitleReducer {
     pub fn new(max_history_count: usize) -> Self {
         Self {
+            audio_source: crate::core::audio_input::AudioSource::System,
             snapshot: SubtitleSnapshot::empty(),
             archive: Default::default(),
             max_history_count,
@@ -311,7 +313,8 @@ impl SubtitleReducer {
             .map_or_else(now_epoch_ms, |last| {
                 now_epoch_ms().max(last.created_at_ms.saturating_add(1))
             });
-        let pair = SubtitlePair::new(source, translation, created_at_ms);
+        let mut pair = SubtitlePair::new(source, translation, created_at_ms);
+        pair.audio_source = self.audio_source;
         if !is_new_utterance && self.snapshot.history.last() == Some(&pair) {
             return;
         }

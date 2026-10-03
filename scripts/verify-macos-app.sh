@@ -38,6 +38,7 @@ read_plist() {
 IDENTIFIER="$(read_plist CFBundleIdentifier)"
 SCREEN_USAGE="$(read_plist NSScreenCaptureUsageDescription)"
 AUDIO_USAGE="$(read_plist NSAudioCaptureUsageDescription)"
+MICROPHONE_USAGE="$(read_plist NSMicrophoneUsageDescription || true)"
 
 [[ "$IDENTIFIER" == "app.yuxino.mimi" ]] || {
   echo "Unexpected bundle identifier: $IDENTIFIER" >&2
@@ -51,8 +52,23 @@ AUDIO_USAGE="$(read_plist NSAudioCaptureUsageDescription)"
   echo "NSAudioCaptureUsageDescription must not be empty." >&2
   exit 1
 }
+[[ -n "$MICROPHONE_USAGE" ]] || {
+  echo "NSMicrophoneUsageDescription must not be empty." >&2
+  exit 1
+}
 
 codesign --verify --deep --strict "$APP"
+
+ENTITLEMENTS="$(codesign --display --entitlements - --xml "$APP" 2>/dev/null)"
+if ! python3 -c 'import plistlib, sys
+try:
+    valid = plistlib.loads(sys.stdin.buffer.read()).get("com.apple.security.device.audio-input") is True
+except (ValueError, TypeError, AttributeError, plistlib.InvalidFileException):
+    valid = False
+sys.exit(0 if valid else 1)' <<<"$ENTITLEMENTS"; then
+  echo "The signed app must enable the audio-input entitlement for microphone capture." >&2
+  exit 1
+fi
 
 SIGNATURE_DETAILS="$(codesign --display --verbose=4 "$APP" 2>&1)"
 REQUIREMENT="$(

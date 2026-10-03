@@ -7,7 +7,7 @@ first, with search and 30-entry pages. The neutral layout follows Mimi's
 settings design rather than the reference app's data table. Timestamps are
 final-confirmation times, not speech onset or WAV playback positions.
 
-The existing Keep subtitles and Record system audio preferences remain off by
+The Keep subtitles and Record session audio preferences remain off by
 default. Enabling either before a new session saves that content to local app
 data when the session stops, including a normal app quit. The two data types
 can be enabled independently; no third history switch is added. This changes
@@ -16,12 +16,12 @@ and PCM chunks go directly to private local journals, bounded to 10,000 pairs
 or 2 MiB and 64 MiB of PCM. The session manager keeps only counts, byte sizes,
 limits, and sample rate in memory. The existing bounded overlay display still
 holds its visible recent lines; it is not the export or history source.
-Explicit TXT and WAV exports read the local files. No microphone source or
-provider diagnostics change.
+Explicit TXT and WAV exports read the local files. Input selection and source
+identity follow the [independent audio input design](2026-10-03-optional-microphone-input.md).
 
 History uses one private JSON file per completed session and an optional WAV
-sibling in the app data directory. Live sessions use append-only JSONL and
-PCM files, which are readable after an interrupted process exit. UUID
+per recorded source in the app data directory. Live sessions use append-only
+JSONL and separate PCM files, which are readable after an interrupted process exit. UUID
 filenames prevent path traversal. Final writes use private temporary files,
 sync, and no-clobber commit; the JSON commit replaces the journal as the
 authoritative session. Only the settings window has IPC
