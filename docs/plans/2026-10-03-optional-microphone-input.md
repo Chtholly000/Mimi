@@ -5,8 +5,9 @@
 Settings → Speech & Translation offers separate System audio and Microphone
 switches. Either or both can be enabled; at least one stays selected. Existing
 and fresh preferences default to system audio only. Choosing an input never
-opens a device: capture and any necessary microphone permission start only
-when the user starts subtitles. Source selection is global and independent
+opens a device from settings: capture and any necessary microphone permission
+start when subtitles start or the user explicitly enables an input in the
+running overlay control panel. Source selection is global and independent
 of service profiles. Both lanes use the selected profile and language settings.
 Two enabled sources open two service connections and incur the corresponding
 provider usage. Android capture is unchanged.
@@ -19,11 +20,32 @@ audio and Microphone, because system output may contain media or multiple
 people rather than one remote speaker. Non-essential usage, permission and
 headphone advice belongs in compact hover/focus help, not persistent small print.
 
+The compact language capsule and collapsed subtitle window show the selected
+system/microphone icons, including both when enabled. Their accessible labels
+name the selected sources; the separate lifecycle label indicates connecting,
+stopping, paused or error state. Icons alone never claim that audio is arriving.
+The expanded control panel always shows System audio and Microphone as separate
+switches, with system audio on and microphone off by default. At least one
+remains selected. Each row's hover/focus help contains its own observed signal
+state, device details and switching guidance. A source receiving sound cannot
+mask another source without PCM or with silence. Source names and actionable
+errors use the panel's normal text size. A source or lifecycle transition
+immediately invalidates old observations. Escape closes an open help tooltip
+before dismissing the panel.
+Automatic recognition is summarized neutrally when multiple sources may have
+different languages. Empty subtitle feedback follows the lane awaiting a
+translation rather than the first lane's detected language.
+
 ## Lifecycle and permissions
 
 Snapshot the enabled inputs at manual start. Pause, resume, language/mode
-changes and recovery retain that selection. Source changes require stopping,
-including connecting, paused, recovery and stopping states. Each source uses
+changes and recovery retain that selection. Settings-page source changes require
+stopping. The control panel can reconfigure a listening session, preserving
+confirmed subtitles and their source labels while reconnecting the selected
+inputs. Reconfiguration first retires the old generation before resetting any
+subtitle reducer. A paused session only updates its selection and remains
+paused; removed capture resources must be fully released in either case.
+Connecting, recovery and stopping states reject further switches. Each source uses
 the existing selected-input capture implementation, with independent native
 handles and queues. Start commits Listening only after all selected sources
 are ready. Failure or cancellation of either source cleans up the whole

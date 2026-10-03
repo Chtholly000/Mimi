@@ -4,9 +4,9 @@
 pub mod send_pipeline;
 
 /// Local presentation only. Device names never enter support diagnostics.
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CaptureStatus {
+pub struct CaptureDetails {
     pub kind: &'static str,
     pub strategy: &'static str,
     pub actual_device_name: Option<String>,
@@ -16,7 +16,66 @@ pub struct CaptureStatus {
     pub observation: Option<CaptureSignal>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceCaptureStatus {
+    pub audio_source: crate::core::audio_input::AudioSource,
+    #[serde(flatten)]
+    pub details: CaptureDetails,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureStatus {
+    /// Retain the aggregate wire fields for older presentation consumers.
+    #[serde(flatten)]
+    pub details: CaptureDetails,
+    pub sources: Vec<SourceCaptureStatus>,
+}
+
+impl CaptureStatus {
+    pub fn for_input(
+        input: crate::core::audio_input::AudioInput,
+        mut details_for_source: impl FnMut(crate::core::audio_input::AudioSource) -> CaptureDetails,
+    ) -> Self {
+        use crate::core::audio_input::{AudioInput, AudioSource};
+        let sources: Vec<_> = input
+            .sources()
+            .iter()
+            .map(|&audio_source| SourceCaptureStatus {
+                audio_source,
+                details: details_for_source(audio_source),
+            })
+            .collect();
+        let details = if input == AudioInput::Both {
+            CaptureDetails {
+                kind: "both",
+                strategy: "independent_inputs",
+                actual_device_name: sources
+                    .iter()
+                    .find(|source| source.audio_source == AudioSource::Microphone)
+                    .and_then(|source| source.details.actual_device_name.clone()),
+                system_output_device_name: sources
+                    .iter()
+                    .find(|source| source.audio_source == AudioSource::System)
+                    .and_then(|source| source.details.system_output_device_name.clone()),
+                observation: sources
+                    .iter()
+                    .filter_map(|source| source.details.observation)
+                    .reduce(|left, right| CaptureSignal {
+                        pcm_data_recent: left.pcm_data_recent || right.pcm_data_recent,
+                        sound_recent: left.sound_recent || right.sound_recent,
+                    }),
+            }
+        } else {
+            // AudioInput always contains at least one explicitly selected source.
+            sources[0].details.clone()
+        };
+        Self { details, sources }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureSignal {
     pub pcm_data_recent: bool,
@@ -379,6 +438,15 @@ impl AudioCapture {
         }
     }
 
+    /// An explicit source switch-off must await native release, including
+    /// ScreenCaptureKit's asynchronous completion after stop acknowledgement.
+    pub async fn stop_and_wait(&self) -> Result<(), SystemAudioCaptureError> {
+        self.stop().await;
+        #[cfg(target_os = "macos")]
+        self.system.wait_until_idle().await?;
+        Ok(())
+    }
+
     pub fn microphone_device_name(&self) -> Option<String> {
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
@@ -404,6 +472,84 @@ impl AudioCapture {
 #[cfg(test)]
 mod format_tests {
     use super::*;
+
+    fn capture_fixture(
+        source: crate::core::audio_input::AudioSource,
+        observation: Option<CaptureSignal>,
+    ) -> CaptureDetails {
+        use crate::core::audio_input::AudioSource;
+        CaptureDetails {
+            kind: if source == AudioSource::System {
+                "macos_system_mix"
+            } else {
+                "microphone"
+            },
+            strategy: if source == AudioSource::System {
+                "platform_capture"
+            } else {
+                "default_input"
+            },
+            actual_device_name: (source == AudioSource::Microphone)
+                .then(|| "Synthetic microphone".into()),
+            system_output_device_name: (source == AudioSource::System)
+                .then(|| "Synthetic speaker".into()),
+            observation,
+        }
+    }
+
+    #[test]
+    fn capture_status_keeps_each_selected_source_and_legacy_aggregate_fields() {
+        use crate::core::audio_input::{AudioInput, AudioSource};
+        let status = CaptureStatus::for_input(AudioInput::Both, |source| {
+            capture_fixture(
+                source,
+                Some(CaptureSignal {
+                    pcm_data_recent: source == AudioSource::System,
+                    sound_recent: source == AudioSource::System,
+                }),
+            )
+        });
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["kind"], "both");
+        assert_eq!(value["strategy"], "independent_inputs");
+        assert_eq!(value["observation"]["soundRecent"], true);
+        assert_eq!(value["sources"][0]["audioSource"], "system");
+        assert_eq!(
+            value["sources"][0]["systemOutputDeviceName"],
+            "Synthetic speaker"
+        );
+        assert_eq!(value["sources"][0]["observation"]["soundRecent"], true);
+        assert_eq!(value["sources"][1]["audioSource"], "microphone");
+        assert_eq!(
+            value["sources"][1]["actualDeviceName"],
+            "Synthetic microphone"
+        );
+        assert_eq!(value["sources"][1]["observation"]["pcmDataRecent"], false);
+        assert_eq!(value["sources"][1]["observation"]["soundRecent"], false);
+        assert!(value["sources"][1]["systemOutputDeviceName"].is_null());
+        assert!(value.get("details").is_none());
+        assert!(value["sources"][0].get("details").is_none());
+    }
+
+    #[test]
+    fn capture_status_does_not_read_or_include_an_unselected_source() {
+        use crate::core::audio_input::{AudioInput, AudioSource};
+        for (input, selected) in [
+            (AudioInput::System, AudioSource::System),
+            (AudioInput::Microphone, AudioSource::Microphone),
+        ] {
+            let mut requested = Vec::new();
+            let status = CaptureStatus::for_input(input, |source| {
+                requested.push(source);
+                capture_fixture(source, None)
+            });
+            assert_eq!(requested, vec![selected]);
+            assert_eq!(status.sources.len(), 1);
+            assert_eq!(status.sources[0].audio_source, selected);
+            assert_eq!(status.details, status.sources[0].details);
+            assert_eq!(status.details.observation, None);
+        }
+    }
 
     #[test]
     fn provider_sample_rates_are_supported() {

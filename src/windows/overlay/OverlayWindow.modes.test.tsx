@@ -416,3 +416,19 @@ it("uses each source's detected language when the other source does not need tra
   await mount(dual, "translation", { audioInput: "both" });
   expect(visibleLanes()).toEqual(["Synthetic system phrase.", "麦克风合成译文。"]);
 });
+
+it.each(["system", "microphone"] as const)("keeps both history labels but only the %s live tail after disabling the other input", async enabled => {
+  const dual = dualSnapshot();
+  const history = [
+    { audioSource: "system" as const, source: "System confirmed.", translation: "系统已确认。", createdAt: 40 },
+    { audioSource: "microphone" as const, source: "Microphone confirmed.", translation: "麦克风已确认。", createdAt: 41 },
+  ];
+  const remaining = dual.tracks!.find(track => track.audioSource === enabled)!;
+  await mount({ ...remaining, history, tracks: [remaining] }, "bilingual", { audioInput: enabled });
+  const rows = [...host.querySelectorAll('[data-utterance-id]')];
+  expect(rows).toHaveLength(3);
+  expect(rows[0].textContent).toContain(I18N.settings.audioInputSystem);
+  expect(rows[1].textContent).toContain(I18N.settings.audioInputMicrophone);
+  expect(rows[2].getAttribute("data-utterance-id")).toMatch(new RegExp(`^${enabled}:`));
+  expect(visibleLanes()).not.toContain(enabled === "system" ? "麦克风合成译文。" : "系统声音合成译文。");
+});

@@ -8,6 +8,21 @@ import {
 } from "./store";
 
 describe("local preview store", () => {
+  it.each([false, true])("switches the preview inputs without losing confirmed text or changing pause=%s", async isPaused => {
+    const original = useStore.getState();
+    const session = { ...original.session, status: { kind: "listening" as const }, isActive: true, isPaused,
+      subtitles: { ...original.session.subtitles, history: [{ audioSource: "system" as const, source: "Synthetic source.", translation: "Synthetic translation.", createdAt: 1 }] },
+    };
+    try {
+      useStore.setState({ session, settings: { ...original.settings, audioInput: "system", recordSessionAudio: true } });
+      await useStore.getState().switchAudioInput("both");
+      expect(useStore.getState().settings).toMatchObject({ audioInput: "both", recordSessionAudio: false });
+      expect(useStore.getState().session).toBe(session);
+      useStore.setState({ session: { ...session, status: { kind: "connecting" } } });
+      await expect(useStore.getState().switchAudioInput("system")).rejects.toThrow("audio_input_switch_busy");
+      expect(useStore.getState().settings.audioInput).toBe("both");
+    } finally { useStore.setState(original, true); }
+  });
   it("defaults to system audio, preserves explicit microphone selection, and requires stopping before a change", async () => {
     const original = useStore.getState();
     expect(original.settings.audioInput).toBe("system");

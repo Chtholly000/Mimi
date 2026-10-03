@@ -137,6 +137,7 @@ export function OverlayControlWindow() {
           isPaused={sessionIsPaused}
           isWaitingForFinalTranslation={isWaiting}
           isChangingSession={isChangingSession}
+          isStopping={sessionStatusKind === "stopping"}
           onDismiss={dismiss}
           onSwitchSourceLanguage={switchSourceLanguage}
           onSetSubtitleDisplayMode={(subtitleDisplayMode) => saveSettings({ subtitleDisplayMode })}
@@ -158,6 +159,7 @@ export function OverlayControlWindow() {
           isPaused={sessionIsPaused}
           isWaitingForFinalTranslation={isWaiting}
           expanded={false}
+          isStopping={sessionStatusKind === "stopping"}
           onToggle={toggle}
           onWidthChange={isTauri ? reportIslandWidth : undefined}
         />

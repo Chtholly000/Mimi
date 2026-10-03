@@ -8,6 +8,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AudioInput,
   AudioSource,
   ProviderCredentialsInput,
   SessionStateEvent,
@@ -56,6 +57,10 @@ export function sessionSwitchSourceLanguage(
   language: SourceLanguage,
 ): Promise<void> {
   return invoke("session_switch_source_language", { language });
+}
+
+export function sessionSwitchAudioInput(input: AudioInput): Promise<void> {
+  return invoke("session_switch_audio_input", { input });
 }
 
 export function sessionSwitchTranslationMode(

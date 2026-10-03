@@ -33,13 +33,13 @@ https://github.com/user-attachments/assets/5acd46bb-e6b5-4bb5-b280-d70d4e0cdbb4
 
 ## Features
 
-- **Live subtitles and translation** — enable system audio (on by default), your default microphone, or both in Settings → Speech & Translation. When both are enabled, separate recognition sessions keep each source’s subtitles distinct. Both use the selected service and languages; provider usage applies to each connection.
+- **Live subtitles and translation** — enable system audio (on by default), your default microphone (off by default), or both. Change inputs in Settings → Speech & Translation or directly from the subtitle control panel. Switching there preserves confirmed subtitles and keeps paused sessions paused. When both are enabled, separate recognition sessions keep each source’s subtitles distinct. Both use the selected service and languages; provider usage applies to each connection.
 - **Service configurations** — save and switch between services without repeatedly entering credentials.
 - **Subtitle overlay** — move, resize, collapse, pause, enable click-through, or use Immersive Mode.
 - **Updates** — check and install updates in Settings on macOS, Windows installers, and Linux AppImage. Windows ZIP and Linux .deb builds link to Releases for manual updates.
 - **Save & export** — under Settings → Save & export, choose whether to save confirmed subtitles or record the selected audio inputs as separate WAV tracks. Browse saved sessions, then export TXT / WAV or delete a session. Both switches are off by default. Changing the selected inputs turns recording off; enable it again to record the new selection.
 - **Settings appearance** — light, dark, or follow the system.
-- **Privacy** — no mimi account or screen video capture. Microphone capture is optional and starts only after you select it and start subtitles; audio goes only to the active provider. History retention and audio recording are off by default. When enabled, confirmed subtitles or audio are saved incrementally to private, bounded local session files. Turning an option off clears its current-session content; saved sessions can be explicitly exported or deleted.
+- **Privacy** — no mimi account or screen video capture. Microphone capture is off by default and requires explicitly enabling it, either before starting subtitles or from the running subtitle control panel; audio goes only to the active provider. History retention and audio recording are off by default. When enabled, confirmed subtitles or audio are saved incrementally to private, bounded local session files. Turning an option off clears its current-session content; saved sessions can be explicitly exported or deleted.
 
 Transcript retention is limited to 10,000 confirmed pairs / 2 MiB of text and audio to 64 MiB; reaching a limit stops retention and shows a notice. Transcript timestamps mark final confirmation time, not media playback time. Pauses and reconnect gaps are omitted from WAV audio, so it is not synchronized to transcript timestamps.
 
@@ -47,7 +47,7 @@ Transcript retention is limited to 10,000 confirmed pairs / 2 MiB of text and au
 
 1. Download the macOS Apple silicon or Intel DMG, a Windows x64 EXE, MSI, or portable ZIP, or a Linux x86_64 .deb / AppImage from the [latest release](https://github.com/yuxino/mimi/releases/latest), or build from source.
 2. Open **Translation Service**, choose a provider, and save its credentials.
-3. Play something and select **Start** from the mimi menu bar/system tray icon. For your own speech, first enable **Microphone** in Settings → Speech & Translation. macOS asks for **Screen & System Audio Recording** for system audio and **Microphone** access when microphone input is enabled. Use headphones when capturing both to keep speaker playback out of the microphone.
+3. Play something and select **Start** from the mimi menu bar/system tray icon. For your own speech, enable **Microphone** in the subtitle control panel or Settings → Speech & Translation. macOS asks for **Screen & System Audio Recording** for system audio and **Microphone** access when microphone input is enabled. Use headphones when capturing both to keep speaker playback out of the microphone.
 
 Bring your own provider API credentials; usage charges may apply. Credentials are stored in the OS credential store.
 

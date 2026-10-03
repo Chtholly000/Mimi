@@ -32,6 +32,7 @@ import {
   sessionStart,
   sessionStop,
   sessionSwitchSourceLanguage,
+  sessionSwitchAudioInput,
   sessionSwitchTranslationMode,
   sessionTogglePaused,
   settingsGet,
@@ -58,6 +59,7 @@ import {
   SnapshotResponseGate,
 } from "./settingsState";
 import type {
+  AudioInput,
   ProviderCredentialsInput,
   SessionStateEvent,
   SettingsDraft,
@@ -133,6 +135,7 @@ interface StoreState {
   togglePaused: () => Promise<void>;
   clearSubtitles: () => Promise<void>;
   switchSourceLanguage: (language: SourceLanguage) => Promise<void>;
+  switchAudioInput: (input: AudioInput) => Promise<void>;
   switchTranslationMode: (mode: TranslationMode) => Promise<void>;
   saveSettings: (draft: SettingsDraft) => Promise<void>;
   createProfile: (
@@ -394,6 +397,19 @@ export const useStore = create<StoreState>()((set, get) => ({
     set((state) => ({
       settings: { ...state.settings, translationMode: mode },
     }));
+  },
+
+  switchAudioInput: async (input) => {
+    const current = get();
+    if (input === (current.settings.audioInput ?? "system")) return;
+    if (sessionSettingsAreChanging(current.session)) throw new Error("audio_input_switch_busy");
+    if (isTauri) {
+      await sessionSwitchAudioInput(input);
+      return;
+    }
+    // The browser preview preserves the live/paused state and confirmed text,
+    // just as the native reconfiguration path does. It never opens devices.
+    set(state => ({ settings: mergeSettingsSnapshot(state.settings, { audioInput: input }) }));
   },
 
   saveSettings: async (draft) => {

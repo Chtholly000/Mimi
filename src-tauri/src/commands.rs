@@ -359,6 +359,18 @@ mod tests {
     }
 
     #[test]
+    fn live_audio_input_switch_is_scoped_to_the_control_panel() {
+        let permissions = include_str!("../permissions/app.toml");
+        let permitted: Vec<_> = permissions
+            .split("[[permission]]")
+            .filter(|entry| entry.contains("\"session_switch_audio_input\""))
+            .collect();
+        assert_eq!(permitted.len(), 1);
+        assert!(permitted[0].contains("identifier = \"app-overlay-control\""));
+        assert!(include_str!("lib.rs").contains("commands::session_switch_audio_input,"));
+    }
+
+    #[test]
     fn island_width_measurement_is_control_window_scoped() {
         let permissions = include_str!("../permissions/app.toml");
         let permitted: Vec<_> = permissions
@@ -1333,6 +1345,14 @@ pub async fn session_clear_subtitles(state: State<'_, AppState>) -> Result<(), S
         .await
         .map_err(|_| "Could not clear subtitles.")?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn session_switch_audio_input(
+    state: State<'_, AppState>,
+    input: AudioInput,
+) -> Result<(), String> {
+    state.session.switch_audio_input(input).await
 }
 
 #[tauri::command]

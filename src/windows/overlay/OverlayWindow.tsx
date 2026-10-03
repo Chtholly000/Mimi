@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { I18N } from "../../lib/i18n";
+import { AudioInputIndicator } from "../../components/AudioInputIndicator";
+import { audioInputLabel } from "../../lib/audioInput";
 import { isTauri, listenOverlayPointerMotion } from "../../lib/ipc";
 import { useStore } from "../../lib/store";
 import { OVERLAY_ACTIVITY_PHASES, hexToRgba } from "../../lib/types";
@@ -31,6 +33,7 @@ const EMPTY_MICROPHONE: SourceSubtitleSnapshot = {
   audioSource: "microphone", source: { text: "", isFinal: false }, translation: { text: "", isFinal: false },
   history: [], detectedLanguage: null, isTranslationPending: false, isTranslationTimedOut: false,
 };
+const EMPTY_SYSTEM: SourceSubtitleSnapshot = { ...EMPTY_MICROPHONE, audioSource: "system" };
 type ControlAction = "collapse" | "clear" | "immersive" | "lock" | "settings";
 
 /** Floating subtitle overlay driven by native session and geometry state. */
@@ -123,13 +126,17 @@ export function OverlayWindow() {
   const phase = computeActivityPhase(session, settings);
   const activeProvider = settings.profiles.find(profile => profile.id === settings.activeProfileId)?.provider;
   const atomicProvider = activeProvider === "alibabaCloud" || activeProvider === "deepLX";
-  const dual = (session.subtitles.tracks?.length ?? 0) > 1;
-  const systemTrack = dual ? session.subtitles.tracks!.find(track => track.audioSource === "system") : undefined;
-  const microphoneTrack = dual ? session.subtitles.tracks!.find(track => track.audioSource === "microphone") : undefined;
-  const primarySubtitles = systemTrack ?? session.subtitles;
+  // Disabling an input keeps its confirmed captions and source identity.
+  const dual = new Set([
+    ...(session.subtitles.tracks ?? []).map(track => track.audioSource),
+    ...session.subtitles.history.map(pair => pair.audioSource ?? "system"),
+  ]).size > 1;
+  const systemTrack = dual ? session.subtitles.tracks?.find(track => track.audioSource === "system") : undefined;
+  const microphoneTrack = dual ? session.subtitles.tracks?.find(track => track.audioSource === "microphone") : undefined;
+  const primarySubtitles = dual ? systemTrack ?? EMPTY_SYSTEM : session.subtitles;
   const microphoneSubtitles = microphoneTrack ?? EMPTY_MICROPHONE;
   const running = OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0;
-  const primaryTail = useSubtitleTail(primarySubtitles, settings, systemTrack ?? session, running, atomicProvider, "primary");
+  const primaryTail = useSubtitleTail(primarySubtitles, settings, dual ? systemTrack ?? EMPTY_SYSTEM : session, running, atomicProvider, "primary");
   const microphoneTail = useSubtitleTail(microphoneSubtitles, settings, microphoneSubtitles, running, atomicProvider, "microphone");
   const blocks = useMemo(() => dual
     ? buildMultiSourceSubtitleBlocks(session.subtitles.history, settings.subtitleDisplayMode, [
@@ -141,7 +148,7 @@ export function OverlayWindow() {
   [dual, session.subtitles.history, settings.subtitleDisplayMode, primarySubtitles.history, primaryTail, microphoneSubtitles.history, microphoneTail]);
   const hasContent = hasSubtitleContent(session.subtitles);
 
-  const phaseLabel = OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;
+  const phaseLabel = session.status.kind === "stopping" ? I18N.overlay.stopping : OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;
   const pauseLabel = session.isPaused
     ? I18N.overlay.resume
     : I18N.overlay.pause;
@@ -479,7 +486,7 @@ export function OverlayWindow() {
       <div
         className="relative h-full w-full"
         role="group"
-        aria-label={`${I18N.overlay.collapsedAccessibilityPrefix}${phaseLabel}`}
+        aria-label={`${I18N.overlay.collapsedAccessibilityPrefix}${phaseLabel} · ${audioInputLabel(settings.audioInput)}`}
         style={{
           borderRadius: 14,
           background: "var(--overlay-card-background, rgba(0,0,0,0.68))",
@@ -510,10 +517,12 @@ export function OverlayWindow() {
         >
           <DragHandle onToggleCollapsed={toggleCollapsed} compact />
           <PulseRing phase={phase} compact motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
+          <AudioInputIndicator input={settings.audioInput} />
           <span
             className="truncate"
             role={sessionAction.failed || controlAction.failed ? "alert" : undefined}
-            style={{ fontSize: 11, fontWeight: 500, color: "rgba(255,255,255,0.76)" }}
+            title={sessionAction.failed || controlAction.failed ? I18N.overlay.controlActionFailed : phaseLabel}
+            style={{ minWidth: 0, fontSize: 12, fontWeight: 500, color: "rgba(255,255,255,0.76)" }}
           >
             {sessionAction.failed || controlAction.failed ? I18N.overlay.controlActionFailed : phaseLabel}
           </span>

@@ -1,42 +1,101 @@
 import { effectiveUiLanguage } from "./i18n";
-import type { AudioInput } from "./types";
+import type { AudioInput, AudioSource, SessionStateEvent } from "./types";
 
-export interface CaptureStatus {
+interface CaptureStatusFields {
   kind: "windows_output" | "macos_system_mix" | "linux_output_monitor" | "microphone" | "both" | "unknown";
   strategy: "follow_system" | "manual_output" | "platform_capture" | "default_input" | "independent_inputs";
   actualDeviceName: string | null;
-  /** Default system output, independent of the macOS mixed-audio capture route. */
+  /** Output context is independent of a macOS mixed-audio capture route. */
   systemOutputDeviceName?: string | null;
   observation: { pcmDataRecent: boolean; soundRecent: boolean } | null;
 }
+export interface CaptureSourceStatus extends CaptureStatusFields { audioSource: AudioSource }
+export interface CaptureStatus extends CaptureStatusFields { sources?: CaptureSourceStatus[] }
+export type CaptureLifecycle = Pick<SessionStateEvent, "status" | "isActive" | "isPaused">;
 
 const copy = {
-  en: { title: "Sound source", system: "Follow system", manual: "Selected output", mac: "System sound mix", linux: "Output monitor selected at start", unknown: "Source unknown", deviceUnknown: "Actual device unknown", idle: "Not capturing", paused: "Capture paused", unobserved: "Audio not observed yet", sound: "Receiving sound", silent: "Audio data, no clear sound", noData: "No audio data — play sound and check your app’s output" },
-  zh: { title: "声音来源", system: "跟随系统", manual: "手动选择输出", mac: "系统声音混音", linux: "启动时选定的输出监听", unknown: "来源未知", deviceUnknown: "实际设备未知", idle: "尚未采音", paused: "采音已暂停", unobserved: "尚未观察到音频", sound: "收到声音", silent: "已采到数据，暂无明显声音", noData: "暂未采到数据，请播放声音并检查应用的输出" },
-  ja: { title: "音声の取得元", system: "システムに合わせる", manual: "選択した出力先", mac: "システム音声ミックス", linux: "開始時に選択した出力のモニター", unknown: "取得元は不明", deviceUnknown: "実際のデバイスは不明", idle: "音声取得前", paused: "音声取得を一時停止中", unobserved: "音声はまだ未確認", sound: "音声を受信中", silent: "データ受信中、明確な音なし", noData: "音声データなし。音を再生し、アプリの出力先を確認してください" },
+  en: {
+    title: "Audio input", system: "System audio", microphone: "Microphone", output: "System output", device: "Capture device",
+    idle: "Not capturing", paused: "Paused", connecting: "Connecting", stopping: "Stopping", error: "Error",
+    unobserved: "Waiting for audio", sound: "Receiving sound", silent: "No sound", noData: "No audio data",
+    systemHelp: "Captures sound played by applications.", microphoneHelp: "Uses the system’s default microphone.",
+    silentHelp: "Audio data is arriving, but no clear sound is detected.",
+    systemNoData: "Play sound and check the application’s audio output.", microphoneNoData: "Check the system’s default microphone and its input level.",
+    errorHelp: "Check the error in the subtitle window, then try again.",
+    autoOutput: "Follows the default system output.", manualOutput: "Captures the selected output.", linuxOutput: "Uses the output monitor selected when subtitles started.",
+    off: "Off", minimum: "Keep at least one input on. Enable the other first to switch sources.",
+    switchFailed: "Could not switch audio inputs. Check the subtitle status, then try again.",
+    switchHelp: "Switching turns recording off. Paused subtitles stay paused.",
+    dualHelp: "Both inputs are recognized separately with their own service usage. Use headphones to avoid duplicate audio.",
+  },
+  zh: {
+    title: "音频输入", system: "系统声音", microphone: "麦克风", output: "系统输出", device: "采集设备",
+    idle: "尚未采音", paused: "已暂停", connecting: "连接中", stopping: "停止中", error: "出错",
+    unobserved: "等待音频", sound: "收到声音", silent: "暂无声音", noData: "未收到音频",
+    systemHelp: "采集应用播放的系统声音。", microphoneHelp: "使用系统默认麦克风。",
+    silentHelp: "已收到音频数据，但暂未检测到明显声音。",
+    systemNoData: "请播放声音，并检查应用的音频输出。", microphoneNoData: "请检查系统默认麦克风及其输入音量。",
+    errorHelp: "请查看字幕窗口中的错误，然后重试。",
+    autoOutput: "跟随系统默认输出。", manualOutput: "采集手动选择的输出。", linuxOutput: "使用开始字幕时选定的输出监听。",
+    off: "已关闭", minimum: "至少保留一路开启。要更换来源，请先开启另一路。",
+    switchFailed: "音频输入未能切换，请查看字幕状态后重试。",
+    switchHelp: "切换后录音关闭，暂停状态保留。",
+    dualHelp: "双路分别识别，用量分别计算。建议戴耳机，避免重复收音。",
+  },
+  ja: {
+    title: "音声入力", system: "システム音声", microphone: "マイク", output: "システム出力", device: "取得デバイス",
+    idle: "取得前", paused: "一時停止中", connecting: "接続中", stopping: "終了中", error: "エラー",
+    unobserved: "音声待ち", sound: "音声を受信中", silent: "音声なし", noData: "データなし",
+    systemHelp: "アプリが再生するシステム音声を取得します。", microphoneHelp: "システムの既定のマイクを使用します。",
+    silentHelp: "音声データを受信していますが、明確な音は検出されていません。",
+    systemNoData: "音を再生し、アプリの音声出力を確認してください。", microphoneNoData: "システムの既定のマイクと入力音量を確認してください。",
+    errorHelp: "字幕ウィンドウのエラーを確認し、再試行してください。",
+    autoOutput: "システムの既定の出力に合わせます。", manualOutput: "選択した出力を取得します。", linuxOutput: "字幕の開始時に選択した出力モニターを使用します。",
+    off: "オフ", minimum: "入力を一つ以上オンにしてください。切り替えるには、先にもう一方をオンにします。",
+    switchFailed: "音声入力を切り替えられませんでした。字幕の状態を確認して再試行してください。",
+    switchHelp: "切替で録音はオフになります。一時停止は維持します。",
+    dualHelp: "両方を個別に認識し、利用量も個別に発生します。音の重複を防ぐため、ヘッドホンを使用してください。",
+  },
 };
 
-const bothCopy = {
-  en: { source: "System audio + microphone", noData: "No audio data — check system playback and the default microphone" },
-  zh: { source: "系统声音与麦克风", noData: "暂未采到数据，请检查系统播放和默认麦克风" },
-  ja: { source: "システム音声とマイク", noData: "音声データなし。システムの再生と既定のマイクを確認してください" },
-};
+/** Legacy single-source snapshots are safe to reuse; an aggregate is never
+ * evidence that each selected input has delivered data or sound. */
+export function captureStatusForSource(value: CaptureStatus | null, input: AudioInput, source: AudioSource): CaptureStatusFields | null {
+  if (value?.sources) return value.sources.find(item => item.audioSource === source) ?? null;
+  if (input === "both" || value?.kind === "both") return null;
+  if (!value || (value.kind === "microphone") !== (source === "microphone")) return null;
+  return value;
+}
 
-const microphoneCopy = {
-  en: { source: "Microphone", noData: "No audio data — check the system’s default microphone" },
-  zh: { source: "麦克风", noData: "暂未采到数据，请检查系统默认麦克风" },
-  ja: { source: "マイク", noData: "音声データなし。システムの既定のマイクを確認してください" },
-};
-
-export function capturePresentation(value: CaptureStatus | null, active: boolean, paused: boolean, language = effectiveUiLanguage(), input: AudioInput = "system") {
+export function capturePresentation(value: CaptureStatusFields | null, lifecycle: CaptureLifecycle,
+  language = effectiveUiLanguage(), input: AudioSource = "system", enabled = true) {
   const text = copy[language];
-  const both = input === "both" || value?.kind === "both";
-  const microphone = input === "microphone" || value?.kind === "microphone";
-  const source = both ? bothCopy[language].source : microphone ? microphoneCopy[language].source : value?.kind === "windows_output" ? value.strategy === "follow_system" ? text.system : text.manual
-    : value?.kind === "macos_system_mix" ? text.mac : value?.kind === "linux_output_monitor" ? text.linux : text.unknown;
-  const device = value?.actualDeviceName || text.deviceUnknown;
-  const observation = !active ? text.idle : paused ? text.paused : !value?.observation ? text.unobserved
+  const microphone = input === "microphone";
+  const source = microphone ? text.microphone : text.system;
+  const kind = lifecycle.status.kind;
+  const observation = !enabled ? text.off : kind === "error" ? text.error : kind === "stopping" ? text.stopping
+    : kind === "connecting" ? text.connecting : lifecycle.isPaused ? text.paused
+    : !lifecycle.isActive || kind === "idle" ? text.idle : !value?.observation ? text.unobserved
     : value.observation.soundRecent && value.observation.pcmDataRecent ? text.sound
-    : value.observation.pcmDataRecent ? text.silent : both ? bothCopy[language].noData : microphone ? microphoneCopy[language].noData : text.noData;
-  return { title: text.title, source, device, observation };
+    : value.observation.pcmDataRecent ? text.silent : text.noData;
+  const device = !enabled ? null : microphone ? value?.actualDeviceName : value?.systemOutputDeviceName ?? value?.actualDeviceName;
+  const route = microphone ? text.microphoneHelp : value?.kind === "windows_output"
+    ? value.strategy === "follow_system" ? text.autoOutput : text.manualOutput
+    : value?.kind === "linux_output_monitor" ? text.linuxOutput : text.systemHelp;
+  const detail = !enabled ? null : kind === "error" ? text.errorHelp : kind === "listening" && lifecycle.isActive && !lifecycle.isPaused
+    ? observation === text.noData ? microphone ? text.microphoneNoData : text.systemNoData
+      : observation === text.silent ? text.silentHelp : null
+    : null;
+  const devicePrefix = microphone || !value?.systemOutputDeviceName ? text.device : text.output;
+  const deviceCharacters = Array.from(device ?? "");
+  const shortDevice = deviceCharacters.length > 40 ? `${deviceCharacters.slice(0, 39).join("")}…` : device;
+  const deviceDescription = device ? `${devicePrefix}: ${device}` : undefined;
+  const help = [route, shortDevice ? `${devicePrefix}: ${shortDevice}` : null, detail]
+    .filter(Boolean).join("\n");
+  return { title: text.title, source, observation, help, deviceDescription };
+}
+
+export function captureSwitchCopy(language = effectiveUiLanguage()) {
+  const { minimum, switchHelp, dualHelp, switchFailed } = copy[language];
+  return { minimum, switchHelp, dualHelp, switchFailed };
 }

@@ -1,5 +1,7 @@
 import { useLayoutEffect, useRef } from "react";
 import { Icon } from "../../components/Icon";
+import { AudioInputIndicator } from "../../components/AudioInputIndicator";
+import { audioInputLabel } from "../../lib/audioInput";
 import { I18N } from "../../lib/i18n";
 import {
   OVERLAY_ACTIVITY_PHASES,
@@ -18,6 +20,7 @@ interface LanguageStatusCapsuleProps {
   isPaused: boolean;
   isWaitingForFinalTranslation: boolean;
   expanded: boolean;
+  isStopping?: boolean;
   onToggle: () => void;
   onWidthChange?: (width: number) => void;
 }
@@ -30,24 +33,22 @@ export function LanguageStatusCapsule({
   isPaused,
   isWaitingForFinalTranslation,
   expanded,
+  isStopping = false,
   onToggle,
   onWidthChange,
 }: LanguageStatusCapsuleProps) {
   const capsuleRef = useRef<HTMLButtonElement>(null);
   const pulseOn = useResolvedMotion(settings.pulseAnimation);
-  const transientLabel =
-    phase === "error" || phase === "idle"
-      ? OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel
-      : isPaused
-        ? I18N.overlay.paused
-        : isWaitingForFinalTranslation
-          ? I18N.overlay.translating
-          : null;
+  const transientPhase = phase === "error" || phase === "idle" ? phase
+    : isStopping ? "stopping" : phase === "connecting" ? "connecting"
+      : isPaused ? "paused" : phase === "translating" || isWaitingForFinalTranslation ? "translating" : null;
   const actionLabel = expanded
     ? I18N.overlay.closeControls
     : I18N.overlay.openControls;
-  const compact = capsuleLabels(settings, phase === "error" || phase === "idle" ? phase : isPaused ? "paused" : isWaitingForFinalTranslation ? "translating" : null);
-  const fullLabel = `${transientLabel ? `${transientLabel} · ` : ""}${status.source} ${status.separator} ${status.target}`;
+  const compact = capsuleLabels(settings, transientPhase);
+  const sources = audioInputLabel(settings.audioInput);
+  const phaseLabel = isStopping ? I18N.overlay.stopping : OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;
+  const fullLabel = `${sources} · ${phaseLabel} · ${status.source} ${status.separator} ${status.target}`;
 
   useLayoutEffect(() => {
     const capsule = capsuleRef.current;
@@ -74,13 +75,14 @@ export function LanguageStatusCapsule({
       className={expanded ? "overlay-control-header" : "overlay-control-island"}
       onClick={onToggle}
       title={`${fullLabel}. ${actionLabel}`}
-      aria-label={`${OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel}${I18N.overlay.accessibilityCurrentLanguagePrefix}${status.source} ${status.separator} ${status.target}. ${actionLabel}`}
+      aria-label={`${sources} · ${phaseLabel}${I18N.overlay.accessibilityCurrentLanguagePrefix}${status.source} ${status.separator} ${status.target}. ${actionLabel}`}
       aria-haspopup={expanded ? undefined : "dialog"}
       aria-expanded={expanded ? undefined : false}
       aria-controls={expanded ? undefined : "overlay-control-panel"}
     >
       <PulseRing phase={phase} compact motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
-      {transientLabel && (
+      <AudioInputIndicator input={settings.audioInput} />
+      {transientPhase && (
         <span className="overlay-control-island__phase">{compact.phase}</span>
       )}
       <span className="overlay-control-island__summary">

@@ -14,6 +14,7 @@ import type {
 import { I18N } from "../../lib/i18n";
 import {
   TARGET_LANGUAGE_DISPLAY_NAMES,
+  SOURCE_LANGUAGE_DISPLAY_NAMES,
   sourceLanguageStatusDisplayName,
 } from "../../lib/types";
 
@@ -144,11 +145,11 @@ export function emptyStateText(
     case "connecting":
       return I18N.overlay.connecting;
     case "listening":
-      return isWaitingForFinalTranslation(
+      return (pendingSourceTranslation(session.subtitles, settings) ?? isWaitingForFinalTranslation(
         settings,
         session.detectedLanguage,
         session.isTranslationPending,
-      )
+      ))
         ? I18N.overlay.translatingEmpty
         : I18N.overlay.listeningEmpty;
     case "stopping":
@@ -496,7 +497,8 @@ export function languageStatus(
   settings: SettingsSnapshot,
   detectedLanguage: string | null,
 ): LanguageStatus | null {
-  const sourceName = sourceLanguageStatusDisplayName(
+  const sourceName = settings.audioInput === "both" && settings.sourceLanguage === "auto"
+    ? SOURCE_LANGUAGE_DISPLAY_NAMES.auto : sourceLanguageStatusDisplayName(
     settings.sourceLanguage,
     detectedLanguage,
     settings.targetLanguage,

@@ -1,4 +1,11 @@
-import { effectiveUiLanguage } from "./i18n";
+import { effectiveUiLanguage, I18N } from "./i18n";
+import type { AudioInput } from "./types";
+
+export function audioInputLabel(input: AudioInput = "system"): string {
+  return input === "both"
+    ? `${I18N.settings.audioInputSystem} + ${I18N.settings.audioInputMicrophone}`
+    : input === "microphone" ? I18N.settings.audioInputMicrophone : I18N.settings.audioInputSystem;
+}
 
 const copy = {
   en: {
@@ -11,6 +18,10 @@ const copy = {
     stopped: "Audio capture stopped unexpectedly. Check the selected input, then start subtitles again.",
     timeout: "Audio capture setup timed out. Check the selected input, then try again.",
     server: "Connect to PulseAudio or PipeWire with PulseAudio support, then try again.",
+    switchBusy: "Wait for the current connection change, then try again.",
+    switchSuperseded: "The session changed. Check its state before trying again.",
+    switchSave: "Could not save the audio input. Try again.",
+    switchStop: "Could not stop the previous audio input. Stop subtitles before trying again.",
   },
   zh: {
     missing: "没有可用的麦克风。请连接麦克风，并将其设为系统默认输入。",
@@ -22,6 +33,10 @@ const copy = {
     stopped: "音频采集意外停止，请检查所选输入，然后重新开启字幕。",
     timeout: "音频采集启动超时，请检查所选输入后重试。",
     server: "请连接支持 PulseAudio 的 PipeWire 或 PulseAudio 服务，然后重试。",
+    switchBusy: "请等待当前连接操作完成后重试。",
+    switchSuperseded: "字幕状态已改变，请确认当前状态后重试。",
+    switchSave: "音频输入未能保存，请重试。",
+    switchStop: "之前的音频输入未能停止，请先停止字幕再重试。",
   },
   ja: {
     missing: "利用できるマイクがありません。接続して、システムの既定の入力に設定してください。",
@@ -33,10 +48,18 @@ const copy = {
     stopped: "音声の取得が予期せず停止しました。選択した入力を確認し、字幕を再開してください。",
     timeout: "音声の取得開始がタイムアウトしました。選択した入力を確認し、再試行してください。",
     server: "PulseAudio、または PulseAudio 対応の PipeWire に接続して、再試行してください。",
+    switchBusy: "現在の接続処理が完了してから再試行してください。",
+    switchSuperseded: "字幕の状態が変わりました。状態を確認してから再試行してください。",
+    switchSave: "音声入力を保存できませんでした。再試行してください。",
+    switchStop: "以前の音声入力を停止できませんでした。字幕を停止してから再試行してください。",
   },
 };
 
 const errors: Record<string, keyof typeof copy.en> = {
+  audio_input_switch_busy: "switchBusy",
+  audio_input_switch_superseded: "switchSuperseded",
+  audio_input_switch_save_failed: "switchSave",
+  audio_input_switch_stop_failed: "switchStop",
   "No default microphone is available.": "missing",
   "Microphone capture permission was denied.": "permission",
   "Microphone capture could not be started.": "start",

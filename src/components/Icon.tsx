@@ -21,6 +21,7 @@ import {
   Languages,
   LockKeyhole,
   LockKeyholeOpen,
+  Mic,
   Pause,
   Play,
   Plus,
@@ -29,6 +30,7 @@ import {
   Sparkles,
   Square,
   Trash2,
+  Volume2,
   Waves,
   type LucideIcon,
 } from "lucide-react";
@@ -68,6 +70,8 @@ export type IconName =
   | "shield-check"
   | "trash"
   | "waves"
+  | "microphone"
+  | "speaker"
   | "download";
 
 const ICONS: Record<IconName, LucideIcon> = {
@@ -100,6 +104,8 @@ const ICONS: Record<IconName, LucideIcon> = {
   "shield-check": ShieldCheck,
   trash: Trash2,
   waves: Waves,
+  microphone: Mic,
+  speaker: Volume2,
   download: Download,
 };
 

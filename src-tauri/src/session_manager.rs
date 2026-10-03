@@ -291,6 +291,69 @@ fn pipeline_settings_mutation_is_allowed(
         && !matches!(status, SessionStatus::Connecting | SessionStatus::Stopping)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AudioInputSwitchAction {
+    ReconfigureOnly,
+    Reconnect,
+}
+
+fn audio_input_switch_action(
+    status: &SessionStatus,
+    paused: bool,
+    recovering: bool,
+    lifecycle_operations: usize,
+) -> Result<AudioInputSwitchAction, &'static str> {
+    if recovering || !pipeline_settings_mutation_is_allowed(status, lifecycle_operations) {
+        return Err("audio_input_switch_busy");
+    }
+    if paused || !matches!(status, SessionStatus::Listening) {
+        Ok(AudioInputSwitchAction::ReconfigureOnly)
+    } else {
+        Ok(AudioInputSwitchAction::Reconnect)
+    }
+}
+
+/// Caller owns both the content gate and generation-transition lock. No
+/// provider event can enter between sealing the old generation and resetting
+/// its confirmation watermarks; a superseded/save-failed request resets none.
+fn commit_audio_input_switch_boundary(
+    active_generation: &AtomicU64,
+    lifecycle_sequence: &AtomicU64,
+    expected_epoch: u64,
+    controller: &mut TranslationSessionController,
+    input: AudioInput,
+    persist: impl FnOnce() -> Result<(), String>,
+) -> Result<(u64, u64), String> {
+    if !lifecycle_sequence_matches(lifecycle_sequence, expected_epoch) {
+        return Err("audio_input_switch_superseded".into());
+    }
+    persist()?;
+    let generation = advance_lifecycle_sequence_if_current(lifecycle_sequence, expected_epoch)
+        .ok_or_else(|| "audio_input_switch_superseded".to_string())?;
+    let previous = active_generation.swap(NO_GENERATION, Ordering::SeqCst);
+    controller.reconfigure_audio_input(input);
+    Ok((generation, previous))
+}
+
+/// Switching off a source must confirm native release even when the session
+/// is already paused, idle, or failed. Those states may still be tearing down.
+async fn release_removed_audio_sources<Stop, Stopped>(
+    previous: AudioInput,
+    selected: AudioInput,
+    mut stop: Stop,
+) -> Result<(), String>
+where
+    Stop: FnMut(AudioSource) -> Stopped,
+    Stopped: Future<Output = Result<(), String>>,
+{
+    for &source in previous.sources() {
+        if !selected.sources().contains(&source) {
+            stop(source).await?;
+        }
+    }
+    Ok(())
+}
+
 fn lifecycle_activity_is_active(has_active_session: bool, lifecycle_operations: usize) -> bool {
     has_active_session || lifecycle_operations > 0
 }
@@ -336,6 +399,22 @@ fn pause_transition_is_valid(
     active_generation: u64,
 ) -> bool {
     !is_paused && *status == SessionStatus::Listening && active_generation != NO_GENERATION
+}
+
+/// A pause accepted while listening may claim its epoch after a source
+/// switch/recovery seals the old generation. It must finish that handoff,
+/// rather than cancelling the reconnect and leaving Connecting ownerless.
+fn accepted_pause_transition_is_valid(
+    status: &SessionStatus,
+    is_paused: bool,
+    active_generation: u64,
+    has_active_settings: bool,
+) -> bool {
+    pause_transition_is_valid(status, is_paused, active_generation)
+        || (!is_paused
+            && *status == SessionStatus::Connecting
+            && active_generation == NO_GENERATION
+            && has_active_settings)
 }
 
 fn resume_transition_is_valid(
@@ -578,6 +657,16 @@ async fn lock_after_operations(
     }
 }
 
+/// A newer pause may claim its epoch immediately, but cannot publish Paused
+/// or let Resume install replacements before the retired resources are gone.
+async fn retain_lifecycle_during_teardown(
+    lifecycle: OwnedMutexGuard<()>,
+    cleanup: impl Future<Output = ()>,
+) -> OwnedMutexGuard<()> {
+    cleanup.await;
+    lifecycle
+}
+
 async fn wait_until_generation_changes(
     active_generation: Arc<AtomicU64>,
     lifecycle_sequence: Arc<AtomicU64>,
@@ -666,6 +755,28 @@ struct LocalCaptureStats {
     audio_bytes: usize,
     audio_limited: bool,
     sample_rate: u32,
+}
+
+/// Capture presentation never borrows a retired generation's recent activity.
+/// Unlike diagnostics, this represents currently selected live input only.
+fn source_capture_observation(
+    pipeline_slot: &Mutex<Option<Arc<AudioSendPipeline>>>,
+    pipeline_generation: &AtomicU64,
+    active_generation: u64,
+) -> Option<crate::audio::CaptureSignal> {
+    let pipeline = pipeline_slot.lock().unwrap();
+    if active_generation == NO_GENERATION
+        || pipeline_generation.load(Ordering::SeqCst) != active_generation
+    {
+        return None;
+    }
+    pipeline.as_ref().map(|pipeline| {
+        let (pcm_data_recent, sound_recent) = pipeline.input_activity();
+        crate::audio::CaptureSignal {
+            pcm_data_recent,
+            sound_recent,
+        }
+    })
 }
 
 /// A provider terminating either stream terminates the selected session.
@@ -1016,41 +1127,31 @@ impl SessionManager {
     }
 
     pub fn capture_status(&self) -> crate::audio::CaptureStatus {
-        let observation =
-            self.current_capture_observation()
-                .map(|capture| crate::audio::CaptureSignal {
-                    pcm_data_recent: capture.pcm_data_recent,
-                    sound_recent: capture.sound_recent,
-                });
-        if self.settings.preferences().audio_input == AudioInput::Both {
-            return crate::audio::CaptureStatus {
-                kind: "both",
-                strategy: "independent_inputs",
-                actual_device_name: self
-                    .lane(AudioSource::Microphone)
-                    .audio
-                    .lock()
-                    .unwrap()
-                    .microphone_device_name(),
-                system_output_device_name: {
-                    #[cfg(target_os = "macos")]
-                    {
-                        crate::audio::macos_output::default_output_device_name()
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        None
-                    }
-                },
-                observation,
-            };
-        }
-        if self.settings.preferences().audio_input == AudioInput::Microphone {
-            return crate::audio::CaptureStatus {
+        let preferences = self.settings.preferences();
+        let generation = self.active_generation.load(Ordering::SeqCst);
+        crate::audio::CaptureStatus::for_input(preferences.audio_input, |source| {
+            let lane = self.lane(source);
+            let observation = source_capture_observation(
+                &lane.audio_pipeline,
+                &lane.audio_pipeline_generation,
+                generation,
+            );
+            self.capture_details(source, observation, &preferences.windows_audio_source)
+        })
+    }
+
+    fn capture_details(
+        &self,
+        source: AudioSource,
+        observation: Option<crate::audio::CaptureSignal>,
+        windows_audio_source: &str,
+    ) -> crate::audio::CaptureDetails {
+        if source == AudioSource::Microphone {
+            return crate::audio::CaptureDetails {
                 kind: "microphone",
                 strategy: "default_input",
                 actual_device_name: self
-                    .lane(AudioSource::Microphone)
+                    .lane(source)
                     .audio
                     .lock()
                     .unwrap()
@@ -1071,9 +1172,9 @@ impl SessionManager {
                         .map(|device| device.name)
                 })
             });
-            crate::audio::CaptureStatus {
+            crate::audio::CaptureDetails {
                 kind: "windows_output",
-                strategy: if self.settings.preferences().windows_audio_source.is_empty() {
+                strategy: if windows_audio_source.is_empty() {
                     "follow_system"
                 } else {
                     "manual_output"
@@ -1085,7 +1186,8 @@ impl SessionManager {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            crate::audio::CaptureStatus {
+            let _ = windows_audio_source;
+            crate::audio::CaptureDetails {
                 kind: if cfg!(target_os = "macos") {
                     "macos_system_mix"
                 } else if cfg!(target_os = "linux") {
@@ -1287,10 +1389,14 @@ impl SessionManager {
                 .snapshot()?;
             // Sound reaching the provider is measured after mono/resampling,
             // independently of raw callback arrival or synthetic keepalive.
+            let system = self.lane(AudioSource::System);
             snapshot.receiving_sound = snapshot.current_device.is_some()
-                && self
-                    .current_capture_observation()
-                    .is_some_and(|capture| capture.sound_recent);
+                && source_capture_observation(
+                    &system.audio_pipeline,
+                    &system.audio_pipeline_generation,
+                    self.active_generation.load(Ordering::SeqCst),
+                )
+                .is_some_and(|capture| capture.sound_recent);
             Ok(Some(snapshot))
         }
         #[cfg(not(target_os = "windows"))]
@@ -1907,7 +2013,16 @@ impl SessionManager {
         let _operation = self.begin_lifecycle_operation();
         let pause_request = self.next_lifecycle_request();
         let _lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
-        if !self.is_lifecycle_request_current(pause_request) || !self.can_pause_current_session() {
+        if !self.is_lifecycle_request_current(pause_request) {
+            return;
+        }
+        let status = self.controller.lock().unwrap().state.status.clone();
+        if !accepted_pause_transition_is_valid(
+            &status,
+            self.is_paused(),
+            self.active_generation.load(Ordering::SeqCst),
+            self.active_settings.lock().unwrap().is_some(),
+        ) {
             return;
         }
         let paused_generation = self.active_generation.swap(NO_GENERATION, Ordering::SeqCst);
@@ -1977,6 +2092,109 @@ impl SessionManager {
         self.controller.lock().unwrap().did_pause();
         self.publish_state();
         pipeline_log!("session resume failed; remaining paused");
+    }
+
+    /// The compact audio switches are explicit live reconfiguration. Preserve
+    /// confirmed subtitles, revoke recording consent, and restart only when
+    /// currently listening; a paused session must never briefly open a mic.
+    pub async fn switch_audio_input(self: &Arc<Self>, input: AudioInput) -> Result<(), String> {
+        let switch_epoch = self.lifecycle_sequence.load(Ordering::SeqCst);
+        let lifecycle = self.settings_mutation_guard(false).await?;
+        if !self.is_lifecycle_request_current(switch_epoch) {
+            return Err("audio_input_switch_superseded".into());
+        }
+        let status = self.controller.lock().unwrap().state.status.clone();
+        let action = audio_input_switch_action(
+            &status,
+            self.is_paused(),
+            self.is_recovering.load(Ordering::SeqCst),
+            self.lifecycle_operations.load(Ordering::SeqCst),
+        )
+        .map_err(str::to_owned)?;
+        if self.settings.preferences().audio_input == input {
+            return Ok(());
+        }
+        let previous_input = *self.active_audio_input.lock().unwrap();
+        let _operation = self.begin_lifecycle_operation();
+        let (generation, old_generation) = {
+            let _content = self.subtitle_content_lock.lock().await;
+            let _transition = self.generation_transition.lock().unwrap();
+            let boundary = commit_audio_input_switch_boundary(
+                &self.active_generation,
+                &self.lifecycle_sequence,
+                switch_epoch,
+                &mut self.controller.lock().unwrap(),
+                input,
+                || {
+                    self.settings
+                        .save_preferences(|prefs| prefs.apply_audio_preferences(Some(input), None))
+                        .map_err(|_| "audio_input_switch_save_failed".to_string())
+                },
+            )?;
+            *self.active_audio_input.lock().unwrap() = input;
+            self.lifecycle_notify.notify_waiters();
+            boundary
+        };
+        self.apply_archive_opt_out(None, Some(false));
+        self.publish_settings();
+        self.stop_health_checks().await;
+        self.cancel_recovery().await;
+        self.cancel_translation_timeout();
+        if action == AudioInputSwitchAction::Reconnect {
+            self.controller.lock().unwrap().begin_connecting();
+        }
+        self.publish_state();
+        let lifecycle = retain_lifecycle_during_teardown(lifecycle, async {
+            if old_generation != NO_GENERATION {
+                self.cleanup_generation(old_generation).await;
+            }
+        })
+        .await;
+        if !self.is_lifecycle_request_current(generation) {
+            return Err("audio_input_switch_superseded".into());
+        }
+        if !self.is_ui_test() {
+            let released = release_removed_audio_sources(previous_input, input, |source| {
+                let capture = self.lane(source).audio.lock().unwrap().clone();
+                async move {
+                    match tokio::time::timeout(Duration::from_secs(5), capture.stop_and_wait())
+                        .await
+                    {
+                        Ok(Ok(())) => Ok(()),
+                        _ => Err("audio_input_switch_stop_failed".into()),
+                    }
+                }
+            })
+            .await;
+            if let Err(error) = released {
+                if self.is_lifecycle_request_current(generation) {
+                    self.clear_active_settings();
+                    self.is_paused.store(false, Ordering::SeqCst);
+                    self.controller.lock().unwrap().did_fail(error.clone());
+                    self.publish_state();
+                }
+                return Err(error);
+            }
+        }
+        if !self.is_lifecycle_request_current(generation) {
+            return Err("audio_input_switch_superseded".into());
+        }
+        if action == AudioInputSwitchAction::ReconfigureOnly {
+            self.publish_state();
+            return Ok(());
+        }
+        self.active_generation.store(generation, Ordering::SeqCst);
+        self.retag_active_settings(generation);
+        drop(lifecycle);
+        self.establish_session(false, generation)
+            .await
+            .map_err(|error| {
+                if error == SESSION_START_CANCELLED {
+                    "audio_input_switch_superseded".into()
+                } else {
+                    error
+                }
+            })
     }
 
     /// Quick-switches the source language, reconnecting when needed.
@@ -3734,6 +3952,465 @@ impl SessionManager {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn audio_input_switch_seals_old_events_before_resetting_confirmation_ids() {
+        let controller = Arc::new(Mutex::new(TranslationSessionController::default()));
+        let confirmed = LiveTranslateServerEvent::SubtitleConfirmedPair {
+            source_utterance_id: Some(1),
+            utterance_id: 1,
+            source: "Synthetic confirmed system".into(),
+            translation: "Synthetic confirmation".into(),
+            language: Some("en".into()),
+        };
+        controller.lock().unwrap().did_connect();
+        controller
+            .lock()
+            .unwrap()
+            .handle_from(AudioSource::System, confirmed.clone());
+        let expected_history = controller.lock().unwrap().state.subtitles.history.clone();
+        let active = Arc::new(AtomicU64::new(7));
+        let sequence = AtomicU64::new(7);
+        let transition = Mutex::new(());
+        let content = Arc::new(TokioMutex::new(()));
+        let held_content = content.lock().await;
+        let (popped_tx, popped_rx) = tokio::sync::oneshot::channel();
+        let pump = {
+            let controller = Arc::clone(&controller);
+            let active = Arc::clone(&active);
+            let content = Arc::clone(&content);
+            tokio::spawn(async move {
+                // These events have left the provider queue before the switch,
+                // but cannot apply until its shared content gate is released.
+                popped_tx.send(()).unwrap();
+                let _content = content.lock().await;
+                for event in [
+                    confirmed,
+                    LiveTranslateServerEvent::SourceDraft {
+                        text: "Retired synthetic draft".into(),
+                        language: Some("ja".into()),
+                    },
+                ] {
+                    if generation_accepts_event(
+                        active.load(Ordering::SeqCst),
+                        NO_GENERATION,
+                        7,
+                        &event,
+                    ) {
+                        controller
+                            .lock()
+                            .unwrap()
+                            .handle_from(AudioSource::System, event);
+                    }
+                }
+            })
+        };
+        popped_rx.await.unwrap();
+        let boundary = {
+            let _transition = transition.lock().unwrap();
+            commit_audio_input_switch_boundary(
+                &active,
+                &sequence,
+                7,
+                &mut controller.lock().unwrap(),
+                AudioInput::Both,
+                || Ok(()),
+            )
+        };
+        assert_eq!(boundary.unwrap(), (8, 7));
+        assert_eq!(active.load(Ordering::SeqCst), NO_GENERATION);
+        drop(held_content);
+        pump.await.unwrap();
+        let state = &controller.lock().unwrap().state;
+        assert_eq!(state.subtitles.history, expected_history);
+        assert!(state
+            .subtitles
+            .tracks
+            .iter()
+            .all(|track| !track.source.text.contains("Retired")));
+    }
+
+    #[test]
+    fn audio_input_switch_superseded_or_failed_save_never_resets_live_watermarks() {
+        for (epoch, save_fails) in [(8, false), (7, true)] {
+            let active = AtomicU64::new(7);
+            let sequence = AtomicU64::new(epoch);
+            let mut controller = TranslationSessionController::default();
+            controller.did_connect();
+            let final_event = LiveTranslateServerEvent::SubtitleConfirmedPair {
+                source_utterance_id: Some(1),
+                utterance_id: 1,
+                source: "Synthetic original".into(),
+                translation: "Synthetic translation".into(),
+                language: Some("en".into()),
+            };
+            controller.handle_from(AudioSource::System, final_event.clone());
+            let original_state = controller.state.clone();
+            let persisted = AtomicBool::new(false);
+            let result = commit_audio_input_switch_boundary(
+                &active,
+                &sequence,
+                7,
+                &mut controller,
+                AudioInput::Both,
+                || {
+                    persisted.store(true, Ordering::SeqCst);
+                    Err("audio_input_switch_save_failed".into())
+                },
+            );
+            assert_eq!(
+                result,
+                Err(if save_fails {
+                    "audio_input_switch_save_failed"
+                } else {
+                    "audio_input_switch_superseded"
+                }
+                .into())
+            );
+            assert_eq!(persisted.load(Ordering::SeqCst), save_fails);
+            assert_eq!(active.load(Ordering::SeqCst), 7);
+            assert_eq!(sequence.load(Ordering::SeqCst), epoch);
+            assert_eq!(controller.state, original_state);
+            controller.handle_from(AudioSource::System, final_event);
+            assert_eq!(
+                controller.state, original_state,
+                "the old provider ID must still be rejected as a replay"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn audio_input_switch_paused_idle_and_error_wait_for_native_release() {
+        for status in [
+            SessionStatus::Listening,
+            SessionStatus::Idle,
+            SessionStatus::Error("synthetic failure".into()),
+        ] {
+            let action =
+                audio_input_switch_action(&status, status == SessionStatus::Listening, false, 0)
+                    .unwrap();
+            assert_eq!(action, AudioInputSwitchAction::ReconfigureOnly);
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                let mut started_tx = Some(started_tx);
+                let mut finished_rx = Some(finished_rx);
+                release_removed_audio_sources(AudioInput::Both, AudioInput::System, |source| {
+                    assert_eq!(source, AudioSource::Microphone);
+                    started_tx.take().unwrap().send(()).unwrap();
+                    let finished = finished_rx.take().unwrap();
+                    async move {
+                        finished.await.unwrap();
+                        Ok(())
+                    }
+                })
+                .await?;
+                Ok::<_, String>(action)
+            });
+            started_rx.await.unwrap();
+            tokio::task::yield_now().await;
+            assert!(
+                !task.is_finished(),
+                "selection-only changes still wait for the native microphone to release"
+            );
+            finished_tx.send(()).unwrap();
+            assert_eq!(
+                task.await.unwrap(),
+                Ok(AudioInputSwitchAction::ReconfigureOnly)
+            );
+            assert_eq!(
+                release_removed_audio_sources(AudioInput::Both, AudioInput::System, |_| async {
+                    Err("audio_input_switch_stop_failed".into())
+                })
+                .await,
+                Err("audio_input_switch_stop_failed".into())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn audio_input_switch_hands_off_to_an_already_accepted_newer_pause() {
+        let controller = Arc::new(Mutex::new(TranslationSessionController::default()));
+        controller.lock().unwrap().did_connect();
+        let active = Arc::new(AtomicU64::new(7));
+        let sequence = Arc::new(AtomicU64::new(7));
+        let paused = Arc::new(AtomicBool::new(false));
+        let lifecycle = Arc::new(TokioMutex::new(()));
+        let transition = Arc::new(Mutex::new(()));
+        let switch_guard = Arc::clone(&lifecycle).lock_owned().await;
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let (claim_tx, claim_rx) = tokio::sync::oneshot::channel();
+        let (claimed_tx, claimed_rx) = tokio::sync::oneshot::channel();
+        let pause = {
+            let controller = Arc::clone(&controller);
+            let active = Arc::clone(&active);
+            let sequence = Arc::clone(&sequence);
+            let paused = Arc::clone(&paused);
+            let lifecycle = Arc::clone(&lifecycle);
+            let transition = Arc::clone(&transition);
+            tokio::spawn(async move {
+                assert!(pause_transition_is_valid(
+                    &controller.lock().unwrap().state.status,
+                    false,
+                    active.load(Ordering::SeqCst)
+                ));
+                accepted_tx.send(()).unwrap();
+                claim_rx.await.unwrap();
+                let pause_epoch = {
+                    let _transition = transition.lock().unwrap();
+                    let current = sequence.load(Ordering::SeqCst);
+                    advance_lifecycle_sequence_if_current(&sequence, current).unwrap()
+                };
+                claimed_tx.send(pause_epoch).unwrap();
+                let _lifecycle = lifecycle.lock_owned().await;
+                if lifecycle_sequence_matches(&sequence, pause_epoch)
+                    && accepted_pause_transition_is_valid(
+                        &controller.lock().unwrap().state.status,
+                        paused.load(Ordering::SeqCst),
+                        active.load(Ordering::SeqCst),
+                        true,
+                    )
+                {
+                    active.store(NO_GENERATION, Ordering::SeqCst);
+                    paused.store(true, Ordering::SeqCst);
+                    controller.lock().unwrap().did_pause();
+                    true
+                } else {
+                    false
+                }
+            })
+        };
+        accepted_rx.await.unwrap();
+        {
+            let _transition = transition.lock().unwrap();
+            assert_eq!(
+                commit_audio_input_switch_boundary(
+                    &active,
+                    &sequence,
+                    7,
+                    &mut controller.lock().unwrap(),
+                    AudioInput::Both,
+                    || Ok(())
+                )
+                .unwrap(),
+                (8, 7)
+            );
+        }
+        claim_tx.send(()).unwrap();
+        assert_eq!(claimed_rx.await.unwrap(), 9);
+        controller.lock().unwrap().begin_connecting();
+        let resources_installed = Arc::new(AtomicBool::new(true));
+        let (teardown_started_tx, teardown_started_rx) = tokio::sync::oneshot::channel();
+        let (finish_teardown_tx, finish_teardown_rx) = tokio::sync::oneshot::channel();
+        let teardown = {
+            let resources_installed = Arc::clone(&resources_installed);
+            tokio::spawn(async move {
+                let _switch_guard = retain_lifecycle_during_teardown(switch_guard, async {
+                    teardown_started_tx.send(()).unwrap();
+                    finish_teardown_rx.await.unwrap();
+                    resources_installed.store(false, Ordering::SeqCst);
+                })
+                .await;
+            })
+        };
+        teardown_started_rx.await.unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            !pause.is_finished(),
+            "Pause cannot expose Resume before old capture/client teardown finishes"
+        );
+        assert!(resources_installed.load(Ordering::SeqCst));
+        finish_teardown_tx.send(()).unwrap();
+        teardown.await.unwrap();
+        assert!(pause.await.unwrap());
+        let _resume_guard = Arc::clone(&lifecycle).lock_owned().await;
+        assert!(
+            !resources_installed.load(Ordering::SeqCst),
+            "Resume cannot meet an old installed client or capture"
+        );
+        assert!(paused.load(Ordering::SeqCst));
+        assert_eq!(
+            controller.lock().unwrap().state.status,
+            SessionStatus::Listening
+        );
+        assert_eq!(active.load(Ordering::SeqCst), NO_GENERATION);
+        assert!(
+            !lifecycle_sequence_matches(&sequence, 8),
+            "the superseded switch cannot reconnect after pause"
+        );
+        assert!(resume_transition_is_valid(
+            &controller.lock().unwrap().state.status,
+            paused.load(Ordering::SeqCst),
+            active.load(Ordering::SeqCst),
+            true
+        ));
+    }
+
+    #[test]
+    fn accepted_pause_cannot_overwrite_stopped_failed_or_unowned_connecting_sessions() {
+        for status in [
+            SessionStatus::Idle,
+            SessionStatus::Stopping,
+            SessionStatus::Error("synthetic failure".into()),
+        ] {
+            assert!(!accepted_pause_transition_is_valid(
+                &status,
+                false,
+                NO_GENERATION,
+                true
+            ));
+        }
+        assert!(!accepted_pause_transition_is_valid(
+            &SessionStatus::Connecting,
+            false,
+            NO_GENERATION,
+            false
+        ));
+        assert!(!accepted_pause_transition_is_valid(
+            &SessionStatus::Connecting,
+            true,
+            NO_GENERATION,
+            true
+        ));
+        assert!(!accepted_pause_transition_is_valid(
+            &SessionStatus::Connecting,
+            false,
+            99,
+            true
+        ));
+        assert!(
+            !pause_transition_is_valid(&SessionStatus::Connecting, false, NO_GENERATION),
+            "ordinary new pause requests still cannot enter while connecting"
+        );
+    }
+
+    #[test]
+    fn audio_input_switch_reconnects_only_a_running_unpaused_session() {
+        assert_eq!(
+            audio_input_switch_action(&SessionStatus::Listening, false, false, 0),
+            Ok(AudioInputSwitchAction::Reconnect)
+        );
+        for status in [
+            SessionStatus::Listening,
+            SessionStatus::Idle,
+            SessionStatus::Error("synthetic failure".into()),
+        ] {
+            assert_eq!(
+                audio_input_switch_action(&status, true, false, 0),
+                Ok(AudioInputSwitchAction::ReconfigureOnly)
+            );
+        }
+        for status in [
+            SessionStatus::Idle,
+            SessionStatus::Error("synthetic failure".into()),
+        ] {
+            assert_eq!(
+                audio_input_switch_action(&status, false, false, 0),
+                Ok(AudioInputSwitchAction::ReconfigureOnly)
+            );
+        }
+    }
+
+    #[test]
+    fn audio_input_switch_rejects_inflight_lifecycle_and_recovery() {
+        for status in [SessionStatus::Connecting, SessionStatus::Stopping] {
+            for paused in [false, true] {
+                assert_eq!(
+                    audio_input_switch_action(&status, paused, false, 0),
+                    Err("audio_input_switch_busy")
+                );
+            }
+        }
+        assert_eq!(
+            audio_input_switch_action(&SessionStatus::Listening, false, true, 0),
+            Err("audio_input_switch_busy")
+        );
+        assert_eq!(
+            audio_input_switch_action(&SessionStatus::Listening, true, false, 1),
+            Err("audio_input_switch_busy")
+        );
+    }
+
+    fn capture_status_test_pipeline() -> Arc<AudioSendPipeline> {
+        Arc::new(AudioSendPipeline::spawn(
+            |_| async { Ok::<(), ()>(()) },
+            |_| {},
+        ))
+    }
+
+    #[tokio::test]
+    async fn capture_status_reports_sound_silence_and_missing_pcm_per_lane() {
+        let system = capture_status_test_pipeline();
+        let microphone = capture_status_test_pipeline();
+        system.ingress().unwrap().try_send(vec![128, 0]).unwrap();
+        let system_slot = Mutex::new(Some(Arc::clone(&system)));
+        let microphone_slot = Mutex::new(Some(Arc::clone(&microphone)));
+        let generation = AtomicU64::new(7);
+        let sound = source_capture_observation(&system_slot, &generation, 7).unwrap();
+        let no_pcm = source_capture_observation(&microphone_slot, &generation, 7).unwrap();
+        assert_eq!(
+            sound,
+            crate::audio::CaptureSignal {
+                pcm_data_recent: true,
+                sound_recent: true
+            }
+        );
+        assert_eq!(
+            no_pcm,
+            crate::audio::CaptureSignal {
+                pcm_data_recent: false,
+                sound_recent: false
+            }
+        );
+        // Receiving silent PCM is different from receiving no samples. Sound
+        // on the system lane must not leak into this microphone observation.
+        microphone.ingress().unwrap().try_send(vec![0, 0]).unwrap();
+        let silent = source_capture_observation(&microphone_slot, &generation, 7).unwrap();
+        assert_eq!(
+            silent,
+            crate::audio::CaptureSignal {
+                pcm_data_recent: true,
+                sound_recent: false
+            }
+        );
+        assert_eq!(
+            source_capture_observation(&system_slot, &generation, 7),
+            Some(sound)
+        );
+        system.stop();
+        microphone.stop();
+    }
+
+    #[tokio::test]
+    async fn capture_status_does_not_reuse_retired_or_removed_pipeline_activity() {
+        let old = capture_status_test_pipeline();
+        old.ingress().unwrap().try_send(vec![128, 0]).unwrap();
+        let slot = Mutex::new(Some(Arc::clone(&old)));
+        let generation = AtomicU64::new(7);
+        assert!(
+            source_capture_observation(&slot, &generation, 7)
+                .unwrap()
+                .sound_recent
+        );
+        // Stop/pause invalidates the active generation before teardown awaits.
+        assert!(source_capture_observation(&slot, &generation, NO_GENERATION).is_none());
+        assert!(source_capture_observation(&slot, &generation, 8).is_none());
+        let removed = slot.lock().unwrap().take().unwrap();
+        assert!(source_capture_observation(&slot, &generation, 7).is_none());
+        // A new pipeline begins unobserved even while a retired Arc survives.
+        let next = capture_status_test_pipeline();
+        *slot.lock().unwrap() = Some(Arc::clone(&next));
+        generation.store(8, Ordering::SeqCst);
+        assert_eq!(
+            source_capture_observation(&slot, &generation, 8),
+            Some(crate::audio::CaptureSignal {
+                pcm_data_recent: false,
+                sound_recent: false,
+            })
+        );
+        removed.stop();
+        next.stop();
+    }
 
     #[tokio::test]
     async fn startup_rollback_keeps_the_provider_pump_alive_until_it_queues_recovery() {

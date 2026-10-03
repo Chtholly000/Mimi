@@ -39,6 +39,7 @@ interface OverlayControlPanelProps {
   isPaused: boolean;
   isWaitingForFinalTranslation: boolean;
   isChangingSession: boolean;
+  isStopping?: boolean;
   onDismiss: () => void;
   onSwitchSourceLanguage: (language: SourceLanguage) => Promise<void>;
   onSetSubtitleDisplayMode: (mode: SubtitleDisplayMode) => Promise<void>;
@@ -55,6 +56,7 @@ export function OverlayControlPanel({
   isPaused,
   isWaitingForFinalTranslation,
   isChangingSession,
+  isStopping = false,
   onDismiss,
   onSwitchSourceLanguage,
   onSetSubtitleDisplayMode,
@@ -147,12 +149,12 @@ export function OverlayControlPanel({
           isPaused={isPaused}
           isWaitingForFinalTranslation={isWaitingForFinalTranslation}
           expanded
+          isStopping={isStopping}
           onToggle={onDismiss}
         />
 
         <CaptureStatusRow
           disabled={pendingAction !== null}
-          onShowAudioSettings={() => performAction("settings", () => onShowSettings("service"), false)}
         />
 
         <div ref={displayControlRef} className="overlay-control-picker" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>

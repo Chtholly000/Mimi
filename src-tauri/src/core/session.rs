@@ -334,6 +334,21 @@ impl TranslationSessionController {
         }
     }
 
+    /// Reconfigure a live/paused session without erasing confirmed subtitles
+    /// or opt-in transcript history. Old transport previews cannot survive.
+    pub fn reconfigure_audio_input(&mut self, audio_input: AudioInput) {
+        if self.audio_input == audio_input {
+            return;
+        }
+        let status = self.state.status.clone();
+        for source in &mut self.sources {
+            source.begin_connecting();
+            source.state.status = status.clone();
+        }
+        self.audio_input = audio_input;
+        self.refresh();
+    }
+
     pub fn archive(&self) -> &super::session_archive::TranscriptArchive {
         &self.archive
     }
@@ -1025,6 +1040,92 @@ mod dual_source_tests {
             source: source.into(),
             translation: translation.into(),
             language: Some("en".into()),
+        }
+    }
+
+    #[test]
+    fn audio_input_switch_preserves_confirmed_history_and_disabled_source_labels() {
+        let mut controller = TranslationSessionController::default();
+        controller.set_audio_input(AudioInput::Both);
+        controller.did_connect();
+        controller.archive_mut().begin(true, 0);
+        controller.handle_from(
+            AudioSource::System,
+            final_pair(1, "Synthetic system", "System translation"),
+        );
+        controller.handle_from(
+            AudioSource::Microphone,
+            final_pair(1, "Synthetic microphone", "Microphone translation"),
+        );
+        let confirmed = controller.state.subtitles.history.clone();
+        let transcript = controller.archive().export();
+        controller.handle_from(
+            AudioSource::Microphone,
+            LiveTranslateServerEvent::TranslationStarted,
+        );
+        controller.handle_from(
+            AudioSource::Microphone,
+            LiveTranslateServerEvent::SourceDraft {
+                text: "Discard this synthetic draft".into(),
+                language: Some("ja".into()),
+            },
+        );
+        controller.reconfigure_audio_input(AudioInput::System);
+        assert_eq!(controller.state.status, SessionStatus::Listening);
+        assert_eq!(controller.state.subtitles.history, confirmed);
+        assert_eq!(controller.archive().export(), transcript);
+        assert_eq!(controller.state.subtitles.tracks.len(), 1);
+        assert_eq!(
+            controller.state.subtitles.tracks[0].audio_source,
+            AudioSource::System
+        );
+        controller.handle_from(
+            AudioSource::Microphone,
+            final_pair(2, "Late microphone", "Late translation"),
+        );
+        assert_eq!(controller.state.subtitles.history, confirmed);
+        controller.reconfigure_audio_input(AudioInput::Both);
+        assert_eq!(controller.state.subtitles.history, confirmed);
+        assert!(controller
+            .state
+            .subtitles
+            .tracks
+            .iter()
+            .all(|track| !track.is_translation_pending && track.preview_pair.is_none()));
+        assert!(!controller.state.subtitles.tracks[1]
+            .source
+            .text
+            .contains("Discard"));
+        // Fresh client IDs restart at one; old confirmed history remains intact.
+        controller.handle_from(
+            AudioSource::Microphone,
+            final_pair(1, "New microphone", "New translation"),
+        );
+        assert_eq!(controller.state.subtitles.history.len(), 3);
+        assert_eq!(
+            controller.state.subtitles.history[2].audio_source,
+            AudioSource::Microphone
+        );
+    }
+
+    #[test]
+    fn audio_input_switch_preserves_paused_or_error_controller_status() {
+        for status in [
+            SessionStatus::Listening,
+            SessionStatus::Error("synthetic permission error".into()),
+            SessionStatus::Idle,
+        ] {
+            let mut controller = TranslationSessionController::default();
+            controller.sources[0].state.status = status.clone();
+            controller.refresh();
+            controller.reconfigure_audio_input(AudioInput::Both);
+            assert_eq!(controller.state.status, status);
+            assert!(controller
+                .state
+                .subtitles
+                .tracks
+                .iter()
+                .all(|track| !track.is_translation_pending));
         }
     }
 
