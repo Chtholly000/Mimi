@@ -326,6 +326,16 @@ fn keyring_operation_error(error: keyring_core::Error) -> SecretStoreError {
 pub trait SecretStore: Send + Sync {
     fn load(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError>;
     fn save(&self, service: &str, account: &str, value: &str) -> Result<(), SecretStoreError>;
+    /// Explicit Save may request the provider's native first-collection prompt.
+    /// Background migration uses `save` and must never create a collection.
+    fn save_from_user_action(
+        &self,
+        service: &str,
+        account: &str,
+        value: &str,
+    ) -> Result<(), SecretStoreError> {
+        self.save(service, account, value)
+    }
     fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError>;
     fn is_read_only(&self) -> bool {
         false
@@ -374,6 +384,49 @@ fn credential_entry(service: &str, account: &str) -> Result<keyring_core::Entry,
             .map(|entry| entry.inner)
             .map_err(|_| SecretStoreError::Unavailable)
     }
+}
+
+#[cfg(target_os = "linux")]
+fn save_linux_password(entry: &keyring_core::Entry, value: &str) -> Result<(), SecretStoreError> {
+    let error = match entry.set_password(value) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    // The backend cannot create its default collection: an absent alias is
+    // reported as NoStorageAccess(NoResult). Only this failed explicit save
+    // may request collection creation, never a settings read or diagnostic.
+    if !matches!(
+        &error,
+        keyring_core::Error::NoStorageAccess(source)
+            if matches!(source.downcast_ref::<secret_service::Error>(), Some(secret_service::Error::NoResult))
+    ) {
+        return Err(keyring_operation_error(error));
+    }
+    let service =
+        secret_service::blocking::SecretService::connect(secret_service::EncryptionType::Dh)
+            .map_err(|_| SecretStoreError::ServiceUnavailable)?;
+    match service.get_default_collection() {
+        // NoResult can also arise elsewhere in the backend. Do not turn a
+        // failed unlock/read into a new collection or a second prompt.
+        Ok(_) => return Err(keyring_operation_error(error)),
+        Err(secret_service::Error::NoResult) => {
+            // The provider owns the native authorization/password prompt and
+            // encrypted storage policy. Cancellation remains an access error.
+            service
+                .create_collection("Default", "default")
+                .map_err(|error| {
+                    keyring_operation_error(
+                        zbus_secret_service_keyring_store::errors::decode_error(error),
+                    )
+                })?;
+        }
+        Err(error) => {
+            return Err(keyring_operation_error(
+                zbus_secret_service_keyring_store::errors::decode_error(error),
+            ));
+        }
+    }
+    entry.set_password(value).map_err(keyring_operation_error)
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -465,6 +518,22 @@ impl SecretStore for KeyringSecretStore {
         #[cfg(target_os = "windows")]
         enforce_local_credential_persistence(&entry, value)?;
         Ok(())
+    }
+
+    fn save_from_user_action(
+        &self,
+        service: &str,
+        account: &str,
+        value: &str,
+    ) -> Result<(), SecretStoreError> {
+        #[cfg(target_os = "linux")]
+        {
+            save_linux_password(&credential_entry(service, account)?, value)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.save(service, account, value)
+        }
     }
 
     fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError> {
@@ -1296,7 +1365,7 @@ impl SettingsStore {
         let account = Self::destination_account(profile);
         match value {
             Some(value) => {
-                self.save_secret(self.profile_keychain_service, &account, value)
+                self.save_secret(self.profile_keychain_service, &account, value, true)
                     .map_err(SecretStoreError::public_error)?;
                 let verified = self
                     .load_secret_uncached(self.profile_keychain_service, &account)
@@ -1455,6 +1524,7 @@ impl SettingsStore {
                     .map_err(|_| Error::InvalidCustomSpeechModel.to_string())?,
             )
         };
+        self.retry_profile_credential_errors(profile, true, false);
         let previous = self
             .load_api_key_for_profile(profile)
             .map_err(SecretStoreError::public_error)?;
@@ -1544,6 +1614,7 @@ impl SettingsStore {
         } else {
             None
         };
+        self.retry_profile_credential_errors(profile, false, true);
         let previous_destination = self.destination_value(profile)?;
         let mut destination = previous_destination
             .as_deref()
@@ -1689,6 +1760,7 @@ impl SettingsStore {
                 })?;
             }
         }
+        self.retry_profile_credential_errors(profile, true, true);
         let previous = self
             .load_api_key_for_profile(profile)
             .map_err(SecretStoreError::public_error)?;
@@ -2260,7 +2332,7 @@ impl SettingsStore {
                 continue;
             }
 
-            self.save_secret(self.profile_keychain_service, &account, &legacy)?;
+            self.save_secret(self.profile_keychain_service, &account, &legacy, false)?;
             let verified = self.load_secret_uncached(self.profile_keychain_service, &account)?;
             if verified.as_deref() != Some(legacy.as_str()) {
                 self.secret_cache
@@ -2319,7 +2391,7 @@ impl SettingsStore {
         value: &str,
     ) -> Result<(), String> {
         let account = credential_account(profile);
-        self.save_secret(self.profile_keychain_service, &account, value)
+        self.save_secret(self.profile_keychain_service, &account, value, true)
             .map_err(SecretStoreError::public_error)?;
         let verified = self
             .load_secret_uncached(self.profile_keychain_service, &account)
@@ -2358,6 +2430,7 @@ impl SettingsStore {
             self.profile_keychain_service,
             LEGACY_MIGRATION_TOMBSTONE_ACCOUNT,
             LEGACY_MIGRATION_TOMBSTONE_VALUE,
+            false,
         )?;
         let verified = self.load_secret_uncached(
             self.profile_keychain_service,
@@ -2431,9 +2504,15 @@ impl SettingsStore {
         service: &str,
         account: &str,
         value: &str,
+        from_user_action: bool,
     ) -> Result<(), SecretStoreError> {
         if !self.is_ui_test {
-            if let Err(error) = self.secret.save(service, account, value) {
+            let result = if from_user_action {
+                self.secret.save_from_user_action(service, account, value)
+            } else {
+                self.secret.save(service, account, value)
+            };
+            if let Err(error) = result {
                 self.secret_cache
                     .lock()
                     .unwrap()
@@ -2608,6 +2687,81 @@ mod animation_switch_tests {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires an isolated desktop Secret Service and synthetic native prompt interaction"]
+    fn linux_secret_service_first_save_and_restart() {
+        use secret_service::{blocking::SecretService, EncryptionType};
+        let mode = std::env::var("MIMI_TEST_SECRET_SERVICE_FIRST_SAVE").unwrap();
+        let directory = std::env::var("MIMI_TEST_PRIVATE_KEYRING_DIRECTORY").unwrap();
+        assert!(std::env::var("DBUS_SESSION_BUS_ADDRESS")
+            .unwrap()
+            .contains(&directory));
+        let store = SettingsStore::in_memory_with_scope(
+            Box::new(KeyringSecretStore),
+            false,
+            "app.yuxino.mimi.test.secret-service-first-save",
+            false,
+        );
+        let profile = store.active_profile().unwrap();
+        let synthetic_value = "synthetic-first-save-value";
+        if mode == "read" {
+            assert_eq!(store.credential_state(&profile), CredentialState::Present);
+            assert!(store.load_api_key().unwrap().as_deref() == Some(synthetic_value));
+            store.delete_api_key(&profile.id).unwrap();
+            assert_eq!(store.credential_state(&profile), CredentialState::Missing);
+            return;
+        }
+        assert_eq!(mode, "write");
+        let service = SecretService::connect(EncryptionType::Dh).unwrap();
+        let assert_no_default = || {
+            assert!(matches!(
+                service.get_default_collection(),
+                Err(secret_service::Error::NoResult)
+            ));
+        };
+        assert_no_default();
+        assert_eq!(store.credential_diagnostic(&profile), "missing");
+        assert_no_default();
+        // The background-migration write path must also leave the collection
+        // absent instead of raising a first-run prompt during a settings read.
+        assert_eq!(
+            KeyringSecretStore.save(
+                store.profile_keychain_service,
+                &credential_account(&profile),
+                synthetic_value,
+            ),
+            Err(SecretStoreError::AccessDenied)
+        );
+        assert_no_default();
+        // The script dismisses the first native prompt, then enters a password
+        // for an encrypted synthetic keyring on the explicit second save.
+        let progress = Path::new(&directory).join("first-save-phase");
+        std::fs::write(&progress, "cancel").unwrap();
+        assert_eq!(
+            store.save_api_key(&profile.id, synthetic_value),
+            Err(CREDENTIAL_STORE_ACCESS_DENIED.into())
+        );
+        assert_no_default();
+        std::fs::write(&progress, "accept").unwrap();
+        store.save_api_key(&profile.id, synthetic_value).unwrap();
+        assert_eq!(store.credential_state(&profile), CredentialState::Present);
+        assert!(service.get_default_collection().is_ok());
+
+        // A new test process has no Mimi credential cache. This proves a
+        // durable backend read across app-process lifetimes, not Stop/Start.
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "settings_store::tests::linux_secret_service_first_save_and_restart",
+                "--exact",
+                "--ignored",
+            ])
+            .env("MIMI_TEST_SECRET_SERVICE_FIRST_SAVE", "read")
+            .status()
+            .unwrap();
+        assert!(result.success());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "requires an isolated D-Bus session and unlocked test Secret Service"]
@@ -5977,6 +6131,68 @@ mod tests {
             .save_api_key(&profile.id, "synthetic-test-value")
             .unwrap();
         assert_eq!(store.credential_diagnostic(&profile), "present");
+    }
+
+    #[test]
+    fn explicit_alibaba_save_retries_failed_reads_without_a_diagnostic() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store.active_profile().unwrap();
+        let account = credential_account(&profile);
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &account);
+        let request = translation_request(TextTranslation::FollowService, "synthetic-key", "", "");
+        assert_eq!(
+            store.save_credentials(&profile.id, &request),
+            Err(CREDENTIAL_STORE_UNAVAILABLE.into())
+        );
+        fake.state.lock().unwrap().unavailable.clear();
+        store.save_credentials(&profile.id, &request).unwrap();
+        assert_eq!(store.credential_state(&profile), CredentialState::Present);
+    }
+
+    #[test]
+    fn explicit_custom_save_retries_only_its_failed_stage() {
+        for speech_save in [false, true] {
+            let fake = FakeSecretStore::default();
+            let store = settings(&fake);
+            let profile = store
+                .create_profile(ProviderKind::CustomOpenAIASR, "Synthetic custom")
+                .unwrap();
+            let speech = credential_account(&profile);
+            let text = SettingsStore::destination_account(&profile);
+            for account in [&speech, &text] {
+                fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, account);
+                assert!(store
+                    .load_secret(PROFILE_KEYCHAIN_SERVICE, account)
+                    .is_err());
+            }
+            let request = if speech_save {
+                ProviderCredentials::CustomSpeech {
+                    endpoint: "wss://speech.example/v1".into(),
+                    model: "synthetic-model".into(),
+                    api_key: "synthetic-speech".into(),
+                }
+            } else {
+                translation_request(TextTranslation::DeepL, "", "", "synthetic-text:fx")
+            };
+            assert!(store.save_credentials(&profile.id, &request).is_err());
+            fake.state.lock().unwrap().unavailable.clear();
+            fake.state.lock().unwrap().loads.clear();
+            store.save_credentials(&profile.id, &request).unwrap();
+            let (saved, untouched) = if speech_save {
+                (&speech, &text)
+            } else {
+                (&text, &speech)
+            };
+            assert!(store
+                .load_secret(PROFILE_KEYCHAIN_SERVICE, saved)
+                .unwrap()
+                .is_some());
+            assert!(store
+                .load_secret(PROFILE_KEYCHAIN_SERVICE, untouched)
+                .is_err());
+            assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, untouched), 0);
+        }
     }
 
     #[test]
