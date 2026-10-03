@@ -47,7 +47,7 @@ Transcript retention is limited to 10,000 confirmed pairs / 2 MiB of text and au
 
 1. Download the macOS Apple silicon or Intel DMG, a Windows x64 EXE, MSI, or portable ZIP, or a Linux x86_64 .deb / AppImage from the [latest release](https://github.com/yuxino/mimi/releases/latest), or build from source.
 2. Open **Translation Service**, choose a provider, and save its credentials.
-3. Play something and select **Start** from the mimi menu bar/system tray icon. For your own speech, enable **Microphone** in the subtitle control panel or Settings → Speech & Translation. macOS asks for **Screen & System Audio Recording** for system audio and **Microphone** access when microphone input is enabled. Use headphones when capturing both to keep speaker playback out of the microphone.
+3. Play something and select **Start** from the mimi menu bar/system tray icon. For your own speech, enable **Microphone** in the subtitle control panel or Settings → Speech & Translation. macOS asks for **Screen & System Audio Recording** for system audio and **Microphone** access when microphone input is enabled. With both inputs on, echo cancellation automatically reduces speaker playback in the microphone. Use headphones if playback is still picked up.
 
 Bring your own provider API credentials; usage charges may apply. Credentials are stored in the OS credential store.
 

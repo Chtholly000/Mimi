@@ -34,6 +34,8 @@ pub enum AudioIngressError {
     Closed,
 }
 
+type AudioRedirect = Arc<dyn Fn(PendingAudio) -> Result<(), AudioIngressError> + Send + Sync>;
+
 /// Cloneable, synchronous ingress for native audio callbacks. `try_send`
 /// performs no await and holds no mutex; a full queue rejects the newest
 /// buffer and permanently closes this generation's ingress.
@@ -44,32 +46,83 @@ pub struct AudioIngress {
     accepting: Arc<AtomicBool>,
     progress: Arc<SendProgress>,
     pending_pcm: PendingPcmGate,
+    redirect: Option<AudioRedirect>,
 }
 
 // The guard travels with the buffer, including while it has left the bounded
 // queue and waits inside the send future. Queue rejection/drop and task
 // cancellation release it without a separate decrement or reset path.
-struct PendingAudio {
-    data: Vec<u8>,
-    pending: Option<PendingPcmGuard>,
+pub(super) struct PendingAudio {
+    pub data: Vec<u8>,
+    pub pending: Option<PendingPcmGuard>,
+    pub captured_at: Instant,
 }
 
 impl AudioIngress {
     pub fn try_send(&self, data: Vec<u8>) -> Result<(), AudioIngressError> {
+        self.send(data, true)
+    }
+
+    /// DSP output already has an observation at the native capture boundary.
+    /// Its reduced amplitude must not replace the raw microphone activity.
+    pub(super) fn try_send_processed(&self, data: Vec<u8>) -> Result<(), AudioIngressError> {
+        self.send(data, false)
+    }
+
+    pub(super) fn redirected(
+        &self,
+        redirect: impl Fn(PendingAudio) -> Result<(), AudioIngressError> + Send + Sync + 'static,
+    ) -> Self {
+        let mut ingress = self.clone();
+        ingress.redirect = Some(Arc::new(redirect));
+        ingress
+    }
+
+    pub(super) fn acquire_pending(&self) -> PendingPcmGuard {
+        self.pending_pcm.acquire()
+    }
+
+    pub(super) fn enqueue_packet(&self, packet: PendingAudio) -> Result<(), AudioIngressError> {
+        if !self.accepting.load(Ordering::SeqCst) {
+            return Err(AudioIngressError::Closed);
+        }
+        self.tx.try_send(packet).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => AudioIngressError::Backpressure,
+            mpsc::error::TrySendError::Closed(_) => AudioIngressError::Closed,
+        })
+    }
+
+    fn send(&self, data: Vec<u8>, observe_capture: bool) -> Result<(), AudioIngressError> {
         if !self.accepting.load(Ordering::SeqCst) {
             return Err(AudioIngressError::Closed);
         }
         let has_data = !data.is_empty();
         let pending = has_data.then(|| self.pending_pcm.acquire());
         let has_sound = peak_pcm16_sample(&data) > 32;
-        match self.tx.try_send(PendingAudio { data, pending }) {
+        let captured_at = Instant::now();
+        let packet = PendingAudio {
+            data,
+            pending,
+            captured_at,
+        };
+        let result = match &self.redirect {
+            Some(redirect) => redirect(packet),
+            None => self.enqueue_packet(packet),
+        };
+        // A DSP stage owns its capture ingress lifetime separately. Closing
+        // that ingress must still allow its already accepted output to drain
+        // into this provider queue (including late native callback clones).
+        if self.redirect.is_some() && result.is_err() {
+            return result;
+        }
+        match result {
             Ok(()) => {
-                if has_data {
-                    self.progress.captured(has_sound, Instant::now());
+                if has_data && observe_capture {
+                    self.progress.captured(has_sound, captured_at);
                 }
                 Ok(())
             }
-            Err(mpsc::error::TrySendError::Full(_)) => {
+            Err(AudioIngressError::Backpressure) => {
                 self.accepting.store(false, Ordering::SeqCst);
                 if !self.failed.swap(true, Ordering::SeqCst) {
                     let completed_ago_ms = self.progress.completed_ago_ms(Instant::now());
@@ -84,7 +137,7 @@ impl AudioIngress {
                     Err(AudioIngressError::Closed)
                 }
             }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
+            Err(AudioIngressError::Closed) => {
                 self.accepting.store(false, Ordering::SeqCst);
                 self.failed.store(true, Ordering::SeqCst);
                 Err(AudioIngressError::Closed)
@@ -210,7 +263,7 @@ impl AudioSendPipeline {
                         None => return true,
                     },
                 };
-                let PendingAudio { data, pending } = data;
+                let PendingAudio { data, pending, .. } = data;
                 let bytes = data.len();
                 peak_audio_sample = peak_audio_sample.max(peak_pcm16_sample(&data));
                 let started_at = Instant::now();
@@ -278,6 +331,7 @@ impl AudioSendPipeline {
             accepting: Arc::clone(&self.accepting),
             progress: Arc::clone(&self.progress),
             pending_pcm: self.pending_pcm.clone(),
+            redirect: None,
         })
     }
 

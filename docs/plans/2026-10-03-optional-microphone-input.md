@@ -58,8 +58,9 @@ include NSMicrophoneUsageDescription and the audio-input entitlement. Linux
 resolves output monitors only for system audio and a non-monitor default input
 for microphone. Windows output selection applies whenever system audio is
 selected. Defaults are resolved at each capture start; mid-session device
-selection is not offered. Headphones are recommended for two-input use because
-this change does not provide acoustic echo cancellation.
+selection is not offered. Two-input use automatically reduces speaker playback
+in the microphone with [acoustic echo cancellation](2026-10-03-microphone-echo-cancellation.md).
+Headphones remain useful when playback is still picked up.
 
 ## Subtitles and local files
 

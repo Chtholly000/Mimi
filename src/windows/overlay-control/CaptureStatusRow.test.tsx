@@ -160,7 +160,7 @@ it.each([
   expect(description("microphone")).toContain("Synthetic microphone");
   expect(description("microphone")).not.toContain("Unrelated output");
   expect(description("microphone")).toContain({ zh: "默认麦克风", en: "default microphone", ja: "既定のマイク" }[language]);
-  expect(description("microphone")).toContain({ zh: "用量分别计算", en: "own service usage", ja: "利用量も個別" }[language]);
+  expect(description("microphone")).toContain({ zh: "用量分别计算", en: "separate recognition and usage", ja: "利用量も個別" }[language]);
 });
 
 it("keeps switching available when capture status is unavailable", async () => {
@@ -230,11 +230,11 @@ it("keeps long device names bounded in help and readable in full through the sou
 it("keeps restrictions in the relevant source help without repeating dual-input advice", async () => {
   await mount();
   expect(description("system")).toContain("Keep at least one input on");
-  expect(description("system")).not.toContain("own service usage");
-  expect(description("microphone")).toContain("own service usage");
+  expect(description("system")).not.toContain("separate recognition and usage");
+  expect(description("microphone")).toContain("separate recognition and usage");
   expect(description("microphone")).not.toContain("Keep at least one input on");
   await act(async () => useStore.setState({ settings: { ...initial.settings, audioInput: "microphone" } }));
   expect(description("microphone")).toContain("Keep at least one input on");
-  expect(description("microphone")).not.toContain("own service usage");
+  expect(description("microphone")).not.toContain("separate recognition and usage");
   expect(description("system")).not.toContain("Keep at least one input on");
 });

@@ -8,6 +8,7 @@ pub mod credentials;
 pub mod diagnostics;
 #[cfg(any(target_os = "macos", test))]
 pub mod dock_presentation;
+pub mod echo_cancellation;
 pub mod models;
 pub mod network_proxy;
 pub mod openai_transcript_committer;

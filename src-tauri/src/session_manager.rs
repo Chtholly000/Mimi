@@ -4,6 +4,7 @@
 //! The manager is always shared behind `Arc<SessionManager>`; spawned tasks
 //! hold clones of the same Arc so they observe one piece of session state.
 
+use crate::audio::echo_pipeline::EchoPipeline;
 use crate::audio::send_pipeline::{AudioPipelineFailure, AudioSendPipeline};
 use crate::audio::{
     AudioCapture, AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureFailure,
@@ -465,6 +466,23 @@ fn invalidate_generation_atoms(
     }
 }
 
+/// The caller holds generation_transition through owner validation and claim.
+/// Rebuilding settings can replace audio resources without changing generation.
+fn invalidate_audio_attempt_atoms(
+    active_generation: &AtomicU64,
+    lifecycle_sequence: &AtomicU64,
+    owner: &mut Option<(u64, u64)>,
+    generation: u64,
+    attempt: u64,
+) -> Option<u64> {
+    if *owner != Some((generation, attempt)) {
+        return None;
+    }
+    let epoch = invalidate_generation_atoms(active_generation, lifecycle_sequence, generation)?;
+    *owner = None;
+    Some(epoch)
+}
+
 fn advance_lifecycle_sequence_if_current(
     lifecycle_sequence: &AtomicU64,
     expected: u64,
@@ -860,10 +878,16 @@ impl RuntimeLane {
     }
 }
 
+type EchoPipelineSlot = Arc<Mutex<Option<(u64, Arc<EchoPipeline>)>>>;
+
 #[derive(Clone)]
 pub struct SessionManager {
     app: AppHandle,
     lanes: [RuntimeLane; 2],
+    /// One DSP stage per connection attempt; a same-generation settings
+    /// rebuild also replaces the reference history and adaptive filter.
+    echo_pipeline: EchoPipelineSlot,
+    audio_attempt: Arc<Mutex<Option<(u64, u64)>>>,
     diagnostic_epoch: Instant,
     diagnostic_error: Arc<Mutex<Option<(SafeFailure, Instant)>>>,
     diagnostic_recovery: Arc<Mutex<Option<(RecoveryAction, Instant)>>>,
@@ -941,6 +965,8 @@ impl SessionManager {
         );
         Arc::new(Self {
             lanes: [RuntimeLane::new(&app), RuntimeLane::new(&app)],
+            echo_pipeline: Default::default(),
+            audio_attempt: Default::default(),
             app,
             diagnostic_epoch: Instant::now(),
             diagnostic_error: Default::default(),
@@ -1701,10 +1727,37 @@ impl SessionManager {
         generation: u64,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
         Box::pin(async move {
+            let attempt = self.next_background_task_id();
+            {
+                let _transition = self.generation_transition.lock().unwrap();
+                self.ensure_generation_current(generation)?;
+                *self.audio_attempt.lock().unwrap() = Some((generation, attempt));
+            }
+            if *self.active_audio_input.lock().unwrap() == AudioInput::Both {
+                let echo = Arc::new(
+                    EchoPipeline::spawn(
+                        configuration.capabilities().input_sample_rate_hz,
+                        self.capture_failure_channel(generation, attempt),
+                    )
+                    .map_err(|error| error.to_string())?,
+                );
+                let _transition = self.generation_transition.lock().unwrap();
+                self.ensure_generation_current(generation)?;
+                let mut slot = self.echo_pipeline.lock().unwrap();
+                if slot.is_some() {
+                    return Err("An audio processor is already assigned to a session.".into());
+                }
+                *slot = Some((generation, echo));
+            }
             connect_source_group(
                 self.sources(),
                 |source| {
-                    Arc::clone(&self).connect_source(configuration.clone(), generation, source)
+                    Arc::clone(&self).connect_source(
+                        configuration.clone(),
+                        generation,
+                        attempt,
+                        source,
+                    )
                 },
                 |pumps| self.cleanup_generation_resources(generation, pumps),
             )
@@ -1721,6 +1774,7 @@ impl SessionManager {
         self: Arc<Self>,
         configuration: LiveTranslationConfiguration,
         generation: u64,
+        attempt: u64,
         source: AudioSource,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
         Box::pin(async move {
@@ -1820,7 +1874,7 @@ impl SessionManager {
                     let manager = Arc::clone(&on_error_self);
                     tokio::spawn(async move {
                         manager
-                            .handle_audio_transport_failure(generation, failure)
+                            .handle_audio_transport_failure(generation, attempt, failure)
                             .await;
                     });
                 },
@@ -1828,11 +1882,18 @@ impl SessionManager {
             let audio_ingress = pipeline
                 .ingress()
                 .ok_or_else(|| "The bounded audio pipeline is unavailable.".to_string())?;
+            let audio_ingress = {
+                let echo = self.echo_pipeline.lock().unwrap();
+                match echo.as_ref().filter(|(owner, _)| *owner == generation) {
+                    Some((_, echo)) => echo.ingress(source, audio_ingress),
+                    None => audio_ingress,
+                }
+            };
             self.ensure_generation_current(generation)?;
             self.install_pipeline(source, generation, Arc::clone(&pipeline))?;
             client.set_audio_pending_gate(pipeline.pending_pcm_gate());
 
-            let audio_failure_tx = self.capture_failure_channel(generation);
+            let audio_failure_tx = self.capture_failure_channel(generation, attempt);
             self.ensure_generation_current(generation)?;
             self.lane(source)
                 .capture_generation
@@ -1894,12 +1955,16 @@ impl SessionManager {
                 .store(stopping_generation, Ordering::SeqCst);
         }
         let _lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
+        self.retire_audio_attempt(stopping_generation);
         if !self.controller.lock().unwrap().state.status.is_active()
             && self.lanes.iter().all(|lane| {
                 lane.client.lock().unwrap().is_none()
                     && lane.capture_generation.load(Ordering::SeqCst) == NO_GENERATION
             })
         {
+            if let Some(echo) = self.take_echo_pipeline(stopping_generation) {
+                echo.stop();
+            }
             self.stop_health_checks().await;
             self.cancel_recovery().await;
             self.cancel_translation_timeout();
@@ -1926,6 +1991,10 @@ impl SessionManager {
         self.controller.lock().unwrap().begin_stopping();
         self.publish_state();
 
+        if let Some((_, echo)) = self.echo_pipeline.lock().unwrap().as_ref() {
+            echo.seal();
+        }
+
         // Stop capture first so the queue has a fixed upper bound, then give
         // buffers already accepted by the network pipeline a finite drain
         // window before asking the provider to close its session.
@@ -1939,6 +2008,11 @@ impl SessionManager {
                 self.stop_any_capture(AudioSource::System),
                 self.stop_any_capture(AudioSource::Microphone)
             );
+        }
+        if let Some(echo) = self.take_echo_pipeline(stopping_generation) {
+            if !echo.finish(Duration::from_secs(1)).await {
+                pipeline_log!("audio processing drain timed out");
+            }
         }
         for source in [AudioSource::System, AudioSource::Microphone] {
             if stopping_generation != NO_GENERATION {
@@ -2945,10 +3019,12 @@ impl SessionManager {
     async fn handle_capture_failure(
         self: &Arc<Self>,
         generation: u64,
+        attempt: u64,
         failure: SystemAudioCaptureFailure,
     ) {
         self.handle_recoverable_runtime_failure(
             generation,
+            attempt,
             failure.to_string(),
             failure.diagnostic_label(),
         )
@@ -2958,10 +3034,12 @@ impl SessionManager {
     async fn handle_audio_transport_failure(
         self: &Arc<Self>,
         generation: u64,
+        attempt: u64,
         failure: AudioPipelineFailure,
     ) {
         self.handle_recoverable_runtime_failure(
             generation,
+            attempt,
             failure.to_string(),
             failure.diagnostic_label(),
         )
@@ -2971,6 +3049,7 @@ impl SessionManager {
     async fn handle_recoverable_runtime_failure(
         self: &Arc<Self>,
         generation: u64,
+        attempt: u64,
         message: String,
         diagnostic_label: &'static str,
     ) {
@@ -2979,22 +3058,27 @@ impl SessionManager {
         if self.is_paused() || self.active_settings.lock().unwrap().is_none() {
             return;
         }
-        let recovery_owns_attempt = self.is_recovering.load(Ordering::SeqCst);
-        if recovery_owns_attempt {
-            self.recovery_retry_generation
-                .store(generation, Ordering::SeqCst);
-        }
-        if !self.invalidate_generation(generation) {
-            if recovery_owns_attempt {
-                let _ = self.recovery_retry_generation.compare_exchange(
-                    generation,
-                    NO_GENERATION,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                );
+        let recovery_owns_attempt = {
+            let _transition = self.generation_transition.lock().unwrap();
+            if invalidate_audio_attempt_atoms(
+                &self.active_generation,
+                &self.lifecycle_sequence,
+                &mut self.audio_attempt.lock().unwrap(),
+                generation,
+                attempt,
+            )
+            .is_none()
+            {
+                return;
             }
-            return;
-        }
+            self.lifecycle_notify.notify_waiters();
+            let recovering = self.is_recovering.load(Ordering::SeqCst);
+            if recovering {
+                self.recovery_retry_generation
+                    .store(generation, Ordering::SeqCst);
+            }
+            recovering
+        };
         pipeline_log!("runtime stream failed label={}", diagnostic_label);
         self.record_diagnostic_failure(diagnostic_label);
         self.controller.lock().unwrap().begin_connecting();
@@ -3262,14 +3346,18 @@ impl SessionManager {
 
     /// Capacity-one channel through which a native callback reports its first
     /// fatal failure without blocking the real-time audio thread.
-    fn capture_failure_channel(self: &Arc<Self>, generation: u64) -> CaptureFailureSender {
+    fn capture_failure_channel(
+        self: &Arc<Self>,
+        generation: u64,
+        attempt: u64,
+    ) -> CaptureFailureSender {
         let (tx, mut rx) = CaptureFailureSender::channel();
         let self_arc = Arc::clone(self);
         tokio::spawn(async move {
             if let Some(failure) = rx.recv().await {
                 self_arc
                     .clone()
-                    .handle_capture_failure(generation, failure)
+                    .handle_capture_failure(generation, attempt, failure)
                     .await;
             }
         });
@@ -3699,6 +3787,10 @@ impl SessionManager {
     }
 
     async fn cleanup_generation_resources(&self, generation: u64, pumps: EventPumpCleanup) {
+        self.retire_audio_attempt(generation);
+        if let Some(echo) = self.take_echo_pipeline(generation) {
+            echo.stop();
+        }
         for source in [AudioSource::System, AudioSource::Microphone] {
             if let Some(pipeline) = self.take_pipeline_for_generation(source, generation) {
                 pipeline.stop();
@@ -3717,6 +3809,25 @@ impl SessionManager {
             if matches!(pumps, EventPumpCleanup::Abort) {
                 self.stop_pump_for_generation(source, generation);
             }
+        }
+    }
+
+    fn retire_audio_attempt(&self, generation: u64) {
+        let _transition = self.generation_transition.lock().unwrap();
+        let mut owner = self.audio_attempt.lock().unwrap();
+        if generation == NO_GENERATION || owner.is_some_and(|(active, _)| active == generation) {
+            *owner = None;
+        }
+    }
+
+    fn take_echo_pipeline(&self, generation: u64) -> Option<Arc<EchoPipeline>> {
+        let mut slot = self.echo_pipeline.lock().unwrap();
+        if generation == NO_GENERATION
+            || slot.as_ref().is_some_and(|(owner, _)| *owner == generation)
+        {
+            slot.take().map(|(_, echo)| echo)
+        } else {
+            None
         }
     }
 
@@ -3952,6 +4063,45 @@ impl SessionManager {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn audio_attempt_failure_cannot_claim_a_rebuilt_session_with_the_same_generation() {
+        let active = Arc::new(AtomicU64::new(7));
+        let sequence = Arc::new(AtomicU64::new(7));
+        let transition = Arc::new(Mutex::new(Some((7, 100))));
+        let (queued_tx, queued_rx) = tokio::sync::oneshot::channel();
+        let (dispatch_tx, dispatch_rx) = tokio::sync::oneshot::channel();
+        let delayed_failure = {
+            let active = Arc::clone(&active);
+            let sequence = Arc::clone(&sequence);
+            let transition = Arc::clone(&transition);
+            tokio::spawn(async move {
+                // The old native/DSP callback has already reported a failure,
+                // but its receiver has not reached the invalidation boundary.
+                queued_tx.send(()).unwrap();
+                dispatch_rx.await.unwrap();
+                let mut owner = transition.lock().unwrap();
+                invalidate_audio_attempt_atoms(&active, &sequence, &mut owner, 7, 100)
+            })
+        };
+        queued_rx.await.unwrap();
+        {
+            let mut owner = transition.lock().unwrap();
+            *owner = None; // cleanup retires the old attempt under the gate
+            *owner = Some((7, 101)); // settings rebuild keeps generation 7
+        }
+        dispatch_tx.send(()).unwrap();
+        assert_eq!(delayed_failure.await.unwrap(), None);
+        assert_eq!(active.load(Ordering::SeqCst), 7);
+        assert_eq!(sequence.load(Ordering::SeqCst), 7);
+        let mut owner = transition.lock().unwrap();
+        assert_eq!(
+            invalidate_audio_attempt_atoms(&active, &sequence, &mut owner, 7, 101),
+            Some(8)
+        );
+        assert_eq!(*owner, None);
+        assert_eq!(active.load(Ordering::SeqCst), NO_GENERATION);
+    }
 
     #[tokio::test]
     async fn audio_input_switch_seals_old_events_before_resetting_confirmation_ids() {

@@ -1,6 +1,7 @@
 //! Explicitly selected platform audio capture (system audio by default) and the
 //! bounded PCM send pipeline.
 
+pub(crate) mod echo_pipeline;
 pub mod send_pipeline;
 
 /// Local presentation only. Device names never enter support diagnostics.

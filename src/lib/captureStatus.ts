@@ -26,7 +26,7 @@ const copy = {
     off: "Off", minimum: "Keep at least one input on. Enable the other first to switch sources.",
     switchFailed: "Could not switch audio inputs. Check the subtitle status, then try again.",
     switchHelp: "Switching turns recording off. Paused subtitles stay paused.",
-    dualHelp: "Both inputs are recognized separately with their own service usage. Use headphones to avoid duplicate audio.",
+    dualHelp: "Both inputs have separate recognition and usage. Echo cancellation runs when both are on. Use headphones if speaker audio is still picked up.",
   },
   zh: {
     title: "音频输入", system: "系统声音", microphone: "麦克风", output: "系统输出", device: "采集设备",
@@ -40,7 +40,7 @@ const copy = {
     off: "已关闭", minimum: "至少保留一路开启。要更换来源，请先开启另一路。",
     switchFailed: "音频输入未能切换，请查看字幕状态后重试。",
     switchHelp: "切换后录音关闭，暂停状态保留。",
-    dualHelp: "双路分别识别，用量分别计算。建议戴耳机，避免重复收音。",
+    dualHelp: "双路分别识别，用量分别计算，同时开启时自动降低外放回声。仍有重复收音时可佩戴耳机。",
   },
   ja: {
     title: "音声入力", system: "システム音声", microphone: "マイク", output: "システム出力", device: "取得デバイス",
@@ -54,7 +54,7 @@ const copy = {
     off: "オフ", minimum: "入力を一つ以上オンにしてください。切り替えるには、先にもう一方をオンにします。",
     switchFailed: "音声入力を切り替えられませんでした。字幕の状態を確認して再試行してください。",
     switchHelp: "切替で録音はオフになります。一時停止は維持します。",
-    dualHelp: "両方を個別に認識し、利用量も個別に発生します。音の重複を防ぐため、ヘッドホンを使用してください。",
+    dualHelp: "両方を個別に認識し、利用量も個別に発生します。同時にオンのときは自動でエコーを低減します。スピーカーの音が残る場合は、ヘッドホンを使用してください。",
   },
 };
 
