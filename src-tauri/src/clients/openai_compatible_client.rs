@@ -350,10 +350,16 @@ mod tests {
                     .unwrap();
                 ready_tx.send(()).unwrap();
                 let mut buffer = [0; 1];
-                tokio::time::timeout(Duration::from_secs(2), socket.read(&mut buffer))
+                // Cancellation may close TCP with FIN or RST; both prove the
+                // stalled transport ended. Other errors and timeouts still fail.
+                match tokio::time::timeout(Duration::from_secs(2), socket.read(&mut buffer))
                     .await
                     .unwrap()
-                    .unwrap()
+                {
+                    Ok(count) => count,
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => 0,
+                    Err(error) => panic!("unexpected transport close error: {error}"),
+                }
             });
             let task =
                 tokio::spawn(async move { client.translate("Synthetic source", None).await });
