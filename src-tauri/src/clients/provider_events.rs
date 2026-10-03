@@ -26,6 +26,9 @@ struct SequencedEvent {
 /// Lifecycle and service failures remain meaningful across a content clear.
 #[derive(Debug, Clone)]
 pub struct ProviderEvent {
+    /// Connects queue publication to session admission in development traces.
+    /// Locally generated control signals do not have a publication sequence.
+    pub transport_sequence: Option<u64>,
     pub content_revision: u64,
     pub event: LiveTranslateServerEvent,
 }
@@ -48,6 +51,13 @@ pub fn is_content_event(event: &LiveTranslateServerEvent) -> bool {
 }
 
 struct SenderInner {
+    debug_context: Mutex<
+        Option<(
+            crate::core::audio_input::AudioSource,
+            u64,
+            crate::core::development_debug::DebugProducer,
+        )>,
+    >,
     reliable: mpsc::Sender<SequencedEvent>,
     source_draft: watch::Sender<Option<SequencedEvent>>,
     translation_draft: watch::Sender<Option<SequencedEvent>>,
@@ -106,6 +116,7 @@ fn provider_event_channel_with_capacity(
     (
         ProviderEventSender {
             inner: Arc::new(SenderInner {
+                debug_context: Mutex::new(None),
                 reliable: reliable_tx,
                 source_draft: source_tx,
                 translation_draft: translation_tx,
@@ -136,6 +147,67 @@ fn provider_event_channel_with_capacity(
 }
 
 impl ProviderEventSender {
+    pub fn set_debug_context(
+        &self,
+        source: crate::core::audio_input::AudioSource,
+        generation: u64,
+    ) {
+        *self.inner.debug_context.lock().unwrap() = Some((
+            source,
+            generation,
+            crate::core::development_debug::DebugProducer::Provider,
+        ));
+    }
+    pub fn debug_context(&self) -> Option<(crate::core::audio_input::AudioSource, u64)> {
+        self.inner
+            .debug_context
+            .lock()
+            .unwrap()
+            .map(|(source, generation, _)| (source, generation))
+    }
+    pub fn set_recognition_debug_context(
+        &self,
+        source: crate::core::audio_input::AudioSource,
+        generation: u64,
+    ) {
+        *self.inner.debug_context.lock().unwrap() = Some((
+            source,
+            generation,
+            crate::core::development_debug::DebugProducer::Recognition,
+        ));
+    }
+    fn debug_event(
+        &self,
+        event: &LiveTranslateServerEvent,
+        admission: crate::core::development_debug::Admission,
+        sequence: Option<u64>,
+    ) {
+        use crate::core::development_debug::{self as debug, DebugEvent, ProviderObservation};
+        if !debug::is_enabled() {
+            return;
+        }
+        if let Some((source, generation, producer)) = *self.inner.debug_context.lock().unwrap() {
+            crate::development_content::provider(
+                source,
+                generation,
+                self.content_revision(),
+                sequence,
+                producer,
+                event,
+                admission,
+            );
+            let mut observation = ProviderObservation::new(
+                source,
+                generation,
+                self.content_revision(),
+                event,
+                admission,
+            );
+            observation.transport_sequence = sequence;
+            observation.producer = producer;
+            debug::record(DebugEvent::Provider { observation });
+        }
+    }
     pub fn content_revision(&self) -> u64 {
         self.inner.content_revision.load(Ordering::SeqCst)
     }
@@ -181,9 +253,19 @@ impl ProviderEventSender {
         // UI after a newer event.
         let _dispatch = self.inner.dispatch.lock().unwrap();
         if !is_current() {
+            self.debug_event(
+                &event,
+                crate::core::development_debug::Admission::ObsoleteProducer,
+                None,
+            );
             return Ok(());
         }
         if self.inner.failed.load(Ordering::SeqCst) {
+            self.debug_event(
+                &event,
+                crate::core::development_debug::Admission::ProducerBackpressure,
+                None,
+            );
             return Err(ProviderEventSendError::Backpressure);
         }
         if matches!(event, LiveTranslateServerEvent::Ignored { .. }) {
@@ -192,6 +274,13 @@ impl ProviderEventSender {
         // Reject before retaining a draft/queued caption. The fixed error uses
         // the reliable lane so clients that stop on send failure remain visible.
         let rejected_text = !event.text_within_limit();
+        if rejected_text {
+            self.debug_event(
+                &event,
+                crate::core::development_debug::Admission::OversizedText,
+                None,
+            );
+        }
         let event = if rejected_text {
             LiveTranslateServerEvent::text_limit_error()
         } else {
@@ -206,10 +295,28 @@ impl ProviderEventSender {
                 .wrapping_add(1),
             event,
         };
+        self.debug_event(
+            &event.event,
+            match &event.event {
+                LiveTranslateServerEvent::SourceDraft { .. }
+                | LiveTranslateServerEvent::SourceUtteranceDraft { .. }
+                | LiveTranslateServerEvent::TranslationDraft(_)
+                | LiveTranslateServerEvent::UtteranceText {
+                    is_final: false, ..
+                } => crate::core::development_debug::Admission::QueueDraftAttempt,
+                _ => crate::core::development_debug::Admission::QueueReliableAttempt,
+            },
+            Some(event.sequence),
+        );
         let result = match &event.event {
             LiveTranslateServerEvent::SourceDraft { .. }
             | LiveTranslateServerEvent::SourceUtteranceDraft { .. } => {
                 if self.inner.source_draft.receiver_count() == 0 {
+                    self.debug_event(
+                        &event.event,
+                        crate::core::development_debug::Admission::ProducerClosed,
+                        Some(event.sequence),
+                    );
                     return Err(ProviderEventSendError::Closed);
                 }
                 self.inner.source_draft.send_replace(Some(event));
@@ -217,6 +324,11 @@ impl ProviderEventSender {
             }
             LiveTranslateServerEvent::TranslationDraft(_) => {
                 if self.inner.translation_draft.receiver_count() == 0 {
+                    self.debug_event(
+                        &event.event,
+                        crate::core::development_debug::Admission::ProducerClosed,
+                        Some(event.sequence),
+                    );
                     return Err(ProviderEventSendError::Closed);
                 }
                 self.inner.translation_draft.send_replace(Some(event));
@@ -237,6 +349,11 @@ impl ProviderEventSender {
                     UtteranceRole::Translation => &self.inner.translation_draft,
                 };
                 if lane.receiver_count() == 0 {
+                    self.debug_event(
+                        &event.event,
+                        crate::core::development_debug::Admission::ProducerClosed,
+                        Some(event.sequence),
+                    );
                     return Err(ProviderEventSendError::Closed);
                 }
                 lane.send_replace(Some(event));
@@ -244,8 +361,20 @@ impl ProviderEventSender {
             }
             _ => match self.inner.reliable.try_send(event) {
                 Ok(()) => Ok(()),
-                Err(mpsc::error::TrySendError::Closed(_)) => Err(ProviderEventSendError::Closed),
-                Err(mpsc::error::TrySendError::Full(_)) => {
+                Err(mpsc::error::TrySendError::Closed(event)) => {
+                    self.debug_event(
+                        &event.event,
+                        crate::core::development_debug::Admission::ProducerClosed,
+                        Some(event.sequence),
+                    );
+                    Err(ProviderEventSendError::Closed)
+                }
+                Err(mpsc::error::TrySendError::Full(event)) => {
+                    self.debug_event(
+                        &event.event,
+                        crate::core::development_debug::Admission::ProducerBackpressureResult,
+                        Some(event.sequence),
+                    );
                     if !self.inner.failed.swap(true, Ordering::SeqCst) {
                         self.inner.overflow.send_replace(true);
                     }
@@ -325,6 +454,7 @@ impl ProviderEventReceiver {
 
     fn control_event(&self, event: LiveTranslateServerEvent) -> ProviderEvent {
         ProviderEvent {
+            transport_sequence: None,
             content_revision: self.content_revision.load(Ordering::SeqCst),
             event,
         }
@@ -440,6 +570,7 @@ impl ProviderEventReceiver {
             self.last_delivered_sequence = self.last_delivered_sequence.max(event.sequence);
         }
         ProviderEvent {
+            transport_sequence: Some(event.sequence),
             content_revision: event.content_revision,
             event: event.event,
         }
@@ -469,6 +600,7 @@ impl ProviderEventReceiver {
         };
         self.last_delivered_sequence = self.last_delivered_sequence.max(event.sequence);
         Some(ProviderEvent {
+            transport_sequence: Some(event.sequence),
             content_revision: event.content_revision,
             event: event.event,
         })
@@ -516,6 +648,59 @@ fn overflow_event() -> LiveTranslateServerEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn admission_preserves_queue_identity_across_reliable_draft_and_content_boundaries() {
+        let (sender, mut receiver) = provider_event_channel();
+        sender
+            .send(LiveTranslateServerEvent::TranslationStarted)
+            .unwrap();
+        sender
+            .send(LiveTranslateServerEvent::TranslationDraft(
+                "Synthetic draft".into(),
+            ))
+            .unwrap();
+        let reliable = receiver.recv_with_revision().await.unwrap();
+        let draft = receiver.recv_with_revision().await.unwrap();
+        assert_eq!(reliable.transport_sequence, Some(1));
+        assert_eq!(draft.transport_sequence, Some(2));
+        assert_eq!(draft.content_revision, 0);
+        sender.advance_content_revision();
+        sender
+            .send(LiveTranslateServerEvent::TranslationFinal(
+                "Synthetic final".into(),
+            ))
+            .unwrap();
+        let next = receiver.recv_with_revision().await.unwrap();
+        assert_eq!(next.transport_sequence, Some(3));
+        assert_eq!(next.content_revision, 1);
+    }
+
+    #[tokio::test]
+    async fn generated_overflow_has_no_fabricated_queue_identity() {
+        let (sender, mut receiver) = provider_event_channel_with_capacity(1);
+        sender
+            .send(LiveTranslateServerEvent::TranslationStarted)
+            .unwrap();
+        assert_eq!(
+            sender.send(LiveTranslateServerEvent::SessionFinished),
+            Err(ProviderEventSendError::Backpressure)
+        );
+        let overflow = receiver.recv_with_revision().await.unwrap();
+        assert_eq!(overflow.transport_sequence, None);
+        assert!(matches!(
+            overflow.event,
+            LiveTranslateServerEvent::Error { .. }
+        ));
+        assert_eq!(
+            receiver
+                .recv_with_revision()
+                .await
+                .unwrap()
+                .transport_sequence,
+            Some(1)
+        );
+    }
 
     #[tokio::test]
     async fn a_previous_identified_final_keeps_the_newer_sentence_draft_but_not_its_own() {

@@ -168,6 +168,13 @@ struct MeasuredTranslation {
     request_ms: Option<u64>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct TranslationEvidenceIdentity {
+    source_utterance_id: Option<u64>,
+    pair_id: Option<u64>,
+    final_boundary: Option<&'static str>,
+}
+
 struct Inner {
     committer: ASRDraftCommitter,
     latest_draft_language: Option<String>,
@@ -608,6 +615,9 @@ impl HighQualityTranslationClient {
 
         let task_id = Uuid::new_v4().simple().to_string();
         let (asr_tx, asr_rx) = provider_event_channel();
+        if let Some((source, generation)) = self.events.debug_context() {
+            asr_tx.set_recognition_debug_context(source, generation);
+        }
         self.asr_client.set_event_sender(asr_tx).await;
         self.asr_client
             .connect(&task_id)
@@ -1255,6 +1265,11 @@ impl HighQualityTranslationClient {
                 deadline,
                 partial_handler,
                 TranslationWorkOwner::Preview(preview_id),
+                TranslationEvidenceIdentity {
+                    source_utterance_id,
+                    pair_id: None,
+                    final_boundary: None,
+                },
             )
             .await;
 
@@ -1655,6 +1670,11 @@ impl HighQualityTranslationClient {
                     deadline,
                     partial_handler,
                     TranslationWorkOwner::Final(worker_id),
+                    TranslationEvidenceIdentity {
+                        source_utterance_id: request.source_utterance_id,
+                        pair_id: Some(request.utterance_revision),
+                        final_boundary: Some(request.boundary.label()),
+                    },
                 )
                 .await
             };
@@ -1989,6 +2009,7 @@ impl HighQualityTranslationClient {
         deadline: tokio::time::Instant,
         on_partial: PartialHandler,
         owner: TranslationWorkOwner,
+        identity: TranslationEvidenceIdentity,
     ) -> Result<MeasuredTranslation, QwenMTClientError> {
         if !self.mt.supports_reported_source(language) {
             return Err(QwenMTClientError::UnsupportedSource);
@@ -2032,19 +2053,42 @@ impl HighQualityTranslationClient {
                 attempt,
                 text.chars().count()
             );
-            let result = tokio::time::timeout(remaining, async {
-                if self.streams_finals {
-                    self.mt
-                        .translate_streaming(text, source_override, move |partial| {
-                            (handler)(partial)
-                        })
-                        .await
-                } else {
-                    self.mt.translate(text, source_override).await
+            let context = self.events.debug_context().map(|(source, generation)| {
+                crate::development_content::RequestContext {
+                    source,
+                    generation,
+                    revision: self.content_revision(),
+                    owner: match owner {
+                        TranslationWorkOwner::Preview(id) | TranslationWorkOwner::Final(id) => id,
+                    },
+                    preview: matches!(owner, TranslationWorkOwner::Preview(_)),
+                    attempt,
+                    request_id: 0,
+                    source_utterance_id: identity.source_utterance_id,
+                    pair_id: identity.pair_id,
+                    final_boundary: identity.final_boundary,
                 }
-            })
+            });
+            let evidence = crate::development_content::begin_attempt(context);
+            let result = tokio::time::timeout(
+                remaining,
+                crate::development_content::scope_attempt(&evidence, async {
+                    if self.streams_finals {
+                        self.mt
+                            .translate_streaming(text, source_override, move |partial| {
+                                (handler)(partial)
+                            })
+                            .await
+                    } else {
+                        self.mt.translate(text, source_override).await
+                    }
+                }),
+            )
             .await
             .unwrap_or(Err(QwenMTClientError::RequestTimedOut));
+            // Persist the decoded attempt outcome before owner filtering. A
+            // successful reply discarded by Clear/replacement is still evidence.
+            evidence.complete(&result);
 
             match result {
                 Ok(translation) => {
@@ -2905,6 +2949,7 @@ mod tests {
                 tokio::time::Instant::now() + Duration::from_secs(1),
                 Arc::new(|_| {}),
                 TranslationWorkOwner::Preview(999),
+                TranslationEvidenceIdentity::default(),
             )
             .await
             .err()
@@ -6075,15 +6120,22 @@ mod tests {
             let mut controller = crate::core::session::TranslationSessionController::default();
             controller.archive_mut().begin(true, 0);
             let mut received_confirmation_ids = Vec::new();
+            let mut confirmed_source_ids = Vec::new();
             while let Ok(event) = confirmed_events.try_recv() {
-                let LiveTranslateServerEvent::SubtitleConfirmedPair { utterance_id, .. } = &event
+                let LiveTranslateServerEvent::SubtitleConfirmedPair {
+                    utterance_id,
+                    source_utterance_id,
+                    ..
+                } = &event
                 else {
                     panic!("expected only completed confirmations: {event:?}");
                 };
                 received_confirmation_ids.push(*utterance_id);
+                confirmed_source_ids.push(*source_utterance_id);
                 controller.handle(event);
             }
             assert_eq!(received_confirmation_ids, [1, 2]);
+            assert_eq!(confirmed_source_ids, [Some(1), Some(2)]);
             assert_eq!(controller.state.subtitles.history.len(), 2);
             assert_eq!(controller.archive().count(), 2);
             client.disconnect().await;

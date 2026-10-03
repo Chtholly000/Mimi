@@ -68,6 +68,8 @@ pub enum StatusPayload {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStateEvent {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debug_snapshot_id: Option<u64>,
     pub status: StatusPayload,
     #[serde(rename = "isActive")]
     pub is_active: bool,
@@ -767,6 +769,7 @@ impl From<&TranslationSessionState> for SessionStateEvent {
             },
         };
         Self {
+            debug_snapshot_id: None,
             is_active: state.status.is_active(),
             status,
             is_paused: false,
@@ -789,6 +792,16 @@ impl From<&TranslationSessionState> for SessionStateEvent {
 
 fn status_should_show_overlay(status: &SessionStatus) -> bool {
     status.is_active() || matches!(status, SessionStatus::Error(_))
+}
+
+/// Stop is a completion boundary: retain normal diagnostic scheduling and
+/// publish the fully drained state before the caller can seal evidence or quit.
+async fn publish_stop_boundary(
+    request_publish: impl FnOnce(),
+    publish_now: impl Future<Output = ()>,
+) {
+    request_publish();
+    publish_now.await;
 }
 
 /// Content lives in the local journal. Only size/limit metadata stays here.
@@ -1830,6 +1843,7 @@ impl SessionManager {
         Box::pin(async move {
             // Create the client and consume its events through this manager.
             let (event_tx, mut event_rx) = provider_event_channel();
+            event_tx.set_debug_context(source, generation);
             let new_client = TranslationClient::new(&configuration, event_tx).map_err(|error| {
                 pipeline_log!(
                     "provider client creation failed label={}",
@@ -1874,7 +1888,10 @@ impl SessionManager {
                 .client_for_generation(source, generation)
                 .ok_or_else(|| SESSION_START_CANCELLED.to_string())?;
             let connect_result = self
-                .run_while_generation_current(generation, client.connect())
+                .run_while_generation_current(
+                    generation,
+                    crate::development_audio::scope(source, generation, client.connect()),
+                )
                 .await;
             let connect_result = match connect_result {
                 Ok(result) => result,
@@ -1915,7 +1932,13 @@ impl SessionManager {
                         );
                         let client = manager.client_for_generation(source, generation);
                         match client {
-                            Some(client) => client.send_audio(&data).await.map_err(|_| ()),
+                            Some(client) => crate::development_audio::scope(
+                                source,
+                                generation,
+                                client.send_audio(&data),
+                            )
+                            .await
+                            .map_err(|_| ()),
                             None => Err(()),
                         }
                     })
@@ -2033,7 +2056,7 @@ impl SessionManager {
             if self.persist_current_history().is_err() {
                 pipeline_log!("session history save failed label=write_failed");
             }
-            self.publish_state();
+            publish_stop_boundary(|| self.publish_state(), self.publish_state_now()).await;
             return;
         }
         pipeline_log!("session stop requested");
@@ -2088,9 +2111,12 @@ impl SessionManager {
                 self.take_client_for_generation(source, stopping_generation)
             };
             if let Some(client) = taken {
-                if tokio::time::timeout(Duration::from_secs(6), client.finish())
-                    .await
-                    .is_err()
+                if tokio::time::timeout(
+                    Duration::from_secs(6),
+                    crate::development_audio::scope(source, stopping_generation, client.finish()),
+                )
+                .await
+                .is_err()
                 {
                     pipeline_log!("provider finish timed out");
                     let _ = tokio::time::timeout(Duration::from_secs(1), client.disconnect()).await;
@@ -2113,7 +2139,7 @@ impl SessionManager {
         if self.persist_current_history().is_err() {
             pipeline_log!("session history save failed label=write_failed");
         }
-        self.publish_state();
+        publish_stop_boundary(|| self.publish_state(), self.publish_state_now()).await;
         pipeline_log!("session stopped");
     }
 
@@ -2962,15 +2988,42 @@ impl SessionManager {
         envelope: ProviderEvent,
     ) {
         let content = self.subtitle_content_lock.lock().await;
+        let debug_event = |event: &LiveTranslateServerEvent, admission| {
+            if crate::core::development_debug::is_enabled() {
+                let mut observation = crate::core::development_debug::ProviderObservation::new(
+                    source,
+                    generation,
+                    envelope.content_revision,
+                    event,
+                    admission,
+                );
+                observation.transport_sequence = envelope.transport_sequence;
+                crate::core::development_debug::record(
+                    crate::core::development_debug::DebugEvent::Provider { observation },
+                );
+            }
+        };
         if !subtitle_content_is_current(
             generation,
             &envelope,
             *self.lane(source).subtitle_content_revision.lock().unwrap(),
         ) {
+            debug_event(
+                &envelope.event,
+                crate::core::development_debug::Admission::StaleContent,
+            );
             return;
         }
         let mut event = envelope.event;
         if !self.accepts_event(generation, &event) || self.is_paused() {
+            debug_event(
+                &event,
+                if self.is_paused() {
+                    crate::core::development_debug::Admission::Paused
+                } else {
+                    crate::core::development_debug::Admission::StaleGeneration
+                },
+            );
             return;
         }
 
@@ -2981,6 +3034,10 @@ impl SessionManager {
             event,
             LiveTranslateServerEvent::SessionCreated | LiveTranslateServerEvent::SessionUpdated
         ) {
+            debug_event(
+                &event,
+                crate::core::development_debug::Admission::SetupAcknowledgement,
+            );
             return;
         }
 
@@ -2999,6 +3056,10 @@ impl SessionManager {
                 source_text,
                 translation,
             ) {
+                debug_event(
+                    &event,
+                    crate::core::development_debug::Admission::DuplicateFinal,
+                );
                 return;
             }
         }
@@ -3016,8 +3077,13 @@ impl SessionManager {
         }
 
         if !self.record_accepted_provider_event(generation, &event) {
+            debug_event(
+                &event,
+                crate::core::development_debug::Admission::StaleGeneration,
+            );
             return;
         }
+        debug_event(&event, crate::core::development_debug::Admission::Accepted);
 
         if let LiveTranslateServerEvent::Error { code, message } = &event {
             if provider_error_is_retryable(code) {
@@ -3094,9 +3160,22 @@ impl SessionManager {
         }
         let newly_confirmed = {
             let mut controller = self.controller.lock().unwrap();
+            let debug_before = crate::core::development_debug::is_enabled()
+                .then(|| controller.state.subtitles.clone());
             let previous = controller.state.subtitles.history.last().cloned();
             controller.handle_from(source, event.clone());
             apply_terminal_event_to_all_sources(&mut controller, &event);
+            if let Some(before) = debug_before {
+                crate::core::development_debug::record(
+                    crate::core::development_debug::DebugEvent::Reduced {
+                        source,
+                        generation,
+                        changed: before != controller.state.subtitles,
+                        before: (&before).into(),
+                        after: (&controller.state.subtitles).into(),
+                    },
+                );
+            }
             let current = controller.state.subtitles.history.last();
             confirmed_history_tail_changed(previous.as_ref(), current)
                 .then(|| current.cloned())
@@ -4111,6 +4190,8 @@ impl SessionManager {
             event.translation_latency_ms = translation_latency_ms;
             event.translation_latency_kind = translation_latency_kind;
         }
+        event.debug_snapshot_id =
+            crate::core::development_debug::record_snapshot(generation, &event.subtitles);
         event
     }
 
@@ -4171,6 +4252,7 @@ impl SessionManager {
         // captured before Clear cannot be emitted after the cleared one.
         let _content = self.subtitle_content_lock.lock().await;
         let event = self.current_state_event();
+        crate::development_debugger::record_snapshot(&event, &self.settings);
         self.write_ui_test_session_state(&event);
         let should_show_overlay =
             event.is_active || matches!(&event.status, StatusPayload::Error { .. });
@@ -4178,7 +4260,18 @@ impl SessionManager {
         let preferences = self.settings.preferences();
         let click_through =
             preferences.overlay_locked || preferences.subtitle_blends_with_background;
-        let _ = self.app.emit("session-state", event);
+        let debug_snapshot_id = event.debug_snapshot_id;
+        let delivered = self.app.emit("session-state", &event).is_ok();
+        if let Some(snapshot_id) = debug_snapshot_id {
+            crate::core::development_debug::record(
+                crate::core::development_debug::DebugEvent::Published {
+                    snapshot_id,
+                    delivered,
+                    overlay_requested: should_show_overlay,
+                    collapsed: is_collapsed,
+                },
+            );
+        }
         OverlayWindowManager::sync_presentation(
             &self.app,
             should_show_overlay,
@@ -4211,6 +4304,7 @@ impl SessionManager {
     /// preference writes so no window keeps a stale selection, and when a
     /// window re-shows in case its webview missed events while hidden).
     pub fn publish_settings(&self) {
+        crate::commands::sync_overlay_minimum(&self.app);
         let _ = self.app.emit(
             "settings-changed",
             crate::commands::SettingsSnapshotPayload::from_store(&self.settings),
@@ -4234,6 +4328,8 @@ impl SessionManager {
         // UI QA. These are explicitly synthetic samples, never captured audio.
         let preferences = self.settings.preferences();
         let dual_fixture = std::env::var("MIMI_UI_TEST_DUAL_SUBTITLES").as_deref() == Ok("1");
+        let dual_live_fixture =
+            std::env::var("MIMI_UI_TEST_DUAL_LIVE_SUBTITLES").as_deref() == Ok("1");
         self.controller
             .lock()
             .unwrap()
@@ -4260,7 +4356,13 @@ impl SessionManager {
                 );
             }
         }
-        if preferences.record_session_audio {
+        if dual_live_fixture {
+            seed_ui_test_live_subtitles(
+                &mut self.controller.lock().unwrap(),
+                preferences.audio_input,
+            );
+        }
+        if preferences.record_session_audio && !dual_live_fixture {
             for &source in preferences.audio_input.sources() {
                 let (slot, frequency) = match source {
                     AudioSource::System => (0, 440.0),
@@ -4279,6 +4381,59 @@ impl SessionManager {
         }
         self.publish_state();
         pipeline_log!("ui-test synthetic session listening");
+    }
+}
+
+/// Only the credential-free UI-test start path calls this synthetic fixture.
+/// Preserve the selected sources and publish both raw and complete paired
+/// previews so native geometry QA works for independent and atomic routes.
+fn seed_ui_test_live_subtitles(
+    controller: &mut TranslationSessionController,
+    audio_input: AudioInput,
+) {
+    for &audio_source in audio_input.sources() {
+        let (source_id, source, translation) = match audio_source {
+            AudioSource::System => (10_001, "System live test", "系统字幕测试"),
+            AudioSource::Microphone => (10_002, "Microphone live test", "麦克风字幕测试"),
+        };
+        controller.handle_from(
+            audio_source,
+            LiveTranslateServerEvent::SourceUtteranceDraft {
+                utterance_id: source_id,
+                text: source.into(),
+                language: Some("en".into()),
+            },
+        );
+        // Use the actual reducer stamp, including its current display epoch.
+        let Some(owner) = controller
+            .state
+            .subtitles
+            .tracks
+            .iter()
+            .find(|track| track.audio_source == audio_source)
+            .and_then(|track| track.source.utterance_id.clone())
+        else {
+            continue;
+        };
+        controller.handle_from(
+            audio_source,
+            LiveTranslateServerEvent::UtteranceText {
+                utterance_id: owner,
+                role: UtteranceRole::Translation,
+                text: translation.into(),
+                is_final: false,
+                language: None,
+            },
+        );
+        controller.handle_from(
+            audio_source,
+            LiveTranslateServerEvent::SubtitlePreviewPair {
+                source_utterance_id: Some(source_id),
+                source: source.into(),
+                language: Some("en".into()),
+                translation: translation.into(),
+            },
+        );
     }
 }
 
@@ -5144,6 +5299,7 @@ mod lifecycle_tests {
             assert!(subtitle_content_is_current(
                 generation,
                 &ProviderEvent {
+                    transport_sequence: None,
                     content_revision: 0,
                     event
                 },
@@ -5489,6 +5645,44 @@ mod lifecycle_tests {
     }
 
     #[test]
+    fn ui_live_fixture_keeps_selected_sources_paired_without_confirming_history() {
+        for audio_input in [AudioInput::System, AudioInput::Microphone, AudioInput::Both] {
+            let mut controller = TranslationSessionController::default();
+            controller.set_audio_input(audio_input);
+            controller.archive_mut().begin(true, 1);
+            controller.did_connect();
+            seed_ui_test_live_subtitles(&mut controller, audio_input);
+
+            let subtitles = &controller.state.subtitles;
+            let sources: Vec<_> = subtitles
+                .tracks
+                .iter()
+                .map(|track| track.audio_source)
+                .collect();
+            assert_eq!(sources, audio_input.sources());
+            assert!(subtitles.history.is_empty());
+            assert_eq!(controller.archive().page("", 0).total, 0);
+            for track in &subtitles.tracks {
+                let pair = track.preview_pair.as_ref().unwrap();
+                assert!(!track.source.is_final);
+                assert!(!track.translation.is_final);
+                assert!(track.source.utterance_id.is_some());
+                assert_eq!(track.source.utterance_id, track.translation.utterance_id);
+                assert_eq!(track.source.utterance_id, pair.utterance_id);
+                assert_eq!(track.source.text, pair.source);
+                assert_eq!(track.translation.text, pair.translation);
+                assert!(track.history.is_empty());
+            }
+            if subtitles.tracks.len() == 2 {
+                assert_ne!(
+                    subtitles.tracks[0].source.utterance_id,
+                    subtitles.tracks[1].source.utterance_id
+                );
+            }
+        }
+    }
+
+    #[test]
     fn ui_export_fixture_survives_stop_and_repeated_finalization_but_resets_on_new_start() {
         let mut controller = TranslationSessionController::default();
         controller.archive_mut().begin(true, 1);
@@ -5723,6 +5917,77 @@ mod lifecycle_tests {
         drop(owner);
         assert!(try_begin_start(&in_progress));
         in_progress.store(false, Ordering::SeqCst);
+    }
+
+    #[tokio::test]
+    async fn stop_publication_waits_until_the_last_accepted_tail_is_published() {
+        let controller = Arc::new(Mutex::new(TranslationSessionController::default()));
+        controller.lock().unwrap().did_connect();
+        controller.lock().unwrap().begin_stopping();
+        let published = Arc::new(Mutex::new(vec![SessionStateEvent::from(
+            &controller.lock().unwrap().state,
+        )]));
+        assert!(published.lock().unwrap()[0].subtitles.history.is_empty());
+        let tail = LiveTranslateServerEvent::SubtitleConfirmedPair {
+            source_utterance_id: Some(7),
+            utterance_id: 1,
+            source: "Synthetic stop tail".into(),
+            translation: "Synthetic final translation".into(),
+            language: Some("en".into()),
+        };
+        assert!(generation_accepts_event(NO_GENERATION, 9, 9, &tail));
+        controller
+            .lock()
+            .unwrap()
+            .handle_from(AudioSource::System, tail);
+        controller.lock().unwrap().did_stop();
+
+        // Hold the same kind of content gate used by publish_state_now. A
+        // coalesced request alone cannot complete stop while delivery is gated.
+        let content = Arc::new(TokioMutex::new(()));
+        let held = Arc::clone(&content).lock_owned().await;
+        let (requested, request_seen) = tokio::sync::oneshot::channel();
+        let publication_controller = Arc::clone(&controller);
+        let publication_output = Arc::clone(&published);
+        let mut stopped = tokio::spawn(async move {
+            publish_stop_boundary(|| requested.send(()).unwrap(), async move {
+                let _content = content.lock().await;
+                publication_output
+                    .lock()
+                    .unwrap()
+                    .push(SessionStateEvent::from(
+                        &publication_controller.lock().unwrap().state,
+                    ));
+            })
+            .await;
+        });
+        request_seen.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut stopped)
+                .await
+                .is_err(),
+            "stop returned while only the old stopping/history=0 snapshot was published"
+        );
+        // No std controller guard is held while waiting for publication.
+        assert!(controller.try_lock().is_ok());
+        drop(held);
+        tokio::time::timeout(Duration::from_millis(200), stopped)
+            .await
+            .unwrap()
+            .unwrap();
+        let output = published.lock().unwrap();
+        assert_eq!(output.len(), 2);
+        let final_state = &output[1];
+        assert!(matches!(final_state.status, StatusPayload::Idle));
+        assert_eq!(final_state.subtitles.history.len(), 1);
+        assert_eq!(
+            final_state.subtitles.history[0].source,
+            "Synthetic stop tail"
+        );
+        assert_eq!(
+            final_state.subtitles.history[0].translation,
+            "Synthetic final translation"
+        );
     }
 
     #[test]

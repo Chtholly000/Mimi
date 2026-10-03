@@ -280,6 +280,12 @@ impl Audio3ASRClient {
             )
         }
         .map_err(|_| Audio3ASRClientError::NotConnected)?;
+        crate::development_content::asr_request(
+            events
+                .debug_context()
+                .map(|(source, generation)| (source, generation, events.content_revision())),
+            &run_task,
+        );
         *self.task_id.lock().await = Some(task_id.to_string());
 
         let mut request = self
@@ -328,6 +334,7 @@ impl Audio3ASRClient {
         let inner = self.inner.clone();
         let source_language = self.source_language;
         let expected_task_id = self.custom_endpoint.then(|| task_id.to_owned());
+        let evidence_context = crate::development_audio::context();
         let task = tokio::spawn(async move {
             let mut heartbeat = tokio::time::interval(SILENCE_INTERVAL);
             heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -340,7 +347,7 @@ impl Audio3ASRClient {
                     _ = heartbeat.tick(), if silence_heartbeat && inner.task_started.load(Ordering::SeqCst)
                         && !inner.task_finished.load(Ordering::SeqCst)
                         && !inner.finishing.load(Ordering::SeqCst) => {
-                        if send_silence_if_idle(&inner).await.is_err() {
+                        if crate::development_audio::scope_context(evidence_context, send_silence_if_idle(&inner)).await.is_err() {
                             fail_transport(&inner, &events, generation).await;
                             return;
                         }
@@ -508,7 +515,9 @@ impl Audio3ASRClient {
             let Some(sink) = sink.as_mut() else {
                 return Err(Audio3ASRClientError::NotConnected);
             };
-            sink.send(Message::Binary(pcm_data.to_vec().into()))
+            let evidence = crate::development_audio::begin_pcm(pcm_data, 16_000);
+            evidence
+                .observe(sink.send(Message::Binary(pcm_data.to_vec().into())))
                 .await
                 .map_err(|_| Audio3ASRClientError::TransportFailure)?;
             *self.inner.last_audio_sent.lock().await = tokio::time::Instant::now();
@@ -660,7 +669,9 @@ async fn send_silence_if_idle(inner: &Inner) -> Result<(), Audio3ASRClientError>
         if pending_pcm {
             return Ok(());
         }
-        sink.send(Message::Binary(SILENCE_PCM.to_vec().into()))
+        let evidence = crate::development_audio::begin_pcm(&SILENCE_PCM, 16_000);
+        evidence
+            .observe(sink.send(Message::Binary(SILENCE_PCM.to_vec().into())))
             .await
             .map_err(|_| Audio3ASRClientError::TransportFailure)?;
         *inner.last_audio_sent.lock().await = tokio::time::Instant::now();
