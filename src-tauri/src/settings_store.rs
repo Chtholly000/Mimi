@@ -1042,7 +1042,7 @@ impl SettingsStore {
         if let Err(error) = deleted {
             let secret_restored = previous_secret
                 .as_deref()
-                .map(|value| self.save_api_key_for_profile(&profile, value))
+                .map(|value| self.save_api_key_for_profile(&profile, value, false))
                 .transpose()
                 .is_ok();
             if self.persist_preferences_value(&previous_prefs).is_err() {
@@ -1050,7 +1050,7 @@ impl SettingsStore {
             }
             let destination_restored = previous_destination
                 .as_deref()
-                .map(|value| self.write_destination_value(&profile, Some(value)))
+                .map(|value| self.write_destination_value(&profile, Some(value), false))
                 .transpose()
                 .is_ok();
             if !secret_restored || !destination_restored {
@@ -1064,7 +1064,7 @@ impl SettingsStore {
             // visible profile with a missing key, never an unreachable secret.
             let secret_restored = previous_secret
                 .as_deref()
-                .map(|value| self.save_api_key_for_profile(&profile, value))
+                .map(|value| self.save_api_key_for_profile(&profile, value, false))
                 .transpose()
                 .is_ok();
             if self.persist_preferences_value(&previous_prefs).is_err() {
@@ -1072,7 +1072,7 @@ impl SettingsStore {
             }
             let destination_restored = previous_destination
                 .as_deref()
-                .map(|value| self.write_destination_value(&profile, Some(value)))
+                .map(|value| self.write_destination_value(&profile, Some(value), false))
                 .transpose()
                 .is_ok();
             if !secret_restored || !destination_restored {
@@ -1335,7 +1335,7 @@ impl SettingsStore {
         let value = credentials
             .encode_for_keychain(profile.provider)
             .map_err(|error| error.to_string())?;
-        self.save_api_key_for_profile(&profile, &value)
+        self.save_api_key_for_profile(&profile, &value, true)
     }
 
     fn destination_account(profile: &ServiceProfile) -> String {
@@ -1361,12 +1361,18 @@ impl SettingsStore {
         &self,
         profile: &ServiceProfile,
         value: Option<&str>,
+        allow_collection_creation: bool,
     ) -> Result<(), String> {
         let account = Self::destination_account(profile);
         match value {
             Some(value) => {
-                self.save_secret(self.profile_keychain_service, &account, value, true)
-                    .map_err(SecretStoreError::public_error)?;
+                self.save_secret(
+                    self.profile_keychain_service,
+                    &account,
+                    value,
+                    allow_collection_creation,
+                )
+                .map_err(SecretStoreError::public_error)?;
                 let verified = self
                     .load_secret_uncached(self.profile_keychain_service, &account)
                     .map_err(SecretStoreError::public_error)?;
@@ -1563,9 +1569,9 @@ impl SettingsStore {
         if previous.as_deref() == Some(value.as_str()) {
             return Ok(());
         }
-        if let Err(error) = self.save_api_key_for_profile(profile, &value) {
+        if let Err(error) = self.save_api_key_for_profile(profile, &value, true) {
             let restored = match previous {
-                Some(value) => self.save_api_key_for_profile(profile, &value),
+                Some(value) => self.save_api_key_for_profile(profile, &value, false),
                 None => self.delete_api_key_for_profile(profile),
             };
             if restored.is_err() {
@@ -1690,7 +1696,7 @@ impl SettingsStore {
                 self.persist_preferences_value(&next_prefs)?;
             }
             if destination_changed {
-                self.write_destination_value(profile, destination_value.as_deref())?;
+                self.write_destination_value(profile, destination_value.as_deref(), true)?;
             }
             self.persist_catalog_value(&next)
         })();
@@ -1700,7 +1706,7 @@ impl SettingsStore {
             }
             if destination_changed
                 && self
-                    .write_destination_value(profile, previous_destination.as_deref())
+                    .write_destination_value(profile, previous_destination.as_deref(), false)
                     .is_err()
             {
                 tracing::warn!("credential update rollback failed label=custom_text_destination");
@@ -1959,10 +1965,10 @@ impl SettingsStore {
                 self.persist_preferences_value(&next_prefs)?;
             }
             if destination_changed {
-                self.write_destination_value(profile, destination_value.as_deref())?;
+                self.write_destination_value(profile, destination_value.as_deref(), true)?;
             }
             if key_changed {
-                self.save_api_key_for_profile(profile, &key_value)?;
+                self.save_api_key_for_profile(profile, &key_value, true)?;
             }
             self.persist_catalog_value(&next)
         })();
@@ -1973,14 +1979,14 @@ impl SettingsStore {
             // Restore in place, never delete/recreate an existing key or widen its ACL.
             if destination_changed
                 && self
-                    .write_destination_value(profile, previous_destination.as_deref())
+                    .write_destination_value(profile, previous_destination.as_deref(), false)
                     .is_err()
             {
                 tracing::warn!("credential update rollback failed label=text_destination");
             }
             if key_changed {
                 let rollback = match previous {
-                    Some(previous) => self.save_api_key_for_profile(profile, &previous),
+                    Some(previous) => self.save_api_key_for_profile(profile, &previous, false),
                     None => self.delete_api_key_for_profile(profile),
                 };
                 if rollback.is_err() {
@@ -2003,12 +2009,12 @@ impl SettingsStore {
         self.require_writable_credentials()?;
         let destination = self.destination_value(profile)?;
         if destination.is_some() {
-            self.write_destination_value(profile, None)?;
+            self.write_destination_value(profile, None, false)?;
         }
         if let Err(error) = self.delete_api_key_for_profile(profile) {
             if let Some(destination) = destination {
                 if self
-                    .write_destination_value(profile, Some(&destination))
+                    .write_destination_value(profile, Some(&destination), false)
                     .is_err()
                 {
                     tracing::warn!("credential delete rollback failed label=text_destination");
@@ -2389,10 +2395,16 @@ impl SettingsStore {
         &self,
         profile: &ServiceProfile,
         value: &str,
+        allow_collection_creation: bool,
     ) -> Result<(), String> {
         let account = credential_account(profile);
-        self.save_secret(self.profile_keychain_service, &account, value, true)
-            .map_err(SecretStoreError::public_error)?;
+        self.save_secret(
+            self.profile_keychain_service,
+            &account,
+            value,
+            allow_collection_creation,
+        )
+        .map_err(SecretStoreError::public_error)?;
         let verified = self
             .load_secret_uncached(self.profile_keychain_service, &account)
             .map_err(SecretStoreError::public_error)?;

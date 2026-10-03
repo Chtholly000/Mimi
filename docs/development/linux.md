@@ -156,7 +156,7 @@ bits for owner, group, and other on both launchers and `usr/bin/mimi` before
 running the existing tray-free X11 smoke tests. It also checks the bundled
 `libGLESv2.so.2` and its copyright notice, independently of libraries installed
 on the build host. Only the GLVND entry library is included; EGL, GLdispatch,
-Mesa/NVIDIA drivers and their dependencies remain supplied by the host.
+and Mesa/NVIDIA GPU drivers remain supplied by the host.
 FUSE availability, other runtime dependencies, and glibc compatibility remain
 separate checks.
 
