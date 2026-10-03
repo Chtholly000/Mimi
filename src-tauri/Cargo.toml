@@ -81,6 +81,7 @@ tauri-plugin-single-instance = "2.4.3"
 gtk = "0.18.2"
 libpulse-binding = "2.30.1"
 zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
+secret-service = { version = "5.1", features = ["crypto-rust"] }
 x11-dl = "2.21.0"
 
 # Keep the shipped desktop binary compact without changing the debug/test
