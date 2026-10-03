@@ -341,6 +341,62 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
+    #[tokio::test]
+    async fn simultaneous_source_queues_stay_independent_and_retired_ingress_cannot_restart() {
+        let (system, system_released) = stalled_pipeline();
+        let system_ingress = system.ingress().unwrap();
+        let system_pending = system.pending_pcm_gate();
+        system_ingress.try_send(vec![11, 0]).unwrap();
+        let (tx, mut rx) = mpsc::channel(4);
+        let microphone = AudioSendPipeline::spawn(
+            move |data| {
+                let tx = tx.clone();
+                async move { tx.send(data).await }
+            },
+            |_| {},
+        );
+        let mic_ingress = microphone.ingress().unwrap();
+        let mic_pending = microphone.pending_pcm_gate();
+        mic_ingress.try_send(vec![22, 0]).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap(),
+            Some(vec![22, 0])
+        );
+        assert!(system_pending.has_pending());
+        wait_for_no_pending_pcm(&mic_pending).await;
+        assert!(rx.try_recv().is_err());
+        // Pause/recovery/stop closes both inputs, including work already popped.
+        system.stop();
+        microphone.stop();
+        tokio::time::timeout(Duration::from_secs(1), system_released)
+            .await
+            .unwrap()
+            .unwrap();
+        wait_for_no_pending_pcm(&system_pending).await;
+        assert_eq!(
+            system_ingress.try_send(vec![33, 0]),
+            Err(AudioIngressError::Closed)
+        );
+        assert_eq!(
+            mic_ingress.try_send(vec![44, 0]),
+            Err(AudioIngressError::Closed)
+        );
+        let (tx, mut resumed_rx) = mpsc::channel(4);
+        let resumed = AudioSendPipeline::spawn(
+            move |data| {
+                let tx = tx.clone();
+                async move { tx.send(data).await }
+            },
+            |_| {},
+        );
+        resumed.ingress().unwrap().try_send(vec![55, 0]).unwrap();
+        assert!(resumed.finish(Duration::from_secs(1)).await);
+        assert_eq!(resumed_rx.recv().await, Some(vec![55, 0]));
+        assert!(resumed_rx.try_recv().is_err());
+    }
+
     #[test]
     fn send_progress_distinguishes_no_completion_and_tracks_the_latest_success() {
         let start = Instant::now();

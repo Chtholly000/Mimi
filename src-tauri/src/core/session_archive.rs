@@ -1,4 +1,5 @@
 //! Explicitly opted-in, bounded session buffers and export formatting. No disk or OS APIs.
+use crate::core::audio_input::AudioSource;
 use crate::core::models::SubtitlePair;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -11,6 +12,7 @@ pub const TRANSCRIPT_PAGE_SIZE: usize = 30;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptPageEntry {
+    pub audio_source: AudioSource,
     pub index: usize,
     pub source: String,
     pub translation: String,
@@ -65,6 +67,7 @@ fn transcript_page(entries: &[SubtitlePair], query: &str, requested_page: usize)
         .skip(page * TRANSCRIPT_PAGE_SIZE)
         .take(TRANSCRIPT_PAGE_SIZE)
         .map(|(index, pair)| TranscriptPageEntry {
+            audio_source: pair.audio_source,
             index: index + 1,
             source: pair.source.clone(),
             translation: pair.translation.clone(),
@@ -143,12 +146,16 @@ fn format_transcript(
         let elapsed = pair.created_at_ms.saturating_sub(started_at_ms);
         let _ = writeln!(
             text,
-            "[{} | +{:02}:{:02}:{:02}.{:03}]\n{}\n{}\n",
+            "[{} | +{:02}:{:02}:{:02}.{:03} | {}]\n{}\n{}\n",
             utc_timestamp(pair.created_at_ms),
             elapsed / 3_600_000,
             elapsed / 60_000 % 60,
             elapsed / 1_000 % 60,
             elapsed % 1_000,
+            match pair.audio_source {
+                AudioSource::System => "System audio",
+                AudioSource::Microphone => "Microphone",
+            },
             pair.source,
             pair.translation
         );
@@ -242,6 +249,7 @@ impl AudioRecording {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchiveState {
+    pub audio_sources: Vec<AudioSource>,
     pub transcript_count: usize,
     pub transcript_limited: bool,
     pub audio_bytes: usize,

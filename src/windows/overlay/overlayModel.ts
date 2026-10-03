@@ -5,6 +5,7 @@ import { credentialErrorMessage } from "../../lib/connectionDiagnostics";
  */
 
 import type {
+  AudioSource,
   OverlayActivityPhaseKind,
   SessionStateEvent,
   SettingsSnapshot,
@@ -20,6 +21,7 @@ export type SubtitleBlockPresentation = "history" | "latestCommitted" | "live";
 
 /** One spoken utterance: the unit the timeline groups, spaces and fades. */
 export interface SubtitleBlock {
+  audioSource?: AudioSource;
   id: string;
   /** Epoch ms of the committed utterance; `null` while it is still live. */
   createdAt: number | null;
@@ -66,6 +68,12 @@ export function isWaitingForFinalTranslation(
   return isTranslationPending;
 }
 
+export function pendingSourceTranslation(subtitles: SubtitleSnapshot,
+  settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage">): boolean | undefined {
+  return subtitles.tracks?.length ? subtitles.tracks.some(track =>
+    isWaitingForFinalTranslation(settings, track.detectedLanguage, track.isTranslationPending)) : undefined;
+}
+
 export function computeActivityPhase(
   session: SessionStateEvent,
   settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage">,
@@ -77,8 +85,10 @@ export function computeActivityPhase(
       isPaused: session.isPaused,
       detectedLanguage: session.detectedLanguage,
       isTranslationPending: session.isTranslationPending,
+      sourceTranslationPending: pendingSourceTranslation(session.subtitles, settings),
       isTranslationPreviewPending: session.isTranslationPreviewPending,
-      hasRecognizingSourceDraft: source.text !== "" && !source.isFinal,
+      hasRecognizingSourceDraft: (source.text !== "" && !source.isFinal) ||
+        (session.subtitles.tracks?.some(track => track.source.text !== "" && !track.source.isFinal) ?? false),
     },
     settings,
   );
@@ -90,6 +100,7 @@ interface ActivityPhaseSignals {
   detectedLanguage: string | null;
   isTranslationPending: boolean;
   isTranslationPreviewPending?: boolean;
+  sourceTranslationPending?: boolean;
   hasRecognizingSourceDraft: boolean;
 }
 
@@ -107,11 +118,11 @@ export function computeActivityPhaseFromSignals(
       return "connecting";
     case "listening": {
       if (signals.isTranslationPreviewPending ||
-        isWaitingForFinalTranslation(
+        (signals.sourceTranslationPending ?? isWaitingForFinalTranslation(
           settings,
           signals.detectedLanguage,
           signals.isTranslationPending,
-        )
+        ))
       ) {
         return "translating";
       }
@@ -256,7 +267,8 @@ export function buildSubtitleBlocks(
         : pair.translation;
     if (source === null && translation === null) continue;
     blocks.push({
-      id: `history-${pair.createdAt}`,
+      id: `${pair.audioSource ? `${pair.audioSource}:` : ""}history-${pair.createdAt}`,
+      ...(pair.audioSource ? { audioSource: pair.audioSource } : {}),
       createdAt: pair.createdAt,
       presentation: "history",
       source,
@@ -286,6 +298,19 @@ export function buildSubtitleBlocks(
     ...(liveTail.isStreaming ? { streaming: true as const } : {}),
   });
   return blocks;
+}
+
+/** Keep both live tails independent while sharing one chronological history. */
+export function buildMultiSourceSubtitleBlocks(history: SubtitleSnapshot["history"],
+  displayMode: SettingsSnapshot["subtitleDisplayMode"],
+  tails: { audioSource: AudioSource; history: SubtitleSnapshot["history"]; tail: LiveTail }[]): SubtitleBlock[] {
+  const committed = buildSubtitleBlocks(history, displayMode).map(block => ({ ...block, audioSource: block.audioSource ?? "system" as const }));
+  const live = tails.flatMap(({ audioSource, history: sourceHistory, tail }) => {
+    const block = buildSubtitleBlocks(sourceHistory, displayMode, tail).find(block => block.presentation === "live");
+    return block ? [{ ...block, id: `${audioSource}:${block.id}`, audioSource }] : [];
+  });
+  if (live.length && committed.length) committed[committed.length - 1].presentation = "history";
+  return [...committed, ...live];
 }
 
 /**
@@ -493,6 +518,7 @@ export function languageStatus(
 
 export function hasSubtitleContent(subtitles: SubtitleSnapshot): boolean {
   return (
+    (subtitles.tracks?.some(track => hasSubtitleContent(track)) ?? false) ||
     subtitles.source.text !== "" ||
     subtitles.translation.text !== "" ||
     (subtitles.previewPair !== undefined && subtitles.previewPair !== null &&

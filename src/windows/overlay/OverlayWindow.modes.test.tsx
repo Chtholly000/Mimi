@@ -360,3 +360,59 @@ it("drops the previous generation's live pair on reconnect while preserving conf
   await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
   expect(visibleLanes()).toEqual([confirmed.source, "New generation original."]);
 });
+
+function dualSnapshot(): SubtitleSnapshot {
+  const track = (audioSource: "system" | "microphone", text: string, translation: string) => ({
+    ...empty, audioSource, detectedLanguage: "en", isTranslationPending: true, isTranslationTimedOut: false,
+    source: { text, isFinal: false, utteranceId: "shared-provider-id" },
+    previewPair: { source: text, translation, utteranceId: "shared-provider-id" },
+  });
+  return { ...empty, tracks: [track("system", "Synthetic system phrase.", "系统声音合成译文。"),
+    track("microphone", "Synthetic microphone phrase.", "麦克风合成译文。")], history: [] };
+}
+
+it.each(modes)("keeps both source tails and labels independent in %s mode, including identical provider ids", async displayMode => {
+  const dual = dualSnapshot();
+  await mount(dual, displayMode, { audioInput: "both" });
+  expect([...host.querySelectorAll(".subtitle-audio-source")].map(label => label.textContent))
+    .toEqual([I18N.settings.audioInputSystem, I18N.settings.audioInputMicrophone]);
+  const ids = [...host.querySelectorAll("[data-utterance-id]")].map(row => row.getAttribute("data-utterance-id"));
+  expect(new Set(ids).size).toBe(2);
+  const expected = displayMode === "original" ? ["Synthetic system phrase.", "Synthetic microphone phrase."]
+    : displayMode === "translation" ? ["系统声音合成译文。", "麦克风合成译文。"]
+    : ["Synthetic system phrase.", "系统声音合成译文。", "Synthetic microphone phrase.", "麦克风合成译文。"];
+  expect(visibleLanes()).toEqual(expected);
+  const microphoneRow = host.querySelector('[data-utterance-id^="microphone:"]');
+  const revised = { ...dual, tracks: dual.tracks!.map(track => track.audioSource === "system" ? {
+    ...track, source: { text: "Revised synthetic system.", isFinal: false, utteranceId: "next" },
+    previewPair: { source: "Revised synthetic system.", translation: "修改后的系统声音。", utteranceId: "next" },
+  } : track) };
+  await publish(revised); await act(async () => vi.advanceTimersByTime(800));
+  expect(host.querySelector('[data-utterance-id^="microphone:"]')).toBe(microphoneRow);
+  expect(visibleLanes()).toContain(displayMode === "original" ? "Synthetic microphone phrase." : "麦克风合成译文。");
+});
+
+it("preserves source identity for simultaneous finals and a lagging other-source preview", async () => {
+  const dual = dualSnapshot();
+  const sameTime = [
+    { audioSource: "system" as const, source: "System confirmed.", translation: "系统已确认。", createdAt: 40 },
+    { audioSource: "microphone" as const, source: "Microphone confirmed.", translation: "麦克风已确认。", createdAt: 40 },
+  ];
+  await mount({ ...dual, history: sameTime }, "bilingual", { audioInput: "both" });
+  const rows = [...host.querySelectorAll('[data-utterance-id]')];
+  expect(rows).toHaveLength(4);
+  expect(new Set(rows.map(row => row.getAttribute("data-utterance-id"))).size).toBe(4);
+  expect(rows[0].textContent).toContain(I18N.settings.audioInputSystem);
+  expect(rows[1].textContent).toContain(I18N.settings.audioInputMicrophone);
+  await publish({ ...empty, history: sameTime, tracks: dual.tracks!.map(track => ({ ...track,
+    source: { text: "", isFinal: false }, previewPair: null, isTranslationPending: false })) }, { status: { kind: "connecting" } });
+  expect(host.querySelectorAll('[data-utterance-id]')).toHaveLength(2);
+  expect(visibleLanes()).not.toContain("麦克风合成译文。");
+});
+
+it("uses each source's detected language when the other source does not need translation", async () => {
+  const dual = dualSnapshot();
+  dual.tracks![0].detectedLanguage = "zh";
+  await mount(dual, "translation", { audioInput: "both" });
+  expect(visibleLanes()).toEqual(["Synthetic system phrase.", "麦克风合成译文。"]);
+});

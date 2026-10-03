@@ -38,7 +38,7 @@ pub struct TranslationLatency {
     pub kind: TranslationLatencyKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TranslationRecoveryReason {
     RateLimited,
@@ -46,7 +46,7 @@ pub enum TranslationRecoveryReason {
 }
 
 /// Local, nonterminal MT recovery. Contains no service response or content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslationRecovery {
     pub reason: TranslationRecoveryReason,

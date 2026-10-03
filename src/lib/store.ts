@@ -178,7 +178,8 @@ export function selectSessionErrorMessage(state: SessionStoreSlice) {
 
 export function selectHasRecognizingSourceDraft(state: SessionStoreSlice) {
   const source = state.session.subtitles.source;
-  return source.text !== "" && !source.isFinal;
+  return (source.text !== "" && !source.isFinal) ||
+    (state.session.subtitles.tracks?.some(track => track.source.text !== "" && !track.source.isFinal) ?? false);
 }
 
 const settingsSaveCoordinator = new SettingsSaveCoordinator();

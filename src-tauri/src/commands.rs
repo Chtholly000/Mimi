@@ -538,7 +538,7 @@ mod tests {
 
     #[test]
     fn audio_input_changes_are_settings_only_and_require_stop() {
-        for input in [AudioInput::System, AudioInput::Microphone] {
+        for input in [AudioInput::System, AudioInput::Microphone, AudioInput::Both] {
             let draft = SettingsDraft {
                 audio_input: Some(input),
                 ..Default::default()
@@ -551,7 +551,7 @@ mod tests {
             }
         }
         assert!(
-            serde_json::from_value::<SettingsDraft>(serde_json::json!({"audioInput":"both"}))
+            serde_json::from_value::<SettingsDraft>(serde_json::json!({"audioInput":"none"}))
                 .is_err()
         );
     }

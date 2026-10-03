@@ -27,13 +27,29 @@ interface SubtitleLineSnapshot {
 }
 
 interface SubtitleHistoryItem {
+  audioSource?: AudioSource;
   source: string;
   translation: string;
   /** Epoch milliseconds. */
   createdAt: number;
 }
 
+export interface SourceSubtitleSnapshot {
+  audioSource: AudioSource;
+  source: SubtitleLineSnapshot;
+  translation: SubtitleLineSnapshot;
+  history: SubtitleHistoryItem[];
+  previewPair?: SubtitleSnapshot["previewPair"];
+  detectedLanguage: string | null;
+  isTranslationPending: boolean;
+  isTranslationPreviewPending?: boolean;
+  isTranslationTimedOut: boolean;
+  translationRecovery?: SessionStateEvent["translationRecovery"];
+}
+
 export interface SubtitleSnapshot {
+  /** Independent source streams; top-level history remains chronological. */
+  tracks?: SourceSubtitleSnapshot[];
   /** One replaceable completed preview; never confirmed history. */
   previewPair?: {
     source: string;
@@ -118,7 +134,8 @@ export interface NetworkProxyConfig {
 }
 
 export type UiLanguage = "system" | "zh" | "en" | "ja";
-export type AudioInput = "system" | "microphone";
+export type AudioSource = "system" | "microphone";
+export type AudioInput = AudioSource | "both";
 export type PulseStyle = "syllable" | "ribbon";
 export type SubtitleDisplayMode = "translation" | "bilingual" | "original";
 export type SubtitlePresetColor = "white" | "teal" | "yellow" | "green" | "pink";
@@ -534,6 +551,7 @@ export function overlayPhaseColor(
 
 /** Content-free metadata for the opt-in in-memory session archive. */
 export interface SessionArchiveState {
+  audioSources?: AudioSource[];
   transcriptCount: number;
   transcriptLimited: boolean;
   audioBytes: number;
@@ -543,6 +561,7 @@ export interface SessionArchiveState {
 }
 
 export interface TranscriptPageEntry {
+  audioSource?: AudioSource;
   index: number;
   source: string;
   translation: string;
@@ -556,6 +575,7 @@ export interface TranscriptPage {
 }
 
 export interface SessionHistoryItem {
+  audioSources?: AudioSource[];
   id: string;
   startedAtMs: number;
   endedAtMs: number;

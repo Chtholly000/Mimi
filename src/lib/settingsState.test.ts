@@ -50,6 +50,9 @@ describe("mergeSettingsSnapshot", () => {
     const optedIn = mergeSettingsSnapshot(changed, { recordSessionAudio: true });
     expect(mergeSettingsSnapshot(optedIn, { audioInput: "microphone" }).recordSessionAudio).toBe(true);
     expect(mergeSettingsSnapshot(optedIn, { audioInput: "system" }).recordSessionAudio).toBe(false);
+    expect(mergeSettingsSnapshot(recording, { audioInput: "both", recordSessionAudio: true }).recordSessionAudio).toBe(false);
+    expect(mergeSettingsSnapshot({ ...recording, audioInput: "both" }, { audioInput: "microphone" }).recordSessionAudio).toBe(false);
+    expect(mergeSettingsSnapshot({ ...recording, audioInput: "both" }, { audioInput: "system" }).recordSessionAudio).toBe(false);
     expect(mergeSettingsSnapshot(recording, { audioInput: "system" }).recordSessionAudio).toBe(true);
   });
   it("normalizes the proxy route while preserving it across unrelated saves", () => {

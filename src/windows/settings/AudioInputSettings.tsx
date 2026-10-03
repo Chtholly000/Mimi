@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { I18N } from "../../lib/i18n";
 import { useStore } from "../../lib/store";
-import { InlineFeedback, SettingsRow, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
+import { InlineFeedback, SettingsRow, SettingsSection } from "./SettingsPrimitives";
+import { Switch } from "../../components/Switch";
+import type { AudioInput, AudioSource } from "../../lib/types";
 import { WindowsAudioSource } from "./WindowsAudioSource";
 
 /** A saved choice only. Capture and microphone permission remain Start actions. */
@@ -19,8 +21,12 @@ export function AudioInputSettings() {
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const requiresStop = active || paused || status === "connecting" || status === "stopping";
   const disabled = requiresStop || busy || initialization !== "ready";
-  const save = async (value: string) => {
-    if (disabled || inFlight.current || value === selected || (value !== "system" && value !== "microphone")) return;
+  const save = async (source: AudioSource, checked: boolean) => {
+    // One source must remain selected. Enabling the other source means both,
+    // never implicitly replaces the user's existing choice.
+    if (disabled || inFlight.current || (!checked && selected === source)) return;
+    const value: AudioInput = checked ? "both" : source === "system" ? "microphone" : "system";
+    if (value === selected) return;
     inFlight.current = true;
     setBusy(true);
     setFailed(false);
@@ -32,13 +38,17 @@ export function AudioInputSettings() {
     }
   };
   return <SettingsSection id="audio-input" title={I18N.settings.audioInputTitle}>
-    <SettingsRow label={I18N.settings.audioInputSource} description={I18N.settings.audioInputHelp}
-      hint={requiresStop ? I18N.settings.audioInputRequiresStop : undefined}>
-      <SettingsSelect label={I18N.settings.audioInputSource} value={selected} disabled={disabled}
-        options={[{ value: "system", label: I18N.settings.audioInputSystem }, { value: "microphone", label: I18N.settings.audioInputMicrophone }]}
-        onChange={value => void save(value)} />
+    <SettingsRow label={I18N.settings.audioInputSystem} description={I18N.settings.audioInputHelp}
+      hint={requiresStop ? I18N.settings.audioInputRequiresStop : selected === "system" ? I18N.settings.audioInputAtLeastOne : undefined}>
+      <Switch aria-label={I18N.settings.audioInputSystem} checked={selected !== "microphone"}
+        disabled={disabled || selected === "system"} onChange={checked => void save("system", checked)} />
     </SettingsRow>
-    {selected === "system" && <WindowsAudioSource />}
+    <SettingsRow label={I18N.settings.audioInputMicrophone} description={I18N.settings.audioInputMicrophoneHelp}
+      hint={requiresStop ? I18N.settings.audioInputRequiresStop : selected === "microphone" ? I18N.settings.audioInputAtLeastOne : undefined}>
+      <Switch aria-label={I18N.settings.audioInputMicrophone} checked={selected !== "system"}
+        disabled={disabled || selected === "microphone"} onChange={checked => void save("microphone", checked)} />
+    </SettingsRow>
+    {selected !== "microphone" && <WindowsAudioSource />}
     {failed && <InlineFeedback tone="error">{I18N.settings.audioInputSaveFailed}</InlineFeedback>}
   </SettingsSection>;
 }

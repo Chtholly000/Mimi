@@ -165,7 +165,7 @@ pub struct Preferences {
     pub ui_language: Option<String>,
     pub retain_session_history: bool,
     pub record_session_audio: bool,
-    /// One explicitly selected input; legacy preferences remain system-only.
+    /// Explicitly selected inputs; legacy preferences remain system-only.
     pub audio_input: AudioInput,
     /// Empty means follow the Windows default output, including live changes.
     pub windows_audio_source: String,
@@ -204,7 +204,7 @@ impl Default for Preferences {
 }
 
 impl Preferences {
-    /// A recording opt-in belongs to the selected source. Switching sources
+    /// A recording opt-in belongs to the selected sources. Changing selection
     /// always requires a fresh opt-in, even in a combined settings draft.
     pub fn apply_audio_preferences(&mut self, input: Option<AudioInput>, recording: Option<bool>) {
         if let Some(recording) = recording {
@@ -2696,35 +2696,37 @@ mod tests {
         let legacy: super::Preferences = serde_json::from_str("{}").unwrap();
         assert_eq!(legacy.audio_input, AudioInput::System);
         assert!(!legacy.record_session_audio);
-        let mut preferences = legacy;
-        preferences.apply_audio_preferences(Some(AudioInput::Microphone), None);
-        let restored: super::Preferences =
-            serde_json::from_str(&serde_json::to_string(&preferences).unwrap()).unwrap();
-        assert_eq!(restored.audio_input, AudioInput::Microphone);
-        assert!(!restored.record_session_audio);
+        for input in [AudioInput::System, AudioInput::Microphone, AudioInput::Both] {
+            let mut preferences = legacy.clone();
+            preferences.apply_audio_preferences(Some(input), None);
+            let restored: super::Preferences =
+                serde_json::from_str(&serde_json::to_string(&preferences).unwrap()).unwrap();
+            assert_eq!(restored.audio_input, input);
+            assert!(!restored.record_session_audio);
+        }
     }
 
     #[test]
     fn changing_audio_input_requires_a_new_recording_opt_in() {
-        for previous in [AudioInput::System, AudioInput::Microphone] {
-            let next = if previous == AudioInput::System {
-                AudioInput::Microphone
-            } else {
-                AudioInput::System
-            };
-            for request in [None, Some(false), Some(true)] {
-                let mut preferences = super::Preferences {
-                    audio_input: previous,
-                    record_session_audio: true,
-                    ..Default::default()
-                };
-                preferences.apply_audio_preferences(Some(next), request);
-                assert_eq!(preferences.audio_input, next);
-                assert!(!preferences.record_session_audio);
-                preferences.apply_audio_preferences(None, Some(true));
-                assert!(preferences.record_session_audio);
-                preferences.apply_audio_preferences(Some(next), None);
-                assert!(preferences.record_session_audio);
+        for previous in [AudioInput::System, AudioInput::Microphone, AudioInput::Both] {
+            for next in [AudioInput::System, AudioInput::Microphone, AudioInput::Both] {
+                if previous == next {
+                    continue;
+                }
+                for request in [None, Some(false), Some(true)] {
+                    let mut preferences = super::Preferences {
+                        audio_input: previous,
+                        record_session_audio: true,
+                        ..Default::default()
+                    };
+                    preferences.apply_audio_preferences(Some(next), request);
+                    assert_eq!(preferences.audio_input, next);
+                    assert!(!preferences.record_session_audio);
+                    preferences.apply_audio_preferences(None, Some(true));
+                    assert!(preferences.record_session_audio);
+                    preferences.apply_audio_preferences(Some(next), None);
+                    assert!(preferences.record_session_audio);
+                }
             }
         }
     }

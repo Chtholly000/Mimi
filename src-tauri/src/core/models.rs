@@ -1,5 +1,6 @@
 //! Core domain models shared by providers, session state, and IPC.
 
+use crate::core::audio_input::AudioSource;
 use serde::{Deserialize, Serialize};
 
 /// Bound complete subtitle fields without truncating words or UTF-8 characters.
@@ -573,6 +574,8 @@ impl SubtitleLine {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubtitlePair {
+    #[serde(default, rename = "audioSource")]
+    pub audio_source: AudioSource,
     pub source: String,
     pub translation: String,
     /// Epoch milliseconds; equality intentionally ignores display time.
@@ -583,6 +586,7 @@ pub struct SubtitlePair {
 impl SubtitlePair {
     pub fn new(source: String, translation: String, created_at_ms: u64) -> Self {
         Self {
+            audio_source: AudioSource::System,
             source,
             translation,
             created_at_ms,
@@ -592,7 +596,9 @@ impl SubtitlePair {
 
 impl PartialEq for SubtitlePair {
     fn eq(&self, other: &Self) -> bool {
-        self.source == other.source && self.translation == other.translation
+        self.audio_source == other.audio_source
+            && self.source == other.source
+            && self.translation == other.translation
     }
 }
 
@@ -610,8 +616,26 @@ pub struct PreviewSubtitlePair {
     pub translation: String,
 }
 
+/// One independent capture lane. Translation state and utterance IDs never cross lanes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceSubtitleSnapshot {
+    pub audio_source: AudioSource,
+    pub source: SubtitleLine,
+    pub translation: SubtitleLine,
+    pub history: Vec<SubtitlePair>,
+    pub preview_pair: Option<PreviewSubtitlePair>,
+    pub detected_language: Option<String>,
+    pub is_translation_pending: bool,
+    pub is_translation_preview_pending: bool,
+    pub is_translation_timed_out: bool,
+    pub translation_recovery: Option<crate::core::diagnostics::TranslationRecovery>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubtitleSnapshot {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tracks: Vec<SourceSubtitleSnapshot>,
     pub source: SubtitleLine,
     pub translation: SubtitleLine,
     pub history: Vec<SubtitlePair>,
@@ -622,6 +646,7 @@ pub struct SubtitleSnapshot {
 impl SubtitleSnapshot {
     pub fn empty() -> Self {
         Self {
+            tracks: Vec::new(),
             source: SubtitleLine::new("", false),
             translation: SubtitleLine::new("", false),
             history: Vec::new(),

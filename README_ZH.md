@@ -1,7 +1,7 @@
 <div align="center">
   <img src="src-tauri/icons/128x128@2x.png" width="96" alt="mimi">
   <h1>mimi</h1>
-  <p>系统音频或麦克风实时字幕与翻译，支持 Apple 芯片和 Intel Mac（macOS 13+），以及 Windows / Linux x86_64。</p>
+  <p>系统音频与麦克风实时字幕与翻译，支持 Apple 芯片和 Intel Mac（macOS 13+），以及 Windows / Linux x86_64。</p>
   <p>
     <a href="https://mimi.yuxino.cn">官网</a>
     · <a href="https://github.com/yuxino/mimi/releases/latest"><strong>下载最新版</strong></a>
@@ -34,11 +34,11 @@ https://github.com/user-attachments/assets/342c049c-1bed-44da-b4d2-ba55dad1a49c
 
 ## 功能
 
-- **实时字幕与翻译** — 在「设置 → 语音与翻译」选择系统音频（默认）或默认麦克风，一次只采集一种输入；识别语言和翻译目标随服务商而异。
+- **实时字幕与翻译** — 在「设置 → 语音与翻译」分别开启系统声音（默认开启）和麦克风，也可同时开启。两路独立识别，字幕标明来源；共用所选服务和语言，每路连接分别产生服务用量。
 - **服务配置** — 保存并切换多套服务配置，无需反复填写凭证。
 - **字幕浮窗** — 支持移动、缩放、收起、暂停、点击穿透和沉浸模式。
 - **版本更新** — macOS、Windows 安装版和 Linux AppImage 可在设置中检查并安装更新；Windows ZIP 和 Linux .deb 提供 Releases 手动更新入口。
-- **保存与导出** — 在「设置 → 保存与导出」选择保存已确认的字幕或录制所选输入的音频。可查看已保存的记录，并导出 TXT / WAV 或删除记录；两个开关默认关闭。切换音频输入会关闭录音；需要录制新输入时，请重新开启。
+- **保存与导出** — 在「设置 → 保存与导出」选择保存已确认的字幕或分轨录制所选输入的音频。可查看已保存的记录，并导出 TXT / WAV 或删除记录；两个开关默认关闭。切换音频输入会关闭录音；需要录制新输入时，请重新开启。
 - **设置外观** — 支持浅色、深色和跟随系统。
 - **隐私** — 无需 mimi 账号，不录制屏幕画面。麦克风为可选输入，只有选中并启动字幕后才会采集；音频只发送给当前服务商。开启保存后，字幕和所选输入的音频会随会话写入本机私有文件。关闭开关会清空本次对应内容；已保存的记录会保留，需自行删除。
 
@@ -48,7 +48,7 @@ https://github.com/user-attachments/assets/342c049c-1bed-44da-b4d2-ba55dad1a49c
 
 1. 从 [Latest Release](https://github.com/yuxino/mimi/releases/latest) 下载 macOS Apple Silicon 或 Intel DMG，Windows x64 EXE、MSI、绿色版 ZIP，或 Linux x86_64 .deb / AppImage；也可以从源码构建。
 2. 打开「翻译服务」，选择服务商并保存凭证。
-3. 播放内容，从菜单栏/系统托盘的 mimi 图标点击 **开始**。要识别自己的讲话，先在「设置 → 语音与翻译」选择「麦克风」。macOS 会按所选输入请求「屏幕与系统音频录制」或「麦克风」权限。
+3. 播放内容，从菜单栏/系统托盘的 mimi 图标点击 **开始**。要识别自己的讲话，先在「设置 → 语音与翻译」开启「麦克风」。macOS 会按所选输入请求「屏幕与系统音频录制」和「麦克风」权限。两路同时采集时建议佩戴耳机，避免扬声器的声音再次进入麦克风。
 
 需要自备服务商 API 凭证，调用可能产生费用。凭证保存在系统钥匙串中。
 

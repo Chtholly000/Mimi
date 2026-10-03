@@ -28,20 +28,18 @@ afterEach(async () => {
   useStore.setState(initial, true); setStoredUiLanguage("system"); vi.unstubAllGlobals();
 });
 async function render() { await act(async () => root.render(<AudioInputSettings />)); }
-function trigger() { return host.querySelector<HTMLButtonElement>('[role="combobox"]')!; }
-async function selectMicrophone() {
-  await act(() => trigger().click());
-  await act(async () => document.querySelectorAll<HTMLElement>('[role="option"]')[1].click());
-}
+function toggle(source: "system" | "microphone") { return host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${source === "system" ? I18N.settings.audioInputSystem : I18N.settings.audioInputMicrophone}"]`)!; }
+async function selectMicrophone() { await act(async () => toggle("microphone").click()); }
 
 it.each(["en", "zh", "ja"] as const)("saves the microphone explicitly in %s without starting capture, and clears the prior recording opt-in", async language => {
   setStoredUiLanguage(language); await render();
-  expect(trigger().textContent).toBe(I18N.settings.audioInputSystem);
+  expect(toggle("system").getAttribute("aria-checked")).toBe("true");
   expect(host.querySelector('[data-output-selector]')).not.toBeNull();
   await selectMicrophone();
-  expect(save).toHaveBeenCalledExactlyOnceWith({ audioInput: "microphone" });
-  expect(trigger().textContent).toBe(I18N.settings.audioInputMicrophone);
-  expect(host.querySelector('[data-output-selector]')).toBeNull();
+  expect(save).toHaveBeenCalledExactlyOnceWith({ audioInput: "both" });
+  expect(toggle("microphone").getAttribute("aria-checked")).toBe("true");
+  expect(toggle("system").getAttribute("aria-checked")).toBe("true");
+  expect(host.querySelector('[data-output-selector]')).not.toBeNull();
   expect(useStore.getState().settings.recordSessionAudio).toBe(false);
   expect(start).not.toHaveBeenCalled();
   expect(host.querySelector('.settings-row__description')).toBeNull();
@@ -56,7 +54,7 @@ it.each([
 ] satisfies Pick<SessionStateEvent, "status" | "isActive" | "isPaused">[])("locks the source in session state %j", async state => {
   useStore.setState({ session: { ...initial.session, ...state } });
   await render();
-  expect(trigger().disabled).toBe(true);
+  expect(toggle("microphone").disabled).toBe(true);
   expect(host.textContent).toContain(I18N.settings.audioInputRequiresStop);
   expect(save).not.toHaveBeenCalled();
 });
@@ -65,18 +63,37 @@ it("prevents duplicate saves and exposes a safe, normal-sized actionable error",
   let fail!: (reason: Error) => void;
   save.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
   await render(); await selectMicrophone();
-  expect(trigger().disabled).toBe(true);
-  await act(() => trigger().click());
+  expect(toggle("microphone").disabled).toBe(true);
+  await act(() => toggle("microphone").click());
   expect(save).toHaveBeenCalledOnce();
   await act(async () => fail(new Error("synthetic-private-device-details")));
-  expect(trigger().disabled).toBe(false);
-  expect(trigger().textContent).toBe(I18N.settings.audioInputSystem);
+  expect(toggle("microphone").disabled).toBe(false);
+  expect(toggle("system").getAttribute("aria-checked")).toBe("true");
   expect(host.querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.audioInputSaveFailed);
   expect(host.textContent).not.toContain("synthetic-private-device-details");
 });
 
 it("does not offer input changes until settings have loaded", async () => {
   useStore.setState({ initializationStatus: "loading" }); await render();
-  expect(trigger().disabled).toBe(true);
+  expect(toggle("microphone").disabled).toBe(true);
   expect(save).not.toHaveBeenCalled();
+});
+
+it("allows either source alone or both, but never no source", async () => {
+  await render();
+  expect(toggle("system").disabled).toBe(true);
+  await act(async () => toggle("system").click());
+  expect(save).not.toHaveBeenCalled();
+  await selectMicrophone();
+  expect(useStore.getState().settings.audioInput).toBe("both");
+  expect(toggle("system").disabled).toBe(false);
+  await act(async () => toggle("system").click());
+  expect(useStore.getState().settings.audioInput).toBe("microphone");
+  expect(toggle("microphone").disabled).toBe(true);
+  expect(host.querySelector('[data-output-selector]')).toBeNull();
+  await act(async () => toggle("system").click());
+  expect(useStore.getState().settings.audioInput).toBe("both");
+  await selectMicrophone();
+  expect(useStore.getState().settings.audioInput).toBe("system");
+  expect(start).not.toHaveBeenCalled();
 });

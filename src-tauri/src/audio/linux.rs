@@ -12,7 +12,7 @@ use crate::audio::send_pipeline::{AudioIngress, AudioIngressError};
 use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureError, SystemAudioCaptureFailure,
 };
-use crate::core::audio_input::AudioInput;
+use crate::core::audio_input::AudioSource;
 use crate::core::diagnostics::milliseconds;
 use crate::pipeline_log;
 use libpulse_binding as pulse;
@@ -90,7 +90,7 @@ impl LinuxSystemAudioCapture {
         failure_tx: CaptureFailureSender,
         format: AudioCaptureFormat,
     ) -> Result<(), SystemAudioCaptureError> {
-        self.start_input(audio_ingress, failure_tx, format, AudioInput::System)
+        self.start_input(audio_ingress, failure_tx, format, AudioSource::System)
             .await
     }
 
@@ -99,7 +99,7 @@ impl LinuxSystemAudioCapture {
         audio_ingress: AudioIngress,
         failure_tx: CaptureFailureSender,
         format: AudioCaptureFormat,
-        input: AudioInput,
+        input: AudioSource,
     ) -> Result<(), SystemAudioCaptureError> {
         AudioCaptureFormat::pcm16_mono(format.sample_rate_hz)?;
         let control = self.reserve_worker()?;
@@ -109,8 +109,8 @@ impl LinuxSystemAudioCapture {
         if std::thread::Builder::new()
             .name(
                 match input {
-                    AudioInput::System => "mimi-system-audio",
-                    AudioInput::Microphone => "mimi-microphone",
+                    AudioSource::System => "mimi-system-audio",
+                    AudioSource::Microphone => "mimi-microphone",
                 }
                 .into(),
             )
@@ -191,9 +191,9 @@ impl LinuxSystemAudioCapture {
     }
 }
 
-fn input_error(input: AudioInput, error: SystemAudioCaptureError) -> SystemAudioCaptureError {
+fn input_error(input: AudioSource, error: SystemAudioCaptureError) -> SystemAudioCaptureError {
     match (input, error) {
-        (AudioInput::Microphone, SystemAudioCaptureError::NativeStartFailed) => {
+        (AudioSource::Microphone, SystemAudioCaptureError::NativeStartFailed) => {
             SystemAudioCaptureError::MicrophoneStartFailed
         }
         (_, error) => error,
@@ -250,7 +250,7 @@ impl PulseCapture {
     fn connect(
         control: &WorkerControl,
         format: AudioCaptureFormat,
-        input: AudioInput,
+        input: AudioSource,
     ) -> Result<Self, SystemAudioCaptureError> {
         let deadline = Instant::now() + START_TIMEOUT;
         let mut mainloop =
@@ -273,11 +273,11 @@ impl PulseCapture {
         })?;
 
         let (source_index, source_name) = match input {
-            AudioInput::System => {
+            AudioSource::System => {
                 let monitor = resolve_monitor(&mut mainloop, &context, control, deadline)?;
                 (monitor.source_index, monitor.source_name)
             }
-            AudioInput::Microphone => {
+            AudioSource::Microphone => {
                 resolve_microphone(&mut mainloop, &context, control, deadline)?
             }
         };
@@ -291,8 +291,8 @@ impl PulseCapture {
         let mut stream = Stream::new(
             &mut context,
             match input {
-                AudioInput::System => "System audio",
-                AudioInput::Microphone => "Microphone",
+                AudioSource::System => "System audio",
+                AudioSource::Microphone => "Microphone",
             },
             &spec,
             None,
@@ -859,11 +859,18 @@ mod tests {
     }
 
     fn play_test_tone_on(sink: &str) -> (tempfile::NamedTempFile, TestPlayback) {
+        play_test_frequency_on(sink, 997.0)
+    }
+
+    fn play_test_frequency_on(
+        sink: &str,
+        frequency: f64,
+    ) -> (tempfile::NamedTempFile, TestPlayback) {
         let mut audio = tempfile::NamedTempFile::new().unwrap();
         // Synthetic PCM only; never write the audio captured from a device.
         let pcm: Vec<u8> = (0..(48_000 * 8))
             .flat_map(|index| {
-                let phase = std::f64::consts::TAU * 997.0 * f64::from(index) / 48_000.0;
+                let phase = std::f64::consts::TAU * frequency * f64::from(index) / 48_000.0;
                 let sample = ((phase.sin() * 6_000.0) as i16).to_le_bytes();
                 [sample[0], sample[1], sample[0], sample[1]]
             })
@@ -883,6 +890,10 @@ mod tests {
     }
 
     fn matches_tone(pcm: &[u8], sample_rate: u32) -> bool {
+        matches_frequency(pcm, sample_rate, 997.0)
+    }
+
+    fn matches_frequency(pcm: &[u8], sample_rate: u32, frequency: f64) -> bool {
         let samples: Vec<f64> = pcm
             .as_chunks::<2>()
             .0
@@ -895,7 +906,7 @@ mod tests {
         let mut energy = 0.0;
         let mut peak: f64 = 0.0;
         for (index, sample) in samples.iter().enumerate() {
-            let phase = std::f64::consts::TAU * 997.0 * index as f64 / f64::from(sample_rate);
+            let phase = std::f64::consts::TAU * frequency * index as f64 / f64::from(sample_rate);
             sine += sample * phase.sin();
             cosine += sample * phase.cos();
             energy += sample * sample;
@@ -948,6 +959,92 @@ mod tests {
         eprintln!("linux native rate={rate} stage={stage} pcm=true sound=false");
     }
 
+    /// Both native streams run concurrently with different synthetic tones.
+    /// Matching the dominant tone rejects swapped streams and mixed PCM.
+    #[tokio::test]
+    #[ignore = "requires an isolated PulseAudio server with mimi-input and paplay"]
+    async fn native_dual_inputs_keep_audio_separate_and_restart() {
+        struct RestoreDefaultSource;
+        impl Drop for RestoreDefaultSource {
+            fn drop(&mut self) {
+                let _ = Command::new("pactl")
+                    .args(["set-default-source", "mimi-microphone.monitor"])
+                    .status();
+            }
+        }
+        let _restore = RestoreDefaultSource;
+        assert!(Command::new("pactl")
+            .args(["set-default-source", "mimi-input"])
+            .status()
+            .unwrap()
+            .success());
+        async fn expect_frequency(rx: &mut mpsc::Receiver<Vec<u8>>, rate: u32, frequency: f64) {
+            tokio::time::timeout(Duration::from_secs(6), async {
+                let mut window = Vec::new();
+                while let Some(pcm) = rx.recv().await {
+                    assert_eq!(pcm.len(), rate as usize * 2 * FRAGMENT_MS / 1000);
+                    window.extend(pcm);
+                    if window.len() >= rate as usize / 2 {
+                        if matches_frequency(&window, rate, frequency) {
+                            return;
+                        }
+                        window.clear();
+                    }
+                }
+                panic!("independent capture ended before its assigned tone arrived");
+            })
+            .await
+            .expect("each source must retain its own dominant tone");
+        }
+        let system = LinuxSystemAudioCapture::new();
+        let microphone = LinuxSystemAudioCapture::new();
+        for rate in [16_000, 24_000] {
+            let (system_pipeline, mut system_rx) = recording_pipeline();
+            let (mic_pipeline, mut mic_rx) = recording_pipeline();
+            let (system_failure, mut system_failures) = CaptureFailureSender::channel();
+            let (mic_failure, mut mic_failures) = CaptureFailureSender::channel();
+            let format = AudioCaptureFormat::pcm16_mono(rate).unwrap();
+            system
+                .start_input(
+                    system_pipeline.ingress().unwrap(),
+                    system_failure,
+                    format,
+                    AudioSource::System,
+                )
+                .await
+                .unwrap();
+            microphone
+                .start_input(
+                    mic_pipeline.ingress().unwrap(),
+                    mic_failure,
+                    format,
+                    AudioSource::Microphone,
+                )
+                .await
+                .unwrap();
+            let (_output_audio, output_playback) = play_test_frequency_on("mimi-output", 997.0);
+            let (_input_audio, input_playback) = play_test_frequency_on("mimi-microphone", 613.0);
+            tokio::join!(
+                expect_frequency(&mut system_rx, rate, 997.0),
+                expect_frequency(&mut mic_rx, rate, 613.0)
+            );
+            // Releasing one native worker must not terminate the other lane.
+            system.stop().await;
+            assert!(system_pipeline.finish(Duration::from_secs(1)).await);
+            while system_rx.try_recv().is_ok() {}
+            while mic_rx.try_recv().is_ok() {}
+            expect_frequency(&mut mic_rx, rate, 613.0).await;
+            assert!(system_rx.try_recv().is_err());
+            microphone.stop().await;
+            assert!(mic_pipeline.finish(Duration::from_secs(1)).await);
+            assert!(system_failures.try_recv().is_err());
+            assert!(mic_failures.try_recv().is_err());
+            drop(output_playback);
+            drop(input_playback);
+            eprintln!("linux native dual rate={rate} isolated=true restart=true");
+        }
+    }
+
     /// The private server exposes a non-monitor recording source backed by a
     /// separate synthetic sink. This proves microphone mode neither accepts
     /// a default monitor nor substitutes the audible output mix.
@@ -978,7 +1075,7 @@ mod tests {
                     pipeline.ingress().unwrap(),
                     failure,
                     AudioCaptureFormat::pcm16_mono(16_000).unwrap(),
-                    AudioInput::Microphone
+                    AudioSource::Microphone
                 )
                 .await,
             Err(SystemAudioCaptureError::NoMicrophoneDevice)
@@ -996,7 +1093,7 @@ mod tests {
                     pipeline.ingress().unwrap(),
                     failure,
                     AudioCaptureFormat::pcm16_mono(rate).unwrap(),
-                    AudioInput::Microphone,
+                    AudioSource::Microphone,
                 ),
             )
             .await

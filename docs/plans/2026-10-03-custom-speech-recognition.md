@@ -8,7 +8,8 @@ transcription, then supply a full endpoint, model and API key. HTTP file
 transcription and Chat Completions compatibility alone do not meet the live
 audio contract. Custom recognition defaults to Original, without a text request.
 DeepL, DeepLX and OpenAI-compatible Chat Completions remain independent text
-destinations. No microphone input is added.
+destinations. Audio sources are configured independently; see the
+[audio input design](2026-10-03-optional-microphone-input.md).
 
 The settings detail shows stage headings, protocol identity, fields and actions
 at normal size. Requirements, model-dependent languages and storage explanations

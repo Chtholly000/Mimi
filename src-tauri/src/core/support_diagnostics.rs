@@ -333,6 +333,7 @@ pub enum OutputSelection {
     ManualOutput,
     PlatformSystemAudio,
     DefaultMicrophone,
+    SystemAndMicrophone,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -443,6 +444,11 @@ mod tests {
         };
         let report = render(facts);
         assert!(report.contains("default_microphone"));
+        let dual = render(DiagnosticFacts {
+            output_selection: OutputSelection::SystemAndMicrophone,
+            ..Default::default()
+        });
+        assert!(dual.contains("system_and_microphone"));
         for (message, code) in [
             (
                 "Microphone capture permission was denied.",

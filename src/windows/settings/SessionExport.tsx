@@ -14,10 +14,11 @@ import {
   sessionHistoryDelete,
 } from "../../lib/ipc";
 import { useStore } from "../../lib/store";
-import type { SessionArchiveState, SessionHistoryItem, SettingsDraft, TranscriptPage } from "../../lib/types";
+import type { AudioSource, SessionArchiveState, SessionHistoryItem, SettingsDraft, TranscriptPage } from "../../lib/types";
 import {
   InlineFeedback,
   SettingsRow,
+  SettingsSelect,
   SettingsSection,
 } from "./SettingsPrimitives";
 import { monitorSessionArchive } from "./sessionArchiveMonitor";
@@ -41,6 +42,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [recordingSource, setRecordingSource] = useState<AudioSource>("system");
   const [audioError, setAudioError] = useState(false);
   const [readError, setReadError] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -57,6 +59,8 @@ export function SessionExport({ visible }: { visible: boolean }) {
   const visibility = useRef(0);
 
   const selected = history.find((item) => item.id === selectedId);
+  const audioSources = selected ? selected.audioSources ?? ["system" as const] : archive?.audioSources ?? ["system" as const];
+  const selectedAudioSource = audioSources.includes(recordingSource) ? recordingSource : audioSources[0];
   const availableCount = selectedId ? (selected?.count ?? 0) : (archive?.transcriptCount ?? 0);
   const displayedTranscript = availableCount ? transcript : undefined;
 
@@ -78,7 +82,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
 
   function loadAudio(id: string) {
     const request = ++audioRequest.current;
-    void sessionHistoryAudio(id).then(
+    void sessionHistoryAudio(id, selectedAudioSource).then(
       (bytes) => {
         if (request !== audioRequest.current) return;
         setAudioUrl(URL.createObjectURL(new Blob([bytes], { type: "audio/wav" })));
@@ -267,7 +271,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
         )}
         {active && recordAudio && (
           <InlineFeedback tone="info">
-            {audioInput === "microphone" ? I18N.settings.sessionMicrophoneEnabled : I18N.settings.sessionAudioEnabled}
+            {audioInput === "both" ? I18N.settings.sessionBothAudioEnabled : audioInput === "microphone" ? I18N.settings.sessionMicrophoneEnabled : I18N.settings.sessionAudioEnabled}
           </InlineFeedback>
         )}
         {archive?.transcriptLimited && (
@@ -312,6 +316,16 @@ export function SessionExport({ visible }: { visible: boolean }) {
             </div>
             <span>{I18N.settings.transcriptCount(availableCount)}</span>
           </div>
+          {canExportAudio && audioSources.length > 1 && <SettingsRow label={I18N.settings.recordingSource}>
+            <SettingsSelect label={I18N.settings.recordingSource} value={selectedAudioSource ?? "system"} disabled={busy}
+              options={audioSources.map(source => ({ value: source, label: source === "system" ? I18N.settings.audioInputSystem : I18N.settings.audioInputMicrophone }))}
+              onChange={value => {
+                audioRequest.current += 1;
+                setRecordingSource(value as AudioSource);
+                setAudioUrl(null);
+                setAudioError(false);
+              }} />
+          </SettingsRow>}
           {selected && <div className="session-history__actions" aria-busy={busy}>
             {selected.hasAudio && (audioUrl ? <audio controls src={audioUrl} aria-label={I18N.settings.historyAudio} /> : <button type="button" className="settings-button settings-button--quiet" onClick={() => loadAudio(selected.id)}>{I18N.settings.historyPlayAudio}</button>)}
             <button type="button" className="settings-button settings-button--danger settings-button--compact" disabled={busy} onClick={() => setConfirmDelete(true)}>
@@ -352,9 +366,12 @@ export function SessionExport({ visible }: { visible: boolean }) {
                     {new Intl.DateTimeFormat(effectiveUiLanguage(), { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(entry.createdAtMs)}
                   </time>
                 </div>
+                <div>
+                  {entry.audioSource && <div className="session-transcript__audio-source">{entry.audioSource === "system" ? I18N.settings.audioInputSystem : I18N.settings.audioInputMicrophone}</div>}
                 <div className="session-transcript__pair">
                   <div><span>{I18N.settings.transcriptSource}</span><p>{entry.source}</p></div>
                   <div><span>{I18N.settings.transcriptTranslation}</span><p>{entry.translation}</p></div>
+                </div>
                 </div>
               </article>
             )) : (
@@ -391,7 +408,7 @@ export function SessionExport({ visible }: { visible: boolean }) {
             disabled={disabled || (!selected && readError) || !canExportAudio}
             onClick={() =>
               void perform(async () =>
-                (await sessionExport("audio", selected?.id)) ? "saved" : null,
+                (await sessionExport("audio", selected?.id, selectedAudioSource)) ? "saved" : null,
               )
             }
           >

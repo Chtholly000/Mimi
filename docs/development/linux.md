@@ -59,9 +59,10 @@ checks the command path, not GNOME/KDE shortcut setup or native Wayland focus.
 
 System audio (the default) opens only the current default output's monitor.
 Mimi verifies the source belongs to that output and never falls back to a
-microphone. Selecting Microphone in Settings instead opens the default
-non-monitor input; an output monitor is rejected. One source is captured at a
-time. Restart the session after changing the default device. A missing source
+microphone. Enabling Microphone in Settings opens the default non-monitor
+input; an output monitor is rejected. Both sources can be enabled together,
+with independent capture and recognition sessions. Restart the session after
+changing the default device. A missing source
 or disconnected sound server is an error, not permission to capture another
 source.
 

@@ -10,7 +10,7 @@ use crate::audio::{
 };
 use crate::clients::provider_events::{provider_event_channel, ProviderEvent};
 use crate::clients::translation_client::TranslationClient;
-use crate::core::audio_input::AudioInput;
+use crate::core::audio_input::{AudioInput, AudioSource};
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::{ProviderCredentials, TextTranslationCredentials};
 use crate::core::diagnostics::{
@@ -668,9 +668,91 @@ struct LocalCaptureStats {
     sample_rate: u32,
 }
 
+/// A provider terminating either stream terminates the selected session.
+/// Synchronize every reducer before publishing or tearing down transports.
+fn apply_terminal_event_to_all_sources(
+    controller: &mut TranslationSessionController,
+    event: &LiveTranslateServerEvent,
+) {
+    match event {
+        LiveTranslateServerEvent::SessionFinished => controller.did_stop(),
+        LiveTranslateServerEvent::Error { message, .. } => controller.did_fail(message.clone()),
+        _ => {}
+    }
+}
+
+#[derive(Clone, Copy)]
+enum EventPumpCleanup {
+    Preserve,
+    Abort,
+}
+
+/// Establishing a selection is transactional: a later source's failure must
+/// release the earlier source too, including partially installed resources.
+async fn connect_source_group<Start, Started, Rollback, RolledBack>(
+    sources: &[AudioSource],
+    mut start: Start,
+    rollback: Rollback,
+) -> Result<(), String>
+where
+    Start: FnMut(AudioSource) -> Started,
+    Started: Future<Output = Result<(), String>>,
+    Rollback: FnOnce(EventPumpCleanup) -> RolledBack,
+    RolledBack: Future<Output = ()>,
+{
+    for &source in sources {
+        if let Err(error) = start(source).await {
+            // The event pump may have invalidated this startup and still own
+            // a recovery handoff. Release captures/clients without aborting it.
+            rollback(EventPumpCleanup::Preserve).await;
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// A source owns every transport, capture, revision and timer it can mutate.
+/// Lifecycle generations are shared so either lane failing tears down both.
+#[derive(Clone)]
+struct RuntimeLane {
+    audio: Arc<Mutex<AudioCapture>>,
+    client: Arc<Mutex<Option<TranslationClient>>>,
+    client_generation: Arc<AtomicU64>,
+    subtitle_content_revision: Arc<Mutex<(u64, u64)>>,
+    mt_budget_continuity: Arc<Mutex<MTBudgetContinuity>>,
+    audio_pipeline: Arc<Mutex<Option<Arc<AudioSendPipeline>>>>,
+    audio_pipeline_generation: Arc<AtomicU64>,
+    capture_generation: Arc<AtomicU64>,
+    pump_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    pump_generation: Arc<AtomicU64>,
+    translation_timeout_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    translation_timeout_task_id: Arc<AtomicU64>,
+}
+
+impl RuntimeLane {
+    fn new(app: &AppHandle) -> Self {
+        let audio_capture = AudioCapture::for_app(app);
+        Self {
+            audio: Arc::new(Mutex::new(audio_capture)),
+            client: Arc::new(Mutex::new(None)),
+            client_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
+            subtitle_content_revision: Default::default(),
+            mt_budget_continuity: Default::default(),
+            audio_pipeline: Arc::new(Mutex::new(None)),
+            audio_pipeline_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
+            capture_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
+            pump_task: Arc::new(Mutex::new(None)),
+            pump_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
+            translation_timeout_task: Arc::new(Mutex::new(None)),
+            translation_timeout_task_id: Arc::new(AtomicU64::new(NO_GENERATION)),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct SessionManager {
     app: AppHandle,
+    lanes: [RuntimeLane; 2],
     diagnostic_epoch: Instant,
     diagnostic_error: Arc<Mutex<Option<(SafeFailure, Instant)>>>,
     diagnostic_recovery: Arc<Mutex<Option<(RecoveryAction, Instant)>>>,
@@ -679,10 +761,9 @@ pub struct SessionManager {
     health_latency: Arc<Mutex<Option<HealthCheckLatency>>>,
     settings: Arc<SettingsStore>,
     controller: Arc<Mutex<TranslationSessionController>>,
-    audio: Arc<Mutex<AudioCapture>>,
     /// Captured at manual start; pause, reconnect and recovery preserve it.
     active_audio_input: Arc<Mutex<AudioInput>>,
-    recording: Arc<Mutex<crate::core::session_archive::AudioRecording>>,
+    recording: Arc<Mutex<[crate::core::session_archive::AudioRecording; 2]>>,
     archive_revision: Arc<AtomicU64>,
     history: Arc<SessionHistory>,
     history_pending_id: Arc<Mutex<Option<String>>>,
@@ -690,16 +771,8 @@ pub struct SessionManager {
     history_pending_audio: Arc<AtomicBool>,
     history_stats: Arc<Mutex<LocalCaptureStats>>,
     history_save_error: Arc<AtomicBool>,
-    client: Arc<Mutex<Option<TranslationClient>>>,
-    client_generation: Arc<AtomicU64>,
     /// Clear and event application (including local-history append) are atomic.
     subtitle_content_lock: Arc<TokioMutex<()>>,
-    /// Retained after client removal so a valid stopping tail is still checked.
-    subtitle_content_revision: Arc<Mutex<(u64, u64)>>,
-    mt_budget_continuity: Arc<Mutex<MTBudgetContinuity>>,
-    audio_pipeline: Arc<Mutex<Option<Arc<AudioSendPipeline>>>>,
-    audio_pipeline_generation: Arc<AtomicU64>,
-    capture_generation: Arc<AtomicU64>,
     active_settings: Arc<Mutex<Option<LiveTranslationConfiguration>>>,
     active_settings_generation: Arc<AtomicU64>,
     is_paused: Arc<AtomicBool>,
@@ -720,14 +793,6 @@ pub struct SessionManager {
     /// retry instead of trying to enqueue a second recovery task.
     recovery_retry_generation: Arc<AtomicU64>,
     background_task_sequence: Arc<AtomicU64>,
-    pump_task: Arc<Mutex<Option<JoinHandle<()>>>>,
-    pump_generation: Arc<AtomicU64>,
-    /// Fires when a translation stays pending too long (e.g. the server never
-    /// returns the final for an incomplete sentence after the audio stops).
-    /// Clears `is_translation_pending` so the UI does not sit on
-    /// "正在翻译" forever; the shown draft/history is untouched.
-    translation_timeout_task: Arc<Mutex<Option<JoinHandle<()>>>>,
-    translation_timeout_task_id: Arc<AtomicU64>,
     /// Explicit lifecycle operations and settings mutations share this lock,
     /// eliminating check-then-mutate races around credential/profile reads.
     lifecycle_lock: Arc<TokioMutex<()>>,
@@ -743,8 +808,18 @@ pub struct SessionManager {
 }
 
 impl SessionManager {
+    fn lane(&self, source: AudioSource) -> &RuntimeLane {
+        &self.lanes[match source {
+            AudioSource::System => 0,
+            AudioSource::Microphone => 1,
+        }]
+    }
+
+    fn sources(&self) -> &'static [AudioSource] {
+        self.active_audio_input.lock().unwrap().sources()
+    }
+
     pub fn new(app: AppHandle, settings: Arc<SettingsStore>) -> Arc<Self> {
-        let audio_capture = AudioCapture::for_app(&app);
         let history_directory = app.path().app_data_dir().ok();
         let history = SessionHistory::new(
             history_directory
@@ -754,6 +829,7 @@ impl SessionManager {
             settings.is_ui_test() || history_directory.is_none(),
         );
         Arc::new(Self {
+            lanes: [RuntimeLane::new(&app), RuntimeLane::new(&app)],
             app,
             diagnostic_epoch: Instant::now(),
             diagnostic_error: Default::default(),
@@ -763,7 +839,6 @@ impl SessionManager {
             health_latency: Default::default(),
             settings,
             controller: Arc::new(Mutex::new(TranslationSessionController::default())),
-            audio: Arc::new(Mutex::new(audio_capture)),
             active_audio_input: Default::default(),
             recording: Default::default(),
             archive_revision: Default::default(),
@@ -773,14 +848,7 @@ impl SessionManager {
             history_pending_audio: Arc::new(AtomicBool::new(false)),
             history_stats: Arc::new(Mutex::new(LocalCaptureStats::default())),
             history_save_error: Arc::new(AtomicBool::new(false)),
-            client: Arc::new(Mutex::new(None)),
-            client_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
             subtitle_content_lock: Default::default(),
-            subtitle_content_revision: Default::default(),
-            mt_budget_continuity: Default::default(),
-            audio_pipeline: Arc::new(Mutex::new(None)),
-            audio_pipeline_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
-            capture_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
             active_settings: Arc::new(Mutex::new(None)),
             active_settings_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
             is_paused: Arc::new(AtomicBool::new(false)),
@@ -794,10 +862,6 @@ impl SessionManager {
             recovery_task_id: Arc::new(AtomicU64::new(NO_GENERATION)),
             recovery_retry_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
             background_task_sequence: Arc::new(AtomicU64::new(0)),
-            pump_task: Arc::new(Mutex::new(None)),
-            pump_generation: Arc::new(AtomicU64::new(NO_GENERATION)),
-            translation_timeout_task: Arc::new(Mutex::new(None)),
-            translation_timeout_task_id: Arc::new(AtomicU64::new(NO_GENERATION)),
             lifecycle_lock: Arc::new(TokioMutex::new(())),
             lifecycle_operations: Arc::new(AtomicUsize::new(0)),
             lifecycle_sequence: Arc::new(AtomicU64::new(0)),
@@ -931,16 +995,23 @@ impl SessionManager {
     }
 
     fn current_capture_observation(&self) -> Option<CaptureObservation> {
-        self.audio_pipeline
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|pipeline| {
-                let (pcm_data_recent, sound_recent) = pipeline.input_activity();
-                CaptureObservation {
-                    pcm_data_recent,
-                    sound_recent,
-                }
+        self.lanes
+            .iter()
+            .filter_map(|lane| {
+                lane.audio_pipeline
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|pipeline| pipeline.input_activity())
+            })
+            .fold(None, |previous, (pcm_data_recent, sound_recent)| {
+                let mut observation = previous.unwrap_or(CaptureObservation {
+                    pcm_data_recent: false,
+                    sound_recent: false,
+                });
+                observation.pcm_data_recent |= pcm_data_recent;
+                observation.sound_recent |= sound_recent;
+                Some(observation)
             })
     }
 
@@ -951,11 +1022,39 @@ impl SessionManager {
                     pcm_data_recent: capture.pcm_data_recent,
                     sound_recent: capture.sound_recent,
                 });
+        if self.settings.preferences().audio_input == AudioInput::Both {
+            return crate::audio::CaptureStatus {
+                kind: "both",
+                strategy: "independent_inputs",
+                actual_device_name: self
+                    .lane(AudioSource::Microphone)
+                    .audio
+                    .lock()
+                    .unwrap()
+                    .microphone_device_name(),
+                system_output_device_name: {
+                    #[cfg(target_os = "macos")]
+                    {
+                        crate::audio::macos_output::default_output_device_name()
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        None
+                    }
+                },
+                observation,
+            };
+        }
         if self.settings.preferences().audio_input == AudioInput::Microphone {
             return crate::audio::CaptureStatus {
                 kind: "microphone",
                 strategy: "default_input",
-                actual_device_name: self.audio.lock().unwrap().microphone_device_name(),
+                actual_device_name: self
+                    .lane(AudioSource::Microphone)
+                    .audio
+                    .lock()
+                    .unwrap()
+                    .microphone_device_name(),
                 system_output_device_name: None,
                 observation,
             };
@@ -1108,12 +1207,19 @@ impl SessionManager {
         let (output_selection, output_availability) = if prefs.audio_input == AudioInput::Microphone
         {
             (OutputSelection::DefaultMicrophone, Availability::Unknown)
+        } else if prefs.audio_input == AudioInput::Both {
+            (OutputSelection::SystemAndMicrophone, Availability::Unknown)
         } else {
             (output_selection, output_availability)
         };
         let translation_latency = self
-            .client_for_generation(generation)
-            .and_then(|client| client.translation_latency());
+            .sources()
+            .iter()
+            .filter_map(|&source| {
+                self.client_for_generation(source, generation)
+                    .and_then(|client| client.translation_latency())
+            })
+            .max_by_key(|latency| latency.milliseconds);
         let (mut api_latency_ms, mut translation_latency_ms, mut translation_latency_kind) =
             visible_session_latencies(
                 &session_status,
@@ -1173,7 +1279,12 @@ impl SessionManager {
         }
         #[cfg(target_os = "windows")]
         {
-            let mut snapshot = self.audio.lock().unwrap().snapshot()?;
+            let mut snapshot = self
+                .lane(AudioSource::System)
+                .audio
+                .lock()
+                .unwrap()
+                .snapshot()?;
             // Sound reaching the provider is measured after mono/resampling,
             // independently of raw callback arrival or synthetic keepalive.
             snapshot.receiving_sound = snapshot.current_device.is_some()
@@ -1289,7 +1400,9 @@ impl SessionManager {
         }
         // A manual start is a new session; server quota can still be exhausted,
         // but no old client accounting may be restored into this new intent.
-        self.mt_budget_continuity.lock().unwrap().reset();
+        for lane in &self.lanes {
+            lane.mt_budget_continuity.lock().unwrap().reset();
+        }
         // A manual start during recovery backoff is the newer user intent.
         // Cancel the old owner before installing this generation so its
         // global recovery flag cannot affect the new session's error path.
@@ -1298,6 +1411,10 @@ impl SessionManager {
             .map_err(|_| "Could not save the previous session history.".to_string())?;
         let preferences = self.settings.preferences();
         *self.active_audio_input.lock().unwrap() = preferences.audio_input;
+        self.controller
+            .lock()
+            .unwrap()
+            .set_audio_input(preferences.audio_input);
         let started_at_ms = crate::core::subtitle_reducer::now_epoch_ms();
         let history_id = (preferences.retain_session_history || preferences.record_session_audio)
             .then(|| uuid::Uuid::new_v4().to_string());
@@ -1326,10 +1443,9 @@ impl SessionManager {
             self.is_ui_test() && preferences.retain_session_history,
             started_at_ms,
         );
-        self.recording
-            .lock()
-            .unwrap()
-            .begin(preferences.record_session_audio && !self.is_ui_test());
+        for recording in self.recording.lock().unwrap().iter_mut() {
+            recording.begin(false);
+        }
         if clear_subtitles {
             self.controller.lock().unwrap().clear_subtitles();
         }
@@ -1425,14 +1541,14 @@ impl SessionManager {
                 .await;
             if let Err(error) = result {
                 pipeline_log!("session establish failed label=provider_or_capture_setup");
-                if !self.is_generation_current(generation) {
+                // Claim failure before cleanup can await. Otherwise a provider
+                // pump can claim recovery during teardown and then be aborted
+                // before it installs the retry task.
+                let Some(failure_epoch) = self.invalidate_generation_with_epoch(generation) else {
                     self.cleanup_generation_without_pump(generation).await;
                     return Err(SESSION_START_CANCELLED.into());
-                }
-                self.cleanup_generation(generation).await;
-                let Some(failure_epoch) = self.invalidate_generation_with_epoch(generation) else {
-                    return Err(SESSION_START_CANCELLED.into());
                 };
+                self.cleanup_generation(generation).await;
                 let _lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
                 if self.lifecycle_sequence.load(Ordering::SeqCst) != failure_epoch {
                     return Err(SESSION_START_CANCELLED.into());
@@ -1477,8 +1593,30 @@ impl SessionManager {
         self: Arc<Self>,
         configuration: LiveTranslationConfiguration,
         generation: u64,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
+        Box::pin(async move {
+            connect_source_group(
+                self.sources(),
+                |source| {
+                    Arc::clone(&self).connect_source(configuration.clone(), generation, source)
+                },
+                |pumps| self.cleanup_generation_resources(generation, pumps),
+            )
+            .await?;
+            self.commit_listening(generation)?;
+            self.publish_state();
+            self.start_health_checks(generation).await;
+            self.ensure_generation_current(generation)?;
+            Ok(())
+        })
+    }
+
+    fn connect_source(
+        self: Arc<Self>,
+        configuration: LiveTranslationConfiguration,
+        generation: u64,
+        source: AudioSource,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
-        let audio_input = *self.active_audio_input.lock().unwrap();
         Box::pin(async move {
             // Create the client and consume its events through this manager.
             let (event_tx, mut event_rx) = provider_event_channel();
@@ -1500,14 +1638,15 @@ impl SessionManager {
                 if !self.is_lifecycle_request_current(generation) {
                     return Err(SESSION_START_CANCELLED.into());
                 }
-                self.mt_budget_continuity
+                self.lane(source)
+                    .mt_budget_continuity
                     .lock()
                     .unwrap()
                     .prepare(generation, scope)
             };
             new_client.restore_mt_request_budget(budget).await;
             self.ensure_generation_current(generation)?;
-            self.install_client(generation, new_client).await?;
+            self.install_client(source, generation, new_client).await?;
 
             // Start consuming before awaiting setup: a provider may acknowledge
             // setup and immediately send a terminal error/close in the same
@@ -1516,13 +1655,13 @@ impl SessionManager {
             let self_arc = Arc::clone(&self);
             let pump = tokio::spawn(async move {
                 while let Some(event) = event_rx.recv_with_revision().await {
-                    self_arc.handle_event(generation, event).await;
+                    self_arc.handle_event(source, generation, event).await;
                 }
             });
-            self.install_pump(generation, pump);
+            self.install_pump(source, generation, pump);
 
             let client = self
-                .client_for_generation(generation)
+                .client_for_generation(source, generation)
                 .ok_or_else(|| SESSION_START_CANCELLED.to_string())?;
             let connect_result = self
                 .run_while_generation_current(generation, client.connect())
@@ -1530,7 +1669,8 @@ impl SessionManager {
             let connect_result = match connect_result {
                 Ok(result) => result,
                 Err(error) => {
-                    self.remember_mt_request_budget(generation, &client).await;
+                    self.remember_mt_request_budget(source, generation, &client)
+                        .await;
                     let _ = tokio::time::timeout(Duration::from_secs(1), client.disconnect()).await;
                     return Err(error);
                 }
@@ -1538,7 +1678,8 @@ impl SessionManager {
             connect_result.map_err(|error| error.to_string())?;
             tokio::task::yield_now().await;
             if let Err(error) = self.ensure_generation_current(generation) {
-                self.remember_mt_request_budget(generation, &client).await;
+                self.remember_mt_request_budget(source, generation, &client)
+                    .await;
                 let _ = tokio::time::timeout(Duration::from_secs(1), client.disconnect()).await;
                 return Err(error);
             }
@@ -1556,8 +1697,13 @@ impl SessionManager {
                 move |data| {
                     let manager = Arc::clone(&send_manager);
                     Box::pin(async move {
-                        manager.record_audio(generation, audio_format.sample_rate_hz, &data);
-                        let client = manager.client_for_generation(generation);
+                        manager.record_audio(
+                            source,
+                            generation,
+                            audio_format.sample_rate_hz,
+                            &data,
+                        );
+                        let client = manager.client_for_generation(source, generation);
                         match client {
                             Some(client) => client.send_audio(&data).await.map_err(|_| ()),
                             None => Err(()),
@@ -1577,12 +1723,13 @@ impl SessionManager {
                 .ingress()
                 .ok_or_else(|| "The bounded audio pipeline is unavailable.".to_string())?;
             self.ensure_generation_current(generation)?;
-            self.install_pipeline(generation, Arc::clone(&pipeline))?;
+            self.install_pipeline(source, generation, Arc::clone(&pipeline))?;
             client.set_audio_pending_gate(pipeline.pending_pcm_gate());
 
             let audio_failure_tx = self.capture_failure_channel(generation);
             self.ensure_generation_current(generation)?;
-            self.capture_generation
+            self.lane(source)
+                .capture_generation
                 .compare_exchange(
                     NO_GENERATION,
                     generation,
@@ -1590,13 +1737,13 @@ impl SessionManager {
                     Ordering::SeqCst,
                 )
                 .map_err(|_| "Audio capture is already assigned to a session.".to_string())?;
-            let capture = self.audio.lock().unwrap().clone();
+            let capture = self.lane(source).audio.lock().unwrap().clone();
             #[cfg(target_os = "windows")]
             capture.set_source(self.settings.preferences().windows_audio_source);
             match self
                 .run_while_generation_current(
                     generation,
-                    capture.start(audio_ingress, audio_failure_tx, audio_format, audio_input),
+                    capture.start(audio_ingress, audio_failure_tx, audio_format, source),
                 )
                 .await
             {
@@ -1607,25 +1754,20 @@ impl SessionManager {
                     // delivered. Always request generation-scoped teardown;
                     // the platform implementation also cleans up its own
                     // start token before returning this error.
-                    self.stop_capture_for_generation(generation).await;
+                    self.stop_capture_for_generation(source, generation).await;
                     return Err(error.to_string());
                 }
                 Err(error) => {
-                    self.stop_capture_for_generation(generation).await;
+                    self.stop_capture_for_generation(source, generation).await;
                     return Err(error);
                 }
             }
             if let Err(error) = self.ensure_generation_current(generation) {
-                self.stop_capture_for_generation(generation).await;
+                self.stop_capture_for_generation(source, generation).await;
                 return Err(error);
             }
             pipeline_log!("audio capture started");
 
-            self.commit_listening(generation)?;
-            self.publish_state();
-            Arc::clone(&self).start_health_checks(generation).await;
-            self.ensure_generation_current(generation)?;
-            pipeline_log!("session listening");
             Ok(())
         })
     }
@@ -1637,7 +1779,9 @@ impl SessionManager {
         self.record_recovery_action(RecoveryAction::UserStopped);
         let _operation = self.begin_lifecycle_operation();
         let _stop_request = self.next_lifecycle_request();
-        self.mt_budget_continuity.lock().unwrap().reset();
+        for lane in &self.lanes {
+            lane.mt_budget_continuity.lock().unwrap().reset();
+        }
         let stopping_generation = self.active_generation.swap(NO_GENERATION, Ordering::SeqCst);
         if stopping_generation != NO_GENERATION {
             self.stopping_tail_generation
@@ -1645,8 +1789,10 @@ impl SessionManager {
         }
         let _lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
         if !self.controller.lock().unwrap().state.status.is_active()
-            && self.client.lock().unwrap().is_none()
-            && self.capture_generation.load(Ordering::SeqCst) == NO_GENERATION
+            && self.lanes.iter().all(|lane| {
+                lane.client.lock().unwrap().is_none()
+                    && lane.capture_generation.load(Ordering::SeqCst) == NO_GENERATION
+            })
         {
             self.stop_health_checks().await;
             self.cancel_recovery().await;
@@ -1678,32 +1824,52 @@ impl SessionManager {
         // buffers already accepted by the network pipeline a finite drain
         // window before asking the provider to close its session.
         if stopping_generation != NO_GENERATION {
-            self.stop_capture_for_generation(stopping_generation).await;
-            self.finish_pipeline_for_generation(stopping_generation, Duration::from_secs(1))
-                .await;
+            tokio::join!(
+                self.stop_capture_for_generation(AudioSource::System, stopping_generation),
+                self.stop_capture_for_generation(AudioSource::Microphone, stopping_generation),
+            );
         } else {
-            self.stop_any_capture().await;
-            self.finish_pipeline(Duration::from_secs(1)).await;
+            tokio::join!(
+                self.stop_any_capture(AudioSource::System),
+                self.stop_any_capture(AudioSource::Microphone)
+            );
         }
-        let taken = if stopping_generation == NO_GENERATION {
-            self.take_any_client()
-        } else {
-            self.take_client_for_generation(stopping_generation)
-        };
-        if let Some(client) = taken {
-            if tokio::time::timeout(Duration::from_secs(6), client.finish())
-                .await
-                .is_err()
-            {
-                pipeline_log!("provider finish timed out");
-                let _ = tokio::time::timeout(Duration::from_secs(1), client.disconnect()).await;
+        for source in [AudioSource::System, AudioSource::Microphone] {
+            if stopping_generation != NO_GENERATION {
+                self.finish_pipeline_for_generation(
+                    source,
+                    stopping_generation,
+                    Duration::from_secs(1),
+                )
+                .await;
+            } else {
+                self.finish_source_pipeline(source, Duration::from_secs(1))
+                    .await;
             }
-        }
-        if stopping_generation != NO_GENERATION {
-            self.finish_pump_for_generation(stopping_generation, Duration::from_millis(500))
+            let taken = if stopping_generation == NO_GENERATION {
+                self.take_any_client(source)
+            } else {
+                self.take_client_for_generation(source, stopping_generation)
+            };
+            if let Some(client) = taken {
+                if tokio::time::timeout(Duration::from_secs(6), client.finish())
+                    .await
+                    .is_err()
+                {
+                    pipeline_log!("provider finish timed out");
+                    let _ = tokio::time::timeout(Duration::from_secs(1), client.disconnect()).await;
+                }
+            }
+            if stopping_generation != NO_GENERATION {
+                self.finish_pump_for_generation(
+                    source,
+                    stopping_generation,
+                    Duration::from_millis(500),
+                )
                 .await;
-        } else {
-            self.stop_any_pump();
+            } else {
+                self.stop_any_pump(source);
+            }
         }
         self.stopping_tail_generation
             .store(NO_GENERATION, Ordering::SeqCst);
@@ -2011,7 +2177,7 @@ impl SessionManager {
         }
     }
 
-    fn record_audio(&self, generation: u64, sample_rate: u32, data: &[u8]) {
+    fn record_audio(&self, source: AudioSource, generation: u64, sample_rate: u32, data: &[u8]) {
         if (self.is_generation_current(generation)
             || self.stopping_tail_generation.load(Ordering::SeqCst) == generation)
             && !self.is_paused()
@@ -2041,7 +2207,7 @@ impl SessionManager {
             }
             if self
                 .history
-                .append_pcm(id, sample_rate, &data[..accepted])
+                .append_pcm_from(id, source, sample_rate, &data[..accepted])
                 .is_err()
             {
                 self.history_save_error.store(true, Ordering::SeqCst);
@@ -2083,7 +2249,9 @@ impl SessionManager {
                     self.history_save_error.store(true, Ordering::SeqCst);
                 }
             }
-            self.recording.lock().unwrap().begin(false);
+            for recording in self.recording.lock().unwrap().iter_mut() {
+                recording.begin(false);
+            }
             let mut stats = self.history_stats.lock().unwrap();
             stats.audio_bytes = 0;
             stats.audio_limited = false;
@@ -2098,16 +2266,32 @@ impl SessionManager {
             return crate::core::session_archive::ArchiveState {
                 transcript_count: controller.archive().count(),
                 transcript_limited: controller.archive().limited,
-                audio_bytes: recording.len(),
-                audio_limited: recording.limited,
-                sample_rate: recording.sample_rate,
+                audio_sources: [AudioSource::System, AudioSource::Microphone]
+                    .into_iter()
+                    .zip(recording.iter())
+                    .filter_map(|(source, recording)| (recording.len() > 0).then_some(source))
+                    .collect(),
+                audio_bytes: recording.iter().map(|recording| recording.len()).sum(),
+                audio_limited: recording.iter().any(|recording| recording.limited),
+                sample_rate: recording
+                    .iter()
+                    .find(|recording| recording.len() > 0)
+                    .map_or(0, |recording| recording.sample_rate),
                 history_save_error: false,
             };
         }
+        let audio_sources = self
+            .history_pending_id
+            .lock()
+            .unwrap()
+            .as_deref()
+            .and_then(|id| self.history.audio_sources(id).ok())
+            .unwrap_or_default();
         let stats = self.history_stats.lock().unwrap();
         crate::core::session_archive::ArchiveState {
             transcript_count: stats.transcript_count,
             transcript_limited: stats.transcript_limited,
+            audio_sources,
             audio_bytes: stats.audio_bytes,
             audio_limited: stats.audio_limited,
             sample_rate: stats.sample_rate,
@@ -2132,11 +2316,14 @@ impl SessionManager {
             // Opt-in only within UI-test mode: no history writes, credentials,
             // provider connections or captured audio. New start/clear/opt-out
             // still reset these bounded, synthetic buffers normally.
-            finish_ui_test_archive(
-                &mut self.controller.lock().unwrap(),
-                &mut self.recording.lock().unwrap(),
-                std::env::var("MIMI_UI_TEST_EXPORT").as_deref() == Ok("1"),
-            );
+            let mut controller = self.controller.lock().unwrap();
+            for recording in self.recording.lock().unwrap().iter_mut() {
+                finish_ui_test_archive(
+                    &mut controller,
+                    recording,
+                    std::env::var("MIMI_UI_TEST_EXPORT").as_deref() == Ok("1"),
+                );
+            }
             *pending = None;
             self.history_pending_text.store(false, Ordering::SeqCst);
             self.history_pending_audio.store(false, Ordering::SeqCst);
@@ -2194,13 +2381,35 @@ impl SessionManager {
         }
     }
 
-    pub fn export_audio(&self) -> std::io::Result<Option<Vec<u8>>> {
+    pub fn export_audio_from(
+        &self,
+        source: Option<AudioSource>,
+    ) -> std::io::Result<Option<Vec<u8>>> {
         if self.is_ui_test() {
-            return Ok(self.recording.lock().unwrap().export());
+            let recordings = self.recording.lock().unwrap();
+            let index = match source {
+                Some(AudioSource::System) => Some(0),
+                Some(AudioSource::Microphone) => Some(1),
+                None => {
+                    let mut available = recordings
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, recording)| recording.len() > 0);
+                    let first = available.next().map(|(index, _)| index);
+                    if available.next().is_some() {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "Select an audio source to export.",
+                        ));
+                    }
+                    first
+                }
+            };
+            return Ok(index.and_then(|index| recordings[index].export()));
         }
         let pending = self.history_pending_id.lock().unwrap();
         match pending.as_deref() {
-            Some(id) => self.history.audio(id).map(Some),
+            Some(id) => self.history.audio_selected(id, source).map(Some),
             None => Ok(None),
         }
     }
@@ -2217,22 +2426,27 @@ impl SessionManager {
         self.history_save_error.store(false, Ordering::SeqCst);
         self.archive_revision.fetch_add(1, Ordering::SeqCst);
         self.controller.lock().unwrap().archive_mut().clear();
-        self.recording.lock().unwrap().clear();
+        for recording in self.recording.lock().unwrap().iter_mut() {
+            recording.clear();
+        }
         Ok(())
     }
 
     pub async fn clear_subtitles(self: &Arc<Self>) -> std::io::Result<()> {
         let _content = self.subtitle_content_lock.lock().await;
         self.clear_current_subtitle_history()?;
-        let generation = self.client_generation.load(Ordering::SeqCst);
-        if let Some(client) = self.client_for_generation(generation) {
-            let revision = client.clear_content().await;
-            *self.subtitle_content_revision.lock().unwrap() = (generation, revision);
-        } else {
-            // Keep the retired connection cut even after teardown has taken
-            // its client. A previously popped stopping tail must stay stale.
-            let mut boundary = self.subtitle_content_revision.lock().unwrap();
-            boundary.1 = boundary.1.wrapping_add(1);
+        for source in [AudioSource::System, AudioSource::Microphone] {
+            let generation = self.lane(source).client_generation.load(Ordering::SeqCst);
+            if let Some(client) = self.client_for_generation(source, generation) {
+                let revision = client.clear_content().await;
+                *self.lane(source).subtitle_content_revision.lock().unwrap() =
+                    (generation, revision);
+            } else {
+                // Keep the retired connection cut even after teardown has taken
+                // its client. A previously popped stopping tail must stay stale.
+                let mut boundary = self.lane(source).subtitle_content_revision.lock().unwrap();
+                boundary.1 = boundary.1.wrapping_add(1);
+            }
         }
         self.cancel_translation_timeout();
         self.controller.lock().unwrap().clear_subtitles();
@@ -2260,12 +2474,17 @@ impl SessionManager {
 
     // MARK: event handling
 
-    async fn handle_event(self: &Arc<Self>, generation: u64, envelope: ProviderEvent) {
+    async fn handle_event(
+        self: &Arc<Self>,
+        source: AudioSource,
+        generation: u64,
+        envelope: ProviderEvent,
+    ) {
         let content = self.subtitle_content_lock.lock().await;
         if !subtitle_content_is_current(
             generation,
             &envelope,
-            *self.subtitle_content_revision.lock().unwrap(),
+            *self.lane(source).subtitle_content_revision.lock().unwrap(),
         ) {
             return;
         }
@@ -2286,16 +2505,17 @@ impl SessionManager {
 
         if let LiveTranslateServerEvent::SubtitleConfirmedPair {
             utterance_id,
-            source,
+            source: source_text,
             translation,
             ..
         } = &event
         {
             // A replay is not an accepted final: it must not cancel a newer
             // request's timeout or inflate the content-free journal counts.
-            if !self.controller.lock().unwrap().accepts_confirmed_pair(
-                *utterance_id,
+            if !self.controller.lock().unwrap().accepts_confirmed_pair_from(
                 source,
+                *utterance_id,
+                source_text,
                 translation,
             ) {
                 return;
@@ -2373,10 +2593,10 @@ impl SessionManager {
                 | LiveTranslateServerEvent::Error { .. }
                 | LiveTranslateServerEvent::TranslationDeferred(_)
         ) {
-            self.cancel_translation_timeout();
+            self.cancel_source_translation_timeout(source);
         }
         if matches!(event, LiveTranslateServerEvent::TranslationStarted) {
-            self.arm_translation_timeout(generation);
+            self.arm_translation_timeout(source, generation);
         }
 
         let is_terminal = matches!(
@@ -2388,10 +2608,14 @@ impl SessionManager {
         if is_terminal && !self.invalidate_generation(generation) {
             return;
         }
+        if is_terminal {
+            self.cancel_translation_timeout();
+        }
         let newly_confirmed = {
             let mut controller = self.controller.lock().unwrap();
             let previous = controller.state.subtitles.history.last().cloned();
-            controller.handle(event.clone());
+            controller.handle_from(source, event.clone());
+            apply_terminal_event_to_all_sources(&mut controller, &event);
             let current = controller.state.subtitles.history.last();
             confirmed_history_tail_changed(previous.as_ref(), current)
                 .then(|| current.cloned())
@@ -2452,37 +2676,48 @@ impl SessionManager {
     /// then waits for the server's `response.text.done`; if the audio stops
     /// mid-sentence the server may never finalize, so without this the UI
     /// would stay pending forever. The shown subtitle is left untouched.
-    fn arm_translation_timeout(self: &Arc<Self>, generation: u64) {
+    fn arm_translation_timeout(self: &Arc<Self>, source: AudioSource, generation: u64) {
         // Install/cancel under one slot lock. Otherwise a concurrent cancel
         // can run after `spawn` but before the handle is stored, leaving a
         // detached stale handle in the slot even though its ownership id was
         // already invalidated.
-        let mut slot = self.translation_timeout_task.lock().unwrap();
+        let mut slot = self.lane(source).translation_timeout_task.lock().unwrap();
         if let Some(task) = slot.take() {
             task.abort();
         }
         let task_id = self.next_background_task_id();
-        self.translation_timeout_task_id
+        self.lane(source)
+            .translation_timeout_task_id
             .store(task_id, Ordering::SeqCst);
         let this = Arc::clone(self);
         let task = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(6)).await;
             let _content = this.subtitle_content_lock.lock().await;
             if !this.is_generation_current(generation)
-                || !this.clear_translation_timeout_task_if_id(task_id)
+                || !this.clear_translation_timeout_task_if_id(source, task_id)
             {
                 return;
             }
             pipeline_log!("translation pending timed out; clearing");
-            this.controller.lock().unwrap().clear_translation_pending();
+            this.controller
+                .lock()
+                .unwrap()
+                .clear_translation_pending_from(source);
             this.publish_state();
         });
         *slot = Some(task);
     }
 
     fn cancel_translation_timeout(self: &Arc<Self>) {
-        let mut slot = self.translation_timeout_task.lock().unwrap();
-        self.translation_timeout_task_id
+        for source in [AudioSource::System, AudioSource::Microphone] {
+            self.cancel_source_translation_timeout(source);
+        }
+    }
+
+    fn cancel_source_translation_timeout(self: &Arc<Self>, source: AudioSource) {
+        let mut slot = self.lane(source).translation_timeout_task.lock().unwrap();
+        self.lane(source)
+            .translation_timeout_task_id
             .store(NO_GENERATION, Ordering::SeqCst);
         if let Some(task) = slot.take() {
             task.abort();
@@ -2589,49 +2824,53 @@ impl SessionManager {
         {
             return false;
         }
-        let Some(client) = self.client_for_generation(generation) else {
-            return false;
-        };
-        let started_at = Instant::now();
-        match client.ping(Duration::from_secs(4)).await {
-            Ok(()) => {
-                let elapsed_ms = milliseconds(started_at, Instant::now());
-                {
-                    // Pair the validity check and write with health-task
-                    // replacement, so a late old probe cannot overwrite a
-                    // newer task's measurement after stop/reconnect.
-                    let _health_task = self.health_task.lock().unwrap();
+        let mut maximum_latency_ms = 0;
+        for &source in self.sources() {
+            let Some(client) = self.client_for_generation(source, generation) else {
+                return false;
+            };
+            let started_at = Instant::now();
+            match client.ping(Duration::from_secs(4)).await {
+                Ok(()) => {
+                    let elapsed_ms = milliseconds(started_at, Instant::now());
+                    {
+                        // Pair the validity check and write with health-task
+                        // replacement, so a late old probe cannot overwrite a
+                        // newer task's measurement after stop/reconnect.
+                        let _health_task = self.health_task.lock().unwrap();
+                        if !self.is_generation_current(generation)
+                            || self.health_task_id.load(Ordering::SeqCst) != task_id
+                        {
+                            return false;
+                        }
+                        *self.health_latency.lock().unwrap() = Some(HealthCheckLatency {
+                            generation,
+                            task_id,
+                            milliseconds: maximum_latency_ms.max(elapsed_ms),
+                        });
+                    }
+                    maximum_latency_ms = maximum_latency_ms.max(elapsed_ms);
+                }
+                Err(error) => {
                     if !self.is_generation_current(generation)
                         || self.health_task_id.load(Ordering::SeqCst) != task_id
                     {
                         return false;
                     }
-                    *self.health_latency.lock().unwrap() = Some(HealthCheckLatency {
-                        generation,
-                        task_id,
-                        milliseconds: elapsed_ms,
-                    });
-                }
-                self.publish_state();
-                true
-            }
-            Err(error) => {
-                if !self.is_generation_current(generation)
-                    || self.health_task_id.load(Ordering::SeqCst) != task_id
-                {
+                    pipeline_log!(
+                        "connection health failed label={}",
+                        error.diagnostic_label()
+                    );
+                    self.clear_health_task_if_id(task_id);
+                    if self.invalidate_generation(generation) {
+                        self.queue_recovery(generation, error.to_string()).await;
+                    }
                     return false;
                 }
-                pipeline_log!(
-                    "connection health failed label={}",
-                    error.diagnostic_label()
-                );
-                self.clear_health_task_if_id(task_id);
-                if self.invalidate_generation(generation) {
-                    self.queue_recovery(generation, error.to_string()).await;
-                }
-                false
             }
         }
+        self.publish_state();
+        true
     }
 
     async fn queue_recovery(self: &Arc<Self>, failed_generation: u64, failure_message: String) {
@@ -2791,10 +3030,11 @@ impl SessionManager {
         }
     }
 
-    async fn finish_pipeline(&self, timeout: Duration) {
-        let pipeline = self.audio_pipeline.lock().unwrap().take();
+    async fn finish_source_pipeline(&self, source: AudioSource, timeout: Duration) {
+        let pipeline = self.lane(source).audio_pipeline.lock().unwrap().take();
         if let Some(pipeline) = pipeline {
-            self.audio_pipeline_generation
+            self.lane(source)
+                .audio_pipeline_generation
                 .store(NO_GENERATION, Ordering::SeqCst);
             if !pipeline.finish(timeout).await {
                 pipeline_log!("audio pipeline drain timed out");
@@ -2884,10 +3124,10 @@ impl SessionManager {
         clear_task_slot_if_id(&self.recovery_task, &self.recovery_task_id, task_id)
     }
 
-    fn clear_translation_timeout_task_if_id(&self, task_id: u64) -> bool {
+    fn clear_translation_timeout_task_if_id(&self, source: AudioSource, task_id: u64) -> bool {
         clear_task_slot_if_id(
-            &self.translation_timeout_task,
-            &self.translation_timeout_task_id,
+            &self.lane(source).translation_timeout_task,
+            &self.lane(source).translation_timeout_task_id,
             task_id,
         )
     }
@@ -2960,6 +3200,7 @@ impl SessionManager {
 
     async fn install_client(
         &self,
+        source: AudioSource,
         generation: u64,
         client: TranslationClient,
     ) -> Result<(), String> {
@@ -2968,13 +3209,16 @@ impl SessionManager {
         let _content = self.subtitle_content_lock.lock().await;
         let _transition = self.generation_transition.lock().unwrap();
         self.ensure_generation_current(generation)?;
-        let mut slot = self.client.lock().unwrap();
+        let mut slot = self.lane(source).client.lock().unwrap();
         if slot.is_some() {
             return Err("A live translation client is already installed.".into());
         }
-        *self.subtitle_content_revision.lock().unwrap() = (generation, client.content_revision());
+        *self.lane(source).subtitle_content_revision.lock().unwrap() =
+            (generation, client.content_revision());
         *slot = Some(client);
-        self.client_generation.store(generation, Ordering::SeqCst);
+        self.lane(source)
+            .client_generation
+            .store(generation, Ordering::SeqCst);
         // Settings can rebuild a client within the same lifecycle generation.
         // Its new socket must not inherit the previous socket's probe time.
         *self.health_latency.lock().unwrap() = None;
@@ -3020,53 +3264,80 @@ impl SessionManager {
             .store(NO_GENERATION, Ordering::SeqCst);
     }
 
-    fn client_for_generation(&self, generation: u64) -> Option<TranslationClient> {
-        let slot = self.client.lock().unwrap();
-        if self.client_generation.load(Ordering::SeqCst) == generation {
+    fn client_for_generation(
+        &self,
+        source: AudioSource,
+        generation: u64,
+    ) -> Option<TranslationClient> {
+        let slot = self.lane(source).client.lock().unwrap();
+        if self.lane(source).client_generation.load(Ordering::SeqCst) == generation {
             slot.clone()
         } else {
             None
         }
     }
 
-    fn take_client_for_generation(&self, generation: u64) -> Option<TranslationClient> {
-        let mut slot = self.client.lock().unwrap();
-        if self.client_generation.load(Ordering::SeqCst) != generation {
+    fn take_client_for_generation(
+        &self,
+        source: AudioSource,
+        generation: u64,
+    ) -> Option<TranslationClient> {
+        let mut slot = self.lane(source).client.lock().unwrap();
+        if self.lane(source).client_generation.load(Ordering::SeqCst) != generation {
             return None;
         }
-        self.client_generation
+        self.lane(source)
+            .client_generation
             .store(NO_GENERATION, Ordering::SeqCst);
         slot.take()
     }
 
-    fn take_any_client(&self) -> Option<TranslationClient> {
-        let mut slot = self.client.lock().unwrap();
-        self.client_generation
+    fn take_any_client(&self, source: AudioSource) -> Option<TranslationClient> {
+        let mut slot = self.lane(source).client.lock().unwrap();
+        self.lane(source)
+            .client_generation
             .store(NO_GENERATION, Ordering::SeqCst);
         slot.take()
     }
 
     fn install_pipeline(
         &self,
+        source: AudioSource,
         generation: u64,
         pipeline: Arc<AudioSendPipeline>,
     ) -> Result<(), String> {
-        let mut slot = self.audio_pipeline.lock().unwrap();
+        let _transition = self.generation_transition.lock().unwrap();
+        self.ensure_generation_current(generation)?;
+        if !self.is_lifecycle_request_current(generation) {
+            return Err(SESSION_START_CANCELLED.into());
+        }
+        let mut slot = self.lane(source).audio_pipeline.lock().unwrap();
         if slot.is_some() {
             return Err("An audio send pipeline is already installed.".into());
         }
         *slot = Some(pipeline);
-        self.audio_pipeline_generation
+        self.lane(source)
+            .audio_pipeline_generation
             .store(generation, Ordering::SeqCst);
         Ok(())
     }
 
-    fn take_pipeline_for_generation(&self, generation: u64) -> Option<Arc<AudioSendPipeline>> {
-        let mut slot = self.audio_pipeline.lock().unwrap();
-        if self.audio_pipeline_generation.load(Ordering::SeqCst) != generation {
+    fn take_pipeline_for_generation(
+        &self,
+        source: AudioSource,
+        generation: u64,
+    ) -> Option<Arc<AudioSendPipeline>> {
+        let mut slot = self.lane(source).audio_pipeline.lock().unwrap();
+        if self
+            .lane(source)
+            .audio_pipeline_generation
+            .load(Ordering::SeqCst)
+            != generation
+        {
             return None;
         }
-        self.audio_pipeline_generation
+        self.lane(source)
+            .audio_pipeline_generation
             .store(NO_GENERATION, Ordering::SeqCst);
         let pipeline = slot.take();
         if let Some(pipeline) = &pipeline {
@@ -3082,31 +3353,50 @@ impl SessionManager {
         pipeline
     }
 
-    fn install_pump(&self, generation: u64, pump: JoinHandle<()>) {
-        let mut slot = self.pump_task.lock().unwrap();
+    fn install_pump(&self, source: AudioSource, generation: u64, pump: JoinHandle<()>) {
+        let _transition = self.generation_transition.lock().unwrap();
+        if !self.is_generation_current(generation) || !self.is_lifecycle_request_current(generation)
+        {
+            pump.abort();
+            return;
+        }
+        let mut slot = self.lane(source).pump_task.lock().unwrap();
         if let Some(old) = slot.replace(pump) {
             old.abort();
         }
-        self.pump_generation.store(generation, Ordering::SeqCst);
+        self.lane(source)
+            .pump_generation
+            .store(generation, Ordering::SeqCst);
     }
 
-    fn stop_pump_for_generation(&self, generation: u64) {
-        if let Some(task) = self.take_pump_for_generation(generation) {
+    fn stop_pump_for_generation(&self, source: AudioSource, generation: u64) {
+        if let Some(task) = self.take_pump_for_generation(source, generation) {
             task.abort();
         }
     }
 
-    fn take_pump_for_generation(&self, generation: u64) -> Option<JoinHandle<()>> {
-        let mut slot = self.pump_task.lock().unwrap();
-        if self.pump_generation.load(Ordering::SeqCst) != generation {
+    fn take_pump_for_generation(
+        &self,
+        source: AudioSource,
+        generation: u64,
+    ) -> Option<JoinHandle<()>> {
+        let mut slot = self.lane(source).pump_task.lock().unwrap();
+        if self.lane(source).pump_generation.load(Ordering::SeqCst) != generation {
             return None;
         }
-        self.pump_generation.store(NO_GENERATION, Ordering::SeqCst);
+        self.lane(source)
+            .pump_generation
+            .store(NO_GENERATION, Ordering::SeqCst);
         slot.take()
     }
 
-    async fn finish_pump_for_generation(&self, generation: u64, timeout: Duration) {
-        let Some(mut task) = self.take_pump_for_generation(generation) else {
+    async fn finish_pump_for_generation(
+        &self,
+        source: AudioSource,
+        generation: u64,
+        timeout: Duration,
+    ) {
+        let Some(mut task) = self.take_pump_for_generation(source, generation) else {
             return;
         };
         if tokio::time::timeout(timeout, &mut task).await.is_err() {
@@ -3114,15 +3404,18 @@ impl SessionManager {
         }
     }
 
-    fn stop_any_pump(&self) {
-        self.pump_generation.store(NO_GENERATION, Ordering::SeqCst);
-        if let Some(task) = self.pump_task.lock().unwrap().take() {
+    fn stop_any_pump(&self, source: AudioSource) {
+        self.lane(source)
+            .pump_generation
+            .store(NO_GENERATION, Ordering::SeqCst);
+        if let Some(task) = self.lane(source).pump_task.lock().unwrap().take() {
             task.abort();
         }
     }
 
-    async fn stop_capture_for_generation(&self, generation: u64) {
+    async fn stop_capture_for_generation(&self, source: AudioSource, generation: u64) {
         if self
+            .lane(source)
             .capture_generation
             .compare_exchange(
                 generation,
@@ -3137,7 +3430,7 @@ impl SessionManager {
         if let Some(observation) = self.current_capture_observation() {
             *self.diagnostic_capture.lock().unwrap() = Some((observation, Instant::now()));
         }
-        let capture = self.audio.lock().unwrap().clone();
+        let capture = self.lane(source).audio.lock().unwrap().clone();
         if tokio::time::timeout(Duration::from_secs(2), capture.stop())
             .await
             .is_err()
@@ -3146,15 +3439,16 @@ impl SessionManager {
         }
     }
 
-    async fn stop_any_capture(&self) {
+    async fn stop_any_capture(&self, source: AudioSource) {
         if self
+            .lane(source)
             .capture_generation
             .swap(NO_GENERATION, Ordering::SeqCst)
             == NO_GENERATION
         {
             return;
         }
-        let capture = self.audio.lock().unwrap().clone();
+        let capture = self.lane(source).audio.lock().unwrap().clone();
         if tokio::time::timeout(Duration::from_secs(2), capture.stop())
             .await
             .is_err()
@@ -3163,8 +3457,13 @@ impl SessionManager {
         }
     }
 
-    async fn finish_pipeline_for_generation(&self, generation: u64, timeout: Duration) {
-        if let Some(pipeline) = self.take_pipeline_for_generation(generation) {
+    async fn finish_pipeline_for_generation(
+        &self,
+        source: AudioSource,
+        generation: u64,
+        timeout: Duration,
+    ) {
+        if let Some(pipeline) = self.take_pipeline_for_generation(source, generation) {
             if !pipeline.finish(timeout).await {
                 pipeline_log!("audio pipeline drain timed out");
             }
@@ -3172,29 +3471,45 @@ impl SessionManager {
     }
 
     async fn cleanup_generation(&self, generation: u64) {
-        self.cleanup_generation_resources(generation, true).await;
+        self.cleanup_generation_resources(generation, EventPumpCleanup::Abort)
+            .await;
     }
 
     async fn cleanup_generation_without_pump(&self, generation: u64) {
-        self.cleanup_generation_resources(generation, false).await;
+        self.cleanup_generation_resources(generation, EventPumpCleanup::Preserve)
+            .await;
     }
 
-    async fn cleanup_generation_resources(&self, generation: u64, stop_pump: bool) {
-        if let Some(pipeline) = self.take_pipeline_for_generation(generation) {
-            pipeline.stop();
+    async fn cleanup_generation_resources(&self, generation: u64, pumps: EventPumpCleanup) {
+        for source in [AudioSource::System, AudioSource::Microphone] {
+            if let Some(pipeline) = self.take_pipeline_for_generation(source, generation) {
+                pipeline.stop();
+            }
         }
-        self.stop_capture_for_generation(generation).await;
-        if let Some(client) = self.take_client_for_generation(generation) {
-            self.remember_mt_request_budget(generation, &client).await;
-            let _ = tokio::time::timeout(Duration::from_secs(2), client.disconnect()).await;
-        }
-        if stop_pump {
-            self.stop_pump_for_generation(generation);
+        tokio::join!(
+            self.stop_capture_for_generation(AudioSource::System, generation),
+            self.stop_capture_for_generation(AudioSource::Microphone, generation),
+        );
+        for source in [AudioSource::System, AudioSource::Microphone] {
+            if let Some(client) = self.take_client_for_generation(source, generation) {
+                self.remember_mt_request_budget(source, generation, &client)
+                    .await;
+                let _ = tokio::time::timeout(Duration::from_secs(2), client.disconnect()).await;
+            }
+            if matches!(pumps, EventPumpCleanup::Abort) {
+                self.stop_pump_for_generation(source, generation);
+            }
         }
     }
 
-    async fn remember_mt_request_budget(&self, generation: u64, client: &TranslationClient) {
+    async fn remember_mt_request_budget(
+        &self,
+        source: AudioSource,
+        generation: u64,
+        client: &TranslationClient,
+    ) {
         let lease = self
+            .lane(source)
             .mt_budget_continuity
             .lock()
             .unwrap()
@@ -3203,7 +3518,8 @@ impl SessionManager {
             return;
         };
         if let Some(budget) = client.suspend_mt_request_budget().await {
-            self.mt_budget_continuity
+            self.lane(source)
+                .mt_budget_continuity
                 .lock()
                 .unwrap()
                 .remember(token, scope, budget);
@@ -3222,8 +3538,13 @@ impl SessionManager {
         event.is_overlay_collapsed = self.is_overlay_collapsed();
         let generation = self.active_generation.load(Ordering::SeqCst);
         let translation_latency = self
-            .client_for_generation(generation)
-            .and_then(|client| client.translation_latency());
+            .sources()
+            .iter()
+            .filter_map(|&source| {
+                self.client_for_generation(source, generation)
+                    .and_then(|client| client.translation_latency())
+            })
+            .max_by_key(|latency| latency.milliseconds);
         let (api_latency_ms, translation_latency_ms, translation_latency_kind) =
             visible_session_latencies(
                 &state.status,
@@ -3361,26 +3682,49 @@ impl SessionManager {
         // Exercise the real archive and native save dialog in credential-free
         // UI QA. These are explicitly synthetic samples, never captured audio.
         let preferences = self.settings.preferences();
-        if preferences.retain_session_history {
-            self.controller
-                .lock()
-                .unwrap()
-                .handle(LiveTranslateServerEvent::SubtitleFinalPair {
-                    source: "Mimi export test: this is synthetic sample text.".into(),
-                    language: Some("en".into()),
-                    translation: "Mimi 导出测试：这是合成的示例文字。".into(),
-                });
+        let dual_fixture = std::env::var("MIMI_UI_TEST_DUAL_SUBTITLES").as_deref() == Ok("1");
+        self.controller
+            .lock()
+            .unwrap()
+            .set_audio_input(preferences.audio_input);
+        if preferences.retain_session_history || dual_fixture {
+            for &source in preferences.audio_input.sources() {
+                let (original, translation) = match source {
+                    AudioSource::System => (
+                        "Mimi system audio test: can you see the shared screen?",
+                        "Mimi 系统声音测试：你能看到共享屏幕吗？",
+                    ),
+                    AudioSource::Microphone => (
+                        "Mimi microphone test: yes, I can see it.",
+                        "Mimi 麦克风测试：可以，我能看到。",
+                    ),
+                };
+                self.controller.lock().unwrap().handle_from(
+                    source,
+                    LiveTranslateServerEvent::SubtitleFinalPair {
+                        source: original.into(),
+                        language: Some("en".into()),
+                        translation: translation.into(),
+                    },
+                );
+            }
         }
         if preferences.record_session_audio {
-            let samples: Vec<u8> = (0..16_000)
-                .flat_map(|index| {
-                    let phase = index as f32 * std::f32::consts::TAU * 440.0 / 16_000.0;
-                    ((phase.sin() * 1_000.0) as i16).to_le_bytes()
-                })
-                .collect();
-            let mut recording = self.recording.lock().unwrap();
-            recording.begin(true);
-            recording.append(16_000, &samples);
+            for &source in preferences.audio_input.sources() {
+                let (slot, frequency) = match source {
+                    AudioSource::System => (0, 440.0),
+                    AudioSource::Microphone => (1, 613.0),
+                };
+                let samples: Vec<u8> = (0..16_000)
+                    .flat_map(|index| {
+                        let phase = index as f32 * std::f32::consts::TAU * frequency / 16_000.0;
+                        ((phase.sin() * 1_000.0) as i16).to_le_bytes()
+                    })
+                    .collect();
+                let mut recordings = self.recording.lock().unwrap();
+                recordings[slot].begin(true);
+                recordings[slot].append(16_000, &samples);
+            }
         }
         self.publish_state();
         pipeline_log!("ui-test synthetic session listening");
@@ -3390,6 +3734,201 @@ impl SessionManager {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn startup_rollback_keeps_the_provider_pump_alive_until_it_queues_recovery() {
+        let active = Arc::new(AtomicU64::new(7));
+        let sequence = Arc::new(AtomicU64::new(7));
+        let notify = Arc::new(Notify::new());
+        let recovery_queued = Arc::new(AtomicBool::new(false));
+        let (failure_tx, failure_rx) = tokio::sync::oneshot::channel::<()>();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+        let pump = {
+            let active = Arc::clone(&active);
+            let sequence = Arc::clone(&sequence);
+            let notify = Arc::clone(&notify);
+            let recovery_queued = Arc::clone(&recovery_queued);
+            tokio::spawn(async move {
+                failure_rx.await.unwrap();
+                assert!(invalidate_generation_atoms(&active, &sequence, 7).is_some());
+                notify.notify_waiters();
+                // Provider-error handling waits on lifecycle/resource teardown
+                // after invalidation and before queue_recovery_with_delay.
+                release_rx.await.unwrap();
+                recovery_queued.store(true, Ordering::SeqCst);
+            })
+        };
+        let mut failure_tx = Some(failure_tx);
+        let cleaned = AtomicBool::new(false);
+        let result = connect_source_group(
+            AudioInput::Both.sources(),
+            |source| {
+                if source == AudioSource::Microphone {
+                    failure_tx.take().unwrap().send(()).unwrap();
+                }
+                let active = Arc::clone(&active);
+                let sequence = Arc::clone(&sequence);
+                let notify = Arc::clone(&notify);
+                async move {
+                    if source == AudioSource::System {
+                        return Ok(());
+                    }
+                    run_generation_bound_operation(
+                        active,
+                        sequence,
+                        notify,
+                        7,
+                        std::future::pending::<()>(),
+                    )
+                    .await
+                    .map(|_| ())
+                }
+            },
+            |pumps| {
+                cleaned.store(true, Ordering::SeqCst);
+                if matches!(pumps, EventPumpCleanup::Abort) {
+                    pump.abort();
+                }
+                std::future::ready(())
+            },
+        )
+        .await;
+        assert_eq!(result, Err(SESSION_START_CANCELLED.into()));
+        assert!(cleaned.load(Ordering::SeqCst));
+        // The startup cannot claim terminal failure after the pump has already
+        // claimed retry ownership. Its stale-error path must preserve the pump.
+        assert!(invalidate_generation_atoms(&active, &sequence, 7).is_none());
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), pump)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(recovery_queued.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn either_source_finishing_or_failing_ends_all_selected_sources() {
+        for source in [AudioSource::System, AudioSource::Microphone] {
+            for event in [
+                LiveTranslateServerEvent::SessionFinished,
+                LiveTranslateServerEvent::Error {
+                    code: "fatal".into(),
+                    message: "unavailable".into(),
+                },
+            ] {
+                let mut controller = TranslationSessionController::default();
+                controller.set_audio_input(AudioInput::Both);
+                controller.did_connect();
+                for &input in AudioInput::Both.sources() {
+                    controller.handle_from(input, LiveTranslateServerEvent::TranslationStarted);
+                }
+                controller.handle_from(source, event.clone());
+                apply_terminal_event_to_all_sources(&mut controller, &event);
+                assert!(!controller.state.status.is_active());
+                assert!(!controller.state.is_translation_pending);
+                assert!(controller
+                    .state
+                    .subtitles
+                    .tracks
+                    .iter()
+                    .all(|track| !track.is_translation_pending));
+                // A normal start following terminal cleanup can establish both again.
+                controller.begin_connecting();
+                controller.did_connect();
+                assert_eq!(controller.state.status, SessionStatus::Listening);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dual_source_start_failure_rolls_back_every_installed_lane() {
+        let installed = Arc::new(Mutex::new(Vec::new()));
+        let rollbacks = AtomicUsize::new(0);
+        let result = connect_source_group(
+            AudioInput::Both.sources(),
+            |source| {
+                let installed = Arc::clone(&installed);
+                async move {
+                    installed.lock().unwrap().push(source);
+                    if source == AudioSource::Microphone {
+                        Err("microphone unavailable".into())
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+            |_| async {
+                rollbacks.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(*installed.lock().unwrap(), AudioInput::Both.sources());
+                installed.lock().unwrap().clear();
+            },
+        )
+        .await;
+        assert_eq!(result, Err("microphone unavailable".into()));
+        assert!(installed.lock().unwrap().is_empty());
+        assert_eq!(rollbacks.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dual_source_stop_cancels_pending_second_start_and_rolls_back_first() {
+        let active = Arc::new(AtomicU64::new(1));
+        let sequence = Arc::new(AtomicU64::new(1));
+        let notify = Arc::new(Notify::new());
+        let installed = Arc::new(Mutex::new(Vec::new()));
+        let result = connect_source_group(
+            AudioInput::Both.sources(),
+            |source| {
+                let active = Arc::clone(&active);
+                let sequence = Arc::clone(&sequence);
+                let notify = Arc::clone(&notify);
+                let installed = Arc::clone(&installed);
+                async move {
+                    installed.lock().unwrap().push(source);
+                    if source == AudioSource::System {
+                        return Ok(());
+                    }
+                    active.store(NO_GENERATION, Ordering::SeqCst);
+                    sequence.store(2, Ordering::SeqCst);
+                    notify.notify_waiters();
+                    run_generation_bound_operation(
+                        active,
+                        sequence,
+                        notify,
+                        1,
+                        std::future::pending::<()>(),
+                    )
+                    .await
+                    .map(|_| ())
+                }
+            },
+            |_| async {
+                installed.lock().unwrap().clear();
+            },
+        )
+        .await;
+        assert_eq!(result, Err(SESSION_START_CANCELLED.into()));
+        assert!(installed.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn dual_source_success_keeps_both_lanes_and_never_rolls_back() {
+        let started = Mutex::new(Vec::new());
+        let rollback = AtomicBool::new(false);
+        connect_source_group(
+            AudioInput::Both.sources(),
+            |source| {
+                started.lock().unwrap().push(source);
+                std::future::ready(Ok(()))
+            },
+            |_| async {
+                rollback.store(true, Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(*started.lock().unwrap(), AudioInput::Both.sources());
+        assert!(!rollback.load(Ordering::SeqCst));
+    }
 
     #[tokio::test]
     async fn popped_pre_clear_event_cannot_restore_overlay_or_private_history() {

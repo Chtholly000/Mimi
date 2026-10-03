@@ -79,3 +79,11 @@ it("discards the old system output as soon as microphone is selected, before the
   expect(host.textContent).toContain("check the system’s default microphone");
   expect(host.textContent).not.toContain("play sound");
 });
+
+it("shows both inputs without claiming a single microphone is the system output", async () => {
+  useStore.setState({ settings: { ...initial.settings, audioInput: "both" } });
+  mocks.invoke.mockResolvedValue({ kind: "both", strategy: "independent_inputs", actualDeviceName: "Synthetic microphone", systemOutputDeviceName: "Synthetic headphones", observation: { pcmDataRecent: true, soundRecent: true } });
+  await mount();
+  expect(host.querySelector('[role="status"]')?.textContent).toBe("System audio + microphone · Receiving sound");
+  expect(host.textContent).not.toContain("Source unknown");
+});

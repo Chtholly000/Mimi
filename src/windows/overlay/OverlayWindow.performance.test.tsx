@@ -78,3 +78,25 @@ it("keeps Timeline unchanged during draft churn and updates for settled text and
   expect(timelineRender).toHaveBeenCalledTimes(5);
   expect(host.textContent).not.toContain("Synthetic second translation");
 });
+
+it("stabilizes both input drafts without rebuilding their shared history on every IPC event", async () => {
+  const tracks = (["system", "microphone"] as const).map(audioSource => ({
+    audioSource, source: { text: `Synthetic ${audioSource}`, isFinal: false },
+    translation: { text: `Synthetic ${audioSource} settled`, isFinal: false },
+    history: session.subtitles.history.map(pair => ({ ...pair, audioSource })),
+    detectedLanguage: "en", isTranslationPending: true, isTranslationTimedOut: false,
+  }));
+  const dual = { ...session, subtitles: { ...session.subtitles, tracks } };
+  await publish(dual);
+  await act(async () => root.render(<OverlayWindow />));
+  expect(timelineRender).toHaveBeenCalledOnce();
+  for (let index = 1; index <= 50; index++) {
+    const incoming = JSON.parse(JSON.stringify(dual)) as SessionStateEvent;
+    incoming.subtitles.tracks![index % 2].translation.text = `Synthetic updated draft ${index}`;
+    await publish(incoming);
+  }
+  expect(timelineRender).toHaveBeenCalledOnce();
+  await act(async () => vi.advanceTimersByTime(400));
+  expect(timelineRender).toHaveBeenCalledTimes(2);
+  expect(host.textContent).toContain("Synthetic updated draft 50");
+});

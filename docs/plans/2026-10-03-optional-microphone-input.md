@@ -1,63 +1,74 @@
-# Optional microphone input — issue #100, first phase
+# Independent system and microphone input — issue #100
 
-## Scope
+## Product behavior
 
-Desktop Mimi can use either system output or the default microphone as the
-single input to the existing recognition and translation pipeline. System
-output remains the default for fresh installs and existing preferences. There
-is no mixing, simultaneous capture, or Remote / Me speaker labeling in this
-phase. Android capture is unchanged. Issue #100 explicitly permits this first
-phase; dual independent recognition sessions remain future work.
+Settings → Speech & Translation offers separate System audio and Microphone
+switches. Either or both can be enabled; at least one stays selected. Existing
+and fresh preferences default to system audio only. Choosing an input never
+opens a device: capture and any necessary microphone permission start only
+when the user starts subtitles. Source selection is global and independent
+of service profiles. Both lanes use the selected profile and language settings.
+Two enabled sources open two service connections and incur the corresponding
+provider usage. Android capture is unchanged.
 
-## Selection and lifecycle
+Each source has independent capture, bounded PCM ingress, provider client,
+content revisions, subtitle assembly, translation progress and timeout state.
+Audio is never combined before recognition. Overlapping speech and identical
+provider utterance IDs must remain separate. The overlay identifies System
+audio and Microphone, because system output may contain media or multiple
+people rather than one remote speaker. Non-essential usage, permission and
+headphone advice belongs in compact hover/focus help, not persistent small print.
 
-The Settings audio input choice is global, separate from service profiles and
-recognition/translation language choices. Windows output selection applies only
-to system audio. Selecting microphone alone does not request permission or
-open a device. Explicitly starting subtitles opens the selected source; a
-microphone start on macOS requests microphone permission without screen/audio
-capture permission. The development and production bundles both declare
-`NSMicrophoneUsageDescription` and the
-[audio-input entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.device.audio-input).
+## Lifecycle and permissions
 
-Snapshot the input at manual start. Pause stops capture; resume, reconnect and
-recovery retain that input. Changing inputs requires stopping the session,
-including connecting, paused and recovery states. Startup cancellation must
-invalidate native workers before a delayed permission result can open capture.
-A missing or denied source fails visibly, without falling back to another
-input. Default microphone selection is resolved at each start; switching input
-devices during a session is not offered in this phase.
+Snapshot the enabled inputs at manual start. Pause, resume, language/mode
+changes and recovery retain that selection. Source changes require stopping,
+including connecting, paused, recovery and stopping states. Each source uses
+the existing selected-input capture implementation, with independent native
+handles and queues. Start commits Listening only after all selected sources
+are ready. Failure or cancellation of either source cleans up the whole
+generation; it must not leave a hidden microphone or silently continue with
+one source. Stop drains bounded final work and releases both native handles.
 
-## Capture and data
+Microphone-only sessions do not request system-audio capture permission;
+system-only sessions do not request microphone permission. macOS bundles
+include NSMicrophoneUsageDescription and the audio-input entitlement. Linux
+resolves output monitors only for system audio and a non-monitor default input
+for microphone. Windows output selection applies whenever system audio is
+selected. Defaults are resolved at each capture start; mid-session device
+selection is not offered. Headphones are recommended for two-input use because
+this change does not provide acoustic echo cancellation.
 
-macOS and Windows reuse the repository's patched CPAL dependency for default
-input capture. CPAL is newly enabled on macOS; no second audio framework or
-resampler dependency is introduced. Audio is downmixed and resampled through
-the existing bounded PCM pipeline at the provider's required 16/24 kHz rate.
-Linux uses the existing PulseAudio/PipeWire-Pulse worker and verifies that the
-selected default input is not an output monitor. System capture continues to
-resolve only output monitors. Native handles stay on their capture worker.
+## Subtitles and local files
 
-Recording and subtitle retention remain off by default. A change of audio
-input clears the recording opt-in, including a combined draft that attempts to
-switch source and enable recording. The user can enable recording again for
-the selected source. Current-session audio is cleared by the existing opt-out
-path; explicitly saved history is retained. Recording still writes bounded
-private local session files; diagnostic output contains no device names,
-audio, or recognized/translated text. Microphone capture status identifies its
-input rather than displaying playback-device information or system-audio
-troubleshooting advice. UI-only tests never access any capture backend.
+Each input retains its own bounded drafts and confirmed display history.
+A source-aware combined history preserves confirmation order for the normal
+history view and export. Clearing subtitles invalidates both clients' previous
+content revisions before clearing local text, so delayed translations cannot
+restore cleared content. Preview and final work from one input cannot overwrite
+or complete pending work for the other input.
 
-## Interface and verification
+Saving subtitles and audio recording remain separately opt-in and default off.
+Changing the input selection clears recording consent even if the same settings
+draft also requests recording. Confirmed text carries source identity in the
+private local journal. Audio is written to separate source tracks as it arrives,
+never retained for the full session in memory or concatenated into one WAV.
+Audio playback/export requires a source choice when both tracks exist. Existing
+single-track recordings and untagged transcripts remain readable. Disabling
+recording clears all current-session tracks; saved sessions require explicit
+deletion. Diagnostics remain content-free.
 
-Use one normal-size selector with System audio / Microphone choices. Put
-non-essential scope, device and permission help in hover/focus tooltips, not
-persistent small print. Keep independent speech and text translation setup.
+## Verification and delivery
 
-Verify preference migration and round trips; settings-window restrictions;
-active-session source locking; recording consent reset; mono/resampling;
-startup cancellation and worker release; Linux monitor rejection; localized
-source/permission/error presentation; and production/development permission
-metadata. Run `scripts/check.sh`, signed macOS UI-only smoke, and native-platform
-PR CI. Record actual hardware/provider verification separately from fixtures.
-This change is submitted as a PR for review, without merge or release.
+Cover legacy preferences, all three nonempty selections, source-locking and
+recording-consent reset; independent overlapping drafts/finals and pending
+states; per-source revisions and stale generations; cancellation and teardown
+when one source fails; independent bounded queues and PCM paths; separate
+recording, clear, delete and export paths with legacy-file compatibility.
+Run scripts/check.sh, inspect the signed macOS development app in UI-only mode,
+and run native-platform PR CI including simultaneous Linux PulseAudio capture.
+UI fixtures prove rendering and IPC behavior, not physical microphone permission
+or cloud recognition. Report live hardware/provider verification separately.
+
+Update PR #108 for review; do not merge main, tag, package a public release or
+publish a release as part of this change.

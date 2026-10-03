@@ -243,8 +243,8 @@ impl SystemAudioCapture {
     }
 }
 
-/// One selected input for a capture generation. System and microphone streams
-/// are never opened concurrently, including during cancelled startup/teardown.
+/// One independently owned input for a capture lane. Separate handles capture
+/// system audio and microphone concurrently without sharing native workers.
 #[derive(Clone)]
 pub struct AudioCapture {
     system: SystemAudioCapture,
@@ -294,7 +294,7 @@ impl AudioCapture {
         ingress: send_pipeline::AudioIngress,
         failure: CaptureFailureSender,
         format: AudioCaptureFormat,
-        input: crate::core::audio_input::AudioInput,
+        input: crate::core::audio_input::AudioSource,
     ) -> Result<(), SystemAudioCaptureError> {
         let token = {
             let mut state = self.state.lock().unwrap();
@@ -324,10 +324,10 @@ impl AudioCapture {
             return Err(SystemAudioCaptureError::StartCancelled);
         }
         match input {
-            crate::core::audio_input::AudioInput::System => {
+            crate::core::audio_input::AudioSource::System => {
                 self.system.start(ingress, failure, format).await?
             }
-            crate::core::audio_input::AudioInput::Microphone => {
+            crate::core::audio_input::AudioSource::Microphone => {
                 #[cfg(any(target_os = "macos", target_os = "windows"))]
                 self.microphone.start(ingress, failure, format).await?;
                 #[cfg(target_os = "linux")]

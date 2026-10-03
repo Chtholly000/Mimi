@@ -33,7 +33,8 @@ export function CaptureStatusRow({ onShowAudioSettings, disabled = false }: {
     return () => { disposed = true; clearTimeout(timer); };
   }, [input]);
   // Source changes invalidate the previous poll before a new response arrives.
-  const currentStatus = (input === "microphone") === (status?.kind === "microphone") ? status : null;
+  const statusInput = status?.kind === "both" ? "both" : status?.kind === "microphone" ? "microphone" : "system";
+  const currentStatus = input === statusInput ? status : null;
   const language = effectiveUiLanguage();
   const text = capturePresentation(currentStatus, active, paused, language, input);
   // The system output is useful context, not a claim that a system mix is

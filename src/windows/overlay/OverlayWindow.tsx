@@ -9,22 +9,28 @@ import { PulseRing } from "./PulseRing";
 import { OverlayLatency } from "./OverlayLatency";
 import { ResizeHandles } from "./ResizeHandles";
 import { Timeline } from "./Timeline";
-import { subtitleStreamKey, useResolvedMotion, useStableText } from "./animation";
+import { useResolvedMotion } from "./animation";
+import { useSubtitleTail } from "./useSubtitleTail";
+import type { SourceSubtitleSnapshot } from "../../lib/types";
 import { overlaySessionChromeLayout } from "./overlayChromeLayout";
 import { useSessionAction } from "./useSessionAction";
 import { publishOverlayPointerMotion } from "../../lib/overlayPointer";
 import {
   buildSubtitleBlocks,
+  buildMultiSourceSubtitleBlocks,
   computeActivityPhase,
   emptyStateDensity,
   emptyStateIsError,
   emptyStateText,
   hasSubtitleContent,
-  visibleLiveSubtitles,
 } from "./overlayModel";
 
 const ACCENT = "#7AA8FF";
 const OVERLAY_INSET = 6;
+const EMPTY_MICROPHONE: SourceSubtitleSnapshot = {
+  audioSource: "microphone", source: { text: "", isFinal: false }, translation: { text: "", isFinal: false },
+  history: [], detectedLanguage: null, isTranslationPending: false, isTranslationTimedOut: false,
+};
 type ControlAction = "collapse" | "clear" | "immersive" | "lock" | "settings";
 
 /** Floating subtitle overlay driven by native session and geometry state. */
@@ -115,81 +121,24 @@ export function OverlayWindow() {
   }, [motionOn, pulseOn]);
   const presentationCollapsed = collapsed && !blendsWithBackground;
   const phase = computeActivityPhase(session, settings);
-  const detectedLanguage = session.detectedLanguage;
   const activeProvider = settings.profiles.find(profile => profile.id === settings.activeProfileId)?.provider;
-  const preferAtomicPreview = session.subtitles.previewPair !== undefined &&
-    (activeProvider === "alibabaCloud" || activeProvider === "deepLX");
-  // The live tail is stabilized before it becomes the newest sentence block:
-  // original-mode text settles quickly, translated text stays calmer, and
-  // confirmed/removed tails update immediately. Source and translation
-  // previews have separate stabilization identities so a display-mode change
-  // cannot retain the previous source.
-  const livePreviews = useMemo(
-    () =>
-      visibleLiveSubtitles(
-        session.subtitles,
-        settings,
-        detectedLanguage,
-        session.isTranslationPending,
-        session.isTranslationTimedOut,
-        preferAtomicPreview,
-      ),
-    [
-      session.subtitles,
-      session.isTranslationPending,
-      session.isTranslationTimedOut,
-      settings,
-      detectedLanguage,
-      preferAtomicPreview,
-    ],
-  );
-  const sourcePreview = livePreviews.find((preview) => preview.kind === "source");
-  const translationPreview = livePreviews.find(
-    (preview) => preview.kind === "translation",
-  );
-  const latestCommittedAt = session.subtitles.history.at(-1)?.createdAt ?? null;
-  const sourceDraftText = useStableText(
-    sourcePreview?.text ?? "",
-    sourcePreview === undefined || sourcePreview.isFinal || sourcePreview.isStable ? 0 : 180,
-    750,
-    subtitleStreamKey(settings.subtitleDisplayMode, "source", sourcePreview?.utteranceId, latestCommittedAt),
-  );
-  const translationDraftText = useStableText(
-    translationPreview?.text ?? "",
-    translationPreview === undefined || translationPreview.isFinal || translationPreview.isStable ? 0 : 400,
-    1_500,
-    subtitleStreamKey(settings.subtitleDisplayMode, "translation", translationPreview?.utteranceId, latestCommittedAt),
-  );
-  // Sentence blocks: committed utterances plus the live tail, original above
-  // translation. The block carries the timestamp, the age fade and the live
-  // line budget, so a long sentence that wraps over several lines stays one
-  // visual unit. Rebuilt from committed history and the (settled) live text.
-  const liveIsStreaming = OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0 &&
-    ((sourcePreview !== undefined && !sourcePreview.isFinal && !sourcePreview.isStable) ||
-      (translationPreview !== undefined && !translationPreview.isFinal && !translationPreview.isStable));
-  const blocks = useMemo(
-    () =>
-      buildSubtitleBlocks(session.subtitles.history, settings.subtitleDisplayMode, {
-        source: sourceDraftText === "" ? null : sourceDraftText,
-        translation: translationDraftText === "" ? null : translationDraftText,
-        // A completed B pair can lag behind raw ASR C. Its own opaque owner
-        // keeps the read anchor on B when a delayed final A inserts above it.
-        utteranceId: sourcePreview?.utteranceId ?? translationPreview?.utteranceId,
-        // Text only counts as still arriving while the session is actually
-        // working: a paused session keeps its frozen draft, but nothing is
-        // coming, so the typing wave must stop with it.
-        isStreaming: liveIsStreaming,
-      }),
-    [
-      session.subtitles.history,
-      settings.subtitleDisplayMode,
-      liveIsStreaming,
-      sourceDraftText,
-      translationDraftText,
-      sourcePreview?.utteranceId,
-      translationPreview?.utteranceId,
-    ],
-  );
+  const atomicProvider = activeProvider === "alibabaCloud" || activeProvider === "deepLX";
+  const dual = (session.subtitles.tracks?.length ?? 0) > 1;
+  const systemTrack = dual ? session.subtitles.tracks!.find(track => track.audioSource === "system") : undefined;
+  const microphoneTrack = dual ? session.subtitles.tracks!.find(track => track.audioSource === "microphone") : undefined;
+  const primarySubtitles = systemTrack ?? session.subtitles;
+  const microphoneSubtitles = microphoneTrack ?? EMPTY_MICROPHONE;
+  const running = OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0;
+  const primaryTail = useSubtitleTail(primarySubtitles, settings, systemTrack ?? session, running, atomicProvider, "primary");
+  const microphoneTail = useSubtitleTail(microphoneSubtitles, settings, microphoneSubtitles, running, atomicProvider, "microphone");
+  const blocks = useMemo(() => dual
+    ? buildMultiSourceSubtitleBlocks(session.subtitles.history, settings.subtitleDisplayMode, [
+      { audioSource: "system", history: primarySubtitles.history, tail: primaryTail },
+      { audioSource: "microphone", history: microphoneSubtitles.history, tail: microphoneTail },
+    ])
+    : buildSubtitleBlocks(session.subtitles.history, settings.subtitleDisplayMode, primaryTail)
+      .map(block => ({ ...block, audioSource: undefined })),
+  [dual, session.subtitles.history, settings.subtitleDisplayMode, primarySubtitles.history, primaryTail, microphoneSubtitles.history, microphoneTail]);
   const hasContent = hasSubtitleContent(session.subtitles);
 
   const phaseLabel = OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;

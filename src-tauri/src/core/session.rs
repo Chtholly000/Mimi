@@ -1,6 +1,9 @@
 //! Provider-neutral session state controller.
 
-use crate::core::models::{DetectedLanguage, SessionStatus, SubtitleSnapshot, UtteranceRole};
+use crate::core::audio_input::{AudioInput, AudioSource};
+use crate::core::models::{
+    DetectedLanguage, SessionStatus, SourceSubtitleSnapshot, SubtitleSnapshot, UtteranceRole,
+};
 use crate::core::protocols::live_translate::LiveTranslateServerEvent;
 use crate::core::subtitle_reducer::SubtitleReducer;
 
@@ -30,13 +33,13 @@ impl Default for TranslationSessionState {
 }
 
 #[derive(Default)]
-pub struct TranslationSessionController {
+struct SourceSessionController {
     pub state: TranslationSessionState,
     subtitle_reducer: SubtitleReducer,
     preview_pending_id: Option<u64>,
 }
 
-impl TranslationSessionController {
+impl SourceSessionController {
     pub fn accepts_confirmed_pair(
         &self,
         utterance_id: u64,
@@ -53,13 +56,6 @@ impl TranslationSessionController {
     fn clear_preview_pending(&mut self) {
         self.preview_pending_id = None;
         self.state.is_translation_preview_pending = false;
-    }
-
-    pub fn archive(&self) -> &super::session_archive::TranscriptArchive {
-        &self.subtitle_reducer.archive
-    }
-    pub fn archive_mut(&mut self) -> &mut super::session_archive::TranscriptArchive {
-        &mut self.subtitle_reducer.archive
     }
 
     pub fn begin_connecting(&mut self) {
@@ -298,13 +294,216 @@ impl TranslationSessionController {
     }
 }
 
+/// A session owns two independent subtitle state machines, selected explicitly.
+/// Its public history is ordered by final confirmation; provider IDs remain local
+/// to each input, and each input retains a separate bounded preview/history.
+pub struct TranslationSessionController {
+    pub state: TranslationSessionState,
+    audio_input: AudioInput,
+    sources: [SourceSessionController; 2],
+    archive: super::session_archive::TranscriptArchive,
+}
+
+impl Default for TranslationSessionController {
+    fn default() -> Self {
+        let system = SourceSessionController::default();
+        let mut microphone = SourceSessionController::default();
+        microphone.subtitle_reducer.audio_source = AudioSource::Microphone;
+        Self {
+            state: TranslationSessionState::default(),
+            audio_input: AudioInput::System,
+            sources: [system, microphone],
+            archive: Default::default(),
+        }
+    }
+}
+
+fn source_index(source: AudioSource) -> usize {
+    match source {
+        AudioSource::System => 0,
+        AudioSource::Microphone => 1,
+    }
+}
+
+impl TranslationSessionController {
+    pub fn set_audio_input(&mut self, audio_input: AudioInput) {
+        if self.audio_input != audio_input {
+            self.clear_subtitles();
+            self.audio_input = audio_input;
+            self.refresh();
+        }
+    }
+
+    pub fn archive(&self) -> &super::session_archive::TranscriptArchive {
+        &self.archive
+    }
+
+    pub fn archive_mut(&mut self) -> &mut super::session_archive::TranscriptArchive {
+        &mut self.archive
+    }
+
+    pub fn accepts_confirmed_pair_from(
+        &self,
+        audio_source: AudioSource,
+        utterance_id: u64,
+        source: &str,
+        translation: &str,
+    ) -> bool {
+        self.audio_input.sources().contains(&audio_source)
+            && self.sources[source_index(audio_source)].accepts_confirmed_pair(
+                utterance_id,
+                source,
+                translation,
+            )
+    }
+
+    fn apply_to_sources(&mut self, action: impl Fn(&mut SourceSessionController)) {
+        for source in self.audio_input.sources() {
+            action(&mut self.sources[source_index(*source)]);
+        }
+        self.refresh();
+    }
+
+    pub fn begin_connecting(&mut self) {
+        self.apply_to_sources(SourceSessionController::begin_connecting);
+    }
+
+    pub fn did_connect(&mut self) {
+        self.apply_to_sources(SourceSessionController::did_connect);
+    }
+
+    pub fn did_pause(&mut self) {
+        self.apply_to_sources(SourceSessionController::did_pause);
+    }
+
+    pub fn begin_stopping(&mut self) {
+        self.apply_to_sources(SourceSessionController::begin_stopping);
+    }
+
+    pub fn did_stop(&mut self) {
+        self.apply_to_sources(SourceSessionController::did_stop);
+    }
+
+    pub fn did_fail(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.apply_to_sources(|source| source.did_fail(message.clone()));
+    }
+
+    pub fn clear_translation_pending_from(&mut self, source: AudioSource) {
+        if self.audio_input.sources().contains(&source) {
+            self.sources[source_index(source)].clear_translation_pending();
+            self.refresh();
+        }
+    }
+
+    pub fn clear_subtitles(&mut self) {
+        for source in &mut self.sources {
+            source.clear_subtitles();
+        }
+        self.archive.clear();
+        self.state.subtitles.history.clear();
+        self.refresh();
+    }
+
+    #[cfg(test)]
+    pub fn handle(&mut self, event: LiveTranslateServerEvent) {
+        self.handle_from(self.audio_input.sources()[0], event);
+    }
+
+    pub fn handle_from(&mut self, audio_source: AudioSource, event: LiveTranslateServerEvent) {
+        if !self.audio_input.sources().contains(&audio_source) || !event.text_within_limit() {
+            return;
+        }
+        let lane = &mut self.sources[source_index(audio_source)];
+        let before = lane
+            .state
+            .subtitles
+            .history
+            .last()
+            .map(|pair| pair.created_at_ms);
+        lane.handle(event);
+        if let Some(pair) = lane.state.subtitles.history.last_mut() {
+            if before != Some(pair.created_at_ms) {
+                // The aggregate list must stay monotonically ordered even when
+                // both independent providers confirm within one millisecond.
+                if let Some(previous) = self.state.subtitles.history.last() {
+                    pair.created_at_ms = pair
+                        .created_at_ms
+                        .max(previous.created_at_ms.saturating_add(1));
+                }
+                if let Some(reduced) = lane.subtitle_reducer.snapshot.history.last_mut() {
+                    reduced.created_at_ms = pair.created_at_ms;
+                }
+                self.archive.append(pair);
+                self.state.subtitles.history.push(pair.clone());
+                if self.state.subtitles.history.len() > 20 {
+                    self.state.subtitles.history.remove(0);
+                }
+            }
+        }
+        self.refresh();
+    }
+
+    fn refresh(&mut self) {
+        let history = std::mem::take(&mut self.state.subtitles.history);
+        let active: Vec<_> = self
+            .audio_input
+            .sources()
+            .iter()
+            .map(|source| (*source, &self.sources[source_index(*source)].state))
+            .collect();
+        self.state = active[0].1.clone();
+        self.state.subtitles.history = history;
+        self.state.subtitles.tracks = active
+            .iter()
+            .map(|(source, state)| SourceSubtitleSnapshot {
+                audio_source: *source,
+                source: state.subtitles.source.clone(),
+                translation: state.subtitles.translation.clone(),
+                history: state.subtitles.history.clone(),
+                preview_pair: state.subtitles.preview_pair.clone(),
+                detected_language: state
+                    .detected_language
+                    .as_ref()
+                    .map(|language| language.code.clone()),
+                is_translation_pending: state.is_translation_pending,
+                is_translation_preview_pending: state.is_translation_preview_pending,
+                is_translation_timed_out: state.is_translation_timed_out,
+                translation_recovery: state.translation_recovery,
+            })
+            .collect();
+        self.state.status = active
+            .iter()
+            .max_by_key(|(_, state)| match &state.status {
+                SessionStatus::Error(_) => 4,
+                SessionStatus::Stopping => 3,
+                SessionStatus::Connecting => 2,
+                SessionStatus::Listening => 1,
+                SessionStatus::Idle => 0,
+            })
+            .map(|(_, state)| state.status.clone())
+            .unwrap_or(SessionStatus::Idle);
+        self.state.is_translation_pending =
+            active.iter().any(|(_, state)| state.is_translation_pending);
+        self.state.is_translation_preview_pending = active
+            .iter()
+            .any(|(_, state)| state.is_translation_preview_pending);
+        self.state.is_translation_timed_out = active
+            .iter()
+            .any(|(_, state)| state.is_translation_timed_out);
+        self.state.translation_recovery = active
+            .iter()
+            .find_map(|(_, state)| state.translation_recovery);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn replayed_confirmation_cannot_clear_pending_work_or_rewind_a_live_pair() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         let replay = LiveTranslateServerEvent::SubtitleConfirmedPair {
             source_utterance_id: None,
             utterance_id: 1,
@@ -335,7 +534,7 @@ mod tests {
 
     #[test]
     fn oversized_events_cannot_clear_pending_recovery_or_claim_a_confirmation() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.handle(LiveTranslateServerEvent::SubtitlePreviewPair {
             source_utterance_id: None,
             source: "Synthetic complete source".into(),
@@ -384,7 +583,7 @@ mod tests {
 
     #[test]
     fn preview_http_pending_is_owner_matched_and_does_not_change_final_pairing() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
         controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 1 });
         assert!(controller.state.is_translation_preview_pending);
@@ -411,7 +610,7 @@ mod tests {
 
     #[test]
     fn preview_cleanup_cannot_clear_a_final_and_final_start_clears_old_preview() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 1 });
         controller.handle(LiveTranslateServerEvent::TranslationStarted);
         assert!(!controller.state.is_translation_preview_pending);
@@ -426,16 +625,16 @@ mod tests {
 
     #[test]
     fn preview_pending_is_cleared_on_each_session_lifecycle_boundary() {
-        let boundaries: [fn(&mut TranslationSessionController); 6] = [
-            TranslationSessionController::begin_connecting,
-            TranslationSessionController::did_connect,
-            TranslationSessionController::did_pause,
-            TranslationSessionController::begin_stopping,
-            TranslationSessionController::did_stop,
+        let boundaries: [fn(&mut SourceSessionController); 6] = [
+            SourceSessionController::begin_connecting,
+            SourceSessionController::did_connect,
+            SourceSessionController::did_pause,
+            SourceSessionController::begin_stopping,
+            SourceSessionController::did_stop,
             |controller| controller.did_fail("synthetic failure"),
         ];
         for boundary in boundaries {
-            let mut controller = TranslationSessionController::default();
+            let mut controller = SourceSessionController::default();
             controller
                 .handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 1 });
             boundary(&mut controller);
@@ -452,7 +651,7 @@ mod tests {
             retry_after_ms: 4_000,
             retry_scheduled: true,
         };
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
         controller.handle(LiveTranslateServerEvent::TranslationStarted);
         controller.handle(LiveTranslateServerEvent::TranslationDeferred(recovery));
@@ -484,10 +683,10 @@ mod tests {
         ));
         assert_eq!(controller.state.translation_recovery, None);
         for finish in [
-            TranslationSessionController::did_pause,
-            TranslationSessionController::begin_stopping,
-            TranslationSessionController::did_stop,
-            TranslationSessionController::begin_connecting,
+            SourceSessionController::did_pause,
+            SourceSessionController::begin_stopping,
+            SourceSessionController::did_stop,
+            SourceSessionController::begin_connecting,
         ] {
             controller.handle(LiveTranslateServerEvent::TranslationDeferred(recovery));
             finish(&mut controller);
@@ -505,7 +704,7 @@ mod tests {
 
     #[test]
     fn session_follows_the_happy_path_lifecycle() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
 
         controller.begin_connecting();
         assert_eq!(controller.state.status, SessionStatus::Connecting);
@@ -522,7 +721,7 @@ mod tests {
 
     #[test]
     fn server_events_update_subtitle_state() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.handle(LiveTranslateServerEvent::SourceDraft {
             text: "Hello wor".into(),
             language: Some("en".into()),
@@ -553,7 +752,7 @@ mod tests {
 
     #[test]
     fn a_new_connection_clears_the_previously_detected_language() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.handle(LiveTranslateServerEvent::SourceDraft {
             text: "こんにちは".into(),
             language: Some("ja".into()),
@@ -569,7 +768,7 @@ mod tests {
 
     #[test]
     fn service_errors_move_the_session_to_error() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.begin_connecting();
         controller.handle(LiveTranslateServerEvent::Error {
             code: "invalid_value".into(),
@@ -584,7 +783,7 @@ mod tests {
 
     #[test]
     fn translation_activity_follows_the_real_plus_request_lifecycle() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
 
         controller.handle(LiveTranslateServerEvent::TranslationStarted);
@@ -602,7 +801,7 @@ mod tests {
 
     #[test]
     fn pausing_clears_translation_activity_without_discarding_subtitles() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
         controller.handle(LiveTranslateServerEvent::SourceFinal {
             text: "Please wait.".into(),
@@ -623,7 +822,7 @@ mod tests {
 
     #[test]
     fn clearing_translation_pending_keeps_status_and_subtitles() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
         controller.handle(LiveTranslateServerEvent::SourceFinal {
             text: "Hello.".into(),
@@ -647,7 +846,7 @@ mod tests {
 
     #[test]
     fn clearing_subtitles_does_not_change_session_status() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
         controller.handle(LiveTranslateServerEvent::SourceFinal {
             text: "Hello.".into(),
@@ -663,7 +862,7 @@ mod tests {
 
     #[test]
     fn clear_resets_pending_work_without_stopping_and_new_preview_remains_owned() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
         controller.handle(LiveTranslateServerEvent::TranslationStarted);
         controller.handle(LiveTranslateServerEvent::PreviewTranslationStarted { request_id: 1 });
@@ -689,7 +888,7 @@ mod tests {
 
     #[test]
     fn stopping_ignores_flushed_tail_subtitles() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
         controller.handle(LiveTranslateServerEvent::SourceFinal {
             text: "Last real line.".into(),
@@ -716,7 +915,7 @@ mod tests {
 
     #[test]
     fn stopping_accepts_a_provider_confirmed_atomic_tail_pair() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
         controller.begin_stopping();
 
@@ -740,7 +939,7 @@ mod tests {
 
     #[test]
     fn unknown_server_events_leave_state_unchanged() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         let before = controller.state.clone();
         controller.handle(LiveTranslateServerEvent::Ignored {
             kind: "response.created".into(),
@@ -750,7 +949,7 @@ mod tests {
 
     #[test]
     fn atomic_pair_updates_history_and_detected_language_together() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
         controller.handle(LiveTranslateServerEvent::SubtitleFinalPair {
             source: "Hello.".into(),
@@ -773,7 +972,7 @@ mod tests {
 
     #[test]
     fn stamped_utterance_text_reaches_the_snapshot_with_its_identity() {
-        let mut controller = TranslationSessionController::default();
+        let mut controller = SourceSessionController::default();
         controller.did_connect();
         controller.handle(LiveTranslateServerEvent::UtteranceText {
             utterance_id: "item_source".into(),
@@ -811,5 +1010,209 @@ mod tests {
                 .map(|value| value.code.as_str()),
             Some("en")
         );
+    }
+}
+
+#[cfg(test)]
+mod dual_source_tests {
+    use super::*;
+    use crate::core::models::SubtitlePair;
+
+    fn final_pair(id: u64, source: &str, translation: &str) -> LiveTranslateServerEvent {
+        LiveTranslateServerEvent::SubtitleConfirmedPair {
+            utterance_id: id,
+            source_utterance_id: Some(id),
+            source: source.into(),
+            translation: translation.into(),
+            language: Some("en".into()),
+        }
+    }
+
+    #[test]
+    fn simultaneous_drafts_and_same_provider_ids_stay_with_their_inputs() {
+        let mut controller = TranslationSessionController::default();
+        controller.set_audio_input(AudioInput::Both);
+        for (input, text, language) in [
+            (AudioSource::System, "Synthetic system draft", "en"),
+            (AudioSource::Microphone, "Synthetic microphone draft", "ja"),
+        ] {
+            controller.handle_from(
+                input,
+                LiveTranslateServerEvent::SourceUtteranceDraft {
+                    utterance_id: 1,
+                    text: text.into(),
+                    language: Some(language.into()),
+                },
+            );
+        }
+        let tracks = &controller.state.subtitles.tracks;
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].source.text, "Synthetic system draft");
+        assert_eq!(tracks[1].source.text, "Synthetic microphone draft");
+        assert_eq!(tracks[0].detected_language.as_ref().unwrap(), "en");
+        assert_eq!(tracks[1].detected_language.as_ref().unwrap(), "ja");
+        assert_ne!(tracks[0].source.utterance_id, tracks[1].source.utterance_id);
+        let wire = serde_json::to_value(&controller.state.subtitles).unwrap();
+        assert_eq!(wire["tracks"][0]["detectedLanguage"], "en");
+        assert_eq!(wire["tracks"][1]["detectedLanguage"], "ja");
+        assert_eq!(wire["tracks"][0]["audioSource"], "system");
+        assert_eq!(wire["tracks"][1]["audioSource"], "microphone");
+
+        controller.handle_from(
+            AudioSource::System,
+            final_pair(1, "System final", "System translation"),
+        );
+        // One input's provider ID does not consume the other's ID or draft.
+        assert!(controller.accepts_confirmed_pair_from(
+            AudioSource::Microphone,
+            1,
+            "Mic final",
+            "Mic translation"
+        ));
+        assert_eq!(
+            controller.state.subtitles.tracks[1].source.text,
+            "Synthetic microphone draft"
+        );
+        controller.handle_from(
+            AudioSource::Microphone,
+            final_pair(1, "Mic final", "Mic translation"),
+        );
+        assert_eq!(controller.state.subtitles.history.len(), 2);
+        assert_eq!(
+            controller.state.subtitles.history[0].audio_source,
+            AudioSource::System
+        );
+        assert_eq!(
+            controller.state.subtitles.history[1].audio_source,
+            AudioSource::Microphone
+        );
+        assert!(
+            controller.state.subtitles.history[0].created_at_ms
+                < controller.state.subtitles.history[1].created_at_ms
+        );
+        controller.handle_from(AudioSource::System, final_pair(1, "Replay", "Replay"));
+        controller.handle_from(AudioSource::Microphone, final_pair(1, "Replay", "Replay"));
+        assert_eq!(controller.state.subtitles.history.len(), 2);
+    }
+
+    #[test]
+    fn finals_in_one_lane_do_not_clear_pending_or_preview_in_the_other() {
+        let mut controller = TranslationSessionController::default();
+        controller.set_audio_input(AudioInput::Both);
+        controller.begin_connecting();
+        controller.handle_from(
+            AudioSource::System,
+            LiveTranslateServerEvent::SessionUpdated,
+        );
+        assert_eq!(controller.state.status, SessionStatus::Connecting);
+        controller.handle_from(
+            AudioSource::Microphone,
+            LiveTranslateServerEvent::SessionUpdated,
+        );
+        assert_eq!(controller.state.status, SessionStatus::Listening);
+        for source in [AudioSource::System, AudioSource::Microphone] {
+            controller.handle_from(source, LiveTranslateServerEvent::TranslationStarted);
+            controller.handle_from(
+                source,
+                LiveTranslateServerEvent::SubtitlePreviewPair {
+                    source_utterance_id: Some(2),
+                    source: "Synthetic preview".into(),
+                    language: None,
+                    translation: "Synthetic translation".into(),
+                },
+            );
+        }
+        controller.handle_from(
+            AudioSource::Microphone,
+            final_pair(1, "Mic final", "Mic translation"),
+        );
+        assert!(controller.state.is_translation_pending);
+        assert!(controller.state.subtitles.tracks[0].is_translation_pending);
+        assert!(!controller.state.subtitles.tracks[1].is_translation_pending);
+        assert!(controller.state.subtitles.tracks[0].preview_pair.is_some());
+        controller.clear_translation_pending_from(AudioSource::System);
+        assert!(controller.state.subtitles.tracks[0].is_translation_timed_out);
+        assert!(!controller.state.subtitles.tracks[1].is_translation_timed_out);
+        assert!(!controller.state.is_translation_pending);
+    }
+
+    #[test]
+    fn both_histories_and_the_aggregate_are_bounded_and_export_preserves_sources() {
+        let mut controller = TranslationSessionController::default();
+        controller.set_audio_input(AudioInput::Both);
+        controller.archive_mut().begin(true, 0);
+        for id in 1..=40 {
+            for input in [AudioSource::System, AudioSource::Microphone] {
+                controller.handle_from(
+                    input,
+                    final_pair(id, "Synthetic final", "Synthetic translation"),
+                );
+            }
+        }
+        assert_eq!(controller.state.subtitles.history.len(), 20);
+        assert!(controller
+            .state
+            .subtitles
+            .tracks
+            .iter()
+            .all(|track| track.history.len() == 20));
+        assert_eq!(controller.archive().count(), 80);
+        let exported = controller.archive().export().unwrap();
+        assert_eq!(exported.matches("System audio").count(), 40);
+        assert_eq!(exported.matches("Microphone").count(), 40);
+        controller.clear_subtitles();
+        assert!(controller.state.subtitles.history.is_empty());
+        assert!(controller
+            .state
+            .subtitles
+            .tracks
+            .iter()
+            .all(|track| track.history.is_empty() && track.preview_pair.is_none()));
+        assert_eq!(controller.archive().count(), 0);
+        controller.handle_from(
+            AudioSource::Microphone,
+            final_pair(40, "Replay after clear", "Replay"),
+        );
+        assert!(controller.state.subtitles.history.is_empty());
+        controller.begin_connecting();
+        controller.handle_from(
+            AudioSource::Microphone,
+            final_pair(1, "New generation", "New translation"),
+        );
+        assert_eq!(controller.state.subtitles.history.len(), 1);
+    }
+
+    #[test]
+    fn unselected_inputs_cannot_produce_content_and_legacy_pairs_default_to_system() {
+        let mut controller = TranslationSessionController::default();
+        controller.handle_from(
+            AudioSource::Microphone,
+            final_pair(1, "Unexpected microphone", "Unexpected microphone"),
+        );
+        assert!(controller.state.subtitles.history.is_empty());
+        controller.set_audio_input(AudioInput::Microphone);
+        controller.handle_from(
+            AudioSource::System,
+            final_pair(1, "Unexpected system", "Unexpected system"),
+        );
+        assert!(controller.state.subtitles.history.is_empty());
+        controller.handle(final_pair(
+            1,
+            "Synthetic microphone",
+            "Synthetic translation",
+        ));
+        assert_eq!(
+            controller.state.subtitles.history[0].audio_source,
+            AudioSource::Microphone
+        );
+        assert_eq!(controller.state.subtitles.tracks.len(), 1);
+        let legacy: SubtitlePair = serde_json::from_str(
+            r#"{"source":"Legacy synthetic","translation":"Legacy translation","createdAt":100}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.audio_source, AudioSource::System);
+        let mut microphone = legacy.clone();
+        microphone.audio_source = AudioSource::Microphone;
+        assert_ne!(legacy, microphone);
     }
 }

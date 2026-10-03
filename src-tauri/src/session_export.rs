@@ -1,5 +1,6 @@
 //! Settings-only manual export: native save picker, then atomic file replacement.
 use crate::commands::AppState;
+use crate::core::audio_input::AudioSource;
 use crate::core::session_archive::{ArchiveState, TranscriptPage};
 use crate::session_history::HistoryItem;
 use serde::Deserialize;
@@ -78,12 +79,14 @@ pub async fn session_history_page(
 pub async fn session_history_audio(
     state: State<'_, AppState>,
     id: String,
+    audio_source: Option<AudioSource>,
 ) -> Result<tauri::ipc::Response, String> {
     let history = state.session.history();
-    let audio = tauri::async_runtime::spawn_blocking(move || history.audio(&id))
-        .await
-        .map_err(|_| "Could not read session audio.")?
-        .map_err(|_| "Could not read session audio.")?;
+    let audio =
+        tauri::async_runtime::spawn_blocking(move || history.audio_selected(&id, audio_source))
+            .await
+            .map_err(|_| "Could not read session audio.")?
+            .map_err(|_| "Could not read session audio.")?;
     Ok(tauri::ipc::Response::new(audio))
 }
 
@@ -112,6 +115,7 @@ pub async fn session_export(
     state: State<'_, AppState>,
     kind: ExportKind,
     id: Option<String>,
+    audio_source: Option<AudioSource>,
 ) -> Result<bool, String> {
     if EXPORT_BUSY
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -124,7 +128,7 @@ pub async fn session_export(
         let history = state.session.history();
         let bytes = tauri::async_runtime::spawn_blocking(move || match kind {
             ExportKind::Transcript => history.export_transcript(&id),
-            ExportKind::Audio => history.audio(&id),
+            ExportKind::Audio => history.audio_selected(&id, audio_source),
         })
         .await
         .map_err(|_| "Could not read saved session.")?
@@ -134,7 +138,7 @@ pub async fn session_export(
         let _lifecycle = state.session.settings_mutation_guard(true).await?;
         let bytes = match kind {
             ExportKind::Transcript => state.session.export_transcript(),
-            ExportKind::Audio => state.session.export_audio(),
+            ExportKind::Audio => state.session.export_audio_from(audio_source),
         }
         .map_err(|_| "Could not read current session content.")?
         .ok_or("No session content is available to export.")?;
@@ -145,10 +149,17 @@ pub async fn session_export(
         ExportKind::Audio => ("wav", "WAV audio"),
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let file_name = match (kind, audio_source) {
+        (ExportKind::Audio, Some(AudioSource::System)) => "mimi-session-system.wav".to_owned(),
+        (ExportKind::Audio, Some(AudioSource::Microphone)) => {
+            "mimi-session-microphone.wav".to_owned()
+        }
+        _ => format!("mimi-session.{extension}"),
+    };
     app.dialog()
         .file()
         .add_filter(description, &[extension])
-        .set_file_name(format!("mimi-session.{extension}"))
+        .set_file_name(file_name)
         .save_file(move |path| {
             let _ = tx.send(path);
         });

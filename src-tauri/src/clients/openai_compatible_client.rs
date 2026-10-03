@@ -353,7 +353,6 @@ mod tests {
                 tokio::time::timeout(Duration::from_secs(2), socket.read(&mut buffer))
                     .await
                     .unwrap()
-                    .unwrap()
             });
             let task =
                 tokio::spawn(async move { client.translate("Synthetic source", None).await });
@@ -364,7 +363,14 @@ mod tests {
             } else {
                 assert_eq!(task.await.unwrap(), Err(OpenAICompatibleError::Timeout));
             }
-            assert_eq!(server.await.unwrap(), 0);
+            // Dropping an HTTP body may close with FIN or reset with RST,
+            // depending on how far the response headers reached the client.
+            // Both prove the canceled request released its transport.
+            match server.await.unwrap() {
+                Ok(0) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
+                other => panic!("canceled transport stayed open: {other:?}"),
+            }
         }
     }
 }
