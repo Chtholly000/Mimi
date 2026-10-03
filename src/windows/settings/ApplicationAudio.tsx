@@ -9,7 +9,9 @@ import { InlineFeedback, SettingsRow } from "./SettingsPrimitives";
 
 export function ApplicationAudio() {
   const target = useStore(state => state.settings.systemAudioTarget) ?? { kind: "system" as const };
-  const session = useStore(state => state.session);
+  const active = useStore(state => state.session.isActive);
+  const paused = useStore(state => state.session.isPaused);
+  const status = useStore(state => state.session.status.kind);
   const ready = useStore(state => state.initializationStatus) === "ready";
   const save = useStore(state => state.saveSettings);
   const [browsing, setBrowsing] = useState(false);
@@ -22,7 +24,7 @@ export function ApplicationAudio() {
   const listing = useRef(false);
   const text = applicationAudioCopy();
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const requiresStop = session.isActive || session.isPaused || session.status.kind === "connecting" || session.status.kind === "stopping";
+  const requiresStop = active || paused || status === "connecting" || status === "stopping";
   const disabled = !ready || requiresStop || saving;
   // The initial OS hint avoids querying ScreenCaptureKit (and prompting for
   // permission) just because the user opened Settings. Native results win.
