@@ -2,7 +2,7 @@
  * UI copy grouped by window. Tray strings, language/mode display names, and
  * the overlay copy follow the effective UI language (Chinese, English, or
  * Japanese). The overlay activity-phase labels live in `types.ts` so they
- * stay adjacent to their color and amplitude parameters.
+ * stay adjacent to their visual parameters.
  */
 
 import type { ServiceProvider, UiLanguage } from "./types";
