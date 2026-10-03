@@ -169,7 +169,12 @@ class MainActivity : AppCompatActivity() {
             else -> R.string.home_ready_hint
         })
         findViewById<TextView>(R.id.source_summary).text = languageLabel(SettingsStore.sourceLang(this))
-        findViewById<TextView>(R.id.target_summary).text = languageLabel(SettingsStore.targetLang(this))
+        val originalOnly = SettingsStore.originalTextOnly(this)
+        findViewById<TextView>(R.id.target_summary).apply {
+            text = if (originalOnly) getString(R.string.translation_none) else languageLabel(SettingsStore.targetLang(this@MainActivity))
+            setCompoundDrawablesRelativeWithIntrinsicBounds(0, 0, if (originalOnly) 0 else R.drawable.ic_expand, 0)
+        }
+        findViewById<View>(R.id.target_language_action).isEnabled = !originalOnly
         val provider = providerTitle(this, app.yuxino.mimi.android.provider.ServiceProvider.fromId(SettingsStore.provider(this)))
         findViewById<TextView>(R.id.provider_summary).text = getString(
             if (keyOk) R.string.home_service_ready else R.string.home_service_unset, provider,
@@ -177,7 +182,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<SubtitlePreviewView>(R.id.subtitle_preview).configure(
             SettingsStore.fontSize(this), SettingsStore.translationColor(this),
             SettingsStore.overlayOpacity(this), SettingsStore.overlayBgAlpha(this), SettingsStore.targetLang(this),
-            SettingsStore.immersiveSubtitles(this),
+            SettingsStore.immersiveSubtitles(this), SettingsStore.originalTextOnly(this),
         )
     }
 
@@ -190,6 +195,7 @@ class MainActivity : AppCompatActivity() {
     })
 
     private fun showLanguages(source: Boolean) {
+        if (!source && SettingsStore.originalTextOnly(this)) return
         val previousSource = SettingsStore.sourceLang(this)
         val previousTarget = SettingsStore.targetLang(this)
         val selected = if (source) SettingsStore.sourceLang(this) else SettingsStore.targetLang(this)

@@ -69,4 +69,52 @@ class SubtitleBusTest {
         assertEquals(200, SubtitleBus.translationDraft.length)
         assertTrue(SubtitleBus.translationDraft.endsWith("RECENT"))
     }
+    @Test fun independentTranslationPairsItsOwnSourceAndClearsOldTranslationForNewRecognition() {
+        SubtitleBus.clear()
+        SubtitleBus.setHistoryLimit(2)
+        SubtitleBus.onUntranslatedSource("First sentence.", "en", true)
+        SubtitleBus.onUntranslatedSource("Second sentence.", "en", true)
+        assertTrue(SubtitleBus.historySnapshot().isEmpty())
+        SubtitleBus.onTranslatedSource("First sentence.", "en", "最初の文。")
+        assertEquals("First sentence", SubtitleBus.sourceFinal)
+        assertEquals("最初の文", SubtitleBus.translationFinal)
+        assertEquals(SubtitleBus.Pair("First sentence", "最初の文"), SubtitleBus.historySnapshot().single())
+        SubtitleBus.onUntranslatedSource("Next draft", "en", false)
+        assertEquals("", SubtitleBus.translationFinal)
+        SubtitleBus.onTranslatedSource("Second sentence.", "en", "二番目の文。")
+        assertEquals("", SubtitleBus.sourceDraft)
+        assertEquals("Second sentence", SubtitleBus.historySnapshot().last().source)
+        SubtitleBus.clear()
+        SubtitleBus.setHistoryLimit(0)
+    }
+
+    @Test fun independentTranslationKeepsNoHistoryWhenDisabled() {
+        SubtitleBus.clear()
+        SubtitleBus.setHistoryLimit(0)
+        SubtitleBus.onTranslatedSource("Example", "en", "例")
+        assertTrue(SubtitleBus.historySnapshot().isEmpty())
+        SubtitleBus.clear()
+    }
+    @Test fun originalOnlyClearsTranslationAndRequiresExplicitHistoryOptIn() {
+        SubtitleBus.onTranslatedSource("Old source", "en", "旧译文")
+        SubtitleBus.onOriginalSource("新しい字幕。", "ja")
+        assertEquals("新しい字幕", SubtitleBus.sourceFinal)
+        assertEquals("", SubtitleBus.translationFinal)
+        assertEquals("ja", SubtitleBus.detectedSourceLanguage)
+        assertTrue(SubtitleBus.historySnapshot().isEmpty())
+        SubtitleBus.setHistoryLimit(2)
+        repeat(3) { SubtitleBus.onOriginalSource("source $it", "en") }
+        assertEquals(listOf(SubtitleBus.Pair("source 1", ""), SubtitleBus.Pair("source 2", "")), SubtitleBus.historySnapshot())
+        SubtitleBus.setHistoryLimit(0)
+        assertTrue(SubtitleBus.historySnapshot().isEmpty())
+    }
+
+    @Test fun originalOnlyDisplayAndHistoryStayBounded() {
+        SubtitleBus.setHistoryLimit(1)
+        SubtitleBus.onOriginalSource("a".repeat(220) + "RECENT", "en")
+        assertEquals(200, SubtitleBus.sourceFinal.length)
+        assertEquals(SubtitleBus.Pair(SubtitleBus.sourceFinal, ""), SubtitleBus.historySnapshot().single())
+        assertTrue(SubtitleBus.sourceFinal.endsWith("RECENT"))
+    }
+
 }

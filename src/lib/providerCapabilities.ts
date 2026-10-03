@@ -110,6 +110,10 @@ export function textTranslationForProfile(profile: ServiceProfile): TextTranslat
   return profile.textTranslation ?? (profile.provider === "deepLX" ? "deepLX" : "followService");
 }
 
+export function isChatCompletionsTranslation(translation: TextTranslation): translation is "openAICompatible" | "chatMock" {
+  return translation === "openAICompatible" || translation === "chatMock";
+}
+
 export function isCustomSpeechProvider(provider: ServiceProvider): boolean {
   return provider === "customDashScopeASR" || provider === "customOpenAIASR";
 }
@@ -138,7 +142,7 @@ export function capabilitiesForProfile(
     return capabilitiesForProvider(profile.provider);
   }
   const route = textTranslationForProfile(profile);
-  if (route === "deepL" || route === "openAICompatible") return LEGACY_ALIBABA_CAPABILITIES;
+  if (route === "deepL" || isChatCompletionsTranslation(route)) return LEGACY_ALIBABA_CAPABILITIES;
   if (route === "deepLX") return PROVIDER_CAPABILITIES.deepLX;
   const capabilities = PROVIDER_CAPABILITIES.alibabaCloud;
   return targetLanguage === "original"

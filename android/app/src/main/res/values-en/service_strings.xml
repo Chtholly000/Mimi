@@ -9,8 +9,6 @@
     <string name="service_configure">Configure</string>
     <string name="service_edit_named">Configure %1$s</string>
     <string name="service_stop_first">Stop captions before changing services or credentials.</string>
-    <string name="service_saved_hint">Credentials saved on this device. Connection is verified during use; update below if needed.</string>
-    <string name="service_setup_hint">Enter your provider credentials. Saving does not verify authentication.</string>
     <string name="service_secret_saved">Saved · leave blank to keep the existing value</string>
     <string name="service_endpoint">Custom endpoint (optional)</string>
     <string name="service_model">Custom model (optional)</string>

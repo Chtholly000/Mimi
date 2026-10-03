@@ -42,6 +42,8 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    sourceSets.getByName("test").resources.srcDir(rootProject.file("../shared"))
+
     kotlinOptions {
         jvmTarget = "17"
     }

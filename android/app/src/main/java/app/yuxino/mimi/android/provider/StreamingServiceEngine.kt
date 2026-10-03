@@ -137,7 +137,7 @@ class StreamingServiceEngine(private val config: ServiceConfiguration, private v
     }
     companion object {
         private const val MAX_MESSAGE = 1024 * 1024
-        private val CLIENT = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS)
+        private val CLIENT = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS).pingInterval(20, TimeUnit.SECONDS).build()
     }
 }

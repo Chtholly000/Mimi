@@ -20,7 +20,8 @@ def plan(paths, full=False, package="none", release=False):
             affected.add("macos-latest")
         elif path == "src-tauri/src/audio/linux.rs" or path.startswith("scripts/linux-"):
             affected.add("ubuntu-22.04")
-        elif path.startswith(("src-tauri/", "scripts/", ".github/workflows/")):
+        elif path.startswith(("src-tauri/", "scripts/", ".github/workflows/", "shared/",
+                              "android/app/src/main/java/app/yuxino/mimi/android/provider/")):
             affected.update(ALL_OS)
     bundles = ALL_OS[:] if package == "all" else [PACKAGES[package]] if package in PACKAGES else []
     affected.update(bundles)

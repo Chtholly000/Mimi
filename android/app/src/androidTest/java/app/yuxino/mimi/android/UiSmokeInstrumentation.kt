@@ -34,6 +34,7 @@ class UiSmokeInstrumentation : Instrumentation() {
     private var firstRun = false
     private var immersiveHelp = false
     private var playbackCapture = false
+    private var chatMock = false
     private var captureArguments: Bundle? = null
     private var guideLocale = "en"
     private var overlayPreview = false
@@ -53,6 +54,8 @@ class UiSmokeInstrumentation : Instrumentation() {
         firstRun = arguments?.getString("first_run") == "true"
         immersiveHelp = arguments?.getString("immersive_help") == "true"
         playbackCapture = arguments?.getString("playback_capture") == "true"
+        chatMock = arguments?.getString("chatmock") == "true" || arguments?.getString("chatmock_saved") == "true" ||
+            arguments?.getString("chatmock_connection") == "true"
         captureArguments = arguments
         guideLocale = arguments?.getString("locale") ?: "en"
         overlayPreview = arguments?.getString("overlay_preview") == "true"
@@ -69,6 +72,10 @@ class UiSmokeInstrumentation : Instrumentation() {
         super.onStart()
         if (playbackCapture) {
             PlaybackCaptureChecks(this).run(captureArguments)
+            return
+        }
+        if (chatMock) {
+            ChatMockSettingsChecks(this).run(captureArguments)
             return
         }
         val prefs = AppearanceSnapshot()

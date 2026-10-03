@@ -188,6 +188,12 @@ impl TranslationClient {
                     endpoint,
                     api_key,
                     model,
+                }
+                | ProviderCredentials::ChatMock {
+                    asr_api_key,
+                    endpoint,
+                    api_key,
+                    model,
                 } = &credentials
                 {
                     return HighQualityTranslationClient::new_openai_compatible(
@@ -662,14 +668,28 @@ mod tests {
 
     #[test]
     fn openai_compatible_override_uses_audio3_and_preserves_original_mode() {
+        assert_compatible_factory(false);
+        assert_compatible_factory(true);
+    }
+
+    fn assert_compatible_factory(chatmock: bool) {
         for target in [TargetLanguage::Japanese, TargetLanguage::Original] {
             let configuration = LiveTranslationConfiguration::with_credentials(
                 ProviderKind::AlibabaCloud,
-                ProviderCredentials::OpenAICompatible {
-                    asr_api_key: "synthetic-asr".into(),
-                    endpoint: "https://example.com/proxy/v1".into(),
-                    api_key: "synthetic-translation-key".into(),
-                    model: "synthetic-model".into(),
+                if chatmock {
+                    ProviderCredentials::ChatMock {
+                        asr_api_key: "synthetic-asr".into(),
+                        endpoint: "https://example.com/proxy/v1".into(),
+                        api_key: "synthetic-translation-key".into(),
+                        model: "synthetic-model".into(),
+                    }
+                } else {
+                    ProviderCredentials::OpenAICompatible {
+                        asr_api_key: "synthetic-asr".into(),
+                        endpoint: "https://example.com/proxy/v1".into(),
+                        api_key: "synthetic-translation-key".into(),
+                        model: "synthetic-model".into(),
+                    }
                 },
                 SourceLanguage::Automatic,
                 target,

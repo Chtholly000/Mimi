@@ -135,6 +135,7 @@ impl LiveTranslationConfiguration {
                 ProviderCredentials::DeepL { .. } => TextTranslation::DeepL,
                 ProviderCredentials::DeepLX { .. } => TextTranslation::DeepLX,
                 ProviderCredentials::OpenAICompatible { .. } => TextTranslation::OpenAICompatible,
+                ProviderCredentials::ChatMock { .. } => TextTranslation::ChatMock,
                 _ => TextTranslation::FollowService,
             },
             TextTranslationCredentials::translation,

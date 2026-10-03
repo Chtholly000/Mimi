@@ -32,6 +32,8 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
     override val sampleRateHz: Int = 24_000
 
     private val client = OkHttpClient.Builder()
+        .followRedirects(false)
+        .followSslRedirects(false)
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
@@ -60,7 +62,7 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
         this.targetLang = targetLang
         model = customModel.trim().ifEmpty { MODEL }
         val request = Request.Builder()
-            .url(resolveEndpoint(customBaseUrl))
+            .url(resolveEndpoint(customBaseUrl).also { require(it.startsWith("wss://")) { "speech_https_required" } })
             .header("Authorization", "Bearer $apiKey")
             .build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {

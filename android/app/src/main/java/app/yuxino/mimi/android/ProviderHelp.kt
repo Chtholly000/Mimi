@@ -1,6 +1,7 @@
 package app.yuxino.mimi.android
 
 import app.yuxino.mimi.android.provider.ServiceProvider
+import app.yuxino.mimi.android.provider.TextTranslationProvider
 
 /** Public official help shared with desktop; reviewed 2026-09-30. */
 internal data class ProviderHelp(val setup: Int, val documentation: String, val billing: String)
@@ -31,7 +32,16 @@ internal fun providerHelp(provider: ServiceProvider): ProviderHelp = when (provi
         "https://docs.x.ai/developers/pricing")
 }
 
-internal fun providerTitle(context: android.content.Context, provider: ServiceProvider): String = context.getString(when (provider) {
+internal fun providerTitle(context: android.content.Context, provider: ServiceProvider): String {
+    if (provider == ServiceProvider.DASHSCOPE) {
+        when (val translation = runCatching { SettingsStore.textTranslationProvider(context) }.getOrDefault(TextTranslationProvider.BUILTIN)) {
+            TextTranslationProvider.BUILTIN -> Unit
+            TextTranslationProvider.NONE -> return context.getString(R.string.translation_service_original)
+            else -> return context.getString(R.string.translation_service_name, context.getString(
+                if (translation == TextTranslationProvider.OPENAI_COMPATIBLE) R.string.translation_service_custom else translationProviderLabel(translation)))
+        }
+    }
+    return context.getString(when (provider) {
     ServiceProvider.DASHSCOPE -> R.string.guide_name_dashscope
     ServiceProvider.OPENAI -> R.string.guide_name_openai
     ServiceProvider.GEMINI -> R.string.guide_name_gemini
@@ -41,6 +51,7 @@ internal fun providerTitle(context: android.content.Context, provider: ServicePr
     ServiceProvider.BAIDU -> R.string.guide_name_baidu
     ServiceProvider.XAI -> R.string.guide_name_xai
 })
+}
 
 internal fun providerDescription(context: android.content.Context, provider: ServiceProvider): String = context.getString(when (provider) {
     ServiceProvider.DASHSCOPE -> R.string.guide_detail_dashscope

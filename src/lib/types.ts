@@ -178,12 +178,12 @@ export type ServiceProvider =
   | "customOpenAIASR"
   | "deepLX";
 
-export type TextTranslation = "followService" | "deepL" | "deepLX" | "openAICompatible";
+export type TextTranslation = "followService" | "deepL" | "deepLX" | "openAICompatible" | "chatMock";
 
 /** Write-only payload sent to the native secure credential store. */
 export type ProviderCredentialsInput =
   | { kind: "customSpeech"; endpoint: string; model: string; apiKey: string }
-  | { kind: "alibabaTranslation"; apiKey: string; textTranslation: TextTranslation; endpoint: string; token: string; model: string }
+  | { kind: "alibabaTranslation"; apiKey: string; textTranslation: TextTranslation; endpoint: string; token: string; model: string; clearToken?: boolean }
   | { kind: "deepLX"; asrApiKey: string; endpoint: string; token: string }
   | { kind: "apiKey"; apiKey: string }
   | {

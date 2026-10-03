@@ -130,21 +130,37 @@ it("requires a DeepL key for a new destination and never sends an address", () =
   expect(buildAlibabaTranslationCredentials({ ...profile, credentialState: "missing" }, { ...draft, apiKey: " synthetic-asr " }, "deepL")).toEqual({ kind: "alibabaTranslation", model: "", apiKey: "synthetic-asr", textTranslation: "deepL", endpoint: "", token: "synthetic-deepl-key" });
 });
 
-it("requires an explicit model, endpoint and key for an OpenAI-compatible destination", () => {
+it("requires a model and endpoint but permits an unauthenticated OpenAI-compatible destination", () => {
   const profile = { id: "ali", name: "Ali", provider: "alibabaCloud", credentialState: "present" } as const;
   const draft = { ...emptyCredentialDraft(), endpoint: " https://dashscope.aliyuncs.com/compatible-mode/v1 ", token: " synthetic-translation-key ", model: " qwen-turbo " };
   expect(buildAlibabaTranslationCredentials(profile, draft, "openAICompatible")).toEqual({ kind: "alibabaTranslation", apiKey: "", textTranslation: "openAICompatible", endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1", token: "synthetic-translation-key", model: "qwen-turbo" });
-  for (const field of ["endpoint", "token", "model"] as const) {
+  for (const field of ["endpoint", "model"] as const) {
     expect(buildAlibabaTranslationCredentials(profile, { ...draft, [field]: "" }, "openAICompatible")).toBeNull();
   }
+  expect(buildAlibabaTranslationCredentials(profile, { ...draft, token: "" }, "openAICompatible")).toMatchObject({ apiKey: "", token: "" });
   expect(buildAlibabaTranslationCredentials({ ...profile, credentialState: "missing" }, draft, "openAICompatible")).toBeNull();
   expect(buildAlibabaTranslationCredentials({ ...profile, textTranslation: "openAICompatible" }, emptyCredentialDraft(), "openAICompatible")).toEqual({ kind: "alibabaTranslation", apiKey: "", textTranslation: "openAICompatible", endpoint: "", token: "", model: "" });
 });
 
-it("requires a replacement OpenAI-compatible key with every changed address", () => {
+it("sends an empty optional key for a changed address and preserves native reuse for model-only edits", () => {
   const profile = { id: "ali", name: "Ali", provider: "alibabaCloud", credentialState: "present", textTranslation: "openAICompatible" } as const;
-  expect(buildAlibabaTranslationCredentials(profile, { ...emptyCredentialDraft(), endpoint: "https://new.example/v1" }, "openAICompatible")).toBeNull();
-  expect(buildAlibabaTranslationCredentials(profile, { ...emptyCredentialDraft(), model: "new-model" }, "openAICompatible")).toMatchObject({ endpoint: "", token: "", model: "new-model" });
+  expect(buildAlibabaTranslationCredentials(profile, { ...emptyCredentialDraft(), endpoint: "http://localhost:8080/v1" }, "openAICompatible")).toEqual({ kind: "alibabaTranslation", apiKey: "", textTranslation: "openAICompatible", endpoint: "http://localhost:8080/v1", token: "", model: "" });
+  expect(buildAlibabaTranslationCredentials(profile, { ...emptyCredentialDraft(), model: "new-model" }, "openAICompatible")).toEqual({ kind: "alibabaTranslation", apiKey: "", textTranslation: "openAICompatible", endpoint: "", token: "", model: "new-model" });
+});
+
+it("distinguishes explicit translation-key removal from blank saved fields", () => {
+  const profile = { id: "ali", name: "Ali", provider: "alibabaCloud", credentialState: "present", textTranslation: "openAICompatible" } as const;
+  const draft = { ...emptyCredentialDraft(), token: "synthetic-replacement" };
+  expect(buildAlibabaTranslationCredentials(profile, draft, "openAICompatible", true)).toEqual({ kind: "alibabaTranslation", apiKey: "", textTranslation: "openAICompatible", endpoint: "", token: "", model: "", clearToken: true });
+  expect(buildAlibabaTranslationCredentials(profile, draft, "deepL", true)).toMatchObject({ token: "synthetic-replacement" });
+  expect(buildAlibabaTranslationCredentials(profile, draft, "deepL", true)).not.toHaveProperty("clearToken");
+});
+
+it.each(["customDashScopeASR", "customOpenAIASR"] as const)("does not borrow the %s recognition key for a keyless ChatMock destination", (provider) => {
+  const profile = { id: "asr", name: "ASR", provider, credentialState: "missing", speechCredentialState: "present", textCredentialState: "missing" } as const;
+  const draft = { ...emptyCredentialDraft(), endpoint: "http://localhost:8080/v1", model: "synthetic-model", apiKey: "synthetic-asr-must-not-send" };
+  expect(buildAlibabaTranslationCredentials(profile, draft, "openAICompatible")).toEqual({ kind: "alibabaTranslation", apiKey: "", textTranslation: "openAICompatible", endpoint: "http://localhost:8080/v1", token: "", model: "synthetic-model" });
+  expect(buildCustomSpeechCredentials({ ...profile, speechCredentialState: "missing" }, { endpoint: "wss://synthetic.example/asr", model: "synthetic-asr", apiKey: "" })).toBeNull();
 });
 
 it("bounds OpenAI-compatible model names by bytes and rejects control characters", () => {

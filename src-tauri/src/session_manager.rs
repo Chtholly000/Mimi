@@ -138,6 +138,7 @@ enum MTBudgetRoute {
     DeepL,
     DeepLX,
     OpenAICompatible,
+    ChatMock,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -162,12 +163,14 @@ impl MTBudgetScope {
                 TextTranslationCredentials::OpenAICompatible { .. } => {
                     MTBudgetRoute::OpenAICompatible
                 }
+                TextTranslationCredentials::ChatMock { .. } => MTBudgetRoute::ChatMock,
             }
         } else {
             match &configuration.credentials {
                 ProviderCredentials::DeepL { .. } => MTBudgetRoute::DeepL,
                 ProviderCredentials::DeepLX { .. } => MTBudgetRoute::DeepLX,
                 ProviderCredentials::OpenAICompatible { .. } => MTBudgetRoute::OpenAICompatible,
+                ProviderCredentials::ChatMock { .. } => MTBudgetRoute::ChatMock,
                 ProviderCredentials::ApiKey { .. }
                     if configuration.provider == ProviderKind::AlibabaCloud =>
                 {
@@ -4923,6 +4926,14 @@ mod lifecycle_tests {
                     },
                     MTBudgetRoute::OpenAICompatible,
                 ),
+                (
+                    TextTranslationCredentials::ChatMock {
+                        endpoint: "https://example.com/v1".into(),
+                        model: "synthetic-text-model".into(),
+                        api_key: "synthetic-text-key".into(),
+                    },
+                    MTBudgetRoute::ChatMock,
+                ),
             ] {
                 let mut selected = configuration.clone().with_text_credentials(credentials);
                 let scope = MTBudgetScope::for_configuration("synthetic-profile".into(), &selected)
@@ -4936,6 +4947,73 @@ mod lifecycle_tests {
                         .is_none()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn chatmock_and_generic_compatible_routes_never_share_budget_continuations() {
+        use crate::core::models::TargetLanguage;
+        use crate::core::preview_pacing::PreviewRequestPacer;
+        let scope = |chatmock: bool| {
+            let credentials = if chatmock {
+                ProviderCredentials::ChatMock {
+                    asr_api_key: "synthetic-asr".into(),
+                    endpoint: "https://example.com/v1".into(),
+                    api_key: "synthetic-text-key".into(),
+                    model: "synthetic-model".into(),
+                }
+            } else {
+                ProviderCredentials::OpenAICompatible {
+                    asr_api_key: "synthetic-asr".into(),
+                    endpoint: "https://example.com/v1".into(),
+                    api_key: "synthetic-text-key".into(),
+                    model: "synthetic-model".into(),
+                }
+            };
+            MTBudgetScope::for_configuration(
+                "same-profile".into(),
+                &LiveTranslationConfiguration::with_credentials(
+                    ProviderKind::AlibabaCloud,
+                    credentials,
+                    SourceLanguage::Automatic,
+                    TargetLanguage::Japanese,
+                    TranslationMode::Turbo,
+                ),
+            )
+            .unwrap()
+        };
+        for chatmock_first in [false, true] {
+            let first = scope(chatmock_first);
+            let other = scope(!chatmock_first);
+            assert!(first.route != other.route);
+            let mut continuity = MTBudgetContinuity::default();
+            assert!(continuity.prepare(1, Some(first.clone())).is_none());
+            let (old_token, old_scope) = continuity.take_lease(1).unwrap();
+            continuity.remember(
+                old_token,
+                old_scope,
+                PreviewRequestPacer::default().export_budget(),
+            );
+            assert!(continuity.prepare(2, Some(other.clone())).is_none());
+            continuity.remember(
+                old_token,
+                first,
+                PreviewRequestPacer::default().export_budget(),
+            );
+            assert!(
+                continuity.retained.is_none(),
+                "old route teardown cannot restore its budget"
+            );
+            let (token, owned_scope) = continuity.take_lease(2).unwrap();
+            continuity.remember(
+                token,
+                owned_scope,
+                PreviewRequestPacer::default().export_budget(),
+            );
+            assert!(
+                continuity.prepare(3, Some(other)).is_some(),
+                "same route keeps its own continuation"
+            );
         }
     }
 
