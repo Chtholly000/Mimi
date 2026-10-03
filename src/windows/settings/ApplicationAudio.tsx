@@ -63,7 +63,7 @@ export function ApplicationAudio() {
     </SettingsRow>
     {applicationMode && <SettingsRow label={text.application} description={text.help}>
       <span className="application-audio-controls">
-        <Select label={text.application} searchLabel={text.search} emptyMessage={text.empty}
+        <Select label={text.application} searchLabel={text.search} emptyMessage={text.noMatch}
           value={selected} disabled={disabled || loading || !supported}
           options={[
             ...(!selected ? [{ value: "", label: loading ? text.loading : text.choose }] : []),

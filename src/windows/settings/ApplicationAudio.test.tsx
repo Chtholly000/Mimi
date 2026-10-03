@@ -56,6 +56,12 @@ it("searches applications and can return to all system audio", async () => {
   await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Application"]')!.click());
   const input = document.querySelector<HTMLInputElement>('input[aria-label="Search applications"]')!;
   await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "does-not-match");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(document.body.textContent).toContain(applicationAudioCopy().noMatch);
+  expect(document.body.textContent).not.toContain(applicationAudioCopy().empty);
+  await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "chat");
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
