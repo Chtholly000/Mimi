@@ -7,7 +7,17 @@ import openAIDark from "../assets/providers/openai-white.svg";
 import deepL from "../assets/providers/deepl-blue.svg";
 import deepLDark from "../assets/providers/deepl-white.svg";
 import deepLX from "../assets/providers/deeplx.svg";
+import apple from "../assets/providers/apple-black.svg";
+import appleDark from "../assets/providers/apple-white.svg";
 import { ProviderIcon } from "./ProviderIcon";
+
+it("uses the bundled Apple mark in both themes instead of a generic fruit glyph", () => {
+  const host = document.createElement("div");
+  host.innerHTML = renderToStaticMarkup(<ProviderIcon provider="appleSpeech" />);
+  expect(host.querySelector(".provider-icon__image--light")?.getAttribute("src")).toBe(apple);
+  expect(host.querySelector(".provider-icon__image--dark")?.getAttribute("src")).toBe(appleDark);
+  expect(host.querySelector(".provider-icon__generic")).toBeNull();
+});
 
 it("bundles distinct official assets for the eight speech providers", () => {
   const providers: ServiceProvider[] = [

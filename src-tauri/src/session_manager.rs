@@ -156,7 +156,7 @@ impl MTBudgetScope {
         profile_id: String,
         configuration: &LiveTranslationConfiguration,
     ) -> Option<Self> {
-        let route = if configuration.provider.is_custom_speech() {
+        let route = if configuration.provider.is_standalone_asr() {
             if !configuration.target_language.translates_audio() {
                 return None;
             }
@@ -2425,6 +2425,22 @@ impl SessionManager {
             Err(_) => return,
         };
         let provider = profile.effective_provider();
+        if provider == ProviderKind::AppleSpeech {
+            let Ok(support) = crate::apple_speech_support::refresh().await else {
+                return;
+            };
+            let installed_required =
+                !matches!(status, SessionStatus::Idle | SessionStatus::Error(_));
+            if !support.available
+                || !support.languages.iter().any(|candidate| {
+                    candidate.source_language == language
+                        && (!installed_required || candidate.installed)
+                })
+                || !self.is_lifecycle_request_current(switch_epoch)
+            {
+                return;
+            }
+        }
         let prefs = self.settings.preferences();
         let capabilities = profile.capabilities(prefs.target_language);
         if !capabilities.source_languages.contains(&language) {
@@ -2551,7 +2567,7 @@ impl SessionManager {
                 configuration.source_language = selection.source_language;
                 configuration.target_language = selection.target_language;
                 configuration.translation_mode = selection.translation_mode;
-                if configuration.provider.is_custom_speech()
+                if configuration.provider.is_standalone_asr()
                     && target.translates_audio()
                     && configuration.text_credentials.is_none()
                 {
@@ -3466,6 +3482,12 @@ impl SessionManager {
         {
             return false;
         }
+        let records_network_latency = self
+            .active_settings
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|configuration| configuration.provider != ProviderKind::AppleSpeech);
         let mut maximum_latency_ms = 0;
         for &source in self.sources() {
             let Some(client) = self.client_for_generation(source, generation) else {
@@ -3485,11 +3507,12 @@ impl SessionManager {
                         {
                             return false;
                         }
-                        *self.health_latency.lock().unwrap() = Some(HealthCheckLatency {
-                            generation,
-                            task_id,
-                            milliseconds: maximum_latency_ms.max(elapsed_ms),
-                        });
+                        *self.health_latency.lock().unwrap() =
+                            records_network_latency.then_some(HealthCheckLatency {
+                                generation,
+                                task_id,
+                                milliseconds: maximum_latency_ms.max(elapsed_ms),
+                            });
                     }
                     maximum_latency_ms = maximum_latency_ms.max(elapsed_ms);
                 }

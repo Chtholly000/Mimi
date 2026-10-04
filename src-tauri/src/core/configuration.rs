@@ -158,19 +158,32 @@ impl LiveTranslationConfiguration {
 
     /// Returns a trimmed, validated copy of the configuration.
     pub fn validated(&self) -> Result<Self, LiveTranslationConfigurationError> {
-        let network_proxy = self.network_proxy.validate()?;
-        let text_network_proxy = self.text_network_proxy.validate()?;
+        let network_proxy = if self.provider == ProviderKind::AppleSpeech {
+            ProxyConfig {
+                mode: crate::core::network_proxy::ProxyMode::Direct,
+                url: None,
+            }
+        } else {
+            self.network_proxy.validate()?
+        };
+        let text_network_proxy = if self.provider == ProviderKind::AppleSpeech
+            && !self.target_language.translates_audio()
+        {
+            network_proxy.clone()
+        } else {
+            self.text_network_proxy.validate()?
+        };
         let credentials = self.credentials.validated_for(self.provider)?;
 
         let text_credentials =
-            if self.provider.is_custom_speech() && self.target_language.translates_audio() {
+            if self.provider.is_standalone_asr() && self.target_language.translates_audio() {
                 Some(
                     self.text_credentials
                         .as_ref()
                         .ok_or(ProviderCredentialsError::MissingTextTranslation)?
                         .validated()?,
                 )
-            } else if self.provider.is_custom_speech() {
+            } else if self.provider.is_standalone_asr() {
                 None
             } else {
                 self.text_credentials.clone()
@@ -209,6 +222,55 @@ impl LiveTranslationConfiguration {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn apple_configuration_has_no_speech_secret_no_auto_and_only_text_network() {
+        use crate::core::network_proxy::ProxyMode;
+        let mut configuration = LiveTranslationConfiguration::with_credentials(
+            ProviderKind::AppleSpeech,
+            ProviderCredentials::AppleSpeech,
+            SourceLanguage::English,
+            TargetLanguage::Original,
+            TranslationMode::Turbo,
+        );
+        configuration.network_proxy = ProxyConfig {
+            mode: ProxyMode::Custom,
+            url: Some("invalid".into()),
+        };
+        configuration.text_network_proxy = configuration.network_proxy.clone();
+        let original = configuration.validated().unwrap();
+        assert_eq!(original.credentials.direct_api_key(), None);
+        assert_eq!(original.network_proxy.mode, ProxyMode::Direct);
+        assert_eq!(original.text_network_proxy.mode, ProxyMode::Direct);
+        assert_eq!(original.capabilities().input_sample_rate_hz, 16_000);
+        configuration.source_language = SourceLanguage::Automatic;
+        assert_eq!(
+            configuration.validated(),
+            Err(LiveTranslationConfigurationError::UnsupportedSourceLanguage)
+        );
+        configuration.source_language = SourceLanguage::English;
+        configuration.target_language = TargetLanguage::SimplifiedChinese;
+        configuration.text_network_proxy = ProxyConfig::default();
+        assert_eq!(
+            configuration.validated(),
+            Err(LiveTranslationConfigurationError::Credentials(
+                ProviderCredentialsError::MissingTextTranslation
+            ))
+        );
+        configuration.text_credentials = Some(TextTranslationCredentials::OpenAICompatible {
+            endpoint: "http://localhost:8080/v1".into(),
+            model: "synthetic-model".into(),
+            api_key: String::new(),
+        });
+        assert!(configuration.validated().is_ok());
+        configuration.credentials = ProviderCredentials::api_key("synthetic-unrelated-key");
+        assert_eq!(
+            configuration.validated(),
+            Err(LiveTranslationConfigurationError::Credentials(
+                ProviderCredentialsError::ProviderMismatch
+            ))
+        );
+    }
+
     #[test]
     fn independent_routes_are_validated_immutable_and_redacted() {
         use crate::core::network_proxy::ProxyMode;

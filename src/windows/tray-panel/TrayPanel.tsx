@@ -98,7 +98,7 @@ export function TrayPanel() {
   const sourcePickerDisabled =
     anyActionPending ||
     !presentation.canChangeSourceLanguage ||
-    sourceLanguages.length === 1;
+    sourceLanguages.length <= 1;
 
   const performAction = (
     name: PendingAction,
@@ -268,7 +268,7 @@ export function TrayPanel() {
             <Icon name="languages" />
           </span>
           <span className="tray-setting-row__copy">
-            <span>{I18N.tray.sourceLanguage} <SettingsHelp text={I18N.settings.recognitionLanguageHelp} label={I18N.settings.helpLabel} /></span>
+            <span>{I18N.tray.sourceLanguage} <SettingsHelp text={activeProfile?.provider === "appleSpeech" ? I18N.settings.appleSpeechLanguageHelp : I18N.settings.recognitionLanguageHelp} label={I18N.settings.helpLabel} /></span>
             <small>{translationSummary(settings)}</small>
           </span>
           <span className="tray-select-wrap">

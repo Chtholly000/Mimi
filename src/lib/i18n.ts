@@ -340,6 +340,25 @@ const OVERLAY_JA = {
 };
 
 const SETTINGS_ZH = {
+  appleSpeech: "Apple Speech",
+  appleSpeechDescription: "在支持的 Mac 上本地识别语音。文字翻译使用你选择的独立服务。",
+  appleSpeechLanguageHelp: "选择声音使用的具体语言；Apple Speech 不支持自动识别语言。首次使用可能需要下载对应语音资源。",
+  appleSpeechResources: "语音资源",
+  appleSpeechResourcesHelp: "此列表来自当前 Mac 的支持情况，只展示 Mimi 可选择的语言。地区代码对应实际使用的识别模型。准备后，在本页的「识别语言」中切换实际使用的语言。准备资源可能需要联网下载，开始识别不会自动下载。",
+  appleSpeechInstalled: "已准备",
+  appleSpeechNotInstalled: "需要准备",
+  appleSpeechPrepare: "准备语音资源",
+  appleSpeechPreparing: "正在准备语音资源…",
+  appleSpeechPrepared: "语音资源已准备。",
+  appleSpeechPrepareFailed: "语音资源未准备完成，请重试。",
+  appleSpeechLoading: "正在检查 Apple Speech…",
+  appleSpeechLoadFailed: "无法检查 Apple Speech，请重试。",
+  appleSpeechUnavailable: "这台 Mac 暂不支持 Apple Speech。",
+  appleSpeechServiceReady: "无需识别密钥",
+  appleSpeechNeedsSetup: "服务需要配置",
+  appleSpeechAssetsMissing: "请打开 Apple Speech 服务配置，为当前识别语言准备语音资源。",
+  appleSpeechLanguageUnsupported: "请在 Apple Speech 服务配置中重新选择这台 Mac 支持的识别语言。",
+  appleSpeechRecognitionFailed: "Apple Speech 识别失败。请重新启动字幕后重试。",
   audioInputTitle: "音频输入",
   audioInputSystem: "系统声音",
   systemAudioHelp: "采集应用播放的系统声音。",
@@ -753,6 +772,25 @@ type SettingsCopy = {
 };
 
 const SETTINGS_EN = {
+  appleSpeech: "Apple Speech",
+  appleSpeechDescription: "Recognize speech locally on a supported Mac. Text translation uses your separately selected service.",
+  appleSpeechLanguageHelp: "Choose the spoken language; Apple Speech does not detect it automatically. First use may require downloading speech resources.",
+  appleSpeechResources: "Speech resources",
+  appleSpeechResourcesHelp: "This Mac supplies the list, limited to languages Mimi can select. The locale identifies the recognition model used. After preparing, choose the active language in Recognition language on this page. Preparing resources may download them; starting recognition never downloads automatically.",
+  appleSpeechInstalled: "Ready",
+  appleSpeechNotInstalled: "Preparation required",
+  appleSpeechPrepare: "Prepare speech resources",
+  appleSpeechPreparing: "Preparing speech resources…",
+  appleSpeechPrepared: "Speech resources are ready.",
+  appleSpeechPrepareFailed: "Speech resources could not be prepared. Try again.",
+  appleSpeechLoading: "Checking Apple Speech…",
+  appleSpeechLoadFailed: "Apple Speech could not be checked. Try again.",
+  appleSpeechUnavailable: "Apple Speech is unavailable on this Mac.",
+  appleSpeechServiceReady: "No recognition key required",
+  appleSpeechNeedsSetup: "Service setup required",
+  appleSpeechAssetsMissing: "Open the Apple Speech configuration and prepare resources for the selected recognition language.",
+  appleSpeechLanguageUnsupported: "Choose a recognition language supported by this Mac in the Apple Speech configuration.",
+  appleSpeechRecognitionFailed: "Apple Speech recognition failed. Restart subtitles and try again.",
   audioInputTitle: "Audio input",
   audioInputSystem: "System audio",
   systemAudioHelp: "Capture audio played by applications.",
@@ -1164,6 +1202,25 @@ const SETTINGS_EN = {
 } satisfies SettingsCopy;
 
 const SETTINGS_JA = {
+  appleSpeech: "Apple Speech",
+  appleSpeechDescription: "対応する Mac 上で音声をローカル認識します。文字の翻訳には別途選択したサービスを使用します。",
+  appleSpeechLanguageHelp: "話されている言語を指定してください。Apple Speech は言語を自動判定しません。初回は音声リソースのダウンロードが必要な場合があります。",
+  appleSpeechResources: "音声リソース",
+  appleSpeechResourcesHelp: "この Mac の対応状況から、Mimi で選択できる言語だけを表示します。地域コードは使用する認識モデルを示します。準備後、このページの「認識言語」で使用する言語を選択してください。準備時にダウンロードする場合がありますが、認識開始時には自動ダウンロードしません。",
+  appleSpeechInstalled: "準備済み",
+  appleSpeechNotInstalled: "準備が必要",
+  appleSpeechPrepare: "音声リソースを準備",
+  appleSpeechPreparing: "音声リソースを準備中…",
+  appleSpeechPrepared: "音声リソースの準備が完了しました。",
+  appleSpeechPrepareFailed: "音声リソースを準備できませんでした。再試行してください。",
+  appleSpeechLoading: "Apple Speech を確認中…",
+  appleSpeechLoadFailed: "Apple Speech を確認できませんでした。再試行してください。",
+  appleSpeechUnavailable: "この Mac では Apple Speech を利用できません。",
+  appleSpeechServiceReady: "認識用キーは不要",
+  appleSpeechNeedsSetup: "サービスの設定が必要",
+  appleSpeechAssetsMissing: "Apple Speech の設定を開き、選択した認識言語の音声リソースを準備してください。",
+  appleSpeechLanguageUnsupported: "Apple Speech の設定で、この Mac が対応する認識言語を選び直してください。",
+  appleSpeechRecognitionFailed: "Apple Speech の認識に失敗しました。字幕を再起動して再試行してください。",
   audioInputTitle: "音声入力",
   audioInputSystem: "システム音声",
   systemAudioHelp: "アプリが再生するシステム音声を取得します。",
@@ -1608,6 +1665,8 @@ export const I18N = {
 
 export function providerDisplayName(provider: ServiceProvider): string {
   switch (provider) {
+    case "appleSpeech":
+      return I18N.settings.appleSpeech;
     case "customDashScopeASR":
       return I18N.settings.customDashScopeASR;
     case "customOpenAIASR":

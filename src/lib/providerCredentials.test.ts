@@ -12,6 +12,15 @@ import {
   openAICompatibleModelIsValid,
 } from "./providerCredentials";
 
+it("has no Apple speech credentials while preserving independent optional-auth text translation", () => {
+  const profile = { id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "missing", textCredentialState: "missing" } as const;
+  expect(credentialFieldsForProvider("appleSpeech")).toEqual([]);
+  expect(buildProviderCredentials("appleSpeech", emptyCredentialDraft())).toBeNull();
+  expect(buildCustomSpeechCredentials(profile, { endpoint: "ws://127.0.0.1:1", model: "model", apiKey: "synthetic" })).toBeNull();
+  expect(buildAlibabaTranslationCredentials(profile, { ...emptyCredentialDraft(), endpoint: "http://127.0.0.1:18080/v1", model: "synthetic-model", apiKey: "never-send-asr-key" }, "openAICompatible"))
+    .toMatchObject({ kind: "alibabaTranslation", apiKey: "", endpoint: "http://127.0.0.1:18080/v1", token: "", model: "synthetic-model" });
+});
+
 it("restricts custom speech to secure full WebSocket addresses or loopback", () => {
   for (const endpoint of ["https://example.com", "ws://example.com/asr", "wss://user:password@example.com", "wss://example.com?intent=transcription", "wss://example.com#", "wss://example.com\n"]) expect(customSpeechEndpointIsValid(endpoint), endpoint).toBe(false);
   for (const endpoint of ["wss://example.com/asr", "ws://localhost:1888/asr", "ws://127.0.0.1:1888", "ws://[::1]:1888"]) expect(customSpeechEndpointIsValid(endpoint), endpoint).toBe(true);

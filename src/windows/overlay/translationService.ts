@@ -2,7 +2,7 @@ import { textTranslationDisplayName } from "../../lib/textTranslationName";
 import { I18N, providerDisplayName } from "../../lib/i18n";
 import {
   activeServiceProfile,
-  isCustomSpeechProvider,
+  isStandaloneAsrProvider,
   textTranslationForProfile,
 } from "../../lib/providerCapabilities";
 import type { ServiceProvider, SettingsSnapshot, TextTranslation } from "../../lib/types";
@@ -31,7 +31,7 @@ export function translationService(
   const speechProvider = profile.provider === "deepLX" ? "alibabaCloud" : profile.provider;
   const speechLabel = providerDisplayName(speechProvider);
   const originalOnly = settings.targetLanguage === "original"
-    || (isCustomSpeechProvider(profile.provider) && route === "followService");
+    || (isStandaloneAsrProvider(profile.provider) && route === "followService");
   const translationLabel = originalOnly ? I18N.overlay.originalOnly : textTranslationDisplayName(profile);
   const stages: OverlayServiceStage[] = [{
     role: !originalOnly && route === "followService" ? "combined" : "recognition",

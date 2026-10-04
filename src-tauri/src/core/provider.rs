@@ -39,6 +39,8 @@ pub enum ProviderKind {
     CustomDashScopeASR,
     #[serde(rename = "customOpenAIASR")]
     CustomOpenAIASR,
+    #[serde(rename = "appleSpeech")]
+    AppleSpeech,
 }
 
 impl ProviderKind {
@@ -47,7 +49,7 @@ impl ProviderKind {
         route: TextTranslation,
         target: TargetLanguage,
     ) -> ProviderCapabilities {
-        if self.is_custom_speech() {
+        if self.is_standalone_asr() {
             custom_speech_capabilities(self, route)
         } else if self == Self::AlibabaCloud {
             alibaba_capabilities(route, target)
@@ -69,6 +71,7 @@ impl ProviderKind {
             Self::DeepLX => "deepLX",
             Self::CustomDashScopeASR => "customDashScopeASR",
             Self::CustomOpenAIASR => "customOpenAIASR",
+            Self::AppleSpeech => "appleSpeech",
         }
     }
 
@@ -85,6 +88,7 @@ impl ProviderKind {
             Self::DeepLX => "DeepLX (Audio 3.0 ASR)",
             Self::CustomDashScopeASR => "Custom DashScope ASR",
             Self::CustomOpenAIASR => "Custom OpenAI ASR",
+            Self::AppleSpeech => "Apple Speech",
         }
     }
 
@@ -127,7 +131,7 @@ impl ProviderKind {
                 ],
                 16_000,
             ),
-            Self::CustomDashScopeASR | Self::CustomOpenAIASR => {
+            Self::CustomDashScopeASR | Self::CustomOpenAIASR | Self::AppleSpeech => {
                 custom_speech_capabilities(self, TextTranslation::FollowService)
             }
         }
@@ -137,8 +141,12 @@ impl ProviderKind {
         matches!(self, Self::CustomDashScopeASR | Self::CustomOpenAIASR)
     }
 
+    pub const fn is_standalone_asr(self) -> bool {
+        self.is_custom_speech() || matches!(self, Self::AppleSpeech)
+    }
+
     pub const fn supports_text_translation(self) -> bool {
-        matches!(self, Self::AlibabaCloud | Self::DeepLX) || self.is_custom_speech()
+        matches!(self, Self::AlibabaCloud | Self::DeepLX) || self.is_standalone_asr()
     }
 
     pub const fn uses_api_key_only(self) -> bool {
@@ -166,13 +174,21 @@ fn custom_speech_capabilities(
         ]);
     }
     ProviderCapabilities {
-        source_languages: vec![
-            SourceLanguage::Automatic,
-            SourceLanguage::Chinese,
-            SourceLanguage::English,
-            SourceLanguage::Japanese,
-            SourceLanguage::Korean,
-        ],
+        // The native adapter validates this representable catalog against the OS inventory.
+        source_languages: if provider == ProviderKind::AppleSpeech {
+            SourceLanguage::ALL
+                .into_iter()
+                .filter(|language| *language != SourceLanguage::Automatic)
+                .collect()
+        } else {
+            vec![
+                SourceLanguage::Automatic,
+                SourceLanguage::Chinese,
+                SourceLanguage::English,
+                SourceLanguage::Japanese,
+                SourceLanguage::Korean,
+            ]
+        },
         target_languages,
         translation_modes: vec![TranslationMode::Turbo],
         input_sample_rate_hz: if provider == ProviderKind::CustomOpenAIASR {
@@ -530,7 +546,7 @@ impl ServiceProfile {
     }
 
     pub fn capabilities(&self, target: TargetLanguage) -> ProviderCapabilities {
-        if self.provider.is_custom_speech() {
+        if self.provider.is_standalone_asr() {
             custom_speech_capabilities(self.provider, self.text_translation())
         } else if self.effective_provider() == ProviderKind::AlibabaCloud {
             alibaba_capabilities(self.text_translation(), target)

@@ -32,7 +32,7 @@ it.each([
   expect(result?.detail).toContain(`Text translation: ${providerDisplayName(provider)}`);
 });
 
-it.each(["alibabaCloud", "customDashScopeASR", "customOpenAIASR"] as const)(
+it.each(["alibabaCloud", "customDashScopeASR", "customOpenAIASR", "appleSpeech"] as const)(
   "keeps %s recognition visible beside each independent translator", provider => {
     for (const [textTranslation, label] of [
       ["deepL", "DeepL"], ["deepLX", "DeepLX"], ["chatMock", "ChatMock"],
@@ -67,7 +67,7 @@ it("keeps recognition without claiming an unused translator when translation is 
   expect(result?.detail).not.toContain("ChatMock");
 });
 
-it.each(["customDashScopeASR", "customOpenAIASR"] as const)(
+it.each(["customDashScopeASR", "customOpenAIASR", "appleSpeech"] as const)(
   "does not invent built-in translation for %s without an independent route", provider => {
     for (const textTranslation of [undefined, "followService"] as const) {
       const result = translationService(settings({ provider, textTranslation }));

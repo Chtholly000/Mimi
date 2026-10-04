@@ -4,6 +4,31 @@
 实测范围和未解决项；条目是历史证据，后续任务仍须核对当前源码与设备。
 不写密钥、音频、字幕正文或个人目录，不把临时日志当作已持久归档的案例。
 
+## 2026-10-05：Apple Speech 原生渠道试验
+
+- 基线 `51820ad`，`feat/apple-speech-recognition`（验证时 dirty）。M5、16 GB、
+  macOS 26.3.1(a)，Xcode 26.6 / macOS 26.5 SDK。静态 Swift + C ABI
+  集成 `SpeechAnalyzer`；每来源独立有界输入和结果，无识别密钥及外部 worker。
+- `./scripts/check.sh` 第一轮完整通过：桌面 Rust 1107 passed／2 ignored，
+  前端 107 文件／1437 项，共享核心及 JNI adapter、fmt/clippy/lint/build 通过。
+  补充 Apple 检查失败的资源/语言恢复提示后，完整检查再次通过：
+  Rust 1108 passed／2 ignored，前端 1437 项通过。
+- 稳定签名的独立静态 ABI smoke：队列溢出、EOF 排空、取消通过；实际模型
+  空音频结束、主动取消、ready 回调拒绝均成功，无迟到回调。只读查询报告
+  30 个系统 locale，应用语言与 Mimi 枚举动态求交，不承诺固定跨设备语言数。
+- 复用公开合成英文样本（Samantha，160 words/min，16 kHz PCM16 mono，
+  9.51825 s；SHA256 `bc9ff054aa985fc5ef2ae27e911c7fd25575b78cbf2f3ac09a4f0b67687ead7b`）。
+  实际静态桥接得到 42 个事件、4 个 final；标点/大小写和数字词归一化后
+  30/30 词与参考一致。首结果 1932.8 ms（含 session 建立），总 10421.1 ms，
+  EOF 收尾 78.3 ms。只是一条清晰合成短样本，不代表真人/噪声准确率。
+- canonical 签名 `local-dev` 已构建启动：原生设置确认 Apple Logo、无识别
+  Key、系统动态语言列表，显式准备英文后状态变为已准备。随后另一开发任务
+  替换了 canonical app，尚未继续系统捕获、翻译和浮窗验收；背景 ABI 成功
+  不能作为这些路径的证据。模型音频、文本结果、临时日志保留在 Git 之外。
+- Windows/Linux/Intel 不展示新增入口；Intel target 的 all-targets clippy
+  （warnings as errors）通过，未链接 Swift；各平台 CI 单独记录。
+  未运行旧 macOS 真机，不把弱链接检查当作旧系统运行证明。所有 PR 保持未合并。
+
 ## 2026-10-05：连续改名、字体方向键与服务身份
 
 - 基线 `51820ad` 加本轮修复及 v1.5.13 版本准备（验证时 dirty）。配置名和

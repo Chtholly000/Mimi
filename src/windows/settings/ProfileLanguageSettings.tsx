@@ -40,8 +40,8 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
   };
   return <section id="translation-languages" className="profile-language-settings" aria-labelledby="translation-languages-title" aria-busy={busy}>
     <header className="profile-language-settings__heading"><h3 id="translation-languages-title">{I18N.settings.subtitleLanguages}</h3>{requiresStop && <SettingsHelp text={I18N.settings.languageChangeRequiresStop} label={I18N.settings.helpLabel} icon="lock" />}</header>
-    <SettingsRow label={I18N.settings.sourceLanguage} description={I18N.settings.recognitionLanguageHelp} align="start">
-      <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} disabled={disabled || busy || sources.length === 1}
+    <SettingsRow label={I18N.settings.sourceLanguage} description={settings.profiles.find(profile => profile.id === settings.activeProfileId)?.provider === "appleSpeech" ? I18N.settings.appleSpeechLanguageHelp : I18N.settings.recognitionLanguageHelp} align="start">
+      <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} disabled={disabled || busy || sources.length <= 1}
         options={sources.map(value => ({ value, label: SOURCE_LANGUAGE_DISPLAY_NAMES[value] }))}
         onChange={value => { const sourceLanguage = sources.find(language => language === value); if (sourceLanguage) void save({ sourceLanguage }); }} />
     </SettingsRow>

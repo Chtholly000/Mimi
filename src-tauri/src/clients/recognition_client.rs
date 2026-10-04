@@ -1,5 +1,6 @@
 //! Recognition-only clients shared by the bounded text-translation pipeline.
 
+use super::apple_speech_client::AppleSpeechClient;
 use super::audio3_client::{Audio3ASRClient, Audio3ASRClientError};
 use super::custom_speech_client::{CustomSpeechClient, CustomSpeechClientError};
 use super::provider_events::ProviderEventSender;
@@ -12,6 +13,8 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RecognitionClientError {
+    #[error("{0}")]
+    Apple(String),
     #[error("{0}")]
     Alibaba(#[from] Audio3ASRClientError),
     #[error("{0}")]
@@ -27,6 +30,9 @@ impl RecognitionClientError {
     }
 
     pub fn is_timeout(&self) -> bool {
+        if matches!(self, Self::Apple(label) if label == "apple_speech_setup_timeout") {
+            return true;
+        }
         matches!(
             self,
             Self::Custom(
@@ -40,6 +46,10 @@ impl RecognitionClientError {
     }
 
     pub fn is_invalid_configuration(&self) -> bool {
+        if matches!(self, Self::Apple(label) if matches!(label.as_str(), "apple_speech_unavailable" | "apple_speech_language_unsupported" | "apple_speech_assets_missing" | "apple_speech_status_failed"))
+        {
+            return true;
+        }
         matches!(
             self,
             Self::Custom(
@@ -71,11 +81,40 @@ impl RecognitionClientError {
 
 #[derive(Clone)]
 pub enum RecognitionClient {
+    Apple(AppleSpeechClient),
     Audio3(Audio3ASRClient),
     OpenAI(CustomSpeechClient),
 }
 
 impl RecognitionClient {
+    pub fn standalone(
+        configuration: &crate::core::configuration::LiveTranslationConfiguration,
+    ) -> Result<Self, RecognitionClientError> {
+        match (&configuration.provider, &configuration.credentials) {
+            (
+                ProviderKind::AppleSpeech,
+                crate::core::credentials::ProviderCredentials::AppleSpeech,
+            ) => Ok(Self::Apple(AppleSpeechClient::new(
+                configuration.source_language,
+            ))),
+            (
+                provider,
+                crate::core::credentials::ProviderCredentials::CustomSpeech {
+                    endpoint,
+                    model,
+                    api_key,
+                },
+            ) => Self::custom(
+                *provider,
+                endpoint,
+                model,
+                api_key,
+                configuration.source_language,
+            ),
+            _ => Err(CustomSpeechClientError::InvalidEndpoint.into()),
+        }
+    }
+
     pub fn alibaba(api_key: &str, source: SourceLanguage) -> Result<Self, RecognitionClientError> {
         Ok(Self::Audio3(Audio3ASRClient::new(api_key, source)?))
     }
@@ -100,6 +139,7 @@ impl RecognitionClient {
 
     pub fn set_network(&mut self, network: ProviderNetwork) -> Result<(), ProviderNetworkError> {
         match self {
+            Self::Apple(_) => Ok(()),
             Self::Audio3(client) => client.set_network(network),
             Self::OpenAI(client) => client.set_network(network),
         }
@@ -107,6 +147,7 @@ impl RecognitionClient {
 
     pub fn set_audio_pending_gate(&self, gate: PendingPcmGate) {
         match self {
+            Self::Apple(_) => {}
             Self::Audio3(client) => client.set_audio_pending_gate(gate),
             Self::OpenAI(client) => client.set_audio_pending_gate(gate),
         }
@@ -114,6 +155,7 @@ impl RecognitionClient {
 
     pub async fn set_event_sender(&self, events: ProviderEventSender) {
         match self {
+            Self::Apple(client) => client.set_event_sender(events),
             Self::Audio3(client) => client.set_event_sender(events).await,
             Self::OpenAI(client) => client.set_event_sender(events).await,
         }
@@ -121,6 +163,7 @@ impl RecognitionClient {
 
     pub async fn connect(&self, task_id: &str) -> Result<(), RecognitionClientError> {
         match self {
+            Self::Apple(client) => client.connect().await,
             Self::Audio3(client) => client.connect(task_id).await.map_err(Into::into),
             Self::OpenAI(client) => client.connect(task_id).await.map_err(Into::into),
         }
@@ -128,6 +171,7 @@ impl RecognitionClient {
 
     pub async fn connect_for_probe(&self, task_id: &str) -> Result<(), RecognitionClientError> {
         match self {
+            Self::Apple(client) => client.connect().await,
             Self::Audio3(client) => client.connect_for_probe(task_id).await.map_err(Into::into),
             Self::OpenAI(client) => client.connect_for_probe(task_id).await.map_err(Into::into),
         }
@@ -135,6 +179,7 @@ impl RecognitionClient {
 
     pub async fn send_audio(&self, pcm: &[u8]) -> Result<(), RecognitionClientError> {
         match self {
+            Self::Apple(client) => client.send_audio(pcm).await,
             Self::Audio3(client) => client.send_audio(pcm).await.map_err(Into::into),
             Self::OpenAI(client) => client.send_audio(pcm).await.map_err(Into::into),
         }
@@ -142,6 +187,7 @@ impl RecognitionClient {
 
     pub async fn ping(&self, timeout: Duration) -> Result<(), RecognitionClientError> {
         match self {
+            Self::Apple(client) => client.ping(),
             Self::Audio3(client) => client.ping(timeout).await.map_err(Into::into),
             Self::OpenAI(client) => client.ping(timeout).await.map_err(Into::into),
         }
@@ -149,6 +195,7 @@ impl RecognitionClient {
 
     pub async fn finish(&self, timeout: Duration) {
         match self {
+            Self::Apple(client) => client.finish(timeout).await,
             Self::Audio3(client) => client.finish(timeout).await,
             Self::OpenAI(client) => client.finish(timeout).await,
         }
@@ -156,6 +203,7 @@ impl RecognitionClient {
 
     pub async fn disconnect(&self) {
         match self {
+            Self::Apple(client) => client.disconnect().await,
             Self::Audio3(client) => client.disconnect().await,
             Self::OpenAI(client) => client.disconnect().await,
         }
@@ -163,6 +211,7 @@ impl RecognitionClient {
 
     pub async fn clear_content(&self) -> u64 {
         match self {
+            Self::Apple(client) => client.clear_content(),
             Self::Audio3(client) => client.clear_content().await,
             Self::OpenAI(client) => client.clear_content().await,
         }
@@ -170,6 +219,7 @@ impl RecognitionClient {
 
     pub fn content_revision(&self) -> u64 {
         match self {
+            Self::Apple(client) => client.content_revision(),
             Self::Audio3(client) => client.content_revision(),
             Self::OpenAI(client) => client.content_revision(),
         }

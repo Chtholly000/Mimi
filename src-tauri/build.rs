@@ -1,7 +1,10 @@
+#[path = "apple-speech/build.rs"]
+mod apple_speech_build;
 #[path = "src/core/development_build_permissions.rs"]
 mod development_build_permissions;
 
 fn main() {
+    apple_speech_build::build();
     println!("cargo:rerun-if-changed=permissions/app.toml");
     let template = std::fs::read_to_string("permissions/app.toml")
         .expect("application permissions must be readable");

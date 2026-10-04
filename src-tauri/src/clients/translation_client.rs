@@ -48,10 +48,27 @@ impl TranslationClient {
         configuration: &LiveTranslationConfiguration,
         events: ProviderEventSender,
     ) -> Result<Self, TranslationClientError> {
-        let network = ProviderNetwork::resolve(&configuration.network_proxy)?;
+        let direct = crate::core::network_proxy::ProxyConfig {
+            mode: crate::core::network_proxy::ProxyMode::Direct,
+            url: None,
+        };
+        let network =
+            ProviderNetwork::resolve(if configuration.provider == ProviderKind::AppleSpeech {
+                &direct
+            } else {
+                &configuration.network_proxy
+            })?;
         let mut client = Self::new_without_network(configuration, events)?;
         if let Self::HighQuality(pipeline) = &mut client {
-            let text = ProviderNetwork::resolve(&configuration.text_network_proxy)?;
+            let text = ProviderNetwork::resolve(
+                if configuration.provider == ProviderKind::AppleSpeech
+                    && !configuration.target_language.translates_audio()
+                {
+                    &direct
+                } else {
+                    &configuration.text_network_proxy
+                },
+            )?;
             pipeline.set_stage_networks(network, text)?;
         } else {
             client.set_network(network)?;
@@ -81,7 +98,9 @@ impl TranslationClient {
             .credentials
             .validated_for(configuration.provider)?;
         match configuration.provider {
-            ProviderKind::CustomDashScopeASR | ProviderKind::CustomOpenAIASR => {
+            ProviderKind::CustomDashScopeASR
+            | ProviderKind::CustomOpenAIASR
+            | ProviderKind::AppleSpeech => {
                 return HighQualityTranslationClient::new_custom(configuration, events)
                     .map(Self::HighQuality)
                     .map_err(TranslationClientError::MT);

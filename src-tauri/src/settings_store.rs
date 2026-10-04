@@ -1362,6 +1362,7 @@ impl SettingsStore {
     }
 
     fn retry_profile_credential_errors(&self, profile: &ServiceProfile, speech: bool, text: bool) {
+        let speech = speech && profile.provider != ProviderKind::AppleSpeech;
         let account = credential_account(profile);
         let retry_legacy = speech && is_default_alibaba(profile) && self.migrate_legacy_alibaba;
         self.secret_cache
@@ -1413,7 +1414,7 @@ impl SettingsStore {
         &self,
         profile: &ServiceProfile,
     ) -> Option<(CredentialState, CredentialState)> {
-        if !profile.provider.is_custom_speech() {
+        if !profile.provider.is_standalone_asr() {
             return None;
         }
         if self.is_ui_test || (!self.secret.uses_local_file() && !cfg!(target_os = "macos")) {
@@ -1431,6 +1432,9 @@ impl SettingsStore {
     }
 
     fn speech_presence_for_snapshot(&self, profile: &ServiceProfile) -> CredentialState {
+        if profile.provider == ProviderKind::AppleSpeech {
+            return CredentialState::Present;
+        }
         let presence = (|| {
             if self.secret_present(&credential_account(profile))? {
                 return Ok(true);
@@ -1482,7 +1486,7 @@ impl SettingsStore {
         &self,
         profile: &ServiceProfile,
     ) -> Option<(CredentialState, CredentialState)> {
-        if !profile.provider.is_custom_speech() {
+        if !profile.provider.is_standalone_asr() {
             return None;
         }
         let speech = match self.credentials_for_profile(profile) {
@@ -1856,6 +1860,9 @@ impl SettingsStore {
         &self,
         profile: &ServiceProfile,
     ) -> Result<Option<ProviderCredentials>, String> {
+        if profile.provider == ProviderKind::AppleSpeech {
+            return Ok(Some(ProviderCredentials::AppleSpeech));
+        }
         if self.secret.is_read_only()
             && (profile.provider.is_custom_speech()
                 || profile.text_translation() != TextTranslation::FollowService)
@@ -2145,7 +2152,7 @@ impl SettingsStore {
         token_update: Option<&str>,
         model: &str,
     ) -> Result<(), String> {
-        if profile.provider.is_custom_speech() {
+        if profile.provider.is_standalone_asr() {
             if !api_key.is_empty() {
                 return Err("custom_speech_text_update_contains_speech_key".into());
             }
@@ -2406,7 +2413,7 @@ impl SettingsStore {
             return Err("draft_connection_check_stage_required".into());
         }
         let provider = if profile.provider.supports_text_translation()
-            && !profile.provider.is_custom_speech()
+            && !profile.provider.is_standalone_asr()
         {
             ProviderKind::AlibabaCloud
         } else {
@@ -2528,7 +2535,7 @@ impl SettingsStore {
             _ => return Err(Error::ProviderMismatch.to_string()),
         };
         let credentials = if route == TextTranslation::FollowService {
-            if profile.provider.is_custom_speech() {
+            if profile.provider.is_standalone_asr() {
                 return Err("text_translation_not_configured".into());
             }
             let speech = self.configuration_for_speech_draft_probe(
@@ -2596,6 +2603,26 @@ impl SettingsStore {
         &self,
         profile: &ServiceProfile,
     ) -> Result<LiveTranslationConfiguration, String> {
+        if profile.provider == ProviderKind::AppleSpeech {
+            let prefs = self.preferences();
+            let normalized =
+                profile
+                    .capabilities(TargetLanguage::Original)
+                    .normalize(ProviderPreferences {
+                        source_language: prefs.source_language,
+                        target_language: TargetLanguage::Original,
+                        translation_mode: prefs.translation_mode,
+                    });
+            return LiveTranslationConfiguration::with_credentials(
+                ProviderKind::AppleSpeech,
+                ProviderCredentials::AppleSpeech,
+                normalized.source_language,
+                TargetLanguage::Original,
+                normalized.translation_mode,
+            )
+            .validated()
+            .map_err(|error| error.to_string());
+        }
         self.retry_profile_credential_errors(profile, true, false);
         if !profile.provider.supports_text_translation() {
             return self.configuration_for_profile_probe(profile);
@@ -2650,7 +2677,7 @@ impl SettingsStore {
     ) -> Result<crate::core::configuration::TextTranslationProbeConfiguration, String> {
         use crate::core::configuration::TextTranslationProbeCredentials;
         if !profile.provider.supports_text_translation()
-            || (profile.provider.is_custom_speech()
+            || (profile.provider.is_standalone_asr()
                 && profile.text_translation() == TextTranslation::FollowService)
         {
             return Err("text_translation_not_configured".into());
@@ -2734,7 +2761,7 @@ impl SettingsStore {
         if for_probe {
             // Explicit checks verify a configured text destination even when
             // listening is recognition-only. This local choice never persists.
-            if profile.provider.is_custom_speech()
+            if profile.provider.is_standalone_asr()
                 && profile.text_translation() != TextTranslation::FollowService
                 && prefs.target_language == TargetLanguage::Original
             {
@@ -2784,7 +2811,7 @@ impl SettingsStore {
                 .clone()
                 .unwrap_or(prefs.network_proxy),
         );
-        if provider.is_custom_speech() && prefs.target_language.translates_audio() {
+        if provider.is_standalone_asr() && prefs.target_language.translates_audio() {
             let text_credentials =
                 self.text_credentials_for_profile(profile)?.ok_or_else(|| {
                     crate::core::credentials::ProviderCredentialsError::MissingTextTranslation
@@ -2860,6 +2887,9 @@ impl SettingsStore {
         &self,
         profile: &ServiceProfile,
     ) -> Result<Option<String>, SecretStoreError> {
+        if profile.provider == ProviderKind::AppleSpeech {
+            return Ok(None);
+        }
         let account = credential_account(profile);
         let destination = self.load_secret(self.profile_keychain_service, &account)?;
         if let Some(value) = destination {
@@ -2927,6 +2957,9 @@ impl SettingsStore {
     }
 
     fn delete_api_key_for_profile(&self, profile: &ServiceProfile) -> Result<(), String> {
+        if profile.provider == ProviderKind::AppleSpeech {
+            return Ok(());
+        }
         if is_default_alibaba(profile) && self.migrate_legacy_alibaba {
             // The tombstone must be durable before deletion so a missing new
             // slot can never revive an older single-slot Alibaba credential.
@@ -2960,6 +2993,11 @@ impl SettingsStore {
         value: &str,
         allow_collection_creation: bool,
     ) -> Result<(), String> {
+        if profile.provider == ProviderKind::AppleSpeech {
+            return Err(
+                crate::core::credentials::ProviderCredentialsError::ProviderMismatch.to_string(),
+            );
+        }
         let account = credential_account(profile);
         self.save_secret(
             self.profile_keychain_service,
@@ -3262,6 +3300,117 @@ mod animation_switch_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn apple_profile_lifecycle_never_reads_or_writes_a_speech_credential() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::AppleSpeech, "Local Apple")
+            .unwrap();
+        let speech_account = credential_account(&profile);
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &speech_account);
+        store.select_profile(&profile.id).unwrap();
+        assert_eq!(
+            store.credential_state_for_snapshot(&profile),
+            CredentialState::Present
+        );
+        assert_eq!(store.credential_diagnostic(&profile), "present");
+        let config = store.configuration().unwrap();
+        assert_eq!(config.credentials, ProviderCredentials::AppleSpeech);
+        assert_eq!(config.target_language, TargetLanguage::Original);
+        assert_ne!(config.source_language, SourceLanguage::Automatic);
+        assert!(store.configuration_for_speech_probe(&profile).is_ok());
+        assert!(store
+            .configuration_for_speech_draft_probe(&profile, &ProviderCredentials::AppleSpeech, true)
+            .is_ok());
+        assert!(store
+            .credential_editor_state(&profile.id, None)
+            .unwrap()
+            .saved_fields
+            .is_empty());
+        assert!(store
+            .save_credentials(&profile.id, &ProviderCredentials::AppleSpeech)
+            .is_err());
+        assert!(store
+            .save_api_key(&profile.id, "synthetic-unrelated")
+            .is_err());
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &speech_account),
+            0
+        );
+        store.delete_profile(&profile.id).unwrap();
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &speech_account),
+            0
+        );
+        assert!(fake
+            .value(PROFILE_KEYCHAIN_SERVICE, &speech_account)
+            .is_none());
+    }
+
+    #[test]
+    fn apple_independent_translation_owns_its_credentials_and_probes_without_speech() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::AppleSpeech, "Apple and local MT")
+            .unwrap();
+        let speech_account = credential_account(&profile);
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &speech_account);
+        store
+            .save_credentials(
+                &profile.id,
+                &openai_compatible_request(
+                    "",
+                    "http://localhost:8080/v1",
+                    "",
+                    "synthetic-local-model",
+                ),
+            )
+            .unwrap();
+        let profile = store.profile(&profile.id).unwrap();
+        store.select_profile(&profile.id).unwrap();
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.source_language = SourceLanguage::English;
+                prefs.target_language = TargetLanguage::SimplifiedChinese;
+            })
+            .unwrap();
+        let config = store.configuration().unwrap();
+        assert_eq!(config.credentials, ProviderCredentials::AppleSpeech);
+        assert!(
+            matches!(config.text_credentials, Some(TextTranslationCredentials::OpenAICompatible { api_key, .. }) if api_key.is_empty())
+        );
+        assert!(store.configuration_for_text_probe(&profile).is_ok());
+        assert!(store.configuration_for_speech_probe(&profile).is_ok());
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &speech_account),
+            0
+        );
+        assert!(store
+            .save_credentials(
+                &profile.id,
+                &openai_compatible_request(
+                    "synthetic-forbidden-speech",
+                    "http://localhost:8080/v1",
+                    "",
+                    "synthetic-model"
+                )
+            )
+            .is_err());
+        store.delete_profile(&profile.id).unwrap();
+        assert!(fake
+            .value(
+                PROFILE_KEYCHAIN_SERVICE,
+                &SettingsStore::destination_account(&profile)
+            )
+            .is_none());
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &speech_account),
+            0
+        );
+    }
+
     #[test]
     fn unsaved_text_probe_never_needs_asr_or_mutates_profile_preferences_or_secrets() {
         use crate::core::configuration::TextTranslationProbeCredentials;
