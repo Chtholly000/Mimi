@@ -1,0 +1,20 @@
+name: parakeet bridge
+on:
+  pull_request:
+    paths: ["tools/parakeet/**", ".github/workflows/parakeet-bridge.yml"]
+  push:
+    branches: [main]
+    paths: ["tools/parakeet/**", ".github/workflows/parakeet-bridge.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  protocol:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Isolated protocol tests without MLX or model downloads
+        run: |
+          python3 -m venv /tmp/parakeet-protocol
+          /tmp/parakeet-protocol/bin/pip install websockets==17.2
+          /tmp/parakeet-protocol/bin/python -B -m unittest discover -s tools/parakeet/tests -v
