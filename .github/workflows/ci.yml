@@ -91,6 +91,10 @@ jobs:
           ./scripts/macos-signing-test.sh
           python3 scripts/extract-macos-updater-test.py
 
+      - name: Apple static bridge and bounded input tests
+        if: runner.os == 'macOS' && runner.arch == 'ARM64'
+        run: bash src-tauri/apple-speech/tests/build-smoke.sh
+
       - name: Format
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 

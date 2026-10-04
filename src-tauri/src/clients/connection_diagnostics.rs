@@ -65,7 +65,7 @@ pub struct ConnectionDiagnostic {
     pub credential: &'static str,
     pub service: ServiceAvailability,
     pub reason: Option<ConnectionCheckReason>,
-    /// Actual setup/request duration; absent when no network request was made.
+    /// Actual setup/request duration, including local model setup; absent when skipped.
     #[serde(rename = "elapsedMs", skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
 }

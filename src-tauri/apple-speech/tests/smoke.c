@@ -17,7 +17,7 @@ static pthread_cond_t condition = PTHREAD_COND_INITIALIZER;
 static bool ready, done, failed, receiver_closed, reject_ready;
 static size_t results, finals, late_callbacks;
 static FILE *result_file;
-static double started, first_result, last_result;
+static double started, ready_at, audio_started, first_result, last_result;
 
 static double now(void) {
     struct timespec value;
@@ -54,6 +54,7 @@ static int32_t receive(uint64_t identifier, const uint8_t *bytes, size_t count) 
         done = true;
     } else if (event_is(json, "ready")) {
         ready = true;
+        ready_at = now() - started;
     } else if (event_is(json, "result")) {
         double elapsed = now() - started;
         if (!results) first_result = elapsed;
@@ -158,6 +159,7 @@ int main(int argc, char **argv) {
             uint8_t pcm[640]; // 20 ms chunks, fed at audio time, at most 1 s queued.
             size_t sent = 0;
             double audio_start = now();
+            audio_started = audio_start - started;
             while (remaining && success) {
                 size_t count = remaining < sizeof(pcm) ? remaining : sizeof(pcm);
                 success = fread(pcm, 1, count, input) == count && mimi_apple_speech_push(1, pcm, count) == 0;
@@ -174,6 +176,7 @@ int main(int argc, char **argv) {
     close_receiver();
     pthread_mutex_lock(&lock);
     printf("{\"event\":\"summary\",\"success\":%s,\"results\":%zu,\"finals\":%zu,\"late_callbacks\":%zu,\"first_result_ms\":%.1f,\"last_result_ms\":%.1f,\"elapsed_ms\":%.1f}\n", success ? "true" : "false", results, finals, late_callbacks, first_result * 1000, last_result * 1000, (now() - started) * 1000);
+    printf("{\"event\":\"timing\",\"ready_ms\":%.1f,\"first_result_after_audio_ms\":%.1f}\n", ready_at * 1000, results ? (first_result - audio_started) * 1000 : 0);
     if (result_file) fclose(result_file);
     pthread_mutex_unlock(&lock);
     if (input) fclose(input);
