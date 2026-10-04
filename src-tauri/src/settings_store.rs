@@ -195,7 +195,6 @@ pub struct Preferences {
     pub subtitle_display_mode: SubtitleDisplayMode,
     pub show_intermediate_subtitles: bool,
     pub show_subtitle_dividers: bool,
-    pub keep_subtitle_text_opaque: bool,
     /// Animation switches: `None` follows the system reduce-motion setting.
     pub pulse_animation: Option<bool>,
     pub pulse_style: PulseStyle,
@@ -233,7 +232,6 @@ impl Default for Preferences {
             subtitle_display_mode: SubtitleDisplayMode::Translation,
             show_intermediate_subtitles: true,
             show_subtitle_dividers: false,
-            keep_subtitle_text_opaque: false,
             pulse_animation: None,
             pulse_style: PulseStyle::Ribbon,
             subtitle_animation: None,
@@ -7573,21 +7571,23 @@ mod tests {
             .unwrap();
         let original_configuration = store.configuration().unwrap();
         assert!(!store.preferences().show_subtitle_dividers);
-        let legacy: Preferences = serde_json::from_str("{}").unwrap();
-        assert!(!legacy.keep_subtitle_text_opaque);
+        let legacy: Preferences = serde_json::from_str(
+            r#"{"keep_subtitle_text_opaque":true,"font_size":22,"subtitle_background_opacity":35}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.font_size, 22.0);
+        assert_eq!(legacy.subtitle_background_opacity, 35);
         assert_eq!(legacy.microphone_subtitle_color, SubtitleColor::Yellow);
         for enabled in [true, false] {
             store
                 .save_preferences_for_active_profile(|prefs| {
                     prefs.show_subtitle_dividers = enabled;
-                    prefs.keep_subtitle_text_opaque = enabled;
                     prefs.microphone_subtitle_color = SubtitleColor::Custom([0x12, 0x34, 0x56]);
                 })
                 .unwrap();
             assert_eq!(store.configuration().unwrap(), original_configuration);
             let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
             assert_eq!(reloaded.preferences().show_subtitle_dividers, enabled);
-            assert_eq!(reloaded.preferences().keep_subtitle_text_opaque, enabled);
             assert_eq!(
                 reloaded.preferences().microphone_subtitle_color,
                 SubtitleColor::Custom([0x12, 0x34, 0x56])

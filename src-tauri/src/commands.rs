@@ -152,7 +152,6 @@ pub struct SettingsSnapshotPayload {
     pub subtitle_display_mode: SubtitleDisplayMode,
     pub show_intermediate_subtitles: bool,
     pub show_subtitle_dividers: bool,
-    pub keep_subtitle_text_opaque: bool,
     /// `None` follows the operating system's reduce-motion setting.
     pub pulse_animation: Option<bool>,
     pub pulse_style: PulseStyle,
@@ -536,7 +535,6 @@ mod tests {
             subtitle_display_mode: SubtitleDisplayMode::Translation,
             show_intermediate_subtitles: true,
             show_subtitle_dividers: false,
-            keep_subtitle_text_opaque: false,
             pulse_animation: None,
             pulse_style: PulseStyle::Ribbon,
             subtitle_animation: None,
@@ -572,7 +570,6 @@ mod tests {
         assert_eq!(json["subtitleDisplayMode"], "translation");
         assert_eq!(json["showIntermediateSubtitles"], true);
         assert_eq!(json["showSubtitleDividers"], false);
-        assert_eq!(json["keepSubtitleTextOpaque"], false);
         assert_eq!(json["microphoneSubtitleColor"], "yellow");
         assert_eq!(json["subtitleBlendsWithBackground"], false);
         assert!(json.get("apiKey").is_none());
@@ -845,7 +842,6 @@ impl SettingsSnapshotPayload {
                     subtitle_display_mode: prefs.subtitle_display_mode,
                     show_intermediate_subtitles: prefs.show_intermediate_subtitles,
                     show_subtitle_dividers: prefs.show_subtitle_dividers,
-                    keep_subtitle_text_opaque: prefs.keep_subtitle_text_opaque,
 
                     pulse_animation: prefs.pulse_animation,
                     pulse_style: prefs.pulse_style,
@@ -895,7 +891,6 @@ impl SettingsSnapshotPayload {
             subtitle_display_mode: prefs.subtitle_display_mode,
             show_intermediate_subtitles: prefs.show_intermediate_subtitles,
             show_subtitle_dividers: prefs.show_subtitle_dividers,
-            keep_subtitle_text_opaque: prefs.keep_subtitle_text_opaque,
 
             pulse_animation: prefs.pulse_animation,
             pulse_style: prefs.pulse_style,
@@ -930,7 +925,6 @@ pub struct SettingsDraft {
     pub subtitle_display_mode: Option<SubtitleDisplayMode>,
     pub show_intermediate_subtitles: Option<bool>,
     pub show_subtitle_dividers: Option<bool>,
-    pub keep_subtitle_text_opaque: Option<bool>,
     pub pulse_animation: Option<bool>,
     pub pulse_style: Option<PulseStyle>,
     pub subtitle_animation: Option<bool>,
@@ -1119,7 +1113,6 @@ fn apply_settings_draft_guarded(
         || draft.subtitle_display_mode.is_some()
         || draft.show_intermediate_subtitles.is_some()
         || draft.show_subtitle_dividers.is_some()
-        || draft.keep_subtitle_text_opaque.is_some()
         || draft.pulse_animation.is_some()
         || draft.pulse_style.is_some()
         || draft.subtitle_animation.is_some()
@@ -1188,9 +1181,6 @@ fn apply_settings_draft_guarded(
             }
             if let Some(mode) = draft.subtitle_display_mode {
                 prefs.subtitle_display_mode = mode;
-            }
-            if let Some(enabled) = draft.keep_subtitle_text_opaque {
-                prefs.keep_subtitle_text_opaque = enabled;
             }
             if let Some(enabled) = draft.show_intermediate_subtitles {
                 prefs.show_intermediate_subtitles = enabled;

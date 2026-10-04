@@ -29,7 +29,6 @@ type PendingAction =
   | "display"
   | "source"
   | "translation"
-  | "opacity"
   | "immersive"
   | "lock"
   | "settings";
@@ -46,7 +45,6 @@ interface OverlayControlPanelProps {
   onDismiss: () => void;
   onSwitchSourceLanguage: (language: SourceLanguage) => Promise<void>;
   onSetSkipTranslation: (enabled: boolean) => Promise<void>;
-  onSetTextOpaque: (enabled: boolean) => Promise<void>;
   onSetSubtitleDisplayMode: (mode: SubtitleDisplayMode) => Promise<void>;
   onSetImmersiveMode: (enabled: boolean) => Promise<void>;
   onSetOverlayLocked: (locked: boolean) => Promise<void>;
@@ -65,7 +63,6 @@ export function OverlayControlPanel({
   onDismiss,
   onSwitchSourceLanguage,
   onSetSkipTranslation,
-  onSetTextOpaque,
   onSetSubtitleDisplayMode,
   onSetImmersiveMode,
   onSetOverlayLocked,
@@ -226,18 +223,6 @@ export function OverlayControlPanel({
           <span className="overlay-control-switch" aria-hidden="true">
             <span />
           </span>
-        </button>
-
-        <button type="button" role="switch"
-          aria-checked={settings.keepSubtitleTextOpaque ?? false}
-          aria-label={I18N.settings.keepSubtitleTextOpaque}
-          className={`overlay-control-setting${settings.keepSubtitleTextOpaque ? " is-on" : ""}`}
-          disabled={pendingAction !== null}
-          onClick={() => performAction("opacity", () => onSetTextOpaque(!settings.keepSubtitleTextOpaque), false)}
-        >
-          <span className="overlay-control-setting__icon" aria-hidden="true"><Icon name="captions-bubble" /></span>
-          <span className="overlay-control-setting__copy"><strong>{I18N.settings.keepSubtitleTextOpaque}</strong></span>
-          <span className="overlay-control-switch" aria-hidden="true"><span /></span>
         </button>
 
         <button

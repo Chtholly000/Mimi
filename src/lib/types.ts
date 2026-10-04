@@ -122,7 +122,6 @@ export interface SettingsSnapshot {
   /** Missing legacy settings preserve immediate previews. */
   showIntermediateSubtitles?: boolean;
   showSubtitleDividers: boolean;
-  keepSubtitleTextOpaque?: boolean;
   /** `null` follows the system reduce-motion setting. */
   pulseAnimation: boolean | null;
   pulseStyle: PulseStyle;
@@ -172,7 +171,6 @@ export interface SettingsDraft {
   subtitleDisplayMode?: SubtitleDisplayMode;
   showIntermediateSubtitles?: boolean;
   showSubtitleDividers?: boolean;
-  keepSubtitleTextOpaque?: boolean;
   pulseAnimation?: boolean;
   pulseStyle?: PulseStyle;
   subtitleAnimation?: boolean;

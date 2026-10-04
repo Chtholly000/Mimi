@@ -30,7 +30,6 @@ beforeEach(() => {
     isPaused: false, isWaitingForFinalTranslation: false, isChangingSession: false,
     onDismiss: vi.fn(), onSwitchSourceLanguage: vi.fn().mockResolvedValue(undefined),
     onSetSkipTranslation: vi.fn().mockResolvedValue(undefined),
-    onSetTextOpaque: vi.fn().mockResolvedValue(undefined),
     onSetSubtitleDisplayMode: vi.fn().mockResolvedValue(undefined), onSetImmersiveMode: vi.fn().mockResolvedValue(undefined),
     onSetOverlayLocked: vi.fn().mockResolvedValue(undefined), onShowSettings: vi.fn().mockResolvedValue(undefined),
   };
@@ -67,7 +66,7 @@ it.each(["zh", "en", "ja"] as const)("keeps %s language, display and application
   expect(host.querySelectorAll('[role="combobox"]')).toHaveLength(3);
   expect(host.querySelectorAll('.application-audio-picker')).toHaveLength(1);
   expect(host.querySelector('fieldset, .overlay-control-options, .overlay-control-group')).toBeNull();
-  expect(host.querySelectorAll('[role="switch"]')).toHaveLength(4);
+  expect(host.querySelectorAll('[role="switch"]')).toHaveLength(3);
   expect(host.querySelector('.overlay-control-setting small')).toBeNull();
   expect(picker(I18N.overlay.sourceLanguage)).toBe(document.activeElement);
   expect(props.onSwitchSourceLanguage).not.toHaveBeenCalled();
@@ -224,14 +223,4 @@ it("locks skipping during a reconnect and hides it for integrated providers with
   configure({ profiles: [{ id: "ali", provider: "openAIRealtime", name: "OpenAI", credentialState: "present" }] });
   await mount();
   expect(host.querySelector(`[aria-label="${I18N.settings.skipTranslation}"]`)).toBeNull();
-});
-
-it("keeps text opacity independent of immersion and leaves the floating panel open", async () => {
-  configure({ subtitleBlendsWithBackground: true });
-  await mount();
-  const opaque = host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${I18N.settings.keepSubtitleTextOpaque}"]`)!;
-  await act(async () => opaque.click());
-  expect(props.onSetTextOpaque).toHaveBeenCalledExactlyOnceWith(true);
-  expect(props.onSetImmersiveMode).not.toHaveBeenCalled();
-  expect(props.onDismiss).not.toHaveBeenCalled();
 });

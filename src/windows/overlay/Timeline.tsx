@@ -40,6 +40,7 @@ interface TimelineProps {
   /** Optional metadata; hidden by default so sentence boundaries lead. */
   showTimestamps?: boolean;
   showSubtitleDividers?: boolean;
+  /** Fixed-opacity debugger replay; not a persisted product setting. */
   keepTextOpaque?: boolean;
   microphoneColor?: SubtitleColor;
   blendsWithBackground?: boolean;
