@@ -18,6 +18,9 @@ import {
 
 const IMMERSIVE_TEXT_SHADOW =
   "0 2px 5px rgba(0,0,0,0.98), 0 0 2px rgba(0,0,0,0.95), 0 0 12px rgba(0,0,0,0.72)";
+// SVG strokes do not receive text-shadow. Keep small source icons legible
+// over light video frames without adding a background to immersive subtitles.
+const IMMERSIVE_ICON_FILTER = "drop-shadow(0 1px 1px #000) drop-shadow(0 0 2px #000)";
 /** Vertical rhythm: lines of one utterance sit close, sentences breathe. */
 const LANE_GAP = 2;
 const BLOCK_PADDING_Y = 2;
@@ -37,8 +40,8 @@ interface TimelineProps {
   displayMode: SettingsSnapshot["subtitleDisplayMode"];
   /** Optional metadata; hidden by default so sentence boundaries lead. */
   showTimestamps?: boolean;
-  /** Single-source views retain their color without repeating the input icon. */
-  showAudioSources?: boolean;
+  /** Microphone-enabled modes use metadata; system-only keeps old mic identity inline. */
+  audioInput?: SettingsSnapshot["audioInput"];
   showSubtitleDividers?: boolean;
   /** Fixed-opacity debugger replay; not a persisted product setting. */
   keepTextOpaque?: boolean;
@@ -64,7 +67,7 @@ export const Timeline = memo(function Timeline({
   blendsWithBackground = false,
   motionEnabled = true,
   showTimestamps = false,
-  showAudioSources = true,
+  audioInput = "both",
   showSubtitleDividers = false,
   keepTextOpaque = false,
   microphoneColor = "yellow",
@@ -81,6 +84,8 @@ export const Timeline = memo(function Timeline({
   }, [blocks]);
   const blockLayoutKey = useMemo(() => JSON.stringify(blocks.map(block => block.id)), [blocks]);
   const liveBlockCount = blocks.filter(block => block.presentation === "live").length;
+  const microphoneEnabled = audioInput !== "system";
+  const mixedSources = new Set(blocks.map(block => block.audioSource).filter(Boolean)).size > 1;
   const prevBlockCountRef = useRef(blocks.length);
   const previousModeRef = useRef(displayMode);
   const modeChangedRef = useRef(false);
@@ -104,7 +109,7 @@ export const Timeline = memo(function Timeline({
 
   useLayoutEffect(() => {
     if (containerRef.current) scroll.reflow(containerRef.current);
-  }, [readingHistory, viewportHeight, showSubtitleDividers, showTimestamps, showAudioSources, scroll]);
+  }, [readingHistory, viewportHeight, showSubtitleDividers, showTimestamps, audioInput, scroll]);
 
   useLayoutEffect(() => {
     if (previousModeRef.current === displayMode) return;
@@ -232,21 +237,23 @@ export const Timeline = memo(function Timeline({
         const blockViewportHeight = viewportHeight === null ? null
           : compact && block.presentation === "live" && liveBlockCount > 1
             ? (viewportHeight - liveSeparatorHeight) / liveBlockCount : viewportHeight;
-        const timestamp = showTimestamps && !blendsWithBackground && block.createdAt !== null
+        const timestamp = microphoneEnabled && showTimestamps && block.createdAt !== null
           ? block.createdAt : null;
-        // A retained second-source history can outlive dual-input capture.
-        // At the single-input minimum, keep its identity beside the text so
-        // the metadata cannot consume a whole bilingual line.
-        const showSource = showAudioSources && block.audioSource != null;
+        // Switching back to system-only restores plain system subtitles. Old
+        // microphone rows retain a small inline identity without a metadata row.
+        const showSource = block.audioSource != null && (microphoneEnabled || block.audioSource === "microphone");
         const inlineSource = showSource && timestamp === null
-          && blockViewportHeight !== null && blockViewportHeight < 80;
+          && (!microphoneEnabled || blockViewportHeight !== null && blockViewportHeight < 80);
+        const tintReference = mixedSources && (microphoneEnabled || block.audioSource === "microphone");
         const hasMetadata = (showSource && !inlineSource) || timestamp !== null;
+        const metadataColor = blendsWithBackground ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.6)";
         const sourceIndicator = showSource && <span className="subtitle-audio-source" role="img"
           aria-label={block.audioSource === "system" ? I18N.settings.audioInputSystem : I18N.settings.audioInputMicrophone}
           title={block.audioSource === "system" ? I18N.settings.audioInputSystem : I18N.settings.audioInputMicrophone}
-          style={{ display: "inline-flex", alignItems: "center", fontSize: 14, flexShrink: 0,
-            color: "rgba(255,255,255,0.6)", textShadow: blendsWithBackground ? IMMERSIVE_TEXT_SHADOW : undefined }}>
-          <Icon name={block.audioSource === "system" ? "speaker" : "microphone"} />
+          style={{ display: "inline-flex", alignItems: "center", fontSize: blendsWithBackground ? 16 : 14, flexShrink: 0,
+            color: metadataColor }}>
+          <Icon name={block.audioSource === "system" ? "speaker" : "microphone"}
+            style={{ filter: blendsWithBackground ? IMMERSIVE_ICON_FILTER : undefined }} />
         </span>;
         const metadataHeight = hasMetadata ? METADATA_HEIGHT : 0;
         const availableLaneHeight = blockViewportHeight === null ? null
@@ -294,12 +301,12 @@ export const Timeline = memo(function Timeline({
             {hasMetadata && <div className="subtitle-metadata" style={{
               display: "flex", alignItems: "center", gap: 7, height: 18, marginBottom: 4,
               justifyContent: alignment === "center" ? "center" : alignment === "right" ? "flex-end" : "flex-start",
-              color: "rgba(255,255,255,0.6)",
+              color: metadataColor,
               textShadow: blendsWithBackground ? IMMERSIVE_TEXT_SHADOW : undefined,
             }}>
               {sourceIndicator}
               {timestamp !== null && <time className="subtitle-timestamp" dateTime={new Date(timestamp).toISOString()}
-                style={{ fontSize: 12, lineHeight: "18px", fontWeight: 400,
+                style={{ fontSize: blendsWithBackground ? 13 : 12, lineHeight: "18px", fontWeight: blendsWithBackground ? 500 : 400,
                   fontFamily: "var(--mimi-ui-font)", fontVariantNumeric: "tabular-nums", letterSpacing: "0.02em" }}>
                 {formatTimestamp(timestamp)}
               </time>}
@@ -316,7 +323,7 @@ export const Timeline = memo(function Timeline({
                   alignment={alignment}
                   displayMode={displayMode}
                   color={sourceColor}
-                  tintReference={showSource}
+                  tintReference={tintReference}
                   blendsWithBackground={blendsWithBackground}
                   motionEnabled={motionEnabled}
                   entering={entering}
@@ -334,7 +341,7 @@ export const Timeline = memo(function Timeline({
                   alignment={alignment}
                   displayMode={displayMode}
                   color={sourceColor}
-                  tintReference={showSource}
+                  tintReference={tintReference}
                   blendsWithBackground={blendsWithBackground}
                   motionEnabled={motionEnabled}
                   entering={entering}
