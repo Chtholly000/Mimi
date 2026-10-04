@@ -63,10 +63,10 @@ pub struct ServiceProfilePayload {
 }
 
 impl ServiceProfilePayload {
-    fn from_profile(store: &SettingsStore, profile: ServiceProfile, active: bool) -> Self {
-        let states = store.custom_credential_states_for_snapshot(&profile, active);
+    fn from_profile(store: &SettingsStore, profile: ServiceProfile) -> Self {
+        let states = store.custom_credential_states_for_snapshot(&profile);
         let credential_state = states.map_or_else(
-            || store.credential_state_for_snapshot(&profile, active),
+            || store.credential_state_for_snapshot(&profile),
             |(speech, text)| speech.combined(text),
         );
         let text_translation = profile.text_translation();
@@ -880,10 +880,7 @@ impl SettingsSnapshotPayload {
             credential_storage: store.credential_storage(),
             profiles: profiles
                 .into_iter()
-                .map(|profile| {
-                    let active = profile.id == active_profile_id;
-                    ServiceProfilePayload::from_profile(store, profile, active)
-                })
+                .map(|profile| ServiceProfilePayload::from_profile(store, profile))
                 .collect(),
             active_profile_id,
             language_capabilities,

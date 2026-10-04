@@ -1,29 +1,35 @@
-# Avoid authorizing every saved provider at startup
+# Settings and profile selection without authorizing saved keys
 
-The local September 30 fix dd1295a exists on an older UI branch but is absent
-from this current feature branch. Settings snapshots still load every profile's
-secret, so a rebuild can produce one authorization prompt for every saved key.
-Port its metadata-only approach to the current profile and custom-pipeline model.
+The September 30 inactive-profile fix dd1295a was absent from this feature
+branch and was first ported in ffa9fd6. Native user feedback then confirmed that
+selecting another saved profile still requested a Keychain password: emitting
+the settings snapshot validated the newly active profile's secret. Selection
+and saved-item badges do not require secret bytes, even for the active profile.
 
-On macOS, the active profile keeps existing validated and cached reads. Unselected
-profiles query the exact service/account in the User keychain for attributes
-only. For custom speech profiles both speech and independent text slots use
-presence; FollowService does not require a text item. Already cached access
-errors and missing results take precedence. Unchecked saved-item badges do not
-certify credential validity or the selected translation route; selection/use,
-reveal and explicit diagnostics retain full validation. Legacy discovery checks
-only metadata and respects the migration tombstone; migration stays on use.
+On macOS all profile states in settings snapshots use exact service/account
+attribute-only presence queries in the User keychain. Cached results, including
+access errors and invalid/empty values, still take precedence. Custom speech and
+independent text slots both use presence; FollowService needs no text item.
+Legacy discovery respects its tombstone and uses metadata only; migration stays
+on actual credential use. Badges establish presence, not provider authentication
+or credential validity. Listening, reveal, saving and explicit diagnostics keep
+their existing validation and OS authorization; this does not move credentials
+out of the keychain or bypass its access control. UI-only/non-macOS semantics
+remain unchanged. The dev hybrid delegates ordinary-profile presence to the OS.
 
-The dev hybrid store must delegate ordinary presence checks to its OS store;
-otherwise its default contains implementation would load each ordinary key.
-UI-only and non-macOS behavior remain unchanged. security-framework is already
-in the locked dependency graph and is referenced directly only for this query.
-No new service, plaintext credential mode, changed account, recreated credential,
-ACL widening or certificate change is involved.
+Regression uses real settings snapshots while repeatedly selecting three saved
+providers and the custom speech/text pipeline, asserting zero secret reads.
+Actual listening/probe configuration reads and validates each slot once. Legacy
+presence and cached authorization failures stay covered.
 
-Regression coverage uses the real settings snapshot with three saved providers,
-repeated snapshots and profile selection. Separate custom speech/text slots,
-legacy presence and cached authorization failure are included. The native formal
-install must compare complete signing requirements, preserve its configuration,
-and be tested separately from mocks. Current fixed self-signing has no Apple
-Team ID and does not guarantee password-free Keychain reads after rebuilds.
+A native disposable three-item experiment on this Mac disabled Keychain user
+interaction for every operation. Fixed self-signed build A read its own items;
+changed build B with the same designated requirement failed all three reads
+with -25293. Repeating with the existing Apple Development identity succeeded
+for all three changed-build reads with status0. Each pair had the same complete
+requirement and a changed CDHash. Original owner builds deleted all test items.
+No real provider credentials, item ACLs, keychain trust or installed identity
+were changed. This proves newly created test-item continuity on this Mac, not
+migration of existing Mimi items or capture grants. An Apple signing migration
+must be explicit and should be verified across installed Mimi rebuilds; public
+Developer ID distribution is a separate requirement from local development.

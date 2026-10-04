@@ -101,9 +101,11 @@ These prompts have different causes and fixes:
   designated requirement. A changed certificate requires one new grant. A
   stable identity at a canonical path must not require repeated grants.
 - **API-key Keychain access:** the running app is reading a saved provider key.
-  A normal startup reads the active profile key once and caches the result.
-  Unselected macOS profiles use metadata-only presence checks, including both
-  custom speech/text slots, so listing profiles does not authorize each key.
+  macOS settings snapshots, including the selected profile, use metadata-only
+  presence checks for speech/text slots. Startup and switching a saved profile
+  must not authorize keys just to render saved-item badges. Actual listening,
+  credential reveal and explicit diagnostics still read and validate the needed
+  keys, once per cached slot.
   Saved-item presence does not certify credential validity. Migration
   tombstones and legacy slots are read only when the profile key is missing or
   during an explicit save/delete/migration. Keep the same service/account and
@@ -121,8 +123,10 @@ provides a stable requirement for local and newly prepared release TCC
 identities; historical ad-hoc signatures were build-specific. The file-based Keychain also applies a partition
 check that can fall back to the build's CDHash. Therefore:
 
-- eliminating the duplicate migration-item read reduces a normal startup to
-  one API-key authorization after an identity migration;
+- avoid secret reads in all macOS settings snapshots, not only unselected
+  profiles: the earlier inactive-only fix still prompted when users switched
+  keys. Test repeated selection of every saved profile and zero secret reads;
+  actual credential use must still validate and authorize required slots;
 - do not promise that a rebuilt self-signed local binary will never ask for
   Keychain access again;
 - do not solve this by deleting/recreating a credential, using an allow-all

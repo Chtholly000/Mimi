@@ -1307,33 +1307,28 @@ impl SettingsStore {
         }
     }
 
-    /// Unselected profiles show saved-item presence without authorizing secrets.
-    pub fn credential_state_for_snapshot(
-        &self,
-        profile: &ServiceProfile,
-        active: bool,
-    ) -> CredentialState {
-        if active || self.is_ui_test || !cfg!(target_os = "macos") {
+    /// Settings show saved-item presence; selection does not authorize secrets.
+    pub fn credential_state_for_snapshot(&self, profile: &ServiceProfile) -> CredentialState {
+        if self.is_ui_test || !cfg!(target_os = "macos") {
             return self.credential_state(profile);
         }
-        if let Some((speech, text)) = self.custom_credential_states_for_snapshot(profile, false) {
+        if let Some((speech, text)) = self.custom_credential_states_for_snapshot(profile) {
             return speech.combined(text);
         }
-        self.inactive_speech_credential_state(profile)
+        self.speech_presence_for_snapshot(profile)
     }
 
     pub fn custom_credential_states_for_snapshot(
         &self,
         profile: &ServiceProfile,
-        active: bool,
     ) -> Option<(CredentialState, CredentialState)> {
         if !profile.provider.is_custom_speech() {
             return None;
         }
-        if active || self.is_ui_test || !cfg!(target_os = "macos") {
+        if self.is_ui_test || !cfg!(target_os = "macos") {
             return self.custom_credential_states(profile);
         }
-        let speech = self.inactive_speech_credential_state(profile);
+        let speech = self.speech_presence_for_snapshot(profile);
         let text = if profile.text_translation() == TextTranslation::FollowService {
             CredentialState::Present
         } else if self.secret.is_read_only() {
@@ -1344,7 +1339,7 @@ impl SettingsStore {
         Some((speech, text))
     }
 
-    fn inactive_speech_credential_state(&self, profile: &ServiceProfile) -> CredentialState {
+    fn speech_presence_for_snapshot(&self, profile: &ServiceProfile) -> CredentialState {
         let presence = (|| {
             if self.secret_present(&credential_account(profile))? {
                 return Ok(true);
@@ -3949,64 +3944,54 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn settings_snapshot_reads_only_the_selected_provider_key() {
+    fn settings_snapshots_and_profile_switches_never_authorize_keys() {
         let fake = FakeSecretStore::default();
         let store = settings(&fake);
-        let active = ServiceProfile::alibaba_default();
+        let first = ServiceProfile::alibaba_default();
         let second = openai_profile(&store, "Second provider");
         let third = store
             .create_profile(ProviderKind::GoogleGeminiLive, "Third provider")
             .unwrap();
-        for profile in [&active, &second, &third] {
+        for profile in [&first, &second, &third] {
             fake.put(
                 PROFILE_KEYCHAIN_SERVICE,
                 &credential_account(profile),
                 "synthetic-profile-key",
             );
         }
-        for _ in 0..2 {
-            let snapshot =
-                crate::commands::SettingsSnapshotPayload::try_from_store(&store).unwrap();
-            assert!(snapshot
-                .profiles
-                .iter()
-                .all(|p| p.credential_state == CredentialState::Present));
+        for profile in [&first, &second, &third, &first, &third, &second] {
+            store.select_profile(&profile.id).unwrap();
+            for _ in 0..2 {
+                let snapshot =
+                    crate::commands::SettingsSnapshotPayload::try_from_store(&store).unwrap();
+                assert_eq!(snapshot.active_profile_id, profile.id);
+                assert!(snapshot
+                    .profiles
+                    .iter()
+                    .all(|p| p.credential_state == CredentialState::Present));
+            }
+            assert!(fake.state.lock().unwrap().loads.is_empty());
+        }
+        // Actual listening configuration still validates each selected key once.
+        for profile in [&first, &second, &third] {
+            store.select_profile(&profile.id).unwrap();
+            for _ in 0..2 {
+                assert!(store.configuration().is_ok());
+            }
+            assert_eq!(
+                fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(profile)),
+                1
+            );
         }
         assert_eq!(
-            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&active)),
-            1
-        );
-        assert_eq!(
-            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&second)),
-            0
-        );
-        assert_eq!(
-            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&third)),
-            0
-        );
-        assert_eq!(
             fake.load_count(PROFILE_KEYCHAIN_SERVICE, LEGACY_MIGRATION_TOMBSTONE_ACCOUNT),
-            0
-        );
-        store.select_profile(&second.id).unwrap();
-        crate::commands::SettingsSnapshotPayload::try_from_store(&store).unwrap();
-        assert_eq!(
-            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&second)),
-            1
-        );
-        assert_eq!(
-            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&active)),
-            1
-        );
-        assert_eq!(
-            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&third)),
             0
         );
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn inactive_custom_pipeline_does_not_authorize_either_credential_slot() {
+    fn selecting_custom_pipeline_does_not_authorize_either_credential_slot() {
         let fake = FakeSecretStore::default();
         let store = settings(&fake);
         let profile = store
@@ -4062,6 +4047,11 @@ mod tests {
         );
         store.select_profile(&profile.id).unwrap();
         crate::commands::SettingsSnapshotPayload::try_from_store(&store).unwrap();
+        assert!(fake.state.lock().unwrap().loads.is_empty());
+        let configured = store.profile(&profile.id).unwrap();
+        for _ in 0..2 {
+            assert!(store.configuration_for_profile_probe(&configured).is_ok());
+        }
         assert_eq!(
             fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile)),
             1
@@ -4077,7 +4067,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn inactive_presence_respects_legacy_tombstone_and_cached_access_failure() {
+    fn snapshot_presence_respects_legacy_tombstone_and_cached_access_failure() {
         let fake = FakeSecretStore::default();
         let store = settings(&fake);
         let profile = ServiceProfile::alibaba_default();
@@ -4087,7 +4077,7 @@ mod tests {
             "synthetic-legacy",
         );
         assert_eq!(
-            store.credential_state_for_snapshot(&profile, false),
+            store.credential_state_for_snapshot(&profile),
             CredentialState::Present
         );
         assert!(fake.state.lock().unwrap().loads.is_empty());
@@ -4097,7 +4087,7 @@ mod tests {
             LEGACY_MIGRATION_TOMBSTONE_VALUE,
         );
         assert_eq!(
-            store.credential_state_for_snapshot(&profile, false),
+            store.credential_state_for_snapshot(&profile),
             CredentialState::Missing
         );
         assert!(fake.state.lock().unwrap().loads.is_empty());
@@ -4112,7 +4102,7 @@ mod tests {
             .unavailable
             .remove(&cache_key(PROFILE_KEYCHAIN_SERVICE, &account));
         assert_eq!(
-            store.credential_state_for_snapshot(&other, false),
+            store.credential_state_for_snapshot(&other),
             CredentialState::Unavailable
         );
         assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, &account), 1);
@@ -4477,7 +4467,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_text_updates_do_not_read_or_write_speech_credentials_and_snapshots_read_each_once() {
+    fn custom_text_updates_preserve_speech_and_snapshots_do_not_authorize_saved_keys() {
         let fake = FakeSecretStore::default();
         let store = settings(&fake);
         let profile = store
@@ -4538,6 +4528,21 @@ mod tests {
             payload.text_credential_state,
             Some(CredentialState::Present)
         );
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &account),
+            usize::from(!cfg!(target_os = "macos"))
+        );
+        assert_eq!(
+            fake.load_count(
+                PROFILE_KEYCHAIN_SERVICE,
+                &SettingsStore::destination_account(&profile)
+            ),
+            usize::from(!cfg!(target_os = "macos"))
+        );
+        let configured = store.profile(&profile.id).unwrap();
+        for _ in 0..2 {
+            assert!(store.configuration_for_profile_probe(&configured).is_ok());
+        }
         assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, &account), 1);
         assert_eq!(
             fake.load_count(
