@@ -97,7 +97,29 @@
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="20dp"
+                    android:layout_marginTop="18dp"
+                    android:orientation="vertical">
+                    <com.google.android.material.materialswitch.MaterialSwitch
+                        android:id="@+id/immersive_subtitles"
+                        android:layout_width="match_parent"
+                        android:layout_height="48dp"
+                        android:text="@string/settings_immersive"
+                        android:textColor="@color/mimi_text"
+                        android:textSize="14sp"
+                        app:trackTint="@color/mimi_switch_track"
+                        app:thumbTint="@color/mimi_switch_thumb" />
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/settings_immersive_help"
+                        android:textColor="@color/mimi_muted"
+                        android:textSize="12sp"
+                        android:lineSpacingExtra="3dp" />
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="16dp"
                     android:gravity="center_vertical"
                     android:orientation="horizontal"
                     android:baselineAligned="false">

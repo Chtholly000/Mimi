@@ -1,9 +1,13 @@
 import { Icon, type IconName } from "../../components/Icon";
+import { Tooltip } from "../../components/Tooltip";
+import "./control-button.css";
 
 interface ControlButtonProps {
   icon: IconName;
   label: string;
   onClick: () => void;
+  disabled?: boolean;
+  busy?: boolean;
   "data-testid"?: string;
 }
 
@@ -12,29 +16,27 @@ export function ControlButton({
   icon,
   label,
   onClick,
+  disabled = false,
+  busy = false,
   "data-testid": dataTestId,
 }: ControlButtonProps) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      data-testid={dataTestId}
-      className="ux-hover flex items-center justify-center"
-      style={{
-        width: 24,
-        height: 24,
-        borderRadius: 8,
-        background: "rgba(0, 0, 0, 0.38)",
-        color: "rgba(255, 255, 255, 0.8)",
-        fontSize: 10,
-        border: "1px solid rgba(255, 255, 255, 0.08)",
-        padding: 0,
-        cursor: "pointer",
-      }}
-    >
-      <Icon name={icon} />
-    </button>
+    <Tooltip label={label}>
+      {(descriptionId, hovered) => (
+        <button
+          type="button"
+          onClick={onClick}
+          aria-label={label}
+          aria-describedby={descriptionId}
+          aria-busy={busy || undefined}
+          disabled={disabled || busy}
+          data-testid={dataTestId}
+          data-hovered={hovered || undefined}
+          className="overlay-control-button flex items-center justify-center"
+        >
+          {busy ? <span className="overlay-control-button__busy" aria-hidden="true" /> : <Icon name={icon} />}
+        </button>
+      )}
+    </Tooltip>
   );
 }

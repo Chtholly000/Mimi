@@ -2,12 +2,32 @@
 //! Tauri v2 shell wiring: plugins, tray, global shortcut, windows, and state.
 
 mod audio;
+#[cfg(test)]
+mod audio3_benchmark;
 mod clients;
 mod commands;
 mod core;
+mod desktop_shortcuts;
+#[cfg(any(test, feature = "development-debugger"))]
+mod development_audio;
+#[cfg(not(any(test, feature = "development-debugger")))]
+#[path = "development_audio_disabled.rs"]
+mod development_audio;
+#[cfg(any(test, feature = "development-debugger"))]
+mod development_content;
+#[cfg(not(any(test, feature = "development-debugger")))]
+#[path = "development_content_disabled.rs"]
+mod development_content;
+#[cfg(any(test, feature = "development-debugger"))]
+mod development_debugger;
 #[cfg(target_os = "linux")]
 mod linux_startup;
+#[cfg(any(target_os = "macos", test))]
+mod mac_dock;
+#[cfg(target_os = "macos")]
+mod mac_native_quit;
 mod session_export;
+mod session_history;
 mod session_manager;
 mod settings_store;
 mod windows;
@@ -59,26 +79,29 @@ pub fn run() {
     // other plugin, renderer, tray, or settings store is initialized.
     #[cfg(target_os = "windows")]
     let builder = builder.plugin(windows_startup::single_instance_plugin());
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        desktop_shortcuts::dispatch_linux_launch(app, &args);
+    }));
     let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build());
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    // X11 grabs cannot act as desktop shortcuts in a Wayland session.
+    let builder = if desktop_shortcuts::uses_system_shortcuts() {
+        builder
+    } else {
+        builder.plugin(tauri_plugin_global_shortcut::Builder::new().build())
+    };
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());
 
     builder
         .setup(move |app| {
             tracing::info!("mimi starting");
-
-            // macOS only admits accessory utilities into another app's true
-            // full-screen presentation. mimi already exposes its lifecycle
-            // through the menu-bar tray, so it does not need a Dock or Cmd-Tab
-            // presence of its own.
-            #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             // Dev-build marker: the settings window is created from the
             // static config title, so adjust it at runtime so the dev binary
@@ -96,16 +119,29 @@ pub fn run() {
                 return Err("development builds require the isolated Tauri identifier".into());
             }
             let is_ui_test = std::env::var("MIMI_UI_TEST").as_deref() == Ok("1");
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::initialize(&app_handle);
             if is_ui_test {
                 if let Some(window) = app.get_webview_window("settings") {
                     let _ = window.set_title("mimi UI test settings");
                 }
             }
-            let settings = Arc::new(SettingsStore::load(
-                app.path().app_config_dir().unwrap_or_default(),
-                is_ui_test,
-                &app.config().identifier,
-            ));
+            let settings = Arc::new(if is_ui_test {
+                match std::env::var_os("MIMI_UI_TEST_PREFERENCES_DIR") {
+                    Some(directory) => SettingsStore::load_ui_test_preferences(directory.into())?,
+                    None => SettingsStore::load(Default::default(), true, &app.config().identifier),
+                }
+            } else {
+                SettingsStore::load(
+                    app.path().app_config_dir().unwrap_or_default(),
+                    false,
+                    &app.config().identifier,
+                )
+            });
+            // Apply the saved global Dock preference at startup. Missing
+            // preferences show Mimi in the Dock, independently of credentials.
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(crate::mac_dock::policy(settings.preferences().show_in_dock));
             // A deterministic standard-overlay fixture is useful for native
             // window-level checks. It changes only the in-memory UI-test
             // snapshot; `SettingsStore` never persists UI-test writes.
@@ -142,7 +178,18 @@ pub fn run() {
             app.manage(windows::install_windows_workspace_follower(&app_handle));
 
             setup_tray(&app_handle)?;
+            #[cfg(target_os = "macos")]
+            setup_application_menu(&app_handle)?;
+            #[cfg(target_os = "macos")]
+            mac_native_quit::install(&app_handle)?;
             setup_global_shortcuts(&app_handle, Arc::clone(&session))?;
+            #[cfg(target_os = "linux")]
+            {
+                let args = std::env::args().collect::<Vec<_>>();
+                if desktop_shortcuts::DesktopAction::from_args(&args).is_some() {
+                    desktop_shortcuts::dispatch_linux_launch(&app_handle, &args);
+                }
+            }
 
             // Test-only probe: `SessionManager` handles UI-test starts as a
             // synthetic local state transition. It never reads the keychain,
@@ -151,7 +198,7 @@ pub fn run() {
                 let session_for_probe = Arc::clone(&session);
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    let _ = session_for_probe.start(true).await;
+                    let _ = session_for_probe.start().await;
                 });
             }
 
@@ -181,6 +228,10 @@ pub fn run() {
         .on_window_event(|window, event| {
             let app = window.app_handle();
             match event {
+                #[cfg(target_os = "macos")]
+                WindowEvent::Destroyed if window.label() == "overlay" => {
+                    windows::remove_overlay_pointer_tracking(app);
+                }
                 // The overlay geometry manager folds the final frame in after
                 // a debounce; transient states (control panel, collapse
                 // animation steps) are never persisted.
@@ -221,7 +272,14 @@ pub fn run() {
                     // has no tray host. Linux users minimize to keep running;
                     // closing Settings must not strand an invisible process.
                     if cfg!(target_os = "linux") {
-                        app.exit(0);
+                        if let Some(state) = app.try_state::<AppState>() {
+                            let session = Arc::clone(&state.session);
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = commands::quit_application(app, session).await;
+                            });
+                        }
+                        api.prevent_close();
                         return;
                     }
                     // Hiding instead of closing keeps the window alive so
@@ -268,6 +326,10 @@ pub fn run() {
                         || window.label() == "tray-panel" =>
                 {
                     api.prevent_close();
+                    #[cfg(target_os = "macos")]
+                    if window.label() == "overlay" {
+                        windows::clear_overlay_pointer_hover(app);
+                    }
                     if let Err(error) = window.hide() {
                         tracing::warn!(
                             window_label = window.label(),
@@ -281,10 +343,41 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::settings_get,
+            commands::windows_audio_status,
+            commands::audio_census,
+            commands::support_diagnostics,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_snapshot,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_start,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_stop,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_observe,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_flush_ack,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_export,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_audio,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_replay,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_cases,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_open_case,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_private_events,
+            #[cfg(any(test, feature = "development-debugger"))]
+            development_debugger::development_debug_trace_events,
+            commands::app_open_support_issue,
+            commands::capture_status,
+            commands::audio_applications,
             commands::app_is_ui_test,
             commands::app_ui_test_frontend_ready,
             commands::app_is_portable,
             commands::app_is_linux_package,
+            desktop_shortcuts::app_desktop_shortcut_commands,
             commands::app_open_releases,
             commands::settings_save,
             commands::profile_create,
@@ -292,8 +385,15 @@ pub fn run() {
             commands::profile_select,
             commands::profile_delete,
             commands::profile_save_credentials,
+            commands::profile_test_connection,
             commands::profile_delete_api_key,
+            commands::profile_reveal_credential,
             crate::session_export::session_archive_state,
+            crate::session_export::session_transcript_page,
+            crate::session_export::session_history_list,
+            crate::session_export::session_history_page,
+            crate::session_export::session_history_audio,
+            crate::session_export::session_history_delete,
             crate::session_export::session_archive_clear,
             crate::session_export::session_export,
             commands::session_start,
@@ -301,15 +401,20 @@ pub fn run() {
             commands::session_toggle_paused,
             commands::session_clear_subtitles,
             commands::session_switch_source_language,
+            commands::session_switch_target_language,
+            commands::session_switch_audio_input,
+            commands::session_switch_system_audio_target,
             commands::session_switch_translation_mode,
             commands::overlay_set_collapsed,
             commands::overlay_set_locked,
+            commands::overlay_set_pointer_cursor,
             commands::overlay_show,
             commands::overlay_move_start,
             commands::overlay_popover_toggle,
             commands::overlay_popover_hide,
             commands::overlay_control_state,
             commands::overlay_control_set_panel_height,
+            commands::overlay_control_set_island_width,
             commands::session_get_state,
             commands::resize_start,
             commands::resize_move,
@@ -318,8 +423,23 @@ pub fn run() {
             commands::app_show_settings,
             commands::app_quit,
         ])
-        .run(context)
-        .expect("error while running tauri application");
+        .build(context)
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::RunEvent::Exit) {
+                mac_native_quit::remove();
+                windows::remove_overlay_pointer_tracking(app);
+            }
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                if app.state::<AppState>().settings.preferences().show_in_dock {
+                    let _ = commands::app_show_settings(app.clone(), None);
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }
 
 fn record_ui_test_tray_visible() {
@@ -350,6 +470,8 @@ struct NativeMenuLabels {
     quit: &'static str,
     subtitle_display: &'static str,
     display_modes: [&'static str; 3],
+    #[cfg(any(target_os = "macos", test))]
+    show_in_dock: &'static str,
 }
 
 #[derive(Clone)]
@@ -360,6 +482,97 @@ struct NativeTrayMenuItems {
     quit: MenuItem<tauri::Wry>,
     subtitle_display: Submenu<tauri::Wry>,
     display_modes: [CheckMenuItem<tauri::Wry>; 3],
+    #[cfg(target_os = "macos")]
+    show_in_dock: CheckMenuItem<tauri::Wry>,
+}
+
+const APPLICATION_QUIT_MENU_ID: &str = "mimi-app-quit";
+const APPLICATION_SETTINGS_MENU_ID: &str = "mimi-app-settings";
+#[cfg(any(target_os = "macos", test))]
+const APPLICATION_QUIT_ACCELERATOR: &str = "CmdOrCtrl+Q";
+#[cfg(any(target_os = "macos", test))]
+const APPLICATION_SETTINGS_ACCELERATOR: &str = "CmdOrCtrl+,";
+
+#[cfg(target_os = "macos")]
+struct NativeApplicationMenuItems {
+    settings: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+}
+
+fn is_settings_menu_event(id: &str) -> bool {
+    matches!(id, "settings" | APPLICATION_SETTINGS_MENU_ID)
+}
+
+fn is_normal_quit_menu_event(id: &str) -> bool {
+    matches!(id, "quit" | APPLICATION_QUIT_MENU_ID)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn default_application_quit_position(
+    item_count: usize,
+    last_predefined_text: Option<&str>,
+) -> Option<usize> {
+    // Tauri's default app submenu ends with muda's English predefined Quit.
+    // Validate that item before removing it, rather than replacing a Services,
+    // Hide, or application-defined entry after an upstream menu change.
+    let text = last_predefined_text?;
+    if text != "Quit" && !text.starts_with("Quit ") {
+        return None;
+    }
+    item_count.checked_sub(1)
+}
+
+#[cfg(target_os = "macos")]
+fn setup_application_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
+    fn unexpected_default_menu() -> tauri::Error {
+        std::io::Error::other("The default application menu could not be installed.").into()
+    }
+
+    // Keep Tauri's complete default menu, including native Services and the
+    // Edit menu's standard copy/paste responders. Replace predefined Quit,
+    // which bypasses our async finalization, and add Settings before Services
+    // so it remains reachable while the subtitle controls are hidden.
+    let menu = app.menu().ok_or_else(unexpected_default_menu)?;
+    let root_items = menu.items()?;
+    let application_menu = root_items
+        .first()
+        .and_then(|item| item.as_submenu())
+        .ok_or_else(unexpected_default_menu)?;
+    let items = application_menu.items()?;
+    let last_predefined_text = items
+        .last()
+        .and_then(|item| item.as_predefined_menuitem())
+        .map(|item| item.text())
+        .transpose()?;
+    let position = default_application_quit_position(items.len(), last_predefined_text.as_deref())
+        .ok_or_else(unexpected_default_menu)?;
+    if position < 2 {
+        return Err(unexpected_default_menu());
+    }
+
+    let override_language = app
+        .try_state::<AppState>()
+        .and_then(|state| state.settings.preferences().ui_language);
+    let system_language = system_language_code();
+    let labels = native_menu_labels(effective_native_menu_language(
+        override_language.as_deref(),
+        system_language.as_deref(),
+    ));
+    let quit_item = MenuItemBuilder::with_id(APPLICATION_QUIT_MENU_ID, labels.quit)
+        .accelerator(APPLICATION_QUIT_ACCELERATOR)
+        .build(app)?;
+    let settings_item = MenuItemBuilder::with_id(APPLICATION_SETTINGS_MENU_ID, labels.settings)
+        .accelerator(APPLICATION_SETTINGS_ACCELERATOR)
+        .build(app)?;
+    application_menu.remove_at(position)?;
+    application_menu.insert(&quit_item, position)?;
+    application_menu.insert(&settings_item, 2)?;
+    application_menu.insert(&tauri::menu::PredefinedMenuItem::separator(app)?, 3)?;
+    app.manage(NativeApplicationMenuItems {
+        settings: settings_item,
+        quit: quit_item,
+    });
+    Ok(())
 }
 
 fn effective_native_menu_language(
@@ -391,6 +604,8 @@ fn native_menu_labels(language: NativeMenuLanguage) -> NativeMenuLabels {
             quit: "退出 mimi",
             subtitle_display: "字幕显示",
             display_modes: ["仅译文", "原文与译文", "仅原文"],
+            #[cfg(any(target_os = "macos", test))]
+            show_in_dock: "在 Dock 中显示",
         },
         NativeMenuLanguage::Japanese => NativeMenuLabels {
             start_subtitles: "字幕を開始",
@@ -400,6 +615,8 @@ fn native_menu_labels(language: NativeMenuLanguage) -> NativeMenuLabels {
             quit: "mimiを終了",
             subtitle_display: "字幕表示",
             display_modes: ["翻訳のみ", "原文と翻訳", "原文のみ"],
+            #[cfg(any(target_os = "macos", test))]
+            show_in_dock: "Dock に表示",
         },
         NativeMenuLanguage::English => NativeMenuLabels {
             start_subtitles: "Start Subtitles",
@@ -413,6 +630,8 @@ fn native_menu_labels(language: NativeMenuLanguage) -> NativeMenuLabels {
                 "Original and Translation",
                 "Original Only",
             ],
+            #[cfg(any(target_os = "macos", test))]
+            show_in_dock: "Show in Dock",
         },
     }
 }
@@ -551,6 +770,18 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         menu_builder = menu_builder.item(item);
     }
 
+    #[cfg(target_os = "macos")]
+    let show_in_dock = {
+        let checked = app
+            .try_state::<AppState>()
+            .is_some_and(|state| state.settings.preferences().show_in_dock);
+        let item = CheckMenuItemBuilder::with_id("show-in-dock", labels.show_in_dock)
+            .checked(checked)
+            .build(app)?;
+        menu_builder = menu_builder.item(&item);
+        item
+    };
+
     let settings_item = MenuItemBuilder::with_id("settings", labels.settings).build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", labels.quit).build(app)?;
 
@@ -582,7 +813,7 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                         if session.is_active() {
                             session.stop().await;
                         } else {
-                            let _ = session.start(true).await;
+                            let _ = session.start().await;
                         }
                     });
                 }
@@ -616,13 +847,43 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                         }
                     }
                 }
-                "settings" => {
-                    // The tray panel is always-on-top; hide it so the
-                    // settings window is not obscured behind it.
-                    windows::TrayPanelManager::hide(app);
-                    windows::ensure_settings_window(app);
+                #[cfg(target_os = "macos")]
+                "show-in-dock" => {
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if commands::toggle_dock_visibility(app.clone()).await.is_err() {
+                            // Restore the checkmark from the saved preference
+                            // when native application or persistence fails.
+                            refresh_native_tray_language(&app);
+                            tracing::warn!(
+                                "Dock visibility setting failed label=settings_unavailable"
+                            );
+                        }
+                    });
                 }
-                "quit" => app.exit(0),
+                id if is_settings_menu_event(id) => {
+                    // The shared command also dismisses the always-on-top
+                    // control panel so neither surface obscures Settings.
+                    let _ = commands::app_show_settings(app.clone(), None);
+                }
+                id if is_normal_quit_menu_event(id) => {
+                    let session = Arc::clone(&state.session);
+                    let app = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        if commands::quit_application(app.clone(), session)
+                            .await
+                            .is_err()
+                        {
+                            // archive_state exposes the existing, content-free
+                            // historySaveError; the export page explains why
+                            // quitting failed and keeps its retry reachable.
+                            let _ = commands::app_show_settings(
+                                app,
+                                Some(commands::SettingsNavigationTarget::Export),
+                            );
+                        }
+                    });
+                }
                 _ => {}
             }
         })
@@ -657,6 +918,8 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         quit: quit_item,
         subtitle_display,
         display_modes,
+        #[cfg(target_os = "macos")]
+        show_in_dock,
     });
 
     // Session broadcasts already cover every start/stop path (native menu,
@@ -692,6 +955,11 @@ pub(crate) fn refresh_native_tray_language(app: &tauri::AppHandle) {
         override_language.as_deref(),
         system_language.as_deref(),
     ));
+    #[cfg(target_os = "macos")]
+    if let Some(items) = app.try_state::<NativeApplicationMenuItems>() {
+        let _ = items.settings.set_text(labels.settings);
+        let _ = items.quit.set_text(labels.quit);
+    }
     let Some(items) = app.try_state::<NativeTrayMenuItems>() else {
         return;
     };
@@ -705,6 +973,14 @@ pub(crate) fn refresh_native_tray_language(app: &tauri::AppHandle) {
     let _ = items.settings.set_text(labels.settings);
     let _ = items.quit.set_text(labels.quit);
     let _ = items.subtitle_display.set_text(labels.subtitle_display);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = items.show_in_dock.set_text(labels.show_in_dock);
+        let checked = app
+            .try_state::<AppState>()
+            .is_some_and(|state| state.settings.preferences().show_in_dock);
+        let _ = items.show_in_dock.set_checked(checked);
+    }
     let current_mode = app
         .try_state::<AppState>()
         .map(|state| state.settings.preferences().subtitle_display_mode)
@@ -746,6 +1022,11 @@ fn setup_global_shortcuts(
         Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
     };
 
+    if desktop_shortcuts::uses_system_shortcuts() {
+        tracing::info!("Wayland shortcuts are configured in desktop settings");
+        return Ok(());
+    }
+
     // macOS: Cmd+Shift (SUPER is the Command key); Windows: Ctrl+Shift.
     #[cfg(target_os = "macos")]
     let modifiers = Modifiers::SUPER | Modifiers::SHIFT;
@@ -786,7 +1067,7 @@ fn setup_global_shortcuts(
                     if session.is_active() {
                         session.stop().await;
                     } else {
-                        let _ = session.start(true).await;
+                        let _ = session.start().await;
                     }
                 });
             });
@@ -872,6 +1153,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn application_settings_and_tray_share_the_settings_route_in_all_languages() {
+        assert!(is_settings_menu_event("settings"));
+        assert!(is_settings_menu_event(APPLICATION_SETTINGS_MENU_ID));
+        for id in [
+            "quit",
+            APPLICATION_QUIT_MENU_ID,
+            "live-subtitles",
+            "mimi-app-settings-extra",
+        ] {
+            assert!(!is_settings_menu_event(id));
+        }
+        assert_eq!(APPLICATION_SETTINGS_ACCELERATOR, "CmdOrCtrl+,");
+        for (language, label) in [
+            (NativeMenuLanguage::Chinese, "设置…"),
+            (NativeMenuLanguage::English, "Settings…"),
+            (NativeMenuLanguage::Japanese, "設定…"),
+        ] {
+            assert_eq!(native_menu_labels(language).settings, label);
+        }
+    }
+
+    #[test]
+    fn application_and_tray_quit_share_the_normal_finalization_route() {
+        assert!(is_normal_quit_menu_event("quit"));
+        assert!(is_normal_quit_menu_event(APPLICATION_QUIT_MENU_ID));
+        for id in ["settings", "live-subtitles", "close", "mimi-app-quit-extra"] {
+            assert!(!is_normal_quit_menu_event(id));
+        }
+        assert_eq!(APPLICATION_QUIT_ACCELERATOR, "CmdOrCtrl+Q");
+        for (language, label) in [
+            (NativeMenuLanguage::Chinese, "退出 mimi"),
+            (NativeMenuLanguage::English, "Quit mimi"),
+            (NativeMenuLanguage::Japanese, "mimiを終了"),
+        ] {
+            assert_eq!(native_menu_labels(language).quit, label);
+        }
+    }
+
+    #[test]
+    fn application_quit_replacement_accepts_only_the_last_default_predefined_quit() {
+        assert_eq!(
+            default_application_quit_position(8, Some("Quit mimi")),
+            Some(7)
+        );
+        assert_eq!(default_application_quit_position(1, Some("Quit")), Some(0));
+        assert_eq!(default_application_quit_position(0, Some("Quit")), None);
+        assert_eq!(default_application_quit_position(8, None), None);
+        for text in ["Services", "Hide mimi", "Copy", "Quitter", "退出 mimi"] {
+            assert_eq!(default_application_quit_position(8, Some(text)), None);
+        }
+    }
+
+    #[test]
     fn native_tray_session_action_follows_status_in_all_three_languages() {
         for (language, start, stop) in [
             (NativeMenuLanguage::Chinese, "开始字幕", "停止字幕"),
@@ -916,6 +1250,19 @@ mod tests {
             native_menu_labels(NativeMenuLanguage::Japanese).settings,
             "設定…"
         );
+    }
+
+    #[test]
+    fn native_dock_visibility_labels_match_the_existing_frontend_copy() {
+        let frontend_i18n = include_str!("../../src/lib/i18n.ts");
+        for language in [
+            NativeMenuLanguage::Chinese,
+            NativeMenuLanguage::English,
+            NativeMenuLanguage::Japanese,
+        ] {
+            let label = native_menu_labels(language).show_in_dock;
+            assert!(frontend_i18n.contains(&format!("showInDock: \"{label}\"")));
+        }
     }
 
     #[test]

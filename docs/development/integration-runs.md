@@ -1,0 +1,729 @@
+# 集成实测记录
+
+持续方法见 [集成测试与经验积累](integration-learning-loop.md)。这里记录
+实测范围和未解决项；条目是历史证据，后续任务仍须核对当前源码与设备。
+不写密钥、音频、字幕正文或个人目录，不把临时日志当作已持久归档的案例。
+
+## 2026-10-05：v1.5.12 浮窗分句线同步
+
+- 基线 `ab71f95` 加分句线控件与版本准备改动；签名 canonical `local-dev`
+  UI-only 构建。设置、浮窗均读写同一 `showSubtitleDividers` 偏好。
+- macOS 原生操作确认：设置页开启分句线，关闭设置并展开浮窗后开关为开；
+  浮窗关闭分句线，再通过 Window 菜单选择设置窗口，开关为关。
+  浮窗确认新行位于更早显示字幕与显示时间之间；默认早显仍为开。
+- 中文、英文、日文真实浏览器检查：280×520 面板分别高 469/483/469px，
+  标签完整、帮助间距 4px、开关右缘一致；280×260 下实际滚轮可到达底部
+  更多设置。截图已目视检查。这是浏览器布局证据，不替代原生浮窗截图。
+- focused 回归 4 文件 51 项通过，覆盖共享保存与广播、失败回滚、重试、
+  busy 防重复、关闭重开及沉浸隐藏分句线但保留偏好。原生完整浮窗视觉、
+  连续鼠标移动光标、Windows/Linux 外观及真实采音/服务商未复验。
+- 所有操作使用合成 UI-only 状态，无凭据、服务请求、真实音频采集或录制。
+  原生辅助工具选窗不稳定时，Window 菜单可明确选择已打开的设置窗口。
+
+## 2026-10-05：浮窗翻译服务标识
+
+- 最终代码 `3a88379`，基于 `e142b6e`；保留全音源时间戳规则。
+  浮窗右侧复用服务图标并显示实际文字翻译服务，完整配置放在悬停/焦点提示。
+- 最终 `./scripts/check.sh` 通过：桌面 Rust 1057 passed／2 ignored，前端
+  100 个文件／1271 项测试通过，共享核心和 JNI adapter 检查通过。
+  浏览器实际组件最终 90 组检查通过：72 组中/英/日文，360/420/552/640 px，
+  六种内置/独立翻译/原文路线；保护图标尺寸、短名称、两项延迟及拖动条间距。
+  另有 18 组 360/420 px、20 px 字号的单/双音源最小高度检查，核对实际
+  字形、时间戳与各层裁剪边界；全部没有越界。
+  修正了负 margin 导致短名截断，以及嵌套延迟栏重复扣减边距的问题。
+- 窄窗服务行增加 20 px 后，同步调整 Rust 与浏览器最小高度，使用共享
+  布局契约防止双语及带时间戳字幕被压缩。rebase 后旧 Vite 模块导致一次
+  浏览器 fixture 未进入实际页面；重启恢复，并在脚本加入前置 DOM 核验。
+- 签名 `local-dev` 构建、指定路径安装和 UI-only 启动成功；合成会话进入
+  listening，设置页显示 UI test 标记。未读取凭据、连接服务或进行真实采音。
+  原生工具在观察时反复激活设置页，无法可靠选择浮窗截图；原生浮窗全部
+  状态与连续鼠标移动下的光标外观仍未完成目视验收，浏览器截图不替代它。
+- 下一步：在最终开发版浮窗手动复核悬停提示、点击打开设置、窄窗和暂停/
+  折叠/沉浸状态。Windows/Linux 原生显示未在本轮执行。
+
+## 2026-10-04：桌面停止后启动保留字幕
+
+- 基线 `babc8ea`，`fix/preserve-subtitles-on-start` 的任务改动（验证时工作区
+  dirty）。所有桌面启动入口原本调用隐式清空；现保留有界已确认字幕，
+  清理连接临时状态，并保留显式清空和新会话存档隔离。
+- 合成回归覆盖停止／重试、切换音源、稍后启用的音源、复用确认 ID、
+  相同无 ID 首句、重复连接尝试、空结果、20 条显示上限及主动清空。
+  新会话边界由共享 Rust reducer 实现，普通重连继续去重。
+- `./scripts/check.sh` 通过；Android `testDebugUnitTest` 120 项通过，包含
+  实际 JNI 的共享契约执行。初次前端检查因复用依赖缺少 `jsdom` 失败，
+  按锁文件安装工作区依赖后完整重跑通过；未改动依赖版本。
+- 未执行原生点击或真实服务／捕获：正式版正在运行，保留其会话及字幕。
+  未替换正式安装、发布版本或开启保存。下一步在空闲的签名 dev 中复核
+  快捷键停止／启动、托盘启动和显式清空；软件完全退出后的恢复仍依赖
+  用户明确启用的保存功能。
+
+## 2026-10-04：#132 平台设置布局与跨页检查
+
+- Revision：基于 `a2cf73846b95f9c12c95e73d70dc57feba19e246` 的本次
+  布局工作区；包含下拉框列宽、状态换行、相邻行 16 px 间距和字体回退修改。
+- 自动检查：`./scripts/check.sh` 全部通过，桌面 Rust 1010 passed／
+  2 ignored，前端 95 个文件／1119 项测试通过，共享核心检查通过。
+  新增测试覆盖平台能力缺失、三种语言的空闲帮助、持续状态与失败反馈。
+- 浏览器：真实设置组件配合无凭据平台 bridge，五种宽度、中文／英文／
+  日文、明／暗主题及输出设备状态共 690 组通过。覆盖全部六个设置页面、
+  三类配置编辑器及合成的已保存值预览、添加配置选择／确认、长设备名、
+  丢失设备、枚举失败和暂停；断言标签空间、溢出、状态位置、相邻音频行
+  间距、帮助上下文间距，以及已保存值动作文字可见并位于字段标签行。
+  最终正常中文、窄窗英文和窄窗日文错误状态
+  截图逐张查看。托盘真实 308 px 内容宽度下三种语言的按钮无裁切，英文
+  活动状态和中文／日文暂停状态另行查看。
+- macOS：使用 canonical `./scripts/dev-app.sh --ui-only` 构建并打开稳定
+  签名 dev bundle；实际点击六个设置分类、配置详情、凭据编辑和确认弹窗，
+  检查浮动控制窗口英文状态与布局。测试会话由 UI fixture 提供；没有进行
+  真实音频、服务网络或凭据验证。没有覆盖正式版 app。
+- 二次截图反馈指出列表底部孤立盾牌。它是存储说明，现移到配置数量旁的
+  常规帮助；诊断隐私说明并入页面标题帮助，三类编辑器复用带文字的凭据
+  帮助，服务名称、代理字段、翻译标题和确认预览也保持相邻上下文。
+  原生重新打开列表、配置详情、诊断、服务选择和添加确认查看，未添加配置。
+- 再次截图反馈指出已保存密钥的孤立眼睛。动作文字原本仅供屏幕阅读器，
+  现三种语言均正常显示，并和字段标签／阶段标题同一行；合成预览不写入
+  替换输入草稿。隐藏、取消、失焦和导航清除行为的既有测试仍通过，最终
+  前端 lint／1119 项测试／build 通过。编辑器最终截图另行逐张查看；
+  重建原生 UI-only app 后再确认列表无孤立帮助、详情动作文字可见。
+- 可复用经验：先前 `dc2143f` 多语言修复漏掉 Windows-only 控件；本次首次
+  预览又漏掉相邻控件间距。两项具体预防规则已写入 UI 规范、常见回归文档，
+  并用浏览器几何检查保留。验收必须包含实际跨页点击和截图视觉复核。
+- 限制：浏览器 Windows fixture 不证明 Windows LTSC 字体或 WASAPI 捕获；
+  macOS 没有输出设备选项是 ScreenCaptureKit 的现有能力边界。原生菜单栏
+  托盘交互未完成，浏览器托盘组件检查不替代它。#132 保留开放，等待包含
+  修复的版本在报告者的 Windows 环境复测；本轮没有发布版本。
+
+## 2026-10-04：首轮质量基线与重复尾句接纳修复
+
+- 基线 revision：`c7e406760a915a35e0c2c7c5c963b4488c30012b`，两批
+  服务测试和签名 dev 构建均为干净工作区。开发凭据沿用既有私有 loader，
+  未复制密钥，未引入服务。系统声音串行播放、麦克风未使用；未发布版本。
+- 冻结输入：私有 catalog `2026-10-04-semantic-8814`，12 例，五条
+  FLEURS 官方 reference、Sintel 八条对白 cue；官方文本已核对，未独立
+  听审。共六条不同原始真人片段、四条人工派生语音条件、两个负对照，
+  不能当作十二个自然独立样本。变速 1.25 倍、混音全窗口 RMS 比 20 dB、
+  重复父样本与哈希均保留；电影原声实际 SNR 和词级时钟未知。
+- 执行：现有 batch runner，`qwen-audio-3.0-asr-flash-streaming`、`auto`、
+  bypass；先三例，再九例，各批最多三个 worker。12 completed、0 failed。
+  编译测试程序 SHA256 为
+  `c2e67cd553128a24526891874e821a74cceeaec582bf68e9eaa1e252fa2c9527`。
+- 直接 ASR：十个语音条件均未观察到 reference 删除。日语短句、三次
+  重复、变速、混音、中文短句和电影对白在既有归一化后完全对应；日语
+  长句四处替换为汉字／假名书写差异，中文长句一处为近义表达。英语和
+  重复英语有专名替换及数字书写差异，错误先出现在 ASR。等值数字写法
+  不算语义错误；未做总分排名，也未据此证明普遍无漏句或翻译改善。
+- 负对照：音乐／音效与全零 PCM 均没有 lexical final。音乐例出现两次
+  短 lexical draft，数字静音未出现；音乐源仍待独立听审。这是未解决
+  观察，零 final 不等于没有瞬时识别文本，也不能据此确认模型幻觉。
+- 真实 macOS 链路：固定日语 11.1 秒片段构造三次、间隔 12 秒，输入
+  59.3 秒，实际播放约 60.212 秒。日语→中文、Alibaba 开发预设、系统
+  全应用捕获、原文＋译文。既有字幕保存开启、音频保存关闭，开发取证
+  独立显式开启并正常停止／封存。临时 UI 设置随后恢复。
+- 私有原生 case `8d974297-9027-4968-8529-7d9cf10c4e6f`：1,700 条完整
+  元数据、84 个快照，trace/content 丢失、失败、限额及 frontend drop
+  均为零；9,291 成功发送 chunk，无失败／取消／丢弃，约 7.83 MB 音频
+  证据。发送成功不等于证明服务接收。三个 source ID 2/3/4 对应 pair
+  1/2/3、翻译 request 7/10/13，三条精确链均为 `server-final`。
+  接纳事件 813/1133/1465；最后 history 变更 1466 后有交付快照，终态
+  Idle 快照 84 的发布事件 1690，封存 1700。原文／接纳／历史均为
+  138/138 字符、D/I/S 为零，三次身份独立。
+- 语义：这一个父句的五个事实／条件单元在三次译文中均保留，AI review
+  未见重大增漏义，有轻微直译和未译术语；没有双语人工 gold，不泛化为
+  其他十例 MT 合格。原生正文窗口未独立确认；store applied／DOM commit
+  及滚动溢出观察不是逐字可见性证明。
+- 实际执行边界：原计划暂停／恢复未能按时操作，因此三个 occurrence
+  均计入采集，没有排除区间；清空未执行。停止发生在 finals 已完成后，
+  不能作为待译尾句竞争、in-flight clear、暂停恢复或重连的验收。
+- 确认修复：桌面 HQ `FinalRequestKey` 的 finish 通配条件忽略原句身份，
+  在同文旧句 active／queued 时跳过另一句停止尾部，最早失效为 final
+  接纳。通过真实 `flush_pending_draft` 的回归复现旧版失败；补入原句 ID
+  与 content revision 后通过。无 ID 的合法 ASR 路径以不同本地确认编号
+  保留独立任务，同一已知原句版本的 server/finish alias 仍去重。没有改
+  提示词、模型、队列上限、重试、预算或 grace。见
+  [设计记录](../plans/2026-10-04-final-request-identity.md)。
+- 相邻回归：59 项 HQ 测试通过，覆盖 active／queued 的已知和无 ID 尾句、
+  同源 alias、内容版本、preview 抢占、HTTP 顺序／取消／预算和重试。
+- 自动检查：`./scripts/check.sh` 全部通过，桌面 Rust 1010 passed／
+  2 ignored；前端 95 个文件、1113 项测试通过。共享 Rust 65 单元测试、
+  3 契约测试，JNI crate 格式／Clippy／编译测试边界均通过；这不等于
+  Android JVM 实际 JNI 或设备实测，Android CI 另行核对。
+- 修复签名构建：干净 `ca759df` 通过 canonical dev launcher，稳定 dev
+  requirement 与既有身份相同。两次 normal 启动的设置页超时，线程栈
+  确认全配置目录的凭据状态检查等待 `SecKeychainFindGenericPassword`／
+  SecurityServer，其余读取等待 secret cache 锁。活动 dev 预设不能隔离
+  目录中普通配置的 Keychain 检查；未把超时归因于本次尾句代码。
+  工具禁止操作 SecurityAgent，未绕过授权。改用 `--ui-only` 后设置与
+  诊断正常载入，Idle、追踪关闭，重开原 case 得到 1700 元数据／84 快照／
+  零证据缺失。正常退出，原配置及沉浸设置恢复；无凭据 UI 和离线回放
+  不等于修复后的真实 provider 验收。
+- 独立只读审阅未发现此次身份匹配引入的错误去重或重复接纳路径。
+- PR 首次 CI：macOS、Windows x64／ARM64、前端及 Android 检查通过，
+  Linux 普通 Rust／HQ／共享检查通过，但既有双输入 PulseAudio smoke 在
+  `system_pipeline.finish(1s)` 失败。源码显示测试模拟发送器使用 32 槽
+  sink，却先等待 finish 再消费 sink；满队列时无法完成发送。日志未记
+  当时队列占用，不能把这次具体超时直接定性为队列满或负载波动。
+  测试 harness 改为先匹配两路时持续读取双方，停止一条时继续读活跃
+  另一条，finish 时并发消费 stopped sink。新增满 32 槽加一个 pending
+  帧的确定性单元回归，要求全部 33 帧收尾、零遗留、旧 ingress 关闭。
+  保留原 1 秒 finish、6 秒双频率界限、两种采样率和分离／重启断言；
+  生产音频行为、队列容量与 deadline 未改。该 Linux 模块的实际测试
+  由 Linux CI 验证，macOS 完整检查不冒充 Linux 原生证明。
+- 持久保存：私有结果 catalog `2026-10-04-quality-cycle-1`，约 22.3 MB、
+  142 条文件 SHA256，12 个 relocated result 路径和 PCM hash 已复核。
+  原始 job 文件和失败日志保留，固定矩阵指向持久输入库；新录制 case
+  仍在 app 私有 workspace `quality-cycle-1`。没有把音频、字幕或个人
+  路径放入 Git。
+
+### 下一轮的固定优先级
+
+1. 同一输入／配置下专测 Stop 紧接未完成 final，保留新的 clean revision
+   case；提前确认实际原生控件，分别测试暂停恢复、in-flight clear 和
+   重连。不能用这次成功的 server finals 替代 finish-race 复测。
+2. 独立听审音乐负对照，并检查瞬时草稿到 stop fallback 的条件；不添加
+   基于几个词的过滤规则。
+3. 以既有语义单元逐例补日／英→中文、中文→英语的准确 MT 请求／返回。
+   优先英语专名与日语长句指代，区分 ASR 继承错误、reference 歧义和 MT
+   新增错误。自然多分钟语音、重叠及 code switching 仍缺样本。
+4. 保留旧失败证据，不把一次成功或 provider 波动当成修复改善。Windows、
+   Linux、Android 真实设备与实际 provider 账户仍需各自验收。
+
+## 2026-10-04：最新 main 的 macOS dev 集成检查
+
+- Revision：`092a31008e54c4cc2f5033f43eee700b97a51e59`；fetch 后
+  `HEAD == origin/main`，构建时工作区干净。包含桌面与 Android 共享核心。
+- 构建与启动：使用 `./scripts/dev-app.sh`，复用已有缓存。
+  `/Applications/mimi-dev.app` 的稳定签名、
+  `app.yuxino.mimi.dev` 身份、单一准确进程路径和 `(dev)` 窗口已确认。
+  正式版通过正常退出让出运行；本轮未发布版本。
+- 范围：macOS、本机系统声音、全部应用捕获、Alibaba 开发预设、
+  日语识别到简体中文、原文＋译文。既有字幕保存开启，音频录制关闭；
+  使用不含敏感内容的合成测试语音，未开启开发音频与字幕取证。
+- 自动检查：`./scripts/check.sh` 全部通过。桌面 Rust 1008 passed／
+  2 ignored；前端 95 个文件、1113 个测试通过；共享核心 65 个单元测试
+  与 3 个契约测试通过，并完成 JNI crate 的格式、Clippy 和编译检查。
+  这里的 JNI crate 检查不等于 Android JVM 实际 JNI 测试或设备验收。
+- 服务连接：识别检查 346 ms、翻译检查 388 ms，均可用；这些是连接／
+  固定短句检查的计时边界。
+- 真实链路：有效日语样本约 11.12 秒，确认实际播放，观察到识别和中文
+  译文，原生浮窗显示双方文本。内容无关追踪观察到服务 final、最终翻译、
+  快照发布及 overlay 收到、应用和 DOM commit。原生可见性另由窗口检查确认。
+  浮窗显示最近接口往返 43 ms、翻译请求耗时 333 ms，未测端到端延迟。
+
+### 可复用经验
+
+- macOS 沙箱内 `say -o` 可返回零却生成零音频帧；`afinfo` 暴露了空文件。
+  `afplay` 在沙箱内也曾返回 `AudioQueueStart failed (-66680)`。
+  使用经批准的本机执行重新生成后，核对非零帧与时长，再执行播放。
+  音源失败时先修正测试准备，不能归因于 Mimi 无字幕。
+- 设置页、字幕控制窗口和字幕正文窗口是不同原生窗口。确认当前窗口
+  标题；关闭设置页后检查实际字幕正文及其控件，不能拿设置预览替代它。
+- 稳定 dev 身份、真实服务可用和原生字幕可见分别验证，结果分别记录。
+  复用有效缓存完成构建，不把本次构建时间当成通用性能提升。
+
+### 未完成与下一步
+
+- 用户中断操作时，dev 应用和系统声音字幕会话仍在运行。暂停、恢复、
+  停止及尾部收尾尚未测试；没有把它们计入通过范围。
+- 只跑了一个短合成样本，译文有一处测试语境的用词偏差。语义质量、
+  真人长语音、音乐背景、重叠说话、清空、折叠和重连没有完成验收。
+- 本次输入与日志位于临时目录，尚未归档为可持久复用的场景案例。
+  普通追踪只有有界内存尾部，未建立可重启回放的完整取证案例。
+- Android JVM／设备、Windows 和 Linux 没有在本轮实测。
+- 后续获得继续测试的请求后，先补会话暂停／恢复／停止与收尾，再按当前
+  具体质量问题选定可持久样本，记录 reference 并进行可比复测。
+
+## 2026-10-04：Gemini 连接拒绝与真人音频直连复测
+
+- Revision：`a2cf738` + `fix/gemini-live-setup` 未提交改动；macOS 原生
+  `GeminiLiveClient` 测试构建，开启 `local-dev-credentials`。使用用户授权的
+  免费 Gemini 测试账户、本机私有开发文件和固定 16 kHz 单声道 PCM，
+  按 100 ms 实时发送。未打开 GUI、未启动系统／麦克风捕获，未修改
+  保存选项或活动配置。密钥、音频、reference、原始服务正文和配对结果
+  均在 Git 外的持久开发 benchmark 目录；普通输出只有计数、标签和计时。
+- 连接失败边界：同一有效密钥列模型 HTTP 200；旧 setup WebSocket 1007，
+  `inputAudioTranscription` 层级被拒绝。两项转录选项移到 setup 后接收
+  `setupComplete`，原生 Settings 检查可用，971 ms。共享 setup 契约覆盖
+  zh/en/ja；不改模型、翻译配置或提示词。
+- 首次真人测试还复现语言字段单独出现时解析失败、连续服务无
+  `turnComplete` 导致尾部不确认。最初逐句修复在重复音频中串句并
+  `gemini_close_timeout`：服务译文与原文的标点数不能证明语义配对。
+  保留旧失败记录；改用共享 Rust 的完整块稳定检查点，2 秒无非空增量
+  且双方均结束于句末标点后整块确认。实际 JNI 与桌面使用同一逻辑；
+  显式 turn 仍留 500 ms 吸收尾部。稳定检查点是启发式，不是服务终止保证。
+- 固定 FLEURS 真人样本（3 个独立输入、1 个重复派生输入，CC BY 4.0）：
+
+  | 样本／方向 | 音频时长 | setup | 首条译文预览 | 完整块确认 | 错误 |
+  | --- | --- | --- | --- | --- | --- |
+  | `fleurs-english-1527` 英→中 | 23.44 s | 961 ms | 3,769 ms | 25,545 ms，1 组 | 0 |
+  | `fleurs-cmn_hans_cn-short-row3-id1648` 中→英 | 9.66 s | 928 ms | 5,928 ms | 11,045 ms，1 组 | 0 |
+  | `fleurs-ja_jp-short-row0-id1519` 日→中 | 11.10 s | 830 ms | 5,035 ms | 13,099 ms，1 组 | 0 |
+  | `repeat-en-two` 英→中，两遍同输入间隔 1 s | 47.88 s | 962 ms | 3,816 ms | 25,491／50,739 ms，2 组 | 0 |
+
+  首条译文和块确认均从开始送音频计时，含样本开头静音和服务处理；
+  不是从首个发声或每个词到屏幕的端到端延迟。两遍相同原文均保留，
+  无串句及收尾超时。取证文件 0600，旧失败与原始事件记录继续保留。
+- 质量：链路可用，但三组均有准确性问题。英→中保留主要赛事／名次，
+  姓名识别错误，译文另把一个运动员扩成两个姓名。中→英将 reference
+  地名识别成别处；另一次同输入连谓语也错。日→中将回国后的时间条件
+  识别为策划后的条件，译文转录也出现该错误。该模型直接做语音翻译；
+  不能据转录共同错误断定内部采用 ASR 文本再翻译。reference 来自既有固定 FLEURS
+  corpus，尚无本轮独立听审；不据此给整体准确率或宣称优于其他服务。
+- 回归保护：共享 setup／转录序列、实际 Android JNI、桌面 socket 模拟
+  覆盖缺省空文本、译文拆句、重复、显式边界晚尾、未配对文本与固定
+  内存上限。`./scripts/check.sh` 通过（桌面 1,015、前端 1,116）；
+  开发特性 Clippy 通过，Gemini 定向测试 25 passed／2 ignored；Android
+  `testDebugUnitTest lintDebug` 通过，包含实际 JNI。最终原生连接检查
+  1,005 ms 可用。签名 dev 已更新到 `/Applications/mimi-dev.app`，稳定
+  designated requirement 相同，`app.yuxino.mimi.dev`；正常退出旧实例后
+  `--no-launch` 安装，未打开新实例。提交后再次从干净 `c1ea751` 构建并
+  安装到同一 dev 路径；PR #134 全部 CI 通过并以 `3ac303d` 合并到 main，
+  未发布版本。
+- 模型调研：官方账号模型清单含实际请求的专用
+  `gemini-3.5-live-translate-preview`（`3.5-live-translate-06-2026`）；
+  Gemini 路由直接取原文／译文转录，没有独立二次 MT。官方模型能力和
+  参数依据见本轮 design note。用同一中文 PCM 比较两种额外配置：
+  专用模型请求 TEXT 仍生成 816,000 字节音频、无 model text parts，
+  有英文译文转录；3.8 Live 沿用 translationConfig 接受 setup，却用
+  中文对话回应，未执行目标英语翻译。连接成功不能证明字段生效或
+  模型可以互换。只做转录正文比较，未保存或听审输出音频。
+- 免费档位：官方把同一专用翻译模型列为 Free／Paid 可用；额度和
+  数据政策存在档位差异，但没有发现准确度降级声明。本轮没有付费
+  同模型对照，不能把错误归因于免费账号，也不能证明两档效果相同。
+- 限制／下一步：未验证原生浮窗、OS 捕获、Android 实机、跨平台真实
+  服务和长时连续无停顿语音。完整块策略可能延迟确认，持续输入到达
+  5,120 字符上限会有界失败；短样本成功不能替代长会话验收。先按相同
+  reference 人工听审与逐语义单元对比，再决定是否继续使用此 preview
+  模型；不要用词汇替换补丁掩盖服务 ASR／翻译错误。
+
+## 2026-10-04：Gemini 三条路线的固定音频对照
+
+- Revision：测试驱动对应 `c1ea751`；随后连接／配对修复以 `3ac303d`
+  合并到 main。本轮对照是独立、只读开发脚本直连官方 API，没有替换
+  Mimi 模型、增加产品配置、启动 GUI／OS 捕获或变更保存选项。继续
+  使用同一授权测试密钥、既有三段 FLEURS 真人 PCM 和原 reference；
+  核对输入 SHA256，以 100 ms 帧按实时钟发送，尾部静音 2 秒后发送
+  `audioStreamEnd`，等待窗口有界。每段每条路线仅跑一次。
+- 路线：专用 `gemini-3.5-live-translate-preview` 使用既有 AUDIO／目标
+  语言配置；`gemini-3.8-live` 改为专用翻译指令、AUDIO、自动 VAD 和
+  `NO_INTERRUPTION`，不传 translationConfig。这是正确配置的对照，
+  与上一轮无指令的替换探测分开。第三条是独立 prototype：
+  `gemini-3.5-transcribe-live` 自动语言／VERBATIM／无词表，收到
+  authoritative inputTranscription 后交给 `gemini-3.8-flash` 的
+  generateContent／low thinking 做文字翻译；不翻译 interim。
+
+  | 样本／方向 | 音频时长 | 专用翻译首条转录 | 3.8 Live 首条译文转录 | 识别后文字翻译首条结果 |
+  | --- | --- | --- | --- | --- |
+  | `fleurs-english-1527` 英→中 | 23.44 s | 3,830 ms | 24,769 ms | 26,274 ms |
+  | `fleurs-cmn_hans_cn-short-row3-id1648` 中→英 | 9.66 s | 5,865 ms | 7,687 ms，异常／不完整 | 16,868 ms |
+  | `fleurs-ja_jp-short-row0-id1519` 日→中 | 11.10 s | 4,902 ms | 11,394 ms | 13,375 ms |
+
+  均从开始送 PCM 到收到首个非空结果计时，含样本初始静音，排除
+  setup；不是首个发声到屏幕的延迟。setup 分别为专用 1,043／899／
+  1,051 ms、对话 878／1,009／848 ms、识别 920／857／625 ms。
+  文字翻译三个请求均 HTTP 200，耗时 2,743／9,226／2,875 ms；只有
+  单次观测，不能将较长一次等同于固定服务耗时。识别 interim 首条为
+  2,761／4,149／3,145 ms，最终原文首条为 23,529／7,642／10,500 ms；
+  原文 interim 不能当成已完成的翻译字幕。
+- 质量逐例：英→中专用模型仍有姓名错误，但保留第一处名次；对话
+  模型姓名更接近 reference，却改错第一处名次。第三条原文姓名更
+  接近，但国家和第一处名次错误，文字翻译继承错误。中→英三条
+  原文均识别错地名；对话模型另在译文转录中夹带异常标记并缺失后半
+  分句，有 generationComplete／turnComplete 仍不能认为译文完整。
+  日→中专用模型仍错时间条件，对话模型与第三条这次保留参考语义。
+  不把这些差异折算成总体准确率，也不推断服务内部 ASR／MT 实现。
+- 传输范围：九次会话均 setupComplete、正常 WebSocket 1000、无
+  传输错误；六次直接翻译都收到原文和译文。对话模型 generationComplete
+  三次均出现，turnComplete 英语 0／中文 1／日语 1，未改 Mimi 的终止
+  策略来适配它。专用模型这轮仍无 turnComplete。第三条三次各收到
+  一组最终原文并完成文字翻译；没有把它纳入产品原生验收。
+- 保存与结论：脚本、manifest、setup 指令、原始服务文本和结果存于
+  Git 外的 `2026-10-04-gemini` 私有 benchmark，独立 fair-comparison／
+  asr-mt-comparison 目录均 0700、文件 0600；旧失败不覆盖，诊断输出
+  仍只含标签、计数、状态与计时。专用模型在这三段更早输出，适合
+  当前连续字幕的交互；准确性尚不足以据此推荐替换既有其他服务。
+  3.8 Live 不是整体更好，也不是可直接换名的字幕模型。识别＋文字
+  翻译可独立调优，但本 prototype 等 final 后才请求，不证明具备
+  生产 preview／取消／上下文／重连／原生浮窗表现。尚缺本轮独立听审、
+  自然长语音、多轮重复和付费同模型对照；无证据归因于免费档位。
+
+## 2026-10-04：第二轮 Alibaba 真人语音与动画测试
+
+- Revision 分层：FLEURS／ASCEND 直连基线为干净 `a2cf738`；两段动画
+  直连为干净 `6cb8d52`；原生测试为干净 `660827a`，已合并 main 的
+  Gemini 兼容及设置布局修复（#134／#133）。采样率修复提交 `cceb683`。
+  直连复用既有手动 ASR runner，没有修改模型、服务提示词或依赖。
+- 基线：9 段 FLEURS（日／英／中朗读，CC BY 4.0）、6 段 ASCEND
+  （中／英／混用对话，CC BY-SA 4.0），15 个不同输入共 154.68 秒；
+  英语长样本另重复一次，共 16 次直连。均收到 task finish、无失败及
+  重复 final ID。固定版本、许可证、官方 reference、输入 hash 和
+  原始服务记录存于 Git 外的私有 catalog。ASCEND 只覆盖两个说话者
+  的定向片段，不代表自然对话整体表现。
+- 文字差异：官方 reference 尚未独立听审。离线 NFKC 比较 7／15 完全
+  相同，Rust runner 归一化为 6／15；全角数字处理解释其中一处差异。
+  不把字符／单词编辑距离当语义准确率。英语长样本两次均有 reference
+  之外的命题，首次可见于 ASR；没有听审 gold，保留为质量候选问题，
+  不宣称已确认服务幻觉或整体准确度提升。
+- 动画来源：官方东宝的[蜡笔小新预告](https://www.youtube.com/watch?v=duyJXUnB_Yg)
+  与[柯南预告](https://www.youtube.com/watch?v=mcb8DwNWdo0)，各约 30 秒。
+  以浏览器媒体元素的音轨生成私有 Opus 文件，再转为单声道 16 kHz PCM；
+  输入已核对时长、hash 与非零样本。未使用麦克风。自动视频字幕没有
+  当作 gold，版权预告没有加入可分发的 CC corpus 或 Git。
+- 动画直连：日语、同一 Audio 3.0 streaming 模型，两次均正常 finish，
+  各 2 个 final，无重复 ID。首个非空识别从送 PCM 开始分别为
+  419／378 ms，首个 final 为 20,619／20,235 ms；后者受长分段影响，
+  不是首词到浮窗延迟。加上 corpus 重复，共 18 次直连、17 个不同
+  源片段。没有独立对白／译文参考，不计算动画 CER 或语义质量分数；
+  final 数量不等于角色数，也不能证明全部对白正确识别。
+- macOS 修复：SDK 与 Objective-C runtime 都声明
+  `SCStreamConfiguration.sampleRate` 为 `NSInteger`，固定版本 wrapper
+  却用 `f64`。arm64 两类参数寄存器不同，配置对象探针证明旧调用未
+  设置预期值。改用整数 adapter；同一个生产 helper 的无采集回归
+  核对 16／24 kHz。未改 capture filter、实际 ASBD 重采样或依赖源码。
+- 旧失败保留：浏览器单应用与经授权的全部应用两份 sent WAV 均全零；
+  另一案例仅准备、未执行会话。全零不能评估漏识别。元素播放状态和
+  非零音轨不能证明系统输出，浏览器 tab／Space 静音另有一层。后来
+  使用本机 `afplay` 播放已验证的同源 WAV，改变了输出路径，不能据
+  后续成功认定 ABI 缺陷或单应用 filter 是旧全零案例的唯一原因。
+- 原生链路：固定签名 `/Applications/mimi-dev.app`，
+  `app.yuxino.mimi.dev`、准确进程、非 UI-only、干净 build revision
+  已确认。全部应用的系统声音、Alibaba 只读开发预设、日→简体中文、
+  原文＋译文；每段独立启用私有取证并在结束后封存。两份 sent WAV
+  为非零 16 kHz；小新 2 个 ASR final／2 个 accepted pair／2 条历史，
+  柯南 3／3／3，五条均有完整的准确事件身份及请求／返回链。
+  socket send、内容落盘、trace、前端 flush 均未观察到失败、取消或
+  丢失；mic send 为零。socket 完成不等于独立服务接收证明。
+- 时长与显示限制：素材播放分别 30.60／30.87 秒。小新停止控件定位
+  出错后改用新 AX 树定位，sent 取证总长 103.78 秒；柯南为 49.42 秒，
+  均含前后静音，不当成严格 30 秒捕获或可比端到端性能样本。
+  小新有 96 次、柯南 81 次 overlay DOM commit，最终发布已观察到。
+  柯南实际字幕正文窗口的日语／中文及原生截图已检查；小新仅完成
+  设置诊断和 DOM commit 取证。长段落产生 overflow 观测，不能仅凭
+  commit 次数宣称全文可读或全部可见；需另做滚动与长句可见性验收。
+- 质量界限：动画原文、草稿和专名存在待听审候选差异；链路成功不等于
+  翻译准确。没有新增基于个别词语的过滤、替换或提示词补丁。仍缺
+  独立日语听审、逐语义单元 MT 对照、重叠说话标注、长会话及其他
+  平台原生验收；本轮也没有覆盖 in-flight Stop／clear 或重连。
+- 检查与归档：最新合并后 `./scripts/check.sh` 通过，桌面 Rust
+  1,016 passed／2 ignored，前端 95 文件／1,122 tests，共享核心
+  69 单元＋3 契约；JNI 格式／Clippy／编译边界不冒充实际 JVM 测试。
+  私有 catalog `2026-10-04-quality-cycle-2` 保存输入、服务结果、旧失败、
+  播放收据与分析，原生案例留在独立 `quality-cycle-2-anime` workspace，
+  目录 0700、文件 0600。正常退出 dev，恢复临时配置与偏好，释放测试
+  browser Space；保留用户最新 `.env`、Keychain、正式应用及编译缓存。
+  音频、字幕正文、凭据、个人路径和构建产物均未提交，未发布版本。
+
+
+## 2026-10-04：中间字幕显示开关与成对回放
+
+- 基线 main `74c2a07`，实现分支 `feat/intermediate-subtitle-toggle`。默认
+  开启即时显示；关闭只改变前端投影，服务请求、确认历史、代次及 Stop
+  尾句收尾不变。共享快照新增 `displayPairFinal`，稳定 preview 不当成 final。
+- 复用 16 份已有私有案例（两份多角色动画、场景矩阵和第一轮原失败），
+  原文／译文／双语各开关两次，共 96 个条件。相同录制快照及其 hash，
+  真实 React OverlayWindow + Timeline DOM，按录制时间推进稳定器；没有
+  新服务请求。15 个 CC 固定场景另做 prepare-only 校验，全部 prepared。
+- 双语可见行替换合计 159 → 0。37 条确认历史在两种设置下全部进入 DOM，
+  保存数据不变；36 条 final 可关联到准确 source owner，2 条仍缺少完整
+  唯一身份，计时不靠正文补齐。运行中的最新行保持文字不变的区间中位数
+  为 1,537 → 12,600 ms；这不是实际视窗可读时间，且包含实际录制中的
+  静音等待。
+- 从首个原文 draft 快照到该身份第一次显示，中位数 0 → 7,903 ms，关闭
+  后最大 59,862 ms。服务确认接纳到回放 DOM 中位数两者均 30 ms；含原
+  录制发布间隔，不是新原生端到端延迟。稳定器采样间隔最多 100 ms。
+  关闭预览会暴露慢确认边界，不新增稳定层级或“更准确”模式。
+- 聚焦回归覆盖会话中开关、取消未触发稳定器、完成预览非 final、空历史
+  确认展示、同语言、迟到 final、重复同文、暂停／重连显示和 Stop 尾句。
+  原服务处理不改动。`./scripts/check.sh`：Rust 1,018 passed / 2 ignored，
+  前端 1,137 passed；共享 Rust/bridge 契约通过。Android debug/release
+  实际 host JNI 各 120 passed；Android 无原生开关，未宣称其 UI 验收。
+- 浏览器核对三语默认与 520 px 最小设置宽度、320 px 托盘宽度。截图复核
+  发现初版托盘误用设置页专属 switch 样式，已改用现有 tray-switch 与
+  明确 grid 行；不能只凭 no-overflow 数字验收外观。
+- 用户随后授权停止旧会话，已正常停止、退出，再安装实现 revision
+  `86147a3` 的 canonical 开发版；稳定 designated requirement 一致。
+  normal 启动仍在普通配置的 `SecKeychainFindGenericPassword` 等待，
+  设置超时的线程采样已私有保存；没有绕过授权或修改凭据。改用
+  `--ui-only` 完成无凭据原生 UI 检查，不能升级为新原生音频验收。
+- 本轮没有新的独立听审或双语语义评分；最终输出与 baseline 相同，故不
+  宣称 ASR／MT 准确率提高。Gemini 的有界检查点不是服务保证句子边界，
+  持续无停顿对白的确认等待仍待新原生实测。音乐负对照原有听审缺口保留。
+
+### 保留分支后的扩大验证
+
+- 用户明确暂不合并。实现及后续记录仍留在功能分支，没有新发布或 tag。
+- 回放加入四份 `pressure-01` 旧案例：20 案例、1,756 个快照、120 个
+  显示条件。新增记录最长 194,164 ms，包含一次暂停快照、历史清空／
+  有界历史缩减以及多代切换；代次变化本身不证明网络重连执行。四份
+  记录完整持久 trace，trace/content/frontend drop 为零，最后 `stopped`
+  的 `unflushedWindows` 为空。旧版服务与输入不当作新服务质量证据。
+- 补强完整时间线覆盖：133 个案例内确认项均进入真实 React DOM，
+  包括之后清空或淘汰的条目；跨案例存在复用历史，不能当作 133 个
+  独立语音样本。终态保留 67 条，开关不改写保存快照。原文／译文／
+  双语可见行替换分别 366／228／272 → 全部 0。
+  59 个 final 可以唯一关联到录制 owner，21 个关联不完整，未用正文
+  推测身份。双语首 draft 到显示中位数 0 → 5,263 ms，关闭最大仍为
+  59,862 ms；这些是旧快照回放的条件统计，不是服务性能比较。
+- 新 canonical 无凭据原生检查：设置三种语言、英文浅色与日文暗色
+  行布局；关闭开关后合成确认字幕实际浮窗可见。正常暂停／折叠／
+  展开、清空及继续后无旧文本复活。模拟会话不访问网络或采集音频；
+  没有验证真实 in-flight Stop、网络重连或新托盘菜单栏交互。
+- 四份 Gemini 扩测输入已核对时长及格式（连续日语、两次英语重复、
+  电影音乐负对照和数字静音）。外部发送被自动审批拒绝：具体样本与
+  目的地授权不足；当时未执行新服务请求。用户随后明确授权这些公开
+  样本与派生输入发送到 Alibaba／Gemini，直连结果见下。真实系统声音
+  测试仍须完成本机普通配置的 Keychain 授权，再确认新案例取证
+  active 后播放，停止会话并封存后评分。旧压力代次和 UI fixture 不替代
+  这些仍未完成的验收。
+- 回放脚本、计数报告、旧超时采样及安装日志已追加到私有 benchmark
+  catalog `2026-10-04-intermediate-subtitles/expanded-20261004`。临时脚本
+  运行后移出源码目录，未进入 Git；保留旧输入、失败证据与编译缓存。
+  无凭据模拟会话正常停止／退出，测试界面语言和主题已恢复。
+
+
+### 授权后的直连多样化测试
+
+- 基于 `ab253a9`，只补充忽略的私有 Gemini 测试驱动；模型、提示词、
+  产品配对及关闭时限不变。旧清单默认保留 2 秒尾静音，新增零尾静音
+  探针；单输入有界到 180 秒。分支继续保留，无 push、PR、合并或发布。
+- 新服务测试共 23 次：现有 Alibaba ASR runner 的 9 条件均正常完成；
+  Gemini 原生客户端手动驱动 14 次，11 次无客户端错误、3 次收尾失败。
+  成功计数仅表示链路及确认存在，不作为准确性通过率。全部直连绕过
+  OS 捕获、session manager 和原生 overlay，没有麦克风或保存偏好变化。
+- 范围：日语长句、1.25 倍速和人工音乐混合、英语重复、中文长句到
+  英语、中英混用、同语言英语回显、Sintel 多角色对白、音乐负对照、
+  数字静音，以及立即 finish。使用既有公开输入，派生条件与复测不算
+  独立自然样本，电影音轨的真实 SNR 和无语音属性仍缺独立听审。
+- Alibaba 音乐例有 2 个 lexical draft、0 final；数字静音两者均零。
+  Gemini 零尾静音音乐／静音两例的原文及译文草稿、确认全部为零；
+  较早两例探针未计原文草稿，不能从零 final 推断原文从未出现。
+- Gemini 同语言英语回显保留一致的原文／译文和 1 组确认。重复英语
+  零尾静音得到 2 组确认；第二组在 finish 开始后 1,810 ms 被观察到，
+  先前确认仍保留。这是客户端有界检查点，不是服务保证句子 final 或
+  新原生 Stop-in-flight 验收；finish 仍等待既有 12 秒有界路径。
+- 中英混用短句到中文两次均为 5 个 lexical source draft、0 译文事件、
+  0 确认，返回 `gemini_close_timeout`。复测末次原文语言为 `zh`；
+  两次失败与有界末次草稿私有保存，没有把未配对草稿提升成确认译文。
+  当前证据不能确定服务遗漏和内部原因，单一英语回显通过也不能排除
+  混用／中文回显问题。
+- 138.15 秒人工串接六种原始片段条件（其中英语父句重复两次），没有
+  新增间隔静音，但包含源片段已有停顿；不是自然连续对话或重叠说话。
+  同一中文目标 session 得到 6 个已确认块，最后一块在 113,726 ms；
+  尾部双方草稿未完成，立即 finish 后 12,007 ms 返回收尾超时，既有
+  6 块仍在客户端取证中。第 4 块中文输入出现英文输出，另一英语块
+  的名次偏离 reference；保留为长序列质量问题，没有增加词汇过滤或
+  补写译文。
+- AI 对照官方 reference：短混用的数字门槛在原文与译文均不完整；中文
+  长句出现场景主体及比较关系偏差；英语专名多次不同，数字书写变体
+  另行处理。直接音频翻译不能从共同转录错误推断内部 ASR→MT 因果。
+  Sintel 八条 cue 在两个确认块中保留，仍有生硬直译。没有独立听审或
+  双语人工 gold，不给整体质量排名。
+- 完整检查通过：桌面 1,018 passed／2 ignored，前端 95 文件／1,137
+  passed，共享 69 单元＋3 契约；新增 probe 两项单元测试与开发特性
+  严格 Clippy 通过。没有 shared／Android 行为变化，未重复设备验收。
+- canonical normal 设置再次超时；此前线程采样指向普通配置 Keychain
+  读取等待，授权阻塞尚未解除，空闲实例已正常退出。UI-only 再次核对
+  原生设置开关外观并退出，未执行凭据／OS 捕获；菜单栏托盘入口工具
+  定位超时，修正后原生托盘仍未验收。
+- 23 次输出、失败、输入及日志持久归档到既有私有 catalog 的
+  `expanded-20261004/authorized-services`；145 个文件 hash、迁移后的
+  ASR 路径和输入路径已验证，目录 0700／文件 0600。正文、音频、凭据
+  和个人路径未进入 Git。原生暂停／clear／重连、真实长对话及重叠说话
+  继续保留为未完成项，自动检查和直连结果不替代它们。
+
+
+### 当前功能分支的正式模式安装与 Keychain 回归
+
+- 用户要求安装当前实现的正式运行模式，继续暂不合并。基于本地提交
+  `ffa9fd6` 的 arm64 1.5.9 已安装并打开，运行正式 bundle；没有 push、
+  PR、main 合并、tag 或公开发布。旧应用备份保留，正式配置未迁移。
+- 旧分支 `dd1295a` 的未选配置 metadata-only 思路适配到当前模型：
+  macOS 未选配置只查精确 service/account 的属性，选中配置仍按原路径
+  校验并缓存密钥；自定义语音／独立文字槽与旧配置发现均覆盖。开发
+  hybrid store 的普通配置 presence 也委托 OS，避免退回逐个读取密钥。
+  没有重建凭据、扩大 ACL、修改 service/account 或更换签名证书。
+- 三运营商实际 settings snapshot 的重复读取／切换，以及独立语音／
+  文字、legacy presence、缓存授权错误回归通过。设置存储 105 项通过；
+  完整检查桌面 1,021 passed／2 ignored，前端 1,137 passed，共享 69
+  单元＋3 契约；开发特性严格 Clippy 通过。没有 shared／Android 改动。
+- `package-app.sh` 完整成功，正式运行包不包含开发调试器或本地开发
+  凭据特性；新旧完整 designated requirement 一致，严格签名检查通过，
+  安装后的二进制与暂存包一致。仍是固定本地自签身份，没有 Apple
+  Team ID，不能据此承诺以后每次重编译都免 Keychain 密码授权。
+- 原生正式设置完成加载，三个既有配置显示凭据保存状态，新中间字幕
+  开关可见。开发版已在空闲状态正常退出，正式版留在字幕设置供体验。
+  本次启动未观察到连续授权阻塞；未切换配置、显示密钥、采集音频或
+  发起新服务会话，不能代替先前仍待完成的原生音频和更新连续性验收。
+- 安装收据、签名比较和检查日志私有保存；未把配置、密钥、字幕正文、
+  音频、签名身份文件或个人路径写入 Git。
+
+
+### 保存配置切换的密码反馈与原生签名连续性探针
+
+- 用户反馈切换已保存配置仍请求密码。此前 `ffa9fd6` 只避免未选配置
+  读取；切换命令刷新 snapshot 后仍读取新选中配置。`a3ca385` 将全部
+  macOS 配置状态改为属性查询，包含当前选中及独立语音／文字槽。
+  保存标记仅表明条目存在；实际监听、显示密钥和显式检查仍保留校验。
+- 实际 snapshot 的三运营商重复选择、独立语音／文字选择均验证零
+  secret load；实际使用／probe 两次仍每槽仅一次读取。完整检查通过：
+  桌面 1,021 passed／2 ignored，前端 1,137，共享 69＋3，设置存储
+  105；开发特性严格 Clippy 通过。非 macOS 行为保持原语义。
+- 新原生探针只创建三个独立 generic-password 测试项，值为公开测试
+  字符串，全部操作禁止 Keychain 交互。固定自签 A 自建项读取及同构建
+  进程重启成功；相同 DR、改变 CDHash 的 B 三次读取均 -25293。
+  现有 Apple Development 证书的对应 A→B 三次读取均 status0。
+  两组均由原 owner 二进制清理测试项；未读取或修改实际 provider 项、
+  ACL、证书信任或安装身份。此结果只证明新测试项的本机连续性，
+  不证明既有 Mimi 项或 TCC 的证书迁移。
+- 修复的 production-mode arm64 1.5.9 已完整打包。另备 Apple 签名候选，
+  两者严格签名通过；原自签候选与已安装 DR 一致，Apple 候选被安装
+  身份保护按预期拒绝。已请求用户明确选择是否迁移本机签名，尚未
+  安装／启动新候选或执行原生配置切换验收，原应用未替换。
+- 探针源码、状态、签名检查、包与检查日志私有归档；未进入 Git。
+  此轮没有新音频／网络／服务质量证据，无 push、合并、tag 或发布。
+
+- 用户随后明确选择 Apple 证书安装。旧应用已空闲并正常退出，批准的
+  一次身份迁移完成；严格签名、真实 Team ID、正式路径运行及已安装
+  二进制与候选一致均通过，旧应用可回滚。新正式设置正常加载，四个
+  配置保留，依次切换 Alibaba／DeepL、百度、Gemini 和原 Alibaba 均
+  立即完成且未观察到密码框，已切回原配置。百度显示正常的支持范围
+  调整提示；本次没有实际使用旧密钥或验证迁移后的音频采集权限。
+- 本机保存非敏感公有证书指纹，当前分支的本地签名选择器优先读取
+  该明确 pin；无效／不可用／歧义／symlink 拒绝且不退回自签。新增
+  签名安全测试和安装恢复测试通过。公开发布 pin 未改，未宣称个人
+  开发证书可代替公开 Developer ID 分发。既有真实密钥首次新签名
+  授权及未来实际应用更新连续性仍待用户使用后验收。
+
+
+### 移除字幕不透明开关并更新本机正式模式
+
+- 用户要求移除“保持文字不透明”。`acd56b7` 删除浮窗行、三语言文案、
+  持久化设置及 IPC 保存字段；产品字幕恢复现有默认渲染。旧 JSON 中的
+  字段安全忽略并保留其他设置；调试回放内部固定不透明参数继续保留。
+- 完整检查通过：桌面 1,021 passed／2 ignored，前端 1,136，共享 69＋3；
+  相关前端 52 项及开发特性严格 Clippy 通过。无 shared／Android 改动。
+- canonical 开发 UI-only 原生浮窗仅剩跳过翻译、沉浸模式、锁定位置
+  三个开关，未见空行或裁切；合成会话正常停止并退出。无网络、真实
+  凭据读取或音频采集，未重复服务质量及权限验收。
+- 已将当前 production-mode arm64 1.5.9 更新到本机正式路径，沿用此前
+  明确批准的 Apple 签名身份。完整 designated requirement 连续、严格
+  签名及暂存／安装字节一致检查通过；旧安装保留备份。新正式设置
+  正常加载，四个既有配置及选中项保留，应用留在空闲字幕设置供体验。
+- 安装收据及检查日志私有归档；未更改公开签名策略。继续保留本地
+  功能分支，无 push、main 合并、tag 或公开发布。
+
+### 2026-10-05 — 麦克风入口、来源标识与确认时间
+
+- Revision: `babc8ea` + `feat/microphone-subtitle-style` task changes; signed
+  `local-dev` UI-only bundle at the canonical development path. The release app
+  was normally quit with user approval and reopened after QA; it was not replaced.
+- Restored explicit microphone/both selection; compact source controls and icon
+  metadata replace the large source-name column. Optional local HH:mm:ss reflects
+  confirmation time, not speech onset. Single-source microphone color is retained.
+- Final `scripts/check.sh` passed: desktop Rust 1,050 passed / 2 ignored, frontend
+  1,192 passed, shared native fixtures/JNI checks, strict lint and production build.
+  Regressions cover single-source color, retained mixed-source history at minimum
+  height, timestamps and bilingual lanes, and dual live rows with dividers.
+- Ego Lite verified zh/en/ja source buttons at 280px: both buttons stay 32px high,
+  no horizontal overflow, pointer cursor; the initial English wrap was repaired.
+  Inspected the actual subtitle and control-panel screenshots, not only geometry.
+- Signed macOS UI-only inspection exercised dual confirmed/live subtitles, source
+  selection from controls and settings, paused-state preservation, last-source
+  guards, time on/off, collapse/expand, and the default system-only capsule. Native
+  selection styling updated immediately. Settings/tray/overlay sibling source and
+  timestamp paths were reviewed; the tray has no duplicate source selector.
+- Synthetic UI fixtures only: no credentials, provider requests, microphone or
+  system capture, transcript retention or audio recording. Live acoustic/provider
+  validation and Windows/Linux native appearance were not repeated in this run.
+- CI caught a UTC-only assertion error in the new metadata test: a raw text
+  count also matched the HTML `datetime` attribute. The regression now counts
+  visible `<time>` content; the focused suite passed under UTC and Asia/Shanghai.
+  No product behavior changed in that correction.
+
+
+### 2026-10-05 — Metadata follows microphone selection
+
+- Source revision: `e7341f7` (`fc333b1` plus the microphone-mode follow-up).
+  Signed canonical `local-dev` UI-only bundle; no formal installation replaced.
+- Accepted behavior: system-only subtitles return to the plain presentation;
+  retained microphone rows keep a small inline icon. Microphone-only and dual
+  modes display metadata, with confirmation time following the saved opt-in.
+  Switching preserves history, colors and the opt-in, and system-only can again
+  use the original 136px minimum. Replay records each snapshot's selected input.
+- `scripts/check.sh` passed: desktop Rust 1,055 passed / 2 ignored, frontend
+  1,205 passed, shared fixtures/JNI, lint, typecheck and production build.
+  Focused tests cover repeated system/both/microphone switches, ordinary and
+  immersive presentation, retained history, single-source colors, compact
+  layouts and replay fallbacks. Independent diff review found no open issue.
+- Signed native UI-only QA exercised both-source confirmations, system-only
+  selection and microphone re-enabling through settings and the control panel.
+  Native accessibility confirmed system icons/times disappear while the old mic
+  identity remains; re-enabling restores the same confirmation times. Inspected
+  the dual-source card and retained system/microphone text in immersive mode.
+  Also exercised microphone-only selection and its last-source guard. The time
+  preference remained enabled through switching, as shown in native settings.
+- Only synthetic text was used. No credentials, network, real audio capture,
+  transcript persistence or recording were enabled. The development app exited
+  normally and the formal app was reopened under the user's existing approval.
+  Real microphone/provider behavior and other-platform native appearance were
+  not revalidated; this run verifies the desktop presentation follow-up.
+
+### 2026-10-05 — Floating controls and cross-platform reading evidence
+
+- Source revision: `8a89040` (on the microphone-mode follow-up). Desktop uses
+  the signed canonical `local-dev` UI-only bundle; Android uses a debug APK
+  built from the same Android source, with the standard native UI runner.
+- `scripts/check.sh` passed: desktop Rust 1,056 passed / 2 ignored, frontend
+  1,238 passed, shared fixtures/JNI, strict lint/typecheck and production build.
+  Android debug unit tests (120), lint, four native ABIs and APK alignment passed.
+- Signed macOS QA verified the time switch in settings and floating controls,
+  immersive time on/off, larger shadowed icons/digits, pause/resume, and native
+  double-click collapse/expand. A real pause failure exposed a missing panel
+  command permission; the scoped permission regression was added, the signed
+  app rebuilt/restarted, and pause/resume then passed. Browser-only success had
+  not been treated as native acceptance.
+- Chromium renderer QA exercised 14 real keyboard combinations, including
+  modifier release before Space, and actual corner dragging down to 360x160.
+  Both axes resize and the microphone/time/bilingual row remains readable.
+  Light, dark and mixed-background contrast screenshots, system-only retained
+  microphone history, empty/error/paused/translating/long states are explicitly
+  labeled renderer previews, separate from saved native macOS screenshots.
+- Android 15 / API 35 native instrumentation uses an empty dedicated emulator.
+  It verifies full expanded current text and its scrollable tail, opening at the
+  current pair, completed-pair following without stealing history review, and
+  compact/expanded/immersive/empty states. The 320dp/200% system-font case exposed
+  clipped header actions; responsive rows and parent-bound assertions now pass.
+  The normal-width header remains one row. This is UI evidence, not physical
+  device gesture or live rotation coverage.
+- PR #144 retains the captioned platform/state screenshots and a downloadable
+  image/hash manifest. All captions are synthetic: no provider requests, real
+  audio capture, transcript retention or recording. Android still has no matching
+  desktop microphone/time controls. Live acoustics/provider quality and native
+  Windows/Linux rendering were not repeated. The development app exited normally
+  and the installed formal app was reopened idle without replacement.
+
+### 2026-10-05 — Time preference applies to system audio
+
+- Base revision: `97f48d1` plus `fix/subtitle-time-toggle` task changes.
+  User feedback supersedes the microphone-only timestamp condition recorded above:
+  the enabled time switch must display confirmation time for every input.
+- Removed the microphone gate from time rendering and synchronized the native and
+  browser 160px single-input minimum. Source icons, source colors, retained history
+  and live-draft timestamp semantics remain unchanged. Updated zh/en/ja help.
+- The adjacent settings audit covered interim display, dividers, colors, alignment,
+  background opacity, animations, immersive mode and position lock across settings,
+  floating controls, tray and overlay. Fixed one additional confirmed defect:
+  settings-page immersive save failures now use the shared sanitized transient
+  toast; successful saves stay quiet and late failures cannot revive after navigation.
+- `scripts/check.sh` passed: desktop Rust 1,057 passed / 2 ignored, frontend
+  1,244 passed, shared core/JNI, strict lint/typecheck and production build.
+  Focused regressions cover live time toggling, repeated input changes, both overlay
+  modes, retained microphone identity, minimum geometry and failure/retry feedback.
+- Ego Lite rendered all 12 input/mode/time combinations correctly. Actual corner
+  dragging reached 360x160 with confirmation time and both language lanes visible;
+  ordinary and immersive screenshots were inspected. A synthetic save rejection
+  showed one localized toast, retained the old switch value and exposed no raw error.
+- Native UI revalidation is pending: the existing canonical development app had
+  an active microphone session, so it was not restarted without confirmation.
+  Browser fixtures are not native acceptance. No audio capture, credentials,
+  provider requests, transcript retention or recording were initiated by this run;
+  installed applications were not replaced. Windows/Linux UI was not revalidated.

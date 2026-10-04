@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createUpdaterForEnvironment } from "./SoftwareUpdate";
+import { createUpdaterForEnvironment } from "./softwareUpdateEnvironment";
 
 const mocks = vi.hoisted(() => ({
   appIsUiTest: vi.fn(),
@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../lib/ipc", () => ({
   isTauri: true,
+  setOverlayPointerCursor: vi.fn(),
   appIsUiTest: mocks.appIsUiTest,
   appIsPortable: mocks.appIsPortable,
   appIsLinuxPackage: mocks.appIsLinuxPackage,

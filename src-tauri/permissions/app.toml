@@ -4,7 +4,10 @@ description = "Allows every bundled window to hydrate public settings and sessio
 commands.allow = [
   "settings_get",
   "session_get_state",
+  "app_desktop_shortcut_commands",
   "app_ui_test_frontend_ready",
+  "development_debug_observe",
+  "development_debug_flush_ack",
 ]
 
 [[permission]]
@@ -12,10 +15,32 @@ identifier = "app-settings"
 description = "Allows the settings window to manage the live-subtitle session, preferences, profiles, updater fixture mode, and fixed release recovery source."
 commands.allow = [
   "settings_save",
+  "app_quit",
+  "windows_audio_status",
+  "audio_applications",
+  "audio_census",
+  "support_diagnostics",
+  "development_debug_snapshot",
+  "development_debug_start",
+  "development_debug_stop",
+  "development_debug_export",
+  "development_debug_audio",
+  "development_debug_replay",
+  "development_debug_cases",
+  "development_debug_open_case",
+  "development_debug_private_events",
+  "development_debug_trace_events",
+  "app_open_support_issue",
+  "capture_status",
   "app_is_ui_test",
   "app_is_portable",
   "app_is_linux_package",
   "session_archive_state",
+  "session_transcript_page",
+  "session_history_list",
+  "session_history_page",
+  "session_history_audio",
+  "session_history_delete",
   "session_archive_clear",
   "session_export",
   "app_open_releases",
@@ -24,10 +49,15 @@ commands.allow = [
   "profile_select",
   "profile_delete",
   "profile_save_credentials",
+  "profile_test_connection",
   "profile_delete_api_key",
+  "profile_reveal_credential",
   "session_start",
   "session_stop",
+  "session_toggle_paused",
   "session_switch_source_language",
+  "session_switch_audio_input",
+  "session_switch_system_audio_target",
   "overlay_set_locked",
 ]
 
@@ -35,11 +65,13 @@ commands.allow = [
 identifier = "app-overlay"
 description = "Allows the subtitle overlay to control its own presentation and active session."
 commands.allow = [
+  "session_start",
   "session_toggle_paused",
   "session_clear_subtitles",
   "settings_save",
   "overlay_set_collapsed",
   "overlay_set_locked",
+  "overlay_set_pointer_cursor",
   "overlay_move_start",
   "app_show_settings",
   "resize_start",
@@ -51,7 +83,13 @@ commands.allow = [
 identifier = "app-overlay-control"
 description = "Allows the overlay control island to change live options and manage its panel."
 commands.allow = [
+  "session_toggle_paused",
+  "capture_status",
+  "audio_applications",
+  "session_switch_audio_input",
+  "session_switch_system_audio_target",
   "session_switch_source_language",
+  "session_switch_target_language",
   "session_switch_translation_mode",
   "settings_save",
   "overlay_set_locked",
@@ -60,6 +98,7 @@ commands.allow = [
   "overlay_popover_hide",
   "overlay_control_state",
   "overlay_control_set_panel_height",
+  "overlay_control_set_island_width",
 ]
 
 [[permission]]

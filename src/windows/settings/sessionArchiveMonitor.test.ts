@@ -8,6 +8,7 @@ const empty: SessionArchiveState = {
   audioBytes: 0,
   audioLimited: false,
   sampleRate: 24_000,
+  historySaveError: false,
 };
 
 function deferred() {

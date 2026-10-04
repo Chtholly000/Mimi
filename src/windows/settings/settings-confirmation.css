@@ -1,0 +1,123 @@
+.settings-confirmation-backdrop {
+  position: fixed;
+  z-index: 1500;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.45);
+  color: var(--settings-text, #f4f4f4);
+  font-family: var(--mimi-ui-font);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.settings-confirmation,
+.settings-confirmation * {
+  box-sizing: border-box;
+}
+
+.settings-confirmation {
+  width: min(440px, 100%);
+  max-height: calc(100vh - 48px);
+  padding: 24px;
+  overflow-y: auto;
+  border: 1px solid var(--settings-border-strong, #454545);
+  border-radius: 12px;
+  background: var(--settings-panel-raised, #1a1a1a);
+}
+
+.settings-confirmation__message {
+  margin: 0;
+  color: var(--settings-text, #f4f4f4);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.settings-confirmation__body {
+  margin-top: 18px;
+}
+
+.settings-confirmation .settings-feedback {
+  font-size: 14px;
+}
+
+.settings-confirmation__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 24px;
+}
+
+.settings-confirmation__button {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--settings-border-strong, #454545);
+  border-radius: 7px;
+  background: var(--settings-control, #202020);
+  color: var(--settings-text, #f4f4f4);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings-confirmation__button svg {
+  flex: 0 0 auto;
+  font-size: 14px;
+}
+
+.settings-confirmation__button:hover:not(:disabled) {
+  border-color: currentColor;
+}
+
+.settings-confirmation__button:focus-visible {
+  outline: 2px solid var(--settings-text, #f4f4f4);
+  outline-offset: 2px;
+}
+
+.settings-confirmation__confirm--default {
+  background: var(--settings-text, #f4f4f4);
+  color: var(--settings-canvas, #161616);
+}
+
+.settings-confirmation__confirm--danger {
+  border-color: #b42318;
+  background: #b42318;
+  color: #ffffff;
+}
+
+.settings-confirmation__confirm--danger:hover:not(:disabled) {
+  border-color: #912018;
+  background: #912018;
+}
+
+.settings-confirmation__button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+@media (forced-colors: active) {
+  .settings-confirmation {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+  .settings-confirmation__button {
+    border-color: ButtonText;
+    background: ButtonFace;
+    color: ButtonText;
+  }
+  .settings-confirmation__message {
+    color: CanvasText;
+  }
+}

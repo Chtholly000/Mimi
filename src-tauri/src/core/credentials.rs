@@ -1,6 +1,6 @@
 //! Provider-specific credentials kept exclusively in the OS keychain.
 
-use crate::core::provider::ProviderKind;
+use crate::core::provider::{ProviderKind, ServiceProfile, TextTranslation};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
@@ -16,12 +16,62 @@ pub enum ProviderCredentialsError {
     ProviderMismatch,
     #[error("The Azure OpenAI endpoint must be an official HTTPS resource endpoint.")]
     InvalidAzureEndpoint,
+    #[error("Use an HTTPS DeepLX endpoint (or HTTP on localhost), without URL credentials, query or fragment.")]
+    InvalidDeepLXEndpoint,
+    #[error("Use an HTTPS OpenAI-compatible endpoint (or HTTP on localhost), without URL credentials, query or fragment.")]
+    InvalidOpenAICompatibleEndpoint,
+    #[error("The OpenAI-compatible model name is invalid.")]
+    InvalidOpenAICompatibleModel,
+    #[error("custom_speech_endpoint_invalid")]
+    InvalidCustomSpeechEndpoint,
+    #[error("custom_speech_model_invalid")]
+    InvalidCustomSpeechModel,
+    #[error("text_translation_credentials_missing")]
+    MissingTextTranslation,
     #[error("The Azure OpenAI deployment name is invalid.")]
     InvalidAzureDeployment,
     #[error("One or more credential fields are invalid.")]
     InvalidField,
     #[error("The saved credentials could not be read.")]
     InvalidStoredValue,
+    #[error("credential_reveal_field_mismatch")]
+    InvalidRevealField,
+}
+
+/// Explicit single-field reveal requests, never part of normal snapshots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CredentialRevealField {
+    ApiKey,
+    AsrApiKey,
+    Token,
+    SecretId,
+    SecretKey,
+    AppKey,
+}
+
+impl CredentialRevealField {
+    pub fn allowed_for(
+        self,
+        profile: &ServiceProfile,
+        expected_text_translation: Option<TextTranslation>,
+    ) -> bool {
+        match self {
+            Self::ApiKey => {
+                profile.provider.uses_api_key_only()
+                    || profile.provider == ProviderKind::AzureOpenAIRealtime
+                    || profile.provider.is_custom_speech()
+            }
+            Self::AsrApiKey => profile.provider.supports_text_translation(),
+            Self::Token => {
+                profile.provider.supports_text_translation()
+                    && profile.text_translation() != TextTranslation::FollowService
+                    && expected_text_translation == Some(profile.text_translation())
+            }
+            Self::SecretId | Self::SecretKey => profile.provider == ProviderKind::TencentCloud,
+            Self::AppKey => profile.provider == ProviderKind::BaiduTranslate,
+        }
+    }
 }
 
 /// Write-only IPC payload and keychain representation. The tagged JSON form is
@@ -35,7 +85,45 @@ pub enum ProviderCredentialsError {
     deny_unknown_fields
 )]
 pub enum ProviderCredentials {
+    /// Write-only request. Empty api_key reuses the profile's existing key
+    /// natively; this request variant is never stored or returned over IPC.
+    AlibabaTranslation {
+        api_key: String,
+        text_translation: TextTranslation,
+        endpoint: String,
+        token: String,
+        #[serde(default)]
+        model: String,
+        #[serde(default)]
+        clear_token: bool,
+    },
+    DeepLX {
+        asr_api_key: String,
+        endpoint: String,
+        token: String,
+    },
+    DeepL {
+        asr_api_key: String,
+        api_key: String,
+    },
+    OpenAICompatible {
+        asr_api_key: String,
+        endpoint: String,
+        api_key: String,
+        model: String,
+    },
+    ChatMock {
+        asr_api_key: String,
+        endpoint: String,
+        api_key: String,
+        model: String,
+    },
     ApiKey {
+        api_key: String,
+    },
+    CustomSpeech {
+        endpoint: String,
+        model: String,
         api_key: String,
     },
     AzureOpenAI {
@@ -55,6 +143,103 @@ pub enum ProviderCredentials {
     },
 }
 
+/// Independent text-destination credentials. They never contain a speech key.
+#[derive(Clone, PartialEq, Eq)]
+pub enum TextTranslationCredentials {
+    DeepL {
+        api_key: String,
+    },
+    DeepLX {
+        endpoint: String,
+        token: String,
+    },
+    OpenAICompatible {
+        endpoint: String,
+        model: String,
+        api_key: String,
+    },
+    ChatMock {
+        endpoint: String,
+        model: String,
+        api_key: String,
+    },
+}
+
+impl fmt::Debug for TextTranslationCredentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TextTranslationCredentials")
+            .field("route", &self.translation())
+            .field("values", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl TextTranslationCredentials {
+    pub const fn translation(&self) -> TextTranslation {
+        match self {
+            Self::DeepL { .. } => TextTranslation::DeepL,
+            Self::DeepLX { .. } => TextTranslation::DeepLX,
+            Self::OpenAICompatible { .. } => TextTranslation::OpenAICompatible,
+            Self::ChatMock { .. } => TextTranslation::ChatMock,
+        }
+    }
+
+    pub fn validated(&self) -> Result<Self, ProviderCredentialsError> {
+        let required = |value: &str| {
+            let value = value.trim();
+            if value.is_empty() {
+                return Err(ProviderCredentialsError::MissingTextTranslation);
+            }
+            if value.chars().count() > MAXIMUM_CREDENTIAL_FIELD_LENGTH
+                || value.chars().any(char::is_control)
+            {
+                return Err(ProviderCredentialsError::InvalidField);
+            }
+            Ok(value.to_owned())
+        };
+        match self {
+            Self::DeepL { api_key } => Ok(Self::DeepL {
+                api_key: required(api_key)?,
+            }),
+            Self::DeepLX { endpoint, token } => Ok(Self::DeepLX {
+                endpoint: crate::core::protocols::deeplx::endpoint(endpoint)
+                    .map_err(|_| ProviderCredentialsError::InvalidDeepLXEndpoint)?
+                    .to_string(),
+                token: if token.trim().is_empty() {
+                    String::new()
+                } else {
+                    required(token)?
+                },
+            }),
+            Self::OpenAICompatible {
+                endpoint,
+                model,
+                api_key,
+            } => Ok(Self::OpenAICompatible {
+                endpoint: crate::core::protocols::openai_compatible::endpoint(endpoint)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleEndpoint)?
+                    .to_string(),
+                model: crate::core::protocols::openai_compatible::validate_model(model)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleModel)?,
+                api_key: optional_openai_compatible_key(api_key)?,
+            }),
+            Self::ChatMock {
+                endpoint,
+                model,
+                api_key,
+            } => Ok(Self::ChatMock {
+                endpoint: crate::core::protocols::openai_compatible::endpoint(endpoint)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleEndpoint)?
+                    .to_string(),
+                model: crate::core::protocols::openai_compatible::validate_model(model)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleModel)?,
+                api_key: optional_openai_compatible_key(api_key)?,
+            }),
+        }
+    }
+}
+
 impl fmt::Debug for ProviderCredentials {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -66,6 +251,114 @@ impl fmt::Debug for ProviderCredentials {
 }
 
 impl ProviderCredentials {
+    /// Returns only the requested known-provider field. An independent text
+    /// destination must match the saved route, so an unsaved route switch
+    /// cannot reveal another service's token or official API key.
+    pub fn revealed_field(
+        &self,
+        profile: &ServiceProfile,
+        field: CredentialRevealField,
+        expected_text_translation: Option<TextTranslation>,
+    ) -> Result<Option<&str>, ProviderCredentialsError> {
+        use CredentialRevealField as Field;
+        if !field.allowed_for(profile, expected_text_translation) {
+            return Err(ProviderCredentialsError::InvalidRevealField);
+        }
+        let value = match (field, self) {
+            (Field::ApiKey | Field::AsrApiKey, Self::CustomSpeech { api_key, .. })
+                if profile.provider.is_custom_speech() =>
+            {
+                api_key
+            }
+            (Field::ApiKey, Self::ApiKey { api_key }) if profile.provider.uses_api_key_only() => {
+                api_key
+            }
+            (Field::ApiKey, Self::AzureOpenAI { api_key, .. })
+                if profile.provider == ProviderKind::AzureOpenAIRealtime =>
+            {
+                api_key
+            }
+            (
+                Field::ApiKey,
+                Self::DeepL { asr_api_key, .. }
+                | Self::DeepLX { asr_api_key, .. }
+                | Self::OpenAICompatible { asr_api_key, .. }
+                | Self::ChatMock { asr_api_key, .. },
+            ) if profile.provider == ProviderKind::AlibabaCloud => asr_api_key,
+            (
+                Field::AsrApiKey,
+                Self::DeepL { asr_api_key, .. }
+                | Self::DeepLX { asr_api_key, .. }
+                | Self::OpenAICompatible { asr_api_key, .. }
+                | Self::ChatMock { asr_api_key, .. },
+            ) if matches!(
+                profile.provider,
+                ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+            ) =>
+            {
+                asr_api_key
+            }
+            (Field::AsrApiKey, Self::ApiKey { api_key })
+                if matches!(
+                    profile.provider,
+                    ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+                ) =>
+            {
+                api_key
+            }
+            (Field::SecretId, Self::TencentCloud { secret_id, .. })
+                if profile.provider == ProviderKind::TencentCloud =>
+            {
+                secret_id
+            }
+            (Field::SecretKey, Self::TencentCloud { secret_key, .. })
+                if profile.provider == ProviderKind::TencentCloud =>
+            {
+                secret_key
+            }
+            (Field::AppKey, Self::BaiduTranslate { app_key, .. })
+                if profile.provider == ProviderKind::BaiduTranslate =>
+            {
+                app_key
+            }
+            (Field::Token, Self::DeepL { api_key, .. })
+                if profile.provider.supports_text_translation()
+                    && profile.text_translation() == TextTranslation::DeepL
+                    && expected_text_translation == Some(TextTranslation::DeepL) =>
+            {
+                api_key
+            }
+            (Field::Token, Self::DeepLX { token, .. })
+                if profile.provider.supports_text_translation()
+                    && profile.text_translation() == TextTranslation::DeepLX
+                    && expected_text_translation == Some(TextTranslation::DeepLX) =>
+            {
+                token
+            }
+            (Field::Token, Self::OpenAICompatible { api_key, .. })
+                if profile.provider.supports_text_translation()
+                    && profile.text_translation() == TextTranslation::OpenAICompatible
+                    && expected_text_translation == Some(TextTranslation::OpenAICompatible) =>
+            {
+                api_key
+            }
+            (Field::Token, Self::ChatMock { api_key, .. })
+                if profile.provider.supports_text_translation()
+                    && profile.text_translation() == TextTranslation::ChatMock
+                    && expected_text_translation == Some(TextTranslation::ChatMock) =>
+            {
+                api_key
+            }
+            _ => return Err(ProviderCredentialsError::InvalidRevealField),
+        };
+        if value.chars().count() > MAXIMUM_CREDENTIAL_FIELD_LENGTH
+            || value.chars().any(char::is_control)
+        {
+            return Err(ProviderCredentialsError::InvalidStoredValue);
+        }
+        Ok((!value.is_empty()).then_some(value.as_str()))
+    }
+
     pub fn api_key(value: impl Into<String>) -> Self {
         Self::ApiKey {
             api_key: value.into(),
@@ -74,7 +367,13 @@ impl ProviderCredentials {
 
     pub const fn kind_label(&self) -> &'static str {
         match self {
+            Self::AlibabaTranslation { .. } => "alibaba_translation_update",
+            Self::DeepLX { .. } => "deeplx",
+            Self::DeepL { .. } => "deepl",
+            Self::OpenAICompatible { .. } => "openai_compatible",
+            Self::ChatMock { .. } => "chat_mock",
             Self::ApiKey { .. } => "api_key",
+            Self::CustomSpeech { .. } => "custom_speech",
             Self::AzureOpenAI { .. } => "azure_openai",
             Self::TencentCloud { .. } => "tencent_cloud",
             Self::BaiduTranslate { .. } => "baidu_translate",
@@ -83,6 +382,83 @@ impl ProviderCredentials {
 
     pub fn validated_for(&self, provider: ProviderKind) -> Result<Self, ProviderCredentialsError> {
         match (provider, self) {
+            (
+                provider,
+                Self::CustomSpeech {
+                    endpoint,
+                    model,
+                    api_key,
+                },
+            ) if provider.is_custom_speech() => Ok(Self::CustomSpeech {
+                endpoint: crate::core::protocols::custom_speech::endpoint(endpoint, provider)
+                    .map_err(|_| ProviderCredentialsError::InvalidCustomSpeechEndpoint)?
+                    .to_string(),
+                model: crate::core::protocols::custom_speech::validate_model(model)
+                    .map_err(|_| ProviderCredentialsError::InvalidCustomSpeechModel)?,
+                api_key: required_field(api_key, provider)?,
+            }),
+            (
+                ProviderKind::AlibabaCloud,
+                Self::DeepL {
+                    asr_api_key,
+                    api_key,
+                },
+            ) => Ok(Self::DeepL {
+                asr_api_key: required_field(asr_api_key, provider)?,
+                api_key: required_field(api_key, provider)?,
+            }),
+            (
+                ProviderKind::AlibabaCloud,
+                Self::OpenAICompatible {
+                    asr_api_key,
+                    endpoint,
+                    api_key,
+                    model,
+                },
+            ) => Ok(Self::OpenAICompatible {
+                asr_api_key: required_field(asr_api_key, provider)?,
+                endpoint: crate::core::protocols::openai_compatible::endpoint(endpoint)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleEndpoint)?
+                    .to_string(),
+                api_key: optional_openai_compatible_key(api_key)?,
+                model: crate::core::protocols::openai_compatible::validate_model(model)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleModel)?,
+            }),
+            (
+                ProviderKind::AlibabaCloud,
+                Self::ChatMock {
+                    asr_api_key,
+                    endpoint,
+                    api_key,
+                    model,
+                },
+            ) => Ok(Self::ChatMock {
+                asr_api_key: required_field(asr_api_key, provider)?,
+                endpoint: crate::core::protocols::openai_compatible::endpoint(endpoint)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleEndpoint)?
+                    .to_string(),
+                api_key: optional_openai_compatible_key(api_key)?,
+                model: crate::core::protocols::openai_compatible::validate_model(model)
+                    .map_err(|_| ProviderCredentialsError::InvalidOpenAICompatibleModel)?,
+            }),
+            (
+                ProviderKind::DeepLX,
+                Self::DeepLX {
+                    asr_api_key,
+                    endpoint,
+                    token,
+                },
+            ) => Ok(Self::DeepLX {
+                asr_api_key: required_field(asr_api_key, provider)?,
+                endpoint: crate::core::protocols::deeplx::endpoint(endpoint)
+                    .map_err(|_| ProviderCredentialsError::InvalidDeepLXEndpoint)?
+                    .to_string(),
+                token: if token.trim().is_empty() {
+                    String::new()
+                } else {
+                    required_field(token, provider)?
+                },
+            }),
             (provider, Self::ApiKey { api_key }) if provider.uses_api_key_only() => {
                 Ok(Self::ApiKey {
                     api_key: required_field(api_key, provider)?,
@@ -157,11 +533,58 @@ impl ProviderCredentials {
             .validated_for(provider)
     }
 
+    /// Recognizes only the two historical Alibaba credential representations.
+    /// The profile account/provider never changes when its text route changes.
+    pub fn decode_for_profile(
+        profile: &ServiceProfile,
+        value: &str,
+    ) -> Result<Self, ProviderCredentialsError> {
+        if !matches!(
+            profile.provider,
+            ProviderKind::AlibabaCloud | ProviderKind::DeepLX
+        ) {
+            return Self::decode_from_keychain(profile.provider, value);
+        }
+        if profile.provider == ProviderKind::AlibabaCloud {
+            return Self::decode_from_keychain(ProviderKind::AlibabaCloud, value);
+        }
+        let credentials = if !value.trim_start().starts_with('{') {
+            Self::api_key(value).validated_for(ProviderKind::AlibabaCloud)?
+        } else {
+            let stored = serde_json::from_str::<Self>(value)
+                .map_err(|_| ProviderCredentialsError::InvalidStoredValue)?;
+            stored.validated_for(if matches!(stored, Self::DeepL { .. }) {
+                ProviderKind::AlibabaCloud
+            } else {
+                ProviderKind::DeepLX
+            })?
+        };
+        Ok(credentials)
+    }
+
+    pub fn alibaba_key(&self) -> Option<&str> {
+        match self {
+            Self::ApiKey { api_key } => Some(api_key),
+            Self::DeepLX { asr_api_key, .. }
+            | Self::DeepL { asr_api_key, .. }
+            | Self::OpenAICompatible { asr_api_key, .. }
+            | Self::ChatMock { asr_api_key, .. } => Some(asr_api_key),
+            _ => None,
+        }
+    }
+
     pub fn direct_api_key(&self) -> Option<&str> {
         match self {
             Self::ApiKey { api_key } => Some(api_key),
             Self::AzureOpenAI { api_key, .. } => Some(api_key),
-            Self::TencentCloud { .. } | Self::BaiduTranslate { .. } => None,
+            Self::CustomSpeech { api_key, .. } => Some(api_key),
+            Self::AlibabaTranslation { .. }
+            | Self::DeepLX { .. }
+            | Self::DeepL { .. }
+            | Self::OpenAICompatible { .. }
+            | Self::ChatMock { .. }
+            | Self::TencentCloud { .. }
+            | Self::BaiduTranslate { .. } => None,
         }
     }
 
@@ -194,6 +617,17 @@ impl ProviderCredentials {
             _ => None,
         }
     }
+}
+
+/// No-auth OpenAI-compatible destinations still have a validated endpoint and model.
+/// Never substitute a recognition key for an empty text-service key.
+fn optional_openai_compatible_key(value: &str) -> Result<String, ProviderCredentialsError> {
+    if value.chars().any(char::is_control)
+        || value.trim().chars().count() > MAXIMUM_CREDENTIAL_FIELD_LENGTH
+    {
+        return Err(ProviderCredentialsError::InvalidField);
+    }
+    Ok(value.trim().to_owned())
 }
 
 fn required_field(value: &str, provider: ProviderKind) -> Result<String, ProviderCredentialsError> {
@@ -266,6 +700,275 @@ mod tests {
     use super::*;
 
     #[test]
+    fn custom_speech_credentials_are_independent_scoped_and_debug_redacted() {
+        for provider in [
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let credentials = ProviderCredentials::CustomSpeech {
+                endpoint: " wss://speech.example/recognition ".into(),
+                model: " synthetic-speech-model ".into(),
+                api_key: " synthetic-speech-key ".into(),
+            };
+            let encoded = credentials.encode_for_keychain(provider).unwrap();
+            let validated = ProviderCredentials::decode_from_keychain(provider, &encoded).unwrap();
+            assert_eq!(validated.alibaba_key(), None);
+            assert_eq!(validated.direct_api_key(), Some("synthetic-speech-key"));
+            assert!(
+                matches!(&validated, ProviderCredentials::CustomSpeech { endpoint, model, .. }
+                if endpoint == "wss://speech.example/recognition" && model == "synthetic-speech-model")
+            );
+            assert_eq!(
+                validated.validated_for(ProviderKind::AlibabaCloud),
+                Err(ProviderCredentialsError::ProviderMismatch)
+            );
+            assert_eq!(
+                ProviderCredentials::api_key("synthetic").validated_for(provider),
+                Err(ProviderCredentialsError::ProviderMismatch)
+            );
+            let profile = ServiceProfile::new("custom", "Speech", provider).unwrap();
+            assert_eq!(
+                validated.revealed_field(&profile, CredentialRevealField::ApiKey, None),
+                Ok(Some("synthetic-speech-key"))
+            );
+            assert_eq!(
+                validated.revealed_field(&profile, CredentialRevealField::Token, None),
+                Err(ProviderCredentialsError::InvalidRevealField)
+            );
+            for value in [
+                "speech.example",
+                "synthetic-speech-model",
+                "synthetic-speech-key",
+            ] {
+                assert!(!format!("{validated:?}").contains(value));
+            }
+        }
+        assert!(serde_json::from_str::<ProviderCredentials>(r#"{"kind":"customSpeech","endpoint":"wss://speech.example","model":"model","apiKey":"synthetic","token":"wrong-destination"}"#).is_err());
+    }
+
+    #[test]
+    fn independent_text_credentials_validate_without_any_recognition_key() {
+        let destinations = [
+            TextTranslationCredentials::DeepL {
+                api_key: " synthetic-deepl:fx ".into(),
+            },
+            TextTranslationCredentials::DeepLX {
+                endpoint: "https://destination.example/translate".into(),
+                token: " synthetic-deeplx ".into(),
+            },
+            TextTranslationCredentials::OpenAICompatible {
+                endpoint: "https://destination.example/v1".into(),
+                model: " synthetic-text-model ".into(),
+                api_key: " synthetic-text-key ".into(),
+            },
+        ];
+        for destination in destinations {
+            let validated = destination.validated().unwrap();
+            assert_eq!(validated.translation(), destination.translation());
+            for value in [
+                "destination.example",
+                "synthetic-deepl",
+                "synthetic-deeplx",
+                "synthetic-text-model",
+                "synthetic-text-key",
+            ] {
+                assert!(!format!("{validated:?}").contains(value));
+            }
+        }
+        assert_eq!(
+            TextTranslationCredentials::DeepL { api_key: "".into() }.validated(),
+            Err(ProviderCredentialsError::MissingTextTranslation)
+        );
+        let anonymous = TextTranslationCredentials::OpenAICompatible {
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+            model: "model".into(),
+            api_key: "".into(),
+        }
+        .validated()
+        .unwrap();
+        assert!(
+            matches!(anonymous, TextTranslationCredentials::OpenAICompatible { api_key, .. } if api_key.is_empty())
+        );
+    }
+
+    #[test]
+    fn credential_reveal_is_single_field_and_provider_scoped() {
+        let tencent =
+            ServiceProfile::new("tencent", "Tencent", ProviderKind::TencentCloud).unwrap();
+        let credentials = ProviderCredentials::TencentCloud {
+            app_id: "123".into(),
+            secret_id: "synthetic-id".into(),
+            secret_key: "synthetic-key".into(),
+        };
+        assert_eq!(
+            credentials.revealed_field(&tencent, CredentialRevealField::SecretId, None),
+            Ok(Some("synthetic-id"))
+        );
+        assert_eq!(
+            credentials.revealed_field(&tencent, CredentialRevealField::SecretKey, None),
+            Ok(Some("synthetic-key"))
+        );
+        let alibaba = ServiceProfile::alibaba_default();
+        assert_eq!(
+            credentials.revealed_field(&alibaba, CredentialRevealField::SecretKey, None),
+            Err(ProviderCredentialsError::InvalidRevealField)
+        );
+        assert_eq!(
+            credentials.revealed_field(&tencent, CredentialRevealField::ApiKey, None),
+            Err(ProviderCredentialsError::InvalidRevealField)
+        );
+        assert!(!format!("{credentials:?}").contains("synthetic"));
+        for field in ["endpoint", "appId", "api_key", "unknown"] {
+            assert!(
+                serde_json::from_str::<CredentialRevealField>(&format!("\"{field}\"")).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn credential_reveal_requires_the_saved_independent_route() {
+        let mut profile = ServiceProfile::alibaba_default();
+        profile.text_translation = Some(TextTranslation::DeepL);
+        let official = ProviderCredentials::DeepL {
+            asr_api_key: "synthetic-asr".into(),
+            api_key: "synthetic-official:fx".into(),
+        };
+        assert_eq!(
+            official.revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::DeepL)
+            ),
+            Ok(Some("synthetic-official:fx"))
+        );
+        assert_eq!(
+            official.revealed_field(&profile, CredentialRevealField::ApiKey, None),
+            Ok(Some("synthetic-asr"))
+        );
+        for route in [
+            None,
+            Some(TextTranslation::DeepLX),
+            Some(TextTranslation::FollowService),
+        ] {
+            assert_eq!(
+                official.revealed_field(&profile, CredentialRevealField::Token, route),
+                Err(ProviderCredentialsError::InvalidRevealField)
+            );
+        }
+        profile.text_translation = Some(TextTranslation::DeepLX);
+        let custom = ProviderCredentials::DeepLX {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "https://example.com/translate".into(),
+            token: String::new(),
+        };
+        assert_eq!(
+            custom.revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::DeepLX)
+            ),
+            Ok(None)
+        );
+        let mut legacy = ServiceProfile::new("legacy", "Legacy", ProviderKind::DeepLX).unwrap();
+        legacy.text_translation = Some(TextTranslation::FollowService);
+        assert_eq!(
+            ProviderCredentials::api_key("synthetic-asr").revealed_field(
+                &legacy,
+                CredentialRevealField::AsrApiKey,
+                None
+            ),
+            Ok(Some("synthetic-asr"))
+        );
+        let request = ProviderCredentials::AlibabaTranslation {
+            api_key: "synthetic-asr".into(),
+            text_translation: TextTranslation::DeepLX,
+            endpoint: String::new(),
+            token: "synthetic-request".into(),
+            model: String::new(),
+            clear_token: false,
+        };
+        assert_eq!(
+            request.revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::DeepLX)
+            ),
+            Err(ProviderCredentialsError::InvalidRevealField)
+        );
+    }
+
+    #[test]
+    fn credential_reveal_rejects_corrupt_field_without_echoing_it() {
+        let profile = ServiceProfile::alibaba_default();
+        for value in ["synthetic-private\nbody".into(), "x".repeat(1_025)] {
+            let error = ProviderCredentials::api_key(value)
+                .revealed_field(&profile, CredentialRevealField::ApiKey, None)
+                .unwrap_err();
+            assert_eq!(error, ProviderCredentialsError::InvalidStoredValue);
+            assert!(!error.to_string().contains("synthetic-private"));
+        }
+    }
+
+    #[test]
+    fn alibaba_translation_request_is_write_only_and_debug_redacted() {
+        let request: ProviderCredentials = serde_json::from_str(r#"{"kind":"alibabaTranslation","apiKey":"","textTranslation":"deepLX","endpoint":"https://example.com","token":"synthetic-token"}"#).unwrap();
+        assert!(
+            matches!(&request, ProviderCredentials::AlibabaTranslation { api_key, text_translation: TextTranslation::DeepLX, clear_token: false, .. } if api_key.is_empty())
+        );
+        let clear_request: ProviderCredentials = serde_json::from_str(r#"{"kind":"alibabaTranslation","apiKey":"","textTranslation":"openAICompatible","endpoint":"","token":"","clearToken":true}"#).unwrap();
+        let encoded = serde_json::to_value(&clear_request).unwrap();
+        assert_eq!(encoded["clearToken"], true);
+        assert_eq!(
+            serde_json::from_value::<ProviderCredentials>(encoded).unwrap(),
+            clear_request
+        );
+        assert!(request
+            .encode_for_keychain(ProviderKind::AlibabaCloud)
+            .is_err());
+        assert!(request.encode_for_keychain(ProviderKind::DeepLX).is_err());
+        for value in ["example.com", "synthetic-token"] {
+            assert!(!format!("{request:?}").contains(value));
+        }
+        let mut legacy = ServiceProfile::new("existing", "Existing", ProviderKind::DeepLX).unwrap();
+        legacy.text_translation = Some(TextTranslation::FollowService);
+        assert!(
+            matches!(ProviderCredentials::decode_for_profile(&legacy, "synthetic-asr").unwrap(), ProviderCredentials::ApiKey { api_key } if api_key == "synthetic-asr")
+        );
+    }
+
+    #[test]
+    fn deeplx_credentials_round_trip_securely_and_validate_optional_token() {
+        let value = ProviderCredentials::DeepLX {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "https://example.com/api".into(),
+            token: "".into(),
+        };
+        let ipc: ProviderCredentials = serde_json::from_str(r#"{"kind":"deepLX","asrApiKey":"synthetic-asr","endpoint":"https://example.com/api","token":""}"#).unwrap();
+        assert_eq!(ipc, value);
+        let encoded = value.encode_for_keychain(ProviderKind::DeepLX).unwrap();
+        let decoded =
+            ProviderCredentials::decode_from_keychain(ProviderKind::DeepLX, &encoded).unwrap();
+        assert!(
+            matches!(&decoded, ProviderCredentials::DeepLX { endpoint, token, .. } if endpoint == "https://example.com/api/translate" && token.is_empty())
+        );
+        assert!(!format!("{decoded:?}").contains("synthetic-asr"));
+        assert!(!format!("{decoded:?}").contains("example.com"));
+        assert!(value.validated_for(ProviderKind::AlibabaCloud).is_err());
+        let bad = ProviderCredentials::DeepLX {
+            asr_api_key: "".into(),
+            endpoint: "https://example.com".into(),
+            token: "token".into(),
+        };
+        assert!(bad.validated_for(ProviderKind::DeepLX).is_err());
+        let bad = ProviderCredentials::DeepLX {
+            asr_api_key: "asr".into(),
+            endpoint: "https://example.com".into(),
+            token: "token\nInjected".into(),
+        };
+        assert!(bad.validated_for(ProviderKind::DeepLX).is_err());
+    }
+
+    #[test]
     fn historical_single_api_keys_remain_raw_and_readable() {
         let credentials = ProviderCredentials::decode_from_keychain(
             ProviderKind::OpenAIRealtime,
@@ -277,6 +980,138 @@ mod tests {
                 .encode_for_keychain(ProviderKind::OpenAIRealtime)
                 .unwrap(),
             "sk-legacy"
+        );
+    }
+
+    #[test]
+    fn openai_compatible_credentials_are_scoped_trimmed_and_redacted() {
+        let credentials: ProviderCredentials = serde_json::from_str(
+            r#"{"kind":"openAICompatible","asrApiKey":" synthetic-asr ","endpoint":"https://example.com/v1","apiKey":" synthetic-third-party ","model":" synthetic-model "}"#,
+        )
+        .unwrap();
+        let validated = credentials
+            .validated_for(ProviderKind::AlibabaCloud)
+            .unwrap();
+        assert_eq!(validated.alibaba_key(), Some("synthetic-asr"));
+        let ProviderCredentials::OpenAICompatible {
+            endpoint,
+            api_key,
+            model,
+            ..
+        } = &validated
+        else {
+            panic!("expected OpenAI-compatible credentials")
+        };
+        assert!(endpoint.starts_with("https://example.com/"));
+        assert_eq!(api_key, "synthetic-third-party");
+        assert_eq!(model, "synthetic-model");
+        assert_eq!(validated.direct_api_key(), None);
+        assert_eq!(
+            validated.validated_for(ProviderKind::OpenAIRealtime),
+            Err(ProviderCredentialsError::ProviderMismatch)
+        );
+        for private in [
+            "synthetic-asr",
+            "synthetic-third-party",
+            "example.com",
+            "synthetic-model",
+        ] {
+            assert!(!format!("{validated:?}").contains(private));
+        }
+        let mut profile = ServiceProfile::alibaba_default();
+        profile.text_translation = Some(TextTranslation::OpenAICompatible);
+        assert_eq!(
+            validated.revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::OpenAICompatible)
+            ),
+            Ok(Some("synthetic-third-party"))
+        );
+        assert_eq!(
+            validated.revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::DeepL)
+            ),
+            Err(ProviderCredentialsError::InvalidRevealField)
+        );
+    }
+
+    #[test]
+    fn openai_compatible_credentials_fail_closed_on_missing_or_invalid_fields() {
+        for (asr_api_key, endpoint, api_key, model, expected) in [
+            (
+                "",
+                "https://example.com/v1",
+                "synthetic",
+                "model",
+                ProviderCredentialsError::Missing(ProviderKind::AlibabaCloud),
+            ),
+            (
+                "asr",
+                "http://example.com/v1",
+                "synthetic",
+                "model",
+                ProviderCredentialsError::InvalidOpenAICompatibleEndpoint,
+            ),
+            (
+                "asr",
+                "https://example.com/v1?secret=synthetic",
+                "synthetic",
+                "model",
+                ProviderCredentialsError::InvalidOpenAICompatibleEndpoint,
+            ),
+            (
+                "asr",
+                "https://example.com/v1",
+                "synthetic\ninjected",
+                "model",
+                ProviderCredentialsError::InvalidField,
+            ),
+            (
+                "asr",
+                "https://example.com/v1",
+                "synthetic",
+                "",
+                ProviderCredentialsError::InvalidOpenAICompatibleModel,
+            ),
+            (
+                "asr",
+                "https://example.com/v1",
+                "synthetic",
+                "synthetic\ninjected",
+                ProviderCredentialsError::InvalidOpenAICompatibleModel,
+            ),
+        ] {
+            let error = ProviderCredentials::OpenAICompatible {
+                asr_api_key: asr_api_key.into(),
+                endpoint: endpoint.into(),
+                api_key: api_key.into(),
+                model: model.into(),
+            }
+            .validated_for(ProviderKind::AlibabaCloud)
+            .unwrap_err();
+            assert_eq!(error, expected);
+            assert!(!error.to_string().contains("synthetic"));
+        }
+        assert_eq!(
+            ProviderCredentials::OpenAICompatible {
+                asr_api_key: "asr".into(),
+                endpoint: "https://example.com/v1".into(),
+                api_key: "key".into(),
+                model: "x".repeat(257),
+            }
+            .validated_for(ProviderKind::AlibabaCloud)
+            .unwrap_err(),
+            ProviderCredentialsError::InvalidOpenAICompatibleModel
+        );
+        let request: ProviderCredentials = serde_json::from_str(
+            r#"{"kind":"alibabaTranslation","apiKey":"","textTranslation":"deepLX","endpoint":"","token":""}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(request, ProviderCredentials::AlibabaTranslation { model, .. } if model.is_empty())
         );
     }
 
@@ -424,5 +1259,120 @@ mod tests {
                 ProviderKind::TencentCloud
             ))
         ));
+    }
+    #[test]
+    fn anonymous_openai_compatible_keys_are_isolated_from_required_recognition_credentials() {
+        let credentials = ProviderCredentials::OpenAICompatible {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+            api_key: String::new(),
+            model: "synthetic-model".into(),
+        }
+        .validated_for(ProviderKind::AlibabaCloud)
+        .unwrap();
+        assert_eq!(credentials.alibaba_key(), Some("synthetic-asr"));
+        assert!(
+            matches!(credentials, ProviderCredentials::OpenAICompatible { api_key, .. } if api_key.is_empty())
+        );
+        for key in [
+            "\n".into(),
+            "bad\r\nkey".into(),
+            "x".repeat(MAXIMUM_CREDENTIAL_FIELD_LENGTH + 1),
+        ] {
+            assert_eq!(
+                TextTranslationCredentials::OpenAICompatible {
+                    endpoint: "http://127.0.0.1:8000/v1".into(),
+                    model: "synthetic-model".into(),
+                    api_key: key,
+                }
+                .validated(),
+                Err(ProviderCredentialsError::InvalidField)
+            );
+        }
+        assert_eq!(
+            ProviderCredentials::DeepL {
+                asr_api_key: "asr".into(),
+                api_key: String::new()
+            }
+            .validated_for(ProviderKind::AlibabaCloud),
+            Err(ProviderCredentialsError::Missing(
+                ProviderKind::AlibabaCloud
+            ))
+        );
+    }
+    #[test]
+    fn chatmock_credentials_keep_route_identity_and_scoped_optional_authentication() {
+        let text = TextTranslationCredentials::ChatMock {
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+            model: "synthetic-model".into(),
+            api_key: "".into(),
+        }
+        .validated()
+        .unwrap();
+        assert_eq!(text.translation(), TextTranslation::ChatMock);
+        let request: ProviderCredentials = serde_json::from_value(serde_json::json!({
+            "kind":"alibabaTranslation", "apiKey":"", "textTranslation":"chatMock", "endpoint":"", "token":"", "model":"", "clearToken":true
+        })).unwrap();
+        assert!(matches!(
+            request,
+            ProviderCredentials::AlibabaTranslation {
+                text_translation: TextTranslation::ChatMock,
+                clear_token: true,
+                ..
+            }
+        ));
+        let credentials = ProviderCredentials::ChatMock {
+            asr_api_key: "synthetic-asr".into(),
+            endpoint: "http://127.0.0.1:8000/v1".into(),
+            api_key: "synthetic-chatmock".into(),
+            model: "synthetic-model".into(),
+        }
+        .validated_for(ProviderKind::AlibabaCloud)
+        .unwrap();
+        assert_eq!(credentials.alibaba_key(), Some("synthetic-asr"));
+        assert_eq!(credentials.direct_api_key(), None);
+        assert_eq!(
+            serde_json::to_value(&credentials).unwrap()["kind"],
+            "chatMock"
+        );
+        assert!(!format!("{credentials:?}").contains("synthetic"));
+        let mut profile = ServiceProfile::alibaba_default();
+        profile.text_translation = Some(TextTranslation::ChatMock);
+        assert_eq!(
+            credentials.revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::ChatMock)
+            ),
+            Ok(Some("synthetic-chatmock"))
+        );
+        assert!(credentials
+            .revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::OpenAICompatible)
+            )
+            .is_err());
+        profile.text_translation = Some(TextTranslation::OpenAICompatible);
+        assert!(credentials
+            .revealed_field(
+                &profile,
+                CredentialRevealField::Token,
+                Some(TextTranslation::OpenAICompatible)
+            )
+            .is_err());
+        for (endpoint, model, key) in [
+            ("http://remote.example/v1", "model", ""),
+            ("http://127.0.0.1:8000/v1", "", ""),
+            ("http://127.0.0.1:8000/v1", "model", "bad\nkey"),
+        ] {
+            assert!(TextTranslationCredentials::ChatMock {
+                endpoint: endpoint.into(),
+                model: model.into(),
+                api_key: key.into()
+            }
+            .validated()
+            .is_err());
+        }
     }
 }

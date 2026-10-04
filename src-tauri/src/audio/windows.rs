@@ -9,15 +9,26 @@ use crate::audio::streaming_resampler::StreamingPcm16Resampler;
 use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureError, SystemAudioCaptureFailure,
 };
+use crate::core::audio_source::{
+    parse_default_role, source_action, AudioActivity, DefaultRole, FollowAudible, FollowDecision,
+    SourceAction,
+};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub struct WindowsSystemAudioCapture {
     stream: Arc<Mutex<StreamSlot<cpal::Stream>>>,
     active: Arc<AtomicBool>,
+    control: Arc<Mutex<()>>,
+    generation: Arc<AtomicU64>,
+    source: Arc<Mutex<String>>,
+    follow: Arc<Mutex<FollowAudible>>,
+    current_device: Arc<Mutex<Option<String>>>,
+    activity: Arc<Mutex<AudioActivity>>,
 }
 
 enum StreamSlotState<S> {
@@ -43,6 +54,7 @@ impl<S> Default for StreamSlot<S> {
 struct WindowsAudioProcessor {
     resampler: StreamingPcm16Resampler,
     normalized_samples: Vec<f32>,
+    activity: Arc<Mutex<AudioActivity>>,
 }
 
 struct WindowsStreamContext {
@@ -57,6 +69,12 @@ impl WindowsSystemAudioCapture {
         Self {
             stream: Arc::new(Mutex::new(StreamSlot::default())),
             active: Arc::new(AtomicBool::new(false)),
+            control: Arc::new(Mutex::new(())),
+            generation: Arc::new(AtomicU64::new(0)),
+            source: Arc::new(Mutex::new(String::new())),
+            follow: Arc::new(Mutex::new(FollowAudible::default())),
+            current_device: Arc::new(Mutex::new(None)),
+            activity: Arc::new(Mutex::new(AudioActivity::default())),
         }
     }
 
@@ -66,24 +84,148 @@ impl WindowsSystemAudioCapture {
         failure_tx: CaptureFailureSender,
         format: AudioCaptureFormat,
     ) -> Result<(), SystemAudioCaptureError> {
-        build_install_and_play_stream(
-            &self.stream,
-            &self.active,
-            || {
-                let host = cpal::default_host();
-                let output_device = host
-                    .default_output_device()
-                    .ok_or(SystemAudioCaptureError::NoPlaybackDevice)?;
-                build_stream_on_output_device(
-                    &output_device,
-                    audio_ingress,
-                    failure_tx,
-                    format,
-                    Arc::clone(&self.active),
-                )
-            },
-            |stream| stream.play().map_err(|_| ()),
-        )
+        let source = self.source.lock().unwrap().clone();
+        *self.follow.lock().unwrap() = FollowAudible::default();
+        let device = resolve_capture_source(&source, &self.follow)?;
+        let generation = self.install_device(
+            &device,
+            audio_ingress.clone(),
+            failure_tx.clone(),
+            format,
+            None,
+        )?;
+        let capture = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                let _control = capture.control.lock().unwrap();
+                let generation_current = capture.generation.load(Ordering::SeqCst) == generation;
+                if !generation_current || failure_tx.has_reported() {
+                    break;
+                }
+                let device = resolve_capture_source(&source, &capture.follow).ok();
+                let id = device
+                    .as_ref()
+                    .and_then(|device| device.id().ok())
+                    .map(|id| id.to_string());
+                let bound = capture.current_device.lock().unwrap().clone();
+                match source_action(generation_current, bound.as_deref(), id.as_deref()) {
+                    SourceAction::StopMonitor => break,
+                    SourceAction::Keep => {}
+                    SourceAction::Unavailable => {
+                        stop_stream(&capture.stream, &capture.active);
+                        *capture.current_device.lock().unwrap() = None;
+                        failure_tx.report(SystemAudioCaptureFailure::NativeStopped);
+                        break;
+                    }
+                    SourceAction::Rebind => {
+                        stop_stream(&capture.stream, &capture.active);
+                        *capture.current_device.lock().unwrap() = None;
+                        drop(_control);
+                        if capture
+                            .install_device(
+                                &device.unwrap(),
+                                audio_ingress.clone(),
+                                failure_tx.clone(),
+                                format,
+                                Some(generation),
+                            )
+                            .is_err()
+                        {
+                            let _control = capture.control.lock().unwrap();
+                            if capture.generation.load(Ordering::SeqCst) == generation {
+                                *capture.current_device.lock().unwrap() = None;
+                                failure_tx.report(SystemAudioCaptureFailure::NativeStopped);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Ok(())
+    }
+
+    pub fn set_source(&self, source: String) {
+        *self.source.lock().unwrap() = source;
+    }
+
+    pub fn snapshot(&self) -> Result<crate::audio::AudioSourceSnapshot, String> {
+        let devices = cpal::default_host()
+            .output_devices()
+            .map_err(|_| "Sound outputs could not be loaded.".to_string())?
+            .filter_map(|device| {
+                Some(crate::audio::AudioSourceDevice {
+                    id: device.id().ok()?.to_string(),
+                    name: device.description().ok()?.name().to_string(),
+                })
+            })
+            .collect();
+        let (receiving_audio_data, receiving_sound) =
+            self.activity.lock().unwrap().state(Instant::now());
+        Ok(crate::audio::AudioSourceSnapshot {
+            devices,
+            current_device: self.current_device.lock().unwrap().clone(),
+            receiving_sound: self.active.load(Ordering::SeqCst) && receiving_sound,
+            receiving_audio_data: self.active.load(Ordering::SeqCst) && receiving_audio_data,
+        })
+    }
+
+    fn install_device(
+        &self,
+        device: &cpal::Device,
+        ingress: AudioIngress,
+        failure: CaptureFailureSender,
+        format: AudioCaptureFormat,
+        expected_generation: Option<u64>,
+    ) -> Result<u64, SystemAudioCaptureError> {
+        let id = device
+            .id()
+            .map_err(|_| SystemAudioCaptureError::NativeStartFailed)?
+            .to_string();
+        let (token, generation) = {
+            let _control = self.control.lock().unwrap();
+            if expected_generation
+                .is_some_and(|generation| self.generation.load(Ordering::SeqCst) != generation)
+            {
+                return Err(SystemAudioCaptureError::NativeStartFailed);
+            }
+            let token = reserve_stream_start(&self.stream, &self.active)?;
+            let generation = expected_generation.unwrap_or_else(|| {
+                self.generation
+                    .fetch_add(1, Ordering::SeqCst)
+                    .wrapping_add(1)
+            });
+            *self.activity.lock().unwrap() = AudioActivity::default();
+            (token, generation)
+        };
+        // Native build is outside the control lock: stop can invalidate both
+        // reservations while WASAPI initializes, preserving cancellable start.
+        let stream = match build_stream_on_output_device(
+            device,
+            ingress,
+            failure,
+            format,
+            Arc::clone(&self.active),
+            Arc::clone(&self.activity),
+        ) {
+            Ok(stream) => stream,
+            Err(error) => {
+                cancel_stream_start(&self.stream, token);
+                return Err(error);
+            }
+        };
+        let _control = self.control.lock().unwrap();
+        if self.generation.load(Ordering::SeqCst) != generation {
+            cancel_stream_start(&self.stream, token);
+            return Err(SystemAudioCaptureError::NativeStartFailed);
+        }
+        install_and_play_reserved_stream(&self.stream, &self.active, token, stream, |stream| {
+            stream.play().map_err(|_| ())
+        })?;
+        *self.current_device.lock().unwrap() = Some(id);
+        Ok(generation)
     }
 
     #[cfg(test)]
@@ -104,6 +246,7 @@ impl WindowsSystemAudioCapture {
                     failure_tx,
                     format,
                     Arc::clone(&self.active),
+                    Arc::clone(&self.activity),
                 )
             },
             |stream| stream.play().map_err(|_| ()),
@@ -111,7 +254,11 @@ impl WindowsSystemAudioCapture {
     }
 
     pub async fn stop(&self) {
+        let _control = self.control.lock().unwrap();
+        self.generation.fetch_add(1, Ordering::SeqCst);
         stop_stream(&self.stream, &self.active);
+        *self.current_device.lock().unwrap() = None;
+        *self.activity.lock().unwrap() = AudioActivity::default();
     }
 }
 
@@ -121,6 +268,7 @@ fn build_stream_on_output_device(
     failure_tx: CaptureFailureSender,
     format: AudioCaptureFormat,
     active: Arc<AtomicBool>,
+    activity: Arc<Mutex<AudioActivity>>,
 ) -> Result<cpal::Stream, SystemAudioCaptureError> {
     // CPAL enables WASAPI loopback when an input stream is built on an
     // output device. Its configuration must still come from that output
@@ -141,6 +289,7 @@ fn build_stream_on_output_device(
     let processor = Arc::new(Mutex::new(WindowsAudioProcessor {
         resampler: StreamingPcm16Resampler::new(sample_rate, format.sample_rate_hz, channel_count)?,
         normalized_samples: Vec::new(),
+        activity,
     }));
     let stream_context = WindowsStreamContext {
         active,
@@ -212,6 +361,7 @@ fn supports_sample_format(sample_format: cpal::SampleFormat) -> bool {
 /// Reserves the capture slot before any native build work. A concurrent stop
 /// changes `Starting(token)` back to `Idle`, so the completed build can only
 /// be installed when it still owns the same token.
+#[cfg(test)]
 fn build_install_and_play_stream<S, E>(
     stream_slot: &Mutex<StreamSlot<S>>,
     active: &AtomicBool,
@@ -411,6 +561,11 @@ fn process_frames_f32(
         failure_tx.report(SystemAudioCaptureFailure::AudioProcessingFailed);
         return;
     };
+    processor
+        .activity
+        .lock()
+        .unwrap()
+        .observe(data, Instant::now());
     let Ok(buffers) = processor.resampler.push_interleaved(data) else {
         failure_tx.report(SystemAudioCaptureFailure::AudioProcessingFailed);
         return;
@@ -469,8 +624,13 @@ fn process_converted_frames<T>(
     let WindowsAudioProcessor {
         resampler,
         normalized_samples,
+        activity,
     } = &mut *processor;
     normalize(data, normalized_samples);
+    activity
+        .lock()
+        .unwrap()
+        .observe(normalized_samples, Instant::now());
     let buffers = resampler.push_interleaved(normalized_samples);
     // Keep the reusable allocation, but do not retain a logical copy of the
     // most recent system-audio callback after it enters the PCM pipeline.
@@ -524,10 +684,209 @@ fn emit_buffers(
     }
 }
 
+fn resolve_output(source: &str) -> Result<cpal::Device, SystemAudioCaptureError> {
+    let host = cpal::default_host();
+    let selected = if source.is_empty() {
+        host.default_output_device()
+            .and_then(|device| device.id().ok())
+            .map(|id| id.to_string())
+            .ok_or(SystemAudioCaptureError::NoPlaybackDevice)?
+    } else if let Some(role) = parse_default_role(source) {
+        // CPAL always asks Windows for the *console* default endpoint, but a
+        // call headset is usually the *communications* default while media
+        // keeps playing to the speakers. Resolve the requested role ourselves
+        // and fall back to the console default when it cannot be resolved.
+        // Match the role endpoint against CPAL's devices by the *backend* id
+        // string (`IMMDevice::GetId`), which is the same value on both sides;
+        // the `Display` form adds a host prefix and would never compare equal.
+        let matched = default_endpoint_id(role).and_then(|wanted| {
+            host.output_devices()
+                .ok()?
+                .find(|device| device.id().is_ok_and(|id| id.id() == wanted))
+        });
+        return matched
+            .or_else(|| host.default_output_device())
+            .ok_or(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable);
+    } else {
+        source.to_string()
+    };
+    // Resolve to a specific render endpoint for persisted ids. CPAL's
+    // default-device handle is dynamic and emits DeviceChanged errors itself;
+    // our generation-scoped monitor owns rebinding instead. Enumerating only
+    // render endpoints also rejects persisted microphone IDs.
+    host.output_devices()
+        .map_err(|_| SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)?
+        .find(|device| device.id().is_ok_and(|id| id.to_string() == selected))
+        .ok_or(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable)
+}
+
+/// The sentinel for "capture whichever render endpoint is currently audible".
+pub const FOLLOW_AUDIBLE: &str = "follow:audible";
+
+/// The normal default and legacy audible sentinel share the same policy.
+/// Role ids and census ids are raw WASAPI ids, not CPAL's display/persisted ids.
+fn resolve_capture_source(
+    source: &str,
+    follow: &Mutex<FollowAudible>,
+) -> Result<cpal::Device, SystemAudioCaptureError> {
+    if !source.is_empty() && source != FOLLOW_AUDIBLE {
+        return resolve_output(source);
+    }
+    smart_default_device(follow)
+}
+
+/// Follow audible role-ranked outputs, falling back through the role chain
+/// while quiet. Census ids must resolve as raw WASAPI ids, not persisted ids.
+fn smart_default_device(
+    follow: &Mutex<FollowAudible>,
+) -> Result<cpal::Device, SystemAudioCaptureError> {
+    let roles: Vec<String> = [
+        DefaultRole::Communications,
+        DefaultRole::Multimedia,
+        DefaultRole::Console,
+    ]
+    .into_iter()
+    .filter_map(default_endpoint_id)
+    .collect();
+    let census = crate::audio::census::census();
+    let candidates: Vec<(String, f32)> = census
+        .endpoints
+        .iter()
+        .map(|endpoint| (endpoint.id.clone(), endpoint.level))
+        .collect();
+    let chosen = {
+        let mut state = follow.lock().unwrap();
+        match state.decide_with_roles(&candidates, &roles) {
+            FollowDecision::SwitchTo(id) => Some(id),
+            FollowDecision::Keep => state.bound().map(str::to_string),
+            FollowDecision::NothingAudible => None,
+        }
+    };
+    chosen
+        .as_deref()
+        .and_then(resolve_backend_endpoint)
+        .or_else(|| roles.iter().find_map(|id| resolve_backend_endpoint(id)))
+        .or_else(|| cpal::default_host().output_devices().ok()?.next())
+        .ok_or(SystemAudioCaptureError::NoPlaybackDevice)
+}
+
+fn resolve_backend_endpoint(wanted: &str) -> Option<cpal::Device> {
+    cpal::default_host()
+        .output_devices()
+        .ok()?
+        .find(|device| device.id().is_ok_and(|id| id.id() == wanted))
+}
+
+/// IMMDevice::GetId owns a COM allocation; copy then release it on every scan.
+pub(crate) unsafe fn com_endpoint_id(
+    device: &windows::Win32::Media::Audio::IMMDevice,
+) -> Option<String> {
+    let id = device.GetId().ok()?;
+    let value = id.to_string().ok();
+    windows::Win32::System::Com::CoTaskMemFree(Some(id.0.cast()));
+    value
+}
+
+/// Windows' default render endpoint for the requested role, by endpoint id.
+fn default_endpoint_id(role: DefaultRole) -> Option<String> {
+    with_com(|| unsafe {
+        use windows::Win32::Media::Audio::{
+            eCommunications, eConsole, eMultimedia, eRender, IMMDeviceEnumerator,
+            MMDeviceEnumerator,
+        };
+        use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+        let role = match role {
+            DefaultRole::Console => eConsole,
+            DefaultRole::Multimedia => eMultimedia,
+            DefaultRole::Communications => eCommunications,
+        };
+        let enumerator: IMMDeviceEnumerator =
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+        let device = enumerator.GetDefaultAudioEndpoint(eRender, role).ok()?;
+        com_endpoint_id(&device)
+    })
+}
+
+/// COM must be initialized on the calling thread before any of these calls; the
+/// capture monitor runs on its own task thread, so initialize lazily per thread
+/// (a mismatched apartment is fine for device enumeration and is reported as
+/// `RPC_E_CHANGED_MODE`, which we ignore).
+pub(crate) fn with_com<R>(run: impl FnOnce() -> R) -> R {
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+    thread_local! {
+        static COM_READY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    COM_READY.with(|ready| {
+        if !ready.get() {
+            let _ = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            ready.set(true);
+        }
+    });
+    run()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::audio::send_pipeline::AudioSendPipeline;
+
+    /// The backend (WASAPI) id string, comparable with `IMMDevice::GetId`.
+    fn endpoint_id(device: &cpal::Device) -> Option<String> {
+        device.id().ok().map(|id| id.id().to_string())
+    }
+
+    #[test]
+    fn role_sources_resolve_to_a_render_endpoint_or_report_unavailable() {
+        // A real machine resolves each role; a headless CI machine may have no
+        // render endpoints at all, which must surface as an error, not a panic.
+        for source in ["role:communications", "role:multimedia", "role:console"] {
+            match resolve_output(source) {
+                Ok(device) => assert!(endpoint_id(&device).is_some()),
+                Err(SystemAudioCaptureError::NoPlaybackDevice)
+                | Err(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable) => {}
+                Err(other) => panic!("unexpected error for {source}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn audible_source_resolves_or_falls_back_without_panicking() {
+        let follow = Mutex::new(FollowAudible::default());
+        for source in ["", FOLLOW_AUDIBLE] {
+            match resolve_capture_source(source, &follow) {
+                Ok(device) => assert!(endpoint_id(&device).is_some()),
+                Err(SystemAudioCaptureError::NoPlaybackDevice)
+                | Err(SystemAudioCaptureError::SelectedPlaybackDeviceUnavailable) => {}
+                Err(other) => panic!("unexpected error: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn raw_census_ids_resolve_the_exact_cpal_render_endpoint() {
+        let Ok(devices) = cpal::default_host().output_devices() else {
+            return;
+        };
+        for device in devices {
+            let Some(id) = endpoint_id(&device) else {
+                continue;
+            };
+            let resolved = resolve_backend_endpoint(&id).expect("raw WASAPI id must resolve");
+            assert_eq!(endpoint_id(&resolved), Some(id));
+        }
+    }
+
+    #[test]
+    fn console_role_matches_the_cpal_default_device() {
+        // The role resolver must agree with CPAL for the role CPAL itself asks
+        // for, otherwise "follow system" and "follow console" would capture
+        // different endpoints on the same machine.
+        let (Ok(role), Ok(cpal_default)) = (resolve_output("role:console"), resolve_output(""))
+        else {
+            return; // headless machine without render endpoints
+        };
+        assert_eq!(endpoint_id(&role), endpoint_id(&cpal_default));
+    }
     use std::mem::size_of;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Barrier;

@@ -57,7 +57,10 @@ impl OpenAIRealtimeRequestEncoder {
         target_language: TargetLanguage,
         event_id: Option<&str>,
     ) -> Result<Value, OpenAIRealtimeProtocolError> {
-        if !target_language.translates_audio() {
+        if !matches!(
+            target_language,
+            TargetLanguage::SimplifiedChinese | TargetLanguage::English | TargetLanguage::Japanese
+        ) {
             return Err(OpenAIRealtimeProtocolError::InvalidTargetLanguage);
         }
         let mut value = json!({
@@ -251,6 +254,23 @@ fn is_recoverable_provider_error(kind: &str, code: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_app_targets_do_not_expand_this_wire_contract() {
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                OpenAIRealtimeRequestEncoder::session_update(target, None).unwrap_err(),
+                OpenAIRealtimeProtocolError::InvalidTargetLanguage
+            );
+        }
+    }
 
     #[test]
     fn endpoint_and_audio_contract_are_fixed() {

@@ -57,10 +57,10 @@ impl GeminiLiveRequestEncoder {
         Ok(json!({
             "setup": {
                 "model": format!("models/{}", GeminiLiveEndpoint::MODEL),
+                "inputAudioTranscription": {},
+                "outputAudioTranscription": {},
                 "generationConfig": {
                     "responseModalities": ["AUDIO"],
-                    "inputAudioTranscription": {},
-                    "outputAudioTranscription": {},
                     "translationConfig": {
                         "targetLanguageCode": target_language_code,
                         "echoTargetLanguage": true
@@ -100,10 +100,10 @@ fn target_language_code(
     target_language: TargetLanguage,
 ) -> Result<&'static str, GeminiLiveProtocolError> {
     match target_language {
-        TargetLanguage::Original => Err(GeminiLiveProtocolError::InvalidTargetLanguage),
         TargetLanguage::SimplifiedChinese => Ok("zh-Hans"),
         TargetLanguage::English => Ok("en"),
         TargetLanguage::Japanese => Ok("ja"),
+        _ => Err(GeminiLiveProtocolError::InvalidTargetLanguage),
     }
 }
 
@@ -246,11 +246,13 @@ fn required_transcript_text(
     transcription: &Value,
     field: &'static str,
 ) -> Result<String, GeminiLiveProtocolError> {
-    transcription
-        .get("text")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or(GeminiLiveProtocolError::MissingEventField(field))
+    match transcription.get("text") {
+        Some(Value::String(text)) => Ok(text.clone()),
+        // Protobuf JSON omits an empty string. Live Translate sends legal
+        // language-only transcription updates during silence.
+        None if transcription.is_object() => Ok(String::new()),
+        _ => Err(GeminiLiveProtocolError::MissingEventField(field)),
+    }
 }
 
 fn language_code(transcription: &Value) -> Option<String> {
@@ -298,6 +300,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn expanded_app_targets_do_not_expand_this_wire_contract() {
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                target_language_code(target).unwrap_err(),
+                GeminiLiveProtocolError::InvalidTargetLanguage
+            );
+        }
+    }
+
+    #[test]
     fn endpoint_and_audio_contract_match_gemini_live_translation() {
         assert_eq!(
             GeminiLiveEndpoint::url().unwrap().as_str(),
@@ -316,8 +335,10 @@ mod tests {
         );
         let generation = &value["setup"]["generationConfig"];
         assert_eq!(generation["responseModalities"], json!(["AUDIO"]));
-        assert_eq!(generation["inputAudioTranscription"], json!({}));
-        assert_eq!(generation["outputAudioTranscription"], json!({}));
+        assert_eq!(value["setup"]["inputAudioTranscription"], json!({}));
+        assert_eq!(value["setup"]["outputAudioTranscription"], json!({}));
+        assert!(generation.get("inputAudioTranscription").is_none());
+        assert!(generation.get("outputAudioTranscription").is_none());
         assert_eq!(generation["translationConfig"]["targetLanguageCode"], "ja");
         assert_eq!(generation["translationConfig"]["echoTargetLanguage"], true);
         assert_eq!(
@@ -436,7 +457,7 @@ mod tests {
         );
         assert_eq!(
             GeminiLiveServerEvent::decode(
-                r#"{"serverContent":{"inputTranscription":{"languageCode":"en"}}}"#
+                r#"{"serverContent":{"inputTranscription":{"text":false}}}"#
             )
             .unwrap_err(),
             GeminiLiveProtocolError::MissingEventField("serverContent.inputTranscription.text")

@@ -10,8 +10,6 @@
     <string name="service_configure">配置</string>
     <string name="service_edit_named">配置 %1$s</string>
     <string name="service_stop_first">先停止字幕，再切换或修改服务。</string>
-    <string name="service_saved_hint">凭证已保存在此设备。可以直接使用，也可以在下方更新。</string>
-    <string name="service_setup_hint">填入服务商提供的凭证，保存后即可使用。</string>
     <string name="service_secret_saved">已保存 · 留空保留原凭证</string>
     <string name="service_endpoint">自定义连接地址（可选）</string>
     <string name="service_model">自定义模型（可选）</string>

@@ -36,10 +36,12 @@ export XDG_CACHE_HOME="$smoke_dir/cache"
 export XDG_RUNTIME_DIR="$smoke_dir/runtime"
 mkdir -m 700 -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
 export GDK_BACKEND=x11
+export XDG_SESSION_TYPE=x11
+unset WAYLAND_DISPLAY
 export LIBGL_ALWAYS_SOFTWARE=1
 export MIMI_UI_TEST=1
 export MIMI_UI_TEST_STANDARD_OVERLAY=1
-export MIMI_AUTO_START=1
+export MIMI_AUTO_START=0
 export MIMI_UI_TEST_SESSION_STATE_FILE="$smoke_dir/session-state"
 export MIMI_UI_TEST_FRONTEND_READY_DIR="$smoke_dir/frontend-ready"
 
@@ -58,9 +60,9 @@ done
 if [[ "$executable" == *.AppImage ]]; then
   # Hosted CI may not expose /dev/fuse. This still executes the packaged
   # AppRun and bundled libraries instead of the loose build executable.
-  "$executable" --appimage-extract-and-run >"$smoke_dir/app.log" 2>&1 &
+  "$executable" --appimage-extract-and-run --toggle-session >"$smoke_dir/app.log" 2>&1 &
 else
-  "$executable" >"$smoke_dir/app.log" 2>&1 &
+  "$executable" --toggle-session >"$smoke_dir/app.log" 2>&1 &
 fi
 app_pid=$!
 
@@ -110,14 +112,21 @@ window_geometry() {
 window_is_visible() {
   xwininfo -id "$1" | grep -q 'Map State: IsViewable'
 }
+control_island_geometry_matches() {
+  local ox="$1" oy="$2" ow="$3" oh="$4" cx="$5" cy="$6" cw="$7" ch="$8"
+  # The compact island hugs its measured content (80..512px); only the expanded
+  # panel has a fixed 280px width. Preserve the exact anchor and height, and
+  # reject a detached, oversized or click-catching surface outside this overlay.
+  [[ "$cx" == "$((ox + 18))" && "$cy" == "$((oy + 16))" && "$ch" == 30 ]] \
+    && (( cw >= 80 && cw <= 512 && cx + cw <= ox + ow && cy + ch <= oy + oh ))
+}
 assert_control_attached() {
   local ox oy ow oh cx cy cw ch
   for _ in {1..20}; do
     read -r ox oy ow oh < <(window_geometry "$overlay_window")
     read -r cx cy cw ch < <(window_geometry "$control_window")
-    if [[ "$cx" == "$((ox + 18))" && "$cy" == "$((oy + 16))" \
-      && "$cw" == 236 && "$ch" == 30 \
-      && ( -z "${1:-}" || ( "$ox" == "$1" && "$oy" == "$2" ) ) ]] \
+    if control_island_geometry_matches "$ox" "$oy" "$ow" "$oh" "$cx" "$cy" "$cw" "$ch" \
+      && [[ -z "${1:-}" || ( "$ox" == "$1" && "$oy" == "$2" ) ]] \
       && window_is_visible "$overlay_window" && window_is_visible "$control_window"; then return; fi
     sleep 0.25
   done
@@ -154,6 +163,54 @@ done
 }
 assert_control_attached
 echo "Linux overlay lifecycle passed: move-stop stays hidden; restart reattaches."
+
+# Desktop commands use the same session bus as the primary. An old build
+# starts another app here instead of stopping the existing session.
+run_desktop_command() {
+  if [[ "$executable" == *.AppImage ]]; then
+    timeout 20 env MIMI_AUTO_START=0 "$executable" --appimage-extract-and-run "$@" >>"$smoke_dir/commands.log" 2>&1
+  else
+    timeout 20 env MIMI_AUTO_START=0 "$executable" "$@" >>"$smoke_dir/commands.log" 2>&1
+  fi
+}
+wait_session_state() {
+  for _ in {1..40}; do
+    [[ "$(cat "$MIMI_UI_TEST_SESSION_STATE_FILE")" == "$1" ]] && return
+    sleep 0.1
+  done
+  echo "Desktop shortcut did not reach session state: $1" >&2
+  cat "$smoke_dir/app.log" "$smoke_dir/commands.log" >&2
+  exit 1
+}
+sleep 0.6
+run_desktop_command --toggle-session
+wait_session_state idle
+sleep 0.6
+run_desktop_command --toggle-session
+wait_session_state listening
+kill -0 "$app_pid"
+[[ "$(xdotool search --name '^mimi UI test settings$' | wc -l)" -eq 1 ]] || {
+  echo "Desktop command created another Mimi instance." >&2; exit 1;
+}
+assert_control_attached
+run_desktop_command --toggle-immersive
+for _ in {1..40}; do
+  if ! window_is_visible "$control_window"; then break; fi
+  sleep 0.1
+done
+if window_is_visible "$control_window"; then
+  echo "Desktop command did not enter immersive mode." >&2; exit 1
+fi
+sleep 0.6
+run_desktop_command --toggle-immersive
+assert_control_attached
+run_desktop_command --cycle-subtitle-display
+run_desktop_command
+kill -0 "$app_pid"
+[[ "$(xdotool search --name '^mimi UI test settings$' | wc -l)" -eq 1 ]] || {
+  echo "Ordinary relaunch created another Mimi instance." >&2; exit 1;
+}
+echo "Linux desktop commands passed: existing-instance start/stop and immersive mode."
 
 # A desktop without a tray must still have a reliable exit path. Closing
 # Settings exits on Linux; minimizing it is the keep-running action.

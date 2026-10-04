@@ -1,9 +1,12 @@
-/** Keep the latest subtitle visible when existing rows rewrap, even if no
- * subtitle event arrives. Native window dimensions can change independently. */
-export function observeTimelineResize(element: HTMLElement): () => void {
+/** Keep the latest subtitle visible as the viewport or its rows reflow, even
+ * when compact-lane measurement changes only scrollHeight after returning. */
+export function observeTimelineResize(element: HTMLElement, onResize = () => {
+  element.scrollTo({ top: element.scrollHeight, behavior: "instant" });
+}): () => void {
   const observer = new ResizeObserver(() => {
-    element.scrollTo({ top: element.scrollHeight, behavior: "instant" });
+    onResize();
   });
   observer.observe(element);
+  for (const row of Array.from(element.children)) observer.observe(row);
   return () => observer.disconnect();
 }

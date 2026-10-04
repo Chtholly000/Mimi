@@ -16,7 +16,7 @@ use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use uuid::Uuid;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -60,7 +60,29 @@ enum SetupState {
     Rejected,
 }
 
+#[derive(Default)]
+struct SentenceContentState {
+    in_progress: bool,
+    discard_until_end: bool,
+}
+
+impl SentenceContentState {
+    fn accepts_content(&mut self, expected: u64, current: u64, sentence_end: bool) -> bool {
+        if expected != current || self.discard_until_end {
+            // Even an already decoded old final remains a real turn boundary.
+            // Consume that boundary without publishing its obsolete content.
+            if sentence_end {
+                *self = Self::default();
+            }
+            return false;
+        }
+        self.in_progress = !sentence_end;
+        true
+    }
+}
+
 struct Inner {
+    content_lock: Mutex<SentenceContentState>,
     sink: Mutex<Option<Sink>>,
     receive_task: Mutex<Option<JoinHandle<()>>>,
     audio_send_lock: Mutex<()>,
@@ -77,6 +99,7 @@ struct Inner {
 /// interpolated into an error or diagnostic event.
 #[derive(Clone)]
 pub struct TencentCloudClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint_override: Option<url::Url>,
     app_id: String,
@@ -88,6 +111,26 @@ pub struct TencentCloudClient {
 }
 
 impl TencentCloudClient {
+    pub fn content_revision(&self) -> u64 {
+        self.events.content_revision()
+    }
+
+    pub async fn clear_content(&self) -> u64 {
+        let mut turn = self.inner.content_lock.lock().await;
+        turn.discard_until_end |= turn.in_progress;
+        turn.in_progress = false;
+        self.events.advance_content_revision()
+    }
+
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         app_id: &str,
         secret_id: &str,
@@ -132,7 +175,9 @@ impl TencentCloudClient {
         events: ProviderEventSender,
     ) -> Self {
         Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
+                content_lock: Mutex::new(SentenceContentState::default()),
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
                 audio_send_lock: Mutex::new(()),
@@ -181,15 +226,19 @@ impl TencentCloudClient {
         readiness_timeout: Duration,
     ) -> Result<(), TencentCloudClientError> {
         self.disconnect().await;
+        *self.inner.content_lock.lock().await = SentenceContentState::default();
         let generation = self.inner.generation.load(Ordering::SeqCst);
         let endpoint = self.endpoint_for_connection()?;
         let request = endpoint
             .into_client_request()
             .map_err(|_| TencentCloudClientError::TransportFailure)?;
-        let (socket, _) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(request))
-            .await
-            .map_err(|_| TencentCloudClientError::TransportFailure)?
-            .map_err(|_| TencentCloudClientError::TransportFailure)?;
+        let (socket, _) = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            super::provider_network::websocket(request, &self.network),
+        )
+        .await
+        .map_err(|_| TencentCloudClientError::TransportFailure)?
+        .map_err(|_| TencentCloudClientError::TransportFailure)?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);
@@ -388,10 +437,15 @@ impl TencentCloudClient {
         let Some(sink) = sink.as_mut() else {
             return Err(TencentCloudClientError::NotConnected);
         };
-        tokio::time::timeout(SEND_TIMEOUT, sink.send(Message::Binary(frame.into())))
-            .await
-            .map_err(|_| TencentCloudClientError::TransportFailure)?
-            .map_err(|_| TencentCloudClientError::TransportFailure)
+        let evidence =
+            crate::development_audio::begin_pcm(&frame, TencentCloudEndpoint::SAMPLE_RATE_HZ);
+        tokio::time::timeout(
+            SEND_TIMEOUT,
+            evidence.observe(sink.send(Message::Binary(frame.into()))),
+        )
+        .await
+        .map_err(|_| TencentCloudClientError::TransportFailure)?
+        .map_err(|_| TencentCloudClientError::TransportFailure)
     }
 
     async fn send_text(&self, text: String) -> Result<(), TencentCloudClientError> {
@@ -489,7 +543,7 @@ async fn receive_loop(mut context: ReceiveContext) {
                 return;
             }
         };
-        if handle_server_event(&context, event) {
+        if handle_server_event(&context, event).await {
             return;
         }
     }
@@ -503,7 +557,13 @@ async fn receive_loop(mut context: ReceiveContext) {
     }
 }
 
-fn handle_server_event(context: &ReceiveContext, event: TencentCloudServerEvent) -> bool {
+async fn handle_server_event(context: &ReceiveContext, event: TencentCloudServerEvent) -> bool {
+    let revision = context.events.content_revision();
+    let mut turn = context.inner.content_lock.lock().await;
+    if context.inner.generation.load(Ordering::SeqCst) != context.generation {
+        return false;
+    }
+
     match event {
         TencentCloudServerEvent::SessionReady => {
             if *context.setup.borrow() == SetupState::Awaiting {
@@ -518,6 +578,9 @@ fn handle_server_event(context: &ReceiveContext, event: TencentCloudServerEvent)
             source_language,
             sentence_end,
         } => {
+            if !turn.accepts_content(revision, context.events.content_revision(), sentence_end) {
+                return false;
+            }
             if sentence_end {
                 if !source_text.trim().is_empty() && !target_text.trim().is_empty() {
                     emit_if_current(
@@ -544,6 +607,7 @@ fn handle_server_event(context: &ReceiveContext, event: TencentCloudServerEvent)
             }
         }
         TencentCloudServerEvent::SessionFinished => {
+            *turn = SentenceContentState::default();
             if *context.setup.borrow() == SetupState::Awaiting {
                 let _ = context.setup.send(SetupState::Rejected);
                 return true;
@@ -609,6 +673,96 @@ fn emit_if_current(context: &ReceiveContext, event: LiveTranslateServerEvent) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clear_observes_an_already_decoded_old_end_without_dropping_the_next_sentence() {
+        let mut turn = SentenceContentState {
+            in_progress: false,
+            discard_until_end: true,
+        };
+        assert!(!turn.accepts_content(0, 1, false));
+        assert!(turn.discard_until_end);
+        assert!(!turn.accepts_content(0, 1, true));
+        assert!(!turn.discard_until_end);
+        assert!(turn.accepts_content(1, 1, false));
+        assert!(turn.in_progress);
+        assert!(turn.accepts_content(1, 1, true));
+        assert!(!turn.in_progress);
+    }
+
+    #[tokio::test]
+    async fn clear_ignores_current_sentence_tail_but_keeps_socket_and_next_sentence() {
+        let (resume, resumed) = tokio::sync::oneshot::channel();
+        let (client, mut events) = test_client(move |mut socket| {
+            Box::pin(async move {
+                socket.send(Message::Text(r#"{"code":0,"message":"success","voice_id":"v"}"#.into())).await.unwrap();
+                socket.send(Message::Text(r#"{"code":0,"result":{"source":"zh","target":"ja","source_text":"old source","target_text":"old translation","sentence_end":false}}"#.into())).await.unwrap();
+                resumed.await.unwrap();
+                for frame in [r#"{"code":0,"result":{"source":"zh","target":"ja","source_text":"old source final","target_text":"old translation final","sentence_end":true}}"#, r#"{"code":0,"result":{"source":"zh","target":"ja","source_text":"new source","target_text":"new translation","sentence_end":false}}"#, r#"{"code":0,"result":{"source":"zh","target":"ja","source_text":"new source final","target_text":"new translation final","sentence_end":true}}"#] {
+                    socket.send(Message::Text(frame.into())).await.unwrap();
+                }
+                while let Some(Ok(message)) = socket.next().await {
+                    if matches!(&message, Message::Text(text) if text.contains(r#""type":"end""#)) {
+                        socket.send(Message::Text(r#"{"code":0,"final":1}"#.into())).await.unwrap();
+                        break;
+                    }
+                }
+            })
+        }).await;
+        client
+            .connect_with_timeout(Duration::from_secs(2))
+            .await
+            .unwrap();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(event, LiveTranslateServerEvent::SourceDraft { .. }) {
+                break;
+            }
+        }
+        let generation = client.inner.generation.load(Ordering::SeqCst);
+        *client.inner.pending_audio.lock().await = vec![1, 2];
+        assert_eq!(client.clear_content().await, 1);
+        assert_eq!(client.content_revision(), 1);
+        assert_eq!(client.inner.generation.load(Ordering::SeqCst), generation);
+        assert!(client.inner.ready.load(Ordering::SeqCst));
+        assert!(client.inner.sink.lock().await.is_some());
+        assert_eq!(*client.inner.pending_audio.lock().await, vec![1, 2]);
+        resume.send(()).unwrap();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            match event {
+                LiveTranslateServerEvent::SubtitleFinalPair {
+                    source,
+                    translation,
+                    ..
+                } => {
+                    assert_eq!(source, "new source final");
+                    assert_eq!(translation, "new translation final");
+                    break;
+                }
+                LiveTranslateServerEvent::SourceDraft { text, .. }
+                | LiveTranslateServerEvent::TranslationDraft(text) => {
+                    assert!(!text.starts_with("old"));
+                }
+                LiveTranslateServerEvent::Error { code, .. } => {
+                    panic!("unexpected fixed error: {code}")
+                }
+                _ => {}
+            }
+        }
+        client.finish(Duration::from_secs(2)).await;
+        assert_eq!(
+            events.recv().await,
+            Some(LiveTranslateServerEvent::SessionFinished)
+        );
+        client.disconnect().await;
+    }
+
     use super::*;
     use crate::clients::provider_events::{provider_event_channel, ProviderEventReceiver};
     use tokio::net::TcpListener;

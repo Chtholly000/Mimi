@@ -16,7 +16,7 @@ use tokio::sync::{watch, Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 const GENERIC_PROVIDER_ERROR: &str = "Gemini Live Translation rejected the session.";
 const GENERIC_PROTOCOL_ERROR: &str = "Gemini Live Translation returned an invalid response.";
@@ -26,7 +26,9 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 // not provide a separate transcript-terminal event. Treat every normal turn
 // boundary (and the final close boundary) as provisional until transcripts
 // have stayed quiet long enough to absorb ordinary network jitter.
-const TAIL_QUIET_PERIOD: Duration = Duration::from_millis(500);
+const TAIL_QUIET_PERIOD: Duration =
+    Duration::from_millis(mimi_core::openai_transcript_committer::GEMINI_TURN_TAIL_QUIET_MS);
+#[cfg(test)]
 const MAXIMUM_TRANSCRIPT_BYTES: usize = 128 * 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -56,91 +58,110 @@ enum SetupState {
     Rejected,
 }
 
-#[derive(Default)]
 struct GeminiTranscriptPairCommitter {
-    source: String,
+    stream: crate::core::openai_transcript_committer::OpenAITranscriptPairCommitter,
     source_language: Option<String>,
-    translation: String,
+    clock: std::time::Instant,
     discard_current_turn: bool,
+    turn_complete_received: bool,
+}
+
+impl Default for GeminiTranscriptPairCommitter {
+    fn default() -> Self {
+        Self {
+            stream:
+                crate::core::openai_transcript_committer::OpenAITranscriptPairCommitter::new_gemini(
+                ),
+            source_language: None,
+            clock: std::time::Instant::now(),
+            discard_current_turn: false,
+            turn_complete_received: false,
+        }
+    }
 }
 
 impl GeminiTranscriptPairCommitter {
+    fn elapsed_ms(&self) -> u64 {
+        self.clock.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+    }
+    fn settle(&mut self) -> Vec<LiveTranslateServerEvent> {
+        let events = self.stream.settle(self.elapsed_ms());
+        self.adapt(events)
+    }
     fn append_source(
         &mut self,
         text: &str,
         language_code: Option<String>,
     ) -> Vec<LiveTranslateServerEvent> {
-        if self.discard_current_turn {
-            return Vec::new();
-        }
-        self.source.push_str(text);
         if language_code.is_some() {
             self.source_language = language_code;
         }
-        if self.exceeded_safety_limit() {
-            return self.safety_limit_error();
-        }
-        vec![LiveTranslateServerEvent::SourceDraft {
-            text: self.source.clone(),
-            language: self.source_language.clone(),
-        }]
+        let events = self
+            .stream
+            .append_source_delta(text, Some(self.elapsed_ms()));
+        self.adapt(events)
     }
 
     fn append_translation(&mut self, text: &str) -> Vec<LiveTranslateServerEvent> {
-        if self.discard_current_turn {
-            return Vec::new();
+        let events = self
+            .stream
+            .append_translation_delta(text, Some(self.elapsed_ms()));
+        self.adapt(events)
+    }
+
+    fn adapt(&mut self, events: Vec<LiveTranslateServerEvent>) -> Vec<LiveTranslateServerEvent> {
+        let mut adapted = Vec::new();
+        for mut event in events {
+            if matches!(event, LiveTranslateServerEvent::Error { .. }) {
+                self.discard_current_turn = true;
+                adapted.push(LiveTranslateServerEvent::Error {
+                    code: "gemini_transcript_safety_limit".into(),
+                    message:
+                        "Gemini Live Translation transcript buffering exceeded its safety limit."
+                            .into(),
+                });
+                continue;
+            }
+            if self.discard_current_turn {
+                if matches!(event, LiveTranslateServerEvent::SubtitleFinalPair { .. }) {
+                    self.discard_current_turn = false;
+                }
+                continue;
+            }
+            match &mut event {
+                LiveTranslateServerEvent::SourceDraft { language, .. }
+                | LiveTranslateServerEvent::SubtitleFinalPair { language, .. } => {
+                    *language = self.source_language.clone()
+                }
+                _ => {}
+            }
+            adapted.push(event);
         }
-        self.translation.push_str(text);
-        if self.exceeded_safety_limit() {
-            return self.safety_limit_error();
-        }
-        vec![LiveTranslateServerEvent::TranslationDraft(
-            self.translation.clone(),
-        )]
+        adapted
     }
 
     fn finish_turn(&mut self) -> Vec<LiveTranslateServerEvent> {
-        if self.discard_current_turn {
-            self.reset();
-            return Vec::new();
-        }
-        let source = self.source.trim().to_string();
-        let translation = self.translation.trim().to_string();
-        let language = self.source_language.clone();
+        let events = self.stream.finish();
+        let events = self.adapt(events);
         self.reset();
-        if source.is_empty() || translation.is_empty() {
-            return Vec::new();
-        }
-        vec![LiveTranslateServerEvent::SubtitleFinalPair {
-            source,
-            language,
-            translation,
-        }]
+        events
+    }
+
+    fn has_pending(&self) -> bool {
+        self.stream.has_pending()
     }
 
     fn reset(&mut self) {
-        self.source.clear();
+        self.stream.reset();
         self.source_language = None;
-        self.translation.clear();
         self.discard_current_turn = false;
-    }
-
-    fn exceeded_safety_limit(&self) -> bool {
-        self.source.len().saturating_add(self.translation.len()) > MAXIMUM_TRANSCRIPT_BYTES
-    }
-
-    fn safety_limit_error(&mut self) -> Vec<LiveTranslateServerEvent> {
-        self.reset();
-        self.discard_current_turn = true;
-        vec![LiveTranslateServerEvent::Error {
-            code: "gemini_transcript_safety_limit".into(),
-            message: "Gemini Live Translation transcript buffering exceeded its safety limit."
-                .into(),
-        }]
+        self.turn_complete_received = false;
     }
 }
 
 struct Inner {
+    // Serializes the content barrier with local assembly, never socket/audio state.
+    content_lock: Mutex<()>,
     sink: Mutex<Option<Sink>>,
     receive_task: Mutex<Option<JoinHandle<()>>>,
     audio_send_lock: Mutex<()>,
@@ -162,6 +183,7 @@ struct Inner {
 /// content-free error before leaving this client.
 #[derive(Clone)]
 pub struct GeminiLiveClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint: url::Url,
     authenticate_with_query: bool,
@@ -171,6 +193,41 @@ pub struct GeminiLiveClient {
 }
 
 impl GeminiLiveClient {
+    pub fn content_revision(&self) -> u64 {
+        self.events.content_revision()
+    }
+
+    pub async fn clear_content(&self) -> u64 {
+        let _content = self.inner.content_lock.lock().await;
+        cancel_normal_turn_boundary(&self.inner);
+        let mut committer = self.inner.committer.lock().await;
+        let pending_boundary = committer.turn_complete_received;
+        let active = committer.discard_current_turn || committer.has_pending();
+        committer.reset();
+        committer.discard_current_turn = active;
+        committer.turn_complete_received = pending_boundary;
+        let revision = self.events.advance_content_revision();
+        // A boundary already observed before Clear still owns its late tails.
+        // Re-arm only that quiet boundary, never create a new server turn.
+        if pending_boundary && !self.inner.is_closing.load(Ordering::SeqCst) {
+            schedule_normal_turn_commit_for(
+                &self.inner,
+                &self.events,
+                self.inner.generation.load(Ordering::SeqCst),
+            );
+        }
+        revision
+    }
+
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         api_key: &str,
         target_language: TargetLanguage,
@@ -196,7 +253,9 @@ impl GeminiLiveClient {
             return Err(GeminiLiveClientError::InvalidTargetLanguage);
         }
         Ok(Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
+                content_lock: Mutex::new(()),
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
                 audio_send_lock: Mutex::new(()),
@@ -235,10 +294,13 @@ impl GeminiLiveClient {
             .authenticated_endpoint()
             .into_client_request()
             .map_err(|_| GeminiLiveClientError::TransportFailure)?;
-        let (socket, _) = tokio::time::timeout(Duration::from_secs(15), connect_async(request))
-            .await
-            .map_err(|_| GeminiLiveClientError::TransportFailure)?
-            .map_err(|_| GeminiLiveClientError::TransportFailure)?;
+        let (socket, _) = tokio::time::timeout(
+            Duration::from_secs(15),
+            super::provider_network::websocket(request, &self.network),
+        )
+        .await
+        .map_err(|_| GeminiLiveClientError::TransportFailure)?
+        .map_err(|_| GeminiLiveClientError::TransportFailure)?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);
@@ -386,12 +448,23 @@ impl GeminiLiveClient {
                 );
             }
             Err(_) if self.is_current_generation(generation) => {
-                self.inner.committer.lock().await.reset();
+                let _content = self.inner.content_lock.lock().await;
+                let mut committer = self.inner.committer.lock().await;
+                let pending = committer.has_pending();
+                committer.reset();
                 self.inner.pending_audio.lock().await.clear();
+                // The continuous translation model need not emit turnComplete.
+                // Already committed stable blocks are durable; an unmatched
+                // tail is still rejected rather than promoted at the deadline.
                 self.emit(
-                    LiveTranslateServerEvent::Error {
-                        code: "gemini_close_timeout".into(),
-                        message: "Gemini Live Translation did not finish closing in time.".into(),
+                    if pending {
+                        LiveTranslateServerEvent::Error {
+                            code: "gemini_close_timeout".into(),
+                            message: "Gemini Live Translation did not finish closing in time."
+                                .into(),
+                        }
+                    } else {
+                        LiveTranslateServerEvent::SessionFinished
                     },
                     generation,
                 );
@@ -462,10 +535,15 @@ impl GeminiLiveClient {
         let Some(sink) = sink.as_mut() else {
             return Err(GeminiLiveClientError::NotConnected);
         };
-        tokio::time::timeout(SEND_TIMEOUT, sink.send(Message::Text(text.into())))
-            .await
-            .map_err(|_| GeminiLiveClientError::TransportFailure)?
-            .map_err(|_| GeminiLiveClientError::TransportFailure)
+        let evidence =
+            crate::development_audio::begin_json(&text, GeminiLiveEndpoint::SAMPLE_RATE_HZ);
+        tokio::time::timeout(
+            SEND_TIMEOUT,
+            evidence.observe(sink.send(Message::Text(text.into()))),
+        )
+        .await
+        .map_err(|_| GeminiLiveClientError::TransportFailure)?
+        .map_err(|_| GeminiLiveClientError::TransportFailure)
     }
 
     fn emit(&self, event: LiveTranslateServerEvent, generation: u64) {
@@ -527,7 +605,20 @@ struct ReceiveContext {
 }
 
 async fn receive_loop(mut context: ReceiveContext) {
-    while let Some(message) = context.stream.next().await {
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    loop {
+        let message = tokio::select! {
+            message = context.stream.next() => { let Some(message) = message else { break }; message },
+            _ = tick.tick() => {
+                let _content = context.inner.content_lock.lock().await;
+                if context.inner.generation.load(Ordering::SeqCst) != context.generation { return; }
+                let mut committer = context.inner.committer.lock().await;
+                if !committer.turn_complete_received {
+                    emit_all_if_current(&context, committer.settle());
+                }
+                continue;
+            }
+        };
         if context.inner.generation.load(Ordering::SeqCst) != context.generation {
             return;
         }
@@ -590,6 +681,21 @@ async fn fail_receive_loop(context: &ReceiveContext, code: &str, message: &str) 
 
 /// Returns true when the receive loop must stop.
 async fn handle_server_event(context: &ReceiveContext, event: GeminiLiveServerEvent) -> bool {
+    let revision = context.events.content_revision();
+    let _content = context.inner.content_lock.lock().await;
+    if context.inner.generation.load(Ordering::SeqCst) != context.generation {
+        return false;
+    }
+    if revision != context.events.content_revision()
+        && matches!(
+            &event,
+            GeminiLiveServerEvent::SourceTranscript { .. }
+                | GeminiLiveServerEvent::TranslationTranscript { .. }
+        )
+    {
+        return false;
+    }
+
     let setup_is_awaiting = *context.setup.borrow() == SetupState::Awaiting;
     if setup_is_awaiting
         && !matches!(
@@ -643,6 +749,7 @@ async fn handle_server_event(context: &ReceiveContext, event: GeminiLiveServerEv
             emit_all_if_current(context, events);
         }
         GeminiLiveServerEvent::TurnComplete => {
+            context.inner.committer.lock().await.turn_complete_received = true;
             if context.inner.is_closing.load(Ordering::SeqCst) {
                 context
                     .inner
@@ -741,6 +848,7 @@ async fn publish_turn_after_transcript_quiet(
 ) -> Option<()> {
     loop {
         let revision = wait_for_transcript_quiet(inner, generation, boundary).await?;
+        let _content = inner.content_lock.lock().await;
         let mut committer = inner.committer.lock().await;
         if !transcript_boundary_is_current(inner, generation, boundary) {
             return None;
@@ -807,16 +915,21 @@ async fn emit_normal_turn_after_transcript_quiet(
 }
 
 fn schedule_normal_turn_commit(context: &ReceiveContext) {
-    let epoch = context
-        .inner
+    schedule_normal_turn_commit_for(&context.inner, &context.events, context.generation);
+}
+
+fn schedule_normal_turn_commit_for(
+    inner: &Arc<Inner>,
+    events: &ProviderEventSender,
+    generation: u64,
+) {
+    let epoch = inner
         .turn_boundary_epoch
         .fetch_add(1, Ordering::SeqCst)
         .wrapping_add(1);
-    context.inner.transcript_notify.notify_waiters();
-
-    let inner = Arc::clone(&context.inner);
-    let events = context.events.clone();
-    let generation = context.generation;
+    inner.transcript_notify.notify_waiters();
+    let inner = Arc::clone(inner);
+    let events = events.clone();
     drop(tokio::spawn(async move {
         emit_normal_turn_after_transcript_quiet(&inner, &events, generation, epoch).await;
     }));
@@ -841,12 +954,173 @@ fn emit_if_current(context: &ReceiveContext, event: LiveTranslateServerEvent) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn clear_keeps_the_observed_quiet_boundary_without_committing_its_old_tail() {
+        let (sender, mut receiver) = provider_event_channel();
+        let client = GeminiLiveClient::with_endpoint(
+            "test-key-not-real",
+            TargetLanguage::Japanese,
+            sender.clone(),
+            url::Url::parse("ws://127.0.0.1:1/live").unwrap(),
+            false,
+        )
+        .unwrap();
+        {
+            let mut committer = client.inner.committer.lock().await;
+            committer.append_source("old source", None);
+            committer.append_translation("old translation");
+            committer.turn_complete_received = true;
+        }
+        let old_epoch = client.inner.turn_boundary_epoch.load(Ordering::SeqCst);
+        sender
+            .send(LiveTranslateServerEvent::SessionUpdated)
+            .unwrap();
+        assert_eq!(client.clear_content().await, 1);
+        assert_eq!(client.content_revision(), 1);
+        assert!(!transcript_boundary_is_current(
+            &client.inner,
+            0,
+            TranscriptBoundary::Normal(old_epoch)
+        ));
+        {
+            let mut committer = client.inner.committer.lock().await;
+            assert!(!committer.has_pending());
+            assert!(committer.append_source("late old source", None).is_empty());
+            assert!(committer
+                .append_translation("late old translation")
+                .is_empty());
+        }
+        let epoch = client.inner.turn_boundary_epoch.load(Ordering::SeqCst);
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            publish_turn_after_transcript_quiet(
+                &client.inner,
+                &sender,
+                0,
+                TranscriptBoundary::Normal(epoch),
+                false,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let mut committer = client.inner.committer.lock().await;
+        assert!(!committer.discard_current_turn);
+        committer.append_source("new source", None);
+        committer.append_translation("new translation");
+        assert!(
+            matches!(committer.finish_turn().as_slice(), [LiveTranslateServerEvent::SubtitleFinalPair {source,translation,..}]
+            if source == "new source" && translation == "new translation")
+        );
+        drop(committer);
+        assert_eq!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::SessionUpdated)
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
     use super::*;
     use crate::clients::provider_events::{provider_event_channel, ProviderEventReceiver};
     use base64::Engine;
     use futures_util::{SinkExt, StreamExt};
     use serde_json::{json, Value};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn shared_gemini_transcript_contracts() {
+        let fixtures: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../shared/translation-contracts.json"
+        )))
+        .unwrap();
+        for case in fixtures["liveTranscriptSequences"].as_array().unwrap() {
+            let mut committer = GeminiTranscriptPairCommitter::default();
+            let mut pairs = Vec::new();
+            let mut failed = false;
+            for (index, frame) in case["frames"].as_array().unwrap().iter().enumerate() {
+                let Ok(decoded) = GeminiLiveServerEvent::decode(frame.as_str().unwrap()) else {
+                    failed = true;
+                    break;
+                };
+                for event in decoded {
+                    let events = match event {
+                        GeminiLiveServerEvent::SourceTranscript {
+                            text,
+                            language_code,
+                        } => committer.append_source(&text, language_code),
+                        GeminiLiveServerEvent::TranslationTranscript { text, .. } => {
+                            committer.append_translation(&text)
+                        }
+                        GeminiLiveServerEvent::TurnComplete => committer.finish_turn(),
+                        _ => Vec::new(),
+                    };
+                    for event in events {
+                        if let LiveTranslateServerEvent::SubtitleFinalPair {
+                            source,
+                            language,
+                            translation,
+                        } = event
+                        {
+                            pairs.push(json!({"source":source,"language":language,"translation":translation}));
+                        }
+                    }
+                }
+                if case["settleAfterFrames"].as_array().is_some_and(|indices| {
+                    indices
+                        .iter()
+                        .any(|value| value.as_u64() == Some(index as u64))
+                }) {
+                    let events = committer.stream.settle(u64::MAX);
+                    for event in committer.adapt(events) {
+                        if let LiveTranslateServerEvent::SubtitleFinalPair {
+                            source,
+                            language,
+                            translation,
+                        } = event
+                        {
+                            pairs.push(json!({"source":source,"language":language,"translation":translation}));
+                        }
+                    }
+                }
+            }
+            if case["expected"].is_null() {
+                assert!(failed, "{}", case["id"]);
+            } else {
+                assert!(!failed);
+                assert_eq!(json!(pairs), case["expected"], "{}", case["id"]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn continuous_sentence_pairs_survive_language_only_updates_and_close_without_turn_complete(
+    ) {
+        let (client, mut events) = test_client(|mut socket| Box::pin(async move {
+            assert_setup(socket.next().await.unwrap().unwrap());
+            socket.send(Message::Text(r#"{"setupComplete":{}}"#.into())).await.unwrap();
+            socket.send(Message::Text(r#"{"serverContent":{"inputTranscription":{"text":"Hello.","languageCode":"en"},"outputTranscription":{"text":"こんにちは。"}}}"#.into())).await.unwrap();
+            socket.send(Message::Text(r#"{"serverContent":{"inputTranscription":{"languageCode":"en"},"outputTranscription":{"languageCode":"ja"}}}"#.into())).await.unwrap();
+            while socket.next().await.is_some() {}
+        })).await;
+        client.connect().await.unwrap();
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(3), events.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(event, LiveTranslateServerEvent::SubtitleFinalPair { .. }) {
+                break;
+            }
+        }
+        client.finish(Duration::from_millis(50)).await;
+        let mut finished = false;
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(event, LiveTranslateServerEvent::Error { .. }));
+            finished |= matches!(event, LiveTranslateServerEvent::SessionFinished);
+        }
+        assert!(finished);
+    }
 
     async fn test_client(
         server: impl FnOnce(
@@ -1071,13 +1345,14 @@ mod tests {
 
         let _ = committer.append_source("Next sentence.", Some("en".into()));
         let _ = committer.append_translation("次の文。");
+        let events = committer.finish_turn();
         assert!(matches!(
-            committer.finish_turn().as_slice(),
-            [LiveTranslateServerEvent::SubtitleFinalPair {
+            events.last(),
+            Some(LiveTranslateServerEvent::SubtitleFinalPair {
                 source,
                 language,
                 translation,
-            }] if source == "Next sentence."
+            }) if source == "Next sentence."
                 && language.as_deref() == Some("en")
                 && translation == "次の文。"
         ));

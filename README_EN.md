@@ -9,6 +9,7 @@
   </p>
   <p>
     <a href="https://github.com/yuxino/mimi/releases/latest"><img src="https://img.shields.io/github/v/release/yuxino/mimi?style=flat&amp;logo=github&amp;logoColor=white" alt="Latest release"></a>
+    <a href="https://github.com/yuxino/mimi/releases"><img src="https://img.shields.io/github/downloads/yuxino/mimi/total?style=flat&amp;labelColor=a85f82&amp;color=e889b5" alt="Total downloads"></a>
     <a href="https://github.com/yuxino/mimi/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/yuxino/mimi/ci.yml?style=flat&amp;logo=githubactions&amp;logoColor=white&amp;branch=main&amp;event=push&amp;label=CI" alt="CI status on main"></a>
     <a href="LICENSE"><img src="https://img.shields.io/github/license/yuxino/mimi?style=flat&amp;logo=opensourceinitiative&amp;logoColor=white" alt="MIT license"></a>
   </p>
@@ -20,79 +21,65 @@
   </p>
 </div>
 
-Mimi shows live subtitles in a floating window for films, live streams, lessons, and games playing on your computer. Your chosen cloud service transcribes the system audio or translates it into Simplified Chinese, English, or Japanese; available languages and modes depend on the service. The name `mimi` means “ear” in Japanese.
+<p align="center">Mimi turns speech playing on your computer into live translated subtitles. Watch films, follow streams, or take lessons with subtitles floating over your screen.</p>
 
-<!-- project-demo-v1 -->
-## Demo
-
-https://github.com/user-attachments/assets/5acd46bb-e6b5-4bb5-b280-d70d4e0cdbb4
-
-<p align="center">A 4K / 60 fps tour of service setup, subtitle controls, and Immersive Mode in the macOS app, with English narration, captions, and original film audio.</p>
-<p align="center"><a href="https://mimi.yuxino.cn/en/?lang=en#demo">Watch in English</a> · <a href="https://mimi.yuxino.cn/?lang=zh#demo">观看中文版</a> · <a href="docs/demos/full-tour-4k.md">Video details and credits</a></p>
-<!-- /project-demo-v1 -->
+![Mimi's bilingual subtitle window over an original illustrated scene](docs/assets/readme-preview.png)
 
 ## Features
 
-- **Live subtitles and translation** — captures system output audio; source languages, targets, and quality modes vary by provider.
-- **Service configurations** — save and switch between services without repeatedly entering credentials.
-- **Subtitle overlay** — move, resize, collapse, pause, enable click-through, or use Immersive Mode.
-- **Updates** — check and install updates in Settings on macOS, Windows installers, and Linux AppImage. Windows ZIP and Linux .deb builds link to Releases for manual updates.
-- **Session export** — opt in under Settings → Session export to retain timestamped transcripts or record system audio, then stop and export TXT / WAV. Both switches are off by default.
-- **Settings appearance** — light, dark, or follow the system.
-- **Privacy** — no mimi account, microphone, or screen capture; audio goes only to the active provider. Session content stays in memory until you explicitly export it. Turning an option off clears its buffer; starting a new session or quitting clears both. Export before doing so.
-
-Transcript retention is limited to 10,000 confirmed pairs / 2 MiB of text and audio to 64 MiB; reaching a limit stops retention and shows a notice. Transcript timestamps mark final confirmation time, not media playback time. Pauses and reconnect gaps are omitted from WAV audio, so it is not synchronized to transcript timestamps.
+- Show original text, translations, or both.
+- Adjust subtitle position, size, and color, or let mouse clicks pass through the window.
+- Save subtitles or audio locally and export TXT / WAV when needed. Saving and recording are off by default.
 
 ## Get started
 
-1. Download the macOS Apple silicon or Intel DMG, a Windows x64 EXE, MSI, or portable ZIP, or a Linux x86_64 .deb / AppImage from the [latest release](https://github.com/yuxino/mimi/releases/latest), or build from source.
-2. Open **Translation Service**, choose a provider, and save its credentials.
-3. Play something and select **Start** from the mimi menu bar/system tray icon; on first use, macOS then prompts for **Screen & System Audio Recording**.
+For your first setup, **we recommend starting with Alibaba Cloud**. We’ve done more real-world testing with it. We’re still improving support for other services, so results and reliability may vary.
 
-Bring your own provider API credentials; usage charges may apply. Credentials are stored in the OS credential store.
+1. Open Settings → Speech & Translation, add a configuration, enter the requested provider credentials, and save.
+2. Choose the recognition and translation languages.
+3. Play something and turn on Live Subtitles under Subtitles. On macOS, allow Screen & System Audio Recording when asked.
 
-For macOS, Windows installer copies, and Linux AppImage, open **Settings → General → Software Update**. Mimi downloads the
-update with progress, then lets you install it. Windows reopens Mimi after
-installation; macOS and Linux AppImage offer a separate **Restart and Finish Update** action.
-Versions older than v1.3.8 need one manual installation to enable in-app updates.
+Bring your own provider credentials. Audio is sent to your configured speech service; cloud usage charges may apply.
 
-### Platform support
+[Setup & help](docs/usage.md) · [Android](android/README.md) · [Report a bug](https://github.com/yuxino/mimi/issues) · [Contributing](CONTRIBUTING.md)
 
-- **macOS 13+ (Apple silicon and Intel)**: Choose the `_aarch64.dmg` for Apple silicon or `_x64.dmg` for Intel. Intel packages are available from v1.4.4; build and signing checks passed, but Intel hardware capture and permission behavior remain unverified. DMG installers are not Apple-notarized. If first launch is blocked, choose **Open Anyway** in **System Settings → Privacy & Security**. See the permission notes below when upgrading from an older build.
-- **Windows x64**: Unsigned preview EXE / MSI installers and, since v1.4.3, a portable ZIP are available; SmartScreen may warn. Extract `mimi_<version>_x64-portable.zip` and launch `mimi.exe` without installation. WebView2 must already be installed (it is normally present on Windows 11). The ZIP does not move settings, service credentials, or exported files into its folder; those remain in their existing user-selected or OS-managed locations. Update this copy by quitting Mimi and replacing it with a new ZIP from Releases. The portable build does not run the in-app installer updater.
+### Try Index-Translate
 
-- **Linux x86_64 preview (Ubuntu 22.04+ baseline)**: Use the `.deb` package or AppImage. Requires PulseAudio or PipeWire with `pipewire-pulse`, a working default output device, and an unlocked Secret Service keyring (for example GNOME Keyring). Mimi captures only the output monitor, never the default input or microphone. Restart the session after changing output devices. X11 is recommended; Wayland compositors may restrict positioning, always-on-top, click-through, and global shortcuts. Use Settings if your desktop does not show a tray icon. Minimize it to keep subtitles running; closing it exits Mimi on Linux. Linux ARM64 packages are not provided. See [Linux setup and verification](docs/development/linux.md).
+Bilibili's [Index-Translate](https://github.com/bilibili/Index-Translate#inference) currently offers a free public translation API (as of October 5, 2026). You can try it in Mimi and compare the subtitle translations with your usual service.
 
-### macOS permissions after an update
+In **Settings → Speech & Translation**, open an **Alibaba Cloud** configuration and select **OpenAI-compatible API** under **Text translation**. Use the values from the [official example](https://github.com/bilibili/Index-Translate/blob/main/inference/llm/call_api.py#L40-L41):
 
-The release pipeline now requires one fixed self-signed certificate across macOS builds. Earlier releases through v1.4.1 used ad-hoc signatures that changed with each build; installing the first release with the fixed identity may require one new recording grant. This source change does not alter an already installed app. Fixed signing prevents build-specific identity changes; it does not promise that macOS will never request consent again. Deleting a local signing certificate does not change the installed app's identity or fix this. Keep the release app at `/Applications/mimi.app`; use the separate `mimi-dev.app` for development.
+| Field | Value |
+| --- | --- |
+| Service address | `https://index-translate.bilibili.com/v1` |
+| Model name | `Index-Translate-35B-A3B` |
+| API Key | Leave empty; the public API currently requires no authentication. |
 
-**Recording is enabled, but Mimi still reports permission denied:** first quit and reopen Mimi and follow the normal permission prompt. If capture is still denied:
+Save, then run the connection check beside **Text translation**. If this address already has a saved key, remove it with **Remove translation key** and save again.
 
-1. Quit Mimi. In **System Settings → Privacy & Security → Screen & System Audio Recording** (the label varies by macOS version), select and remove only the old **mimi** entry.
-2. Use **+** to add `/Applications/mimi.app`, enable its permission, and complete any system authentication yourself. Leave `mimi-dev` and other apps alone.
-3. Reopen that same app, start a session, and play audio containing speech to check that subtitles actually appear. An enabled switch alone does not confirm recovery.
+Index-Translate handles text translation only: keep your Alibaba Cloud speech-recognition credentials configured; recognition may still incur charges. Free API availability is subject to the upstream service.
 
-This removes an old recording authorization, not a certificate or API key. If one attempt does not help, stop repeating the reset and [report the error](https://github.com/yuxino/mimi/issues), including your macOS and Mimi versions and installation source. Do not include API keys or subtitle content.
+## FAQ
 
-**Keychain asks for your password or access to a saved API key:** confirm that the request comes from the Mimi copy you intended to open. If the dialog offers **Always Allow**, it can retain access for that build, but cannot guarantee access after a self-signed binary changes. Do not delete saved credentials, certificates, or the login keychain, allow all apps to access a key, or run a system-wide permission reset. A `codesign` request for a development signing private key is a separate build-time prompt.
+**macOS keeps asking for recording permission even though it is enabled?** Quit Mimi, then remove and re-add only its entry in System Settings → Privacy & Security → Screen & System Audio Recording. Use `/Applications/mimi.app` for the release app or `/Applications/mimi-dev.app` for development, enable it, and reopen the same app. See [permission recovery](docs/usage.md#macos-permissions-after-an-update).
 
-My wallet is still a little empty, and I’m saving up for Apple Developer membership (๑•̀ㅂ•́)و✧ Thank you for understanding! Stable self-signing does not need a paid membership; Apple notarization is a separate step. The manual recovery above is for a stale recording grant, not something you should have to repeat after every update.
+## Contributors
 
-## Development
+Thanks to everyone who writes code, reports issues, tries Mimi, or shares it (๑•̀ㅂ•́)و✧
 
-See the [contributing guide](CONTRIBUTING.md) for building and contributing, and the [security policy](SECURITY.md) for reporting vulnerabilities.
+Special thanks to [@yebuwudong](https://github.com/yebuwudong) for the [Android app](https://github.com/yuxino/mimi/pull/37), and [@LLLin000](https://github.com/LLLin000) for [subtitle animation](https://github.com/yuxino/mimi/pull/67) and [Windows audio improvements](https://github.com/yuxino/mimi/pull/89).
 
-## Subtitle display
+<p>
+  <a href="https://github.com/yuxino"><img src="docs/assets/contributors/yuxino.svg" width="64" height="64" alt="@yuxino"></a>
+  <a href="https://github.com/inhome"><img src="docs/assets/contributors/inhome.svg" width="64" height="64" alt="@inhome"></a>
+  <a href="https://github.com/LLLin000"><img src="docs/assets/contributors/LLLin000.svg" width="64" height="64" alt="@LLLin000"></a>
+  <a href="https://github.com/yebuwudong"><img src="docs/assets/contributors/yebuwudong.svg" width="64" height="64" alt="@yebuwudong"></a>
+</p>
 
-Choose **Translation only**, **Original + translation**, or **Original only**
-in Settings, the overlay control panel, or the tray. Switch instantly with
-**⌘⇧B** on macOS or **Ctrl+Shift+B** on Windows/Linux. This changes what you see
-without restarting translation. Bilingual mode pairs confirmed sentences and
-previews the recognized original while a translation is pending.
+[All contributors](https://github.com/yuxino/mimi/graphs/contributors)
 
-## Community links
+## Community
 
-[LINUX DO](https://linux.do/)
+Thanks to the people in [V2EX](https://www.v2ex.com/), [LINUX DO](https://linux.do/), [Appinn](https://meta.appinn.net/), [NodeLoc](https://www.nodeloc.com/), [Solo](https://solo.xin/), [Xinquji](https://xinquji.com/posts/859305), and [Eleduck](https://eleduck.com/) for trying Mimi, sharing feedback, and spreading the word.
 
 [MIT](LICENSE) © 2026 yuxino

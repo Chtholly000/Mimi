@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import app.yuxino.mimi.android.provider.TextTranslationProvider
+import app.yuxino.mimi.android.provider.TranslationConfiguration
+import app.yuxino.mimi.android.provider.validateTranslationConfiguration
 
 /** EncryptedSharedPreferences-backed settings (API key stays in Android Keystore-backed storage). */
 object SettingsStore {
@@ -18,6 +21,7 @@ object SettingsStore {
     private const val KEY_MODEL_PREFIX = "model_"
     private const val KEY_OVERLAY_OPACITY = "overlay_opacity"
     private const val KEY_OVERLAY_BG_ALPHA = "overlay_bg_alpha"
+    private const val KEY_IMMERSIVE_SUBTITLES = "immersive_subtitles"
     private const val KEY_HISTORY_LINES = "history_lines"
     private const val KEY_HOTWORDS = "hotwords"
     private const val KEY_TRANSLATION_COLOR = "translation_color"
@@ -88,7 +92,9 @@ object SettingsStore {
         provider.configured(configuration(context, provider).credentials)
 
     /** Save one complete profile atomically; callers preserve blank, write-only secret fields. */
-    fun saveConfiguration(context: Context, config: app.yuxino.mimi.android.provider.ServiceConfiguration): Boolean {
+    fun saveConfiguration(context: Context, config: app.yuxino.mimi.android.provider.ServiceConfiguration,
+        translation: app.yuxino.mimi.android.provider.TranslationConfiguration? = null,
+        translationEnabled: Boolean? = null): Boolean {
         apiKey(context, config.provider.id) // Resolve legacy ownership before activating another provider.
         val editor = get(context).edit()
         config.provider.fields.forEach { field ->
@@ -97,7 +103,66 @@ object SettingsStore {
         }
         editor.putString(KEY_BASE_URL_PREFIX + config.provider.id, config.endpoint.trim())
         editor.putString(KEY_MODEL_PREFIX + config.provider.id, config.model.trim())
+        if (config.provider == app.yuxino.mimi.android.provider.ServiceProvider.DASHSCOPE && translation != null) {
+            val selected = if (translationEnabled == false) TextTranslationProvider.BUILTIN else translation.provider
+            if (selected != TextTranslationProvider.BUILTIN) validateTranslationConfiguration(translation)
+            // Copy the old ChatMock draft once, even when saving a different translator first.
+            // Reads do not migrate or enable anything; Save and use is the only write boundary.
+            val preferences = get(context)
+            val openAIPrefix = translationPrefix(TextTranslationProvider.OPENAI_COMPATIBLE)
+            if (!preferences.contains(openAIPrefix + "endpoint") && preferences.contains("chatmock_endpoint")) {
+                writeTranslation(editor, translationConfiguration(context, TextTranslationProvider.OPENAI_COMPATIBLE))
+            }
+            if (translation.provider !in setOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.NONE)) {
+                writeTranslation(editor, translation)
+            }
+            editor.putString("text_translation_provider", selected.storageId)
+            listOf("chatmock_enabled", "chatmock_endpoint", "chatmock_model", "chatmock_api_key", "chatmock_local_http")
+                .forEach(editor::remove)
+        }
         return editor.commit()
+    }
+
+    fun textTranslationProvider(context: Context): TextTranslationProvider {
+        val preferences = get(context)
+        val stored = preferences.getString("text_translation_provider", null)
+        if (stored != null) return TextTranslationProvider.fromStorageId(stored)
+        return if (preferences.getBoolean("chatmock_enabled", false)) TextTranslationProvider.OPENAI_COMPATIBLE
+            else TextTranslationProvider.BUILTIN
+    }
+
+    fun originalTextOnly(context: Context): Boolean =
+        provider(context) == PROVIDER_DASHSCOPE && textTranslationProvider(context) == TextTranslationProvider.NONE
+
+    fun useChatMockTranslation(context: Context): Boolean =
+        textTranslationProvider(context) == TextTranslationProvider.CHAT_MOCK
+
+    fun translationConfiguration(context: Context, provider: TextTranslationProvider = textTranslationProvider(context)): TranslationConfiguration {
+        if (provider in setOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.NONE)) {
+            return TranslationConfiguration(provider = provider)
+        }
+        val preferences = get(context)
+        val prefix = translationPrefix(provider)
+        // The old combined entry could hold any compatible service. Keep it generic;
+        // never infer ChatMock from its URL or copy its key into the new ChatMock entry.
+        val legacy = provider == TextTranslationProvider.OPENAI_COMPATIBLE && !preferences.contains(prefix + "endpoint")
+        return TranslationConfiguration(
+            endpoint = preferences.getString(if (legacy) "chatmock_endpoint" else prefix + "endpoint", "").orEmpty(),
+            model = preferences.getString(if (legacy) "chatmock_model" else prefix + "model", "").orEmpty(),
+            apiKey = preferences.getString(if (legacy) "chatmock_api_key" else prefix + "api_key", "").orEmpty(),
+            allowLocalHttp = preferences.getBoolean(if (legacy) "chatmock_local_http" else prefix + "local_http", false),
+            provider = provider,
+        )
+    }
+
+    private fun translationPrefix(provider: TextTranslationProvider) = "text_translation_${provider.storageId}_"
+
+    private fun writeTranslation(editor: SharedPreferences.Editor, configuration: TranslationConfiguration) {
+        val prefix = translationPrefix(configuration.provider)
+        editor.putString(prefix + "endpoint", configuration.endpoint)
+            .putString(prefix + "model", configuration.model)
+            .putString(prefix + "api_key", configuration.apiKey)
+            .putBoolean(prefix + "local_http", configuration.allowLocalHttp)
     }
 
     fun activateProvider(context: Context, provider: app.yuxino.mimi.android.provider.ServiceProvider): Boolean {
@@ -163,10 +228,17 @@ object SettingsStore {
 
     /** Subtitle card background alpha, 0 (invisible) .. 90 (nearly solid). */
     fun overlayBgAlpha(context: Context): Int =
-        get(context).getInt(KEY_OVERLAY_BG_ALPHA, 0).coerceIn(0, 90)
+        get(context).getInt(KEY_OVERLAY_BG_ALPHA, 65).coerceIn(0, 90)
 
     fun setOverlayBgAlpha(context: Context, value: Int) =
         get(context).edit().putInt(KEY_OVERLAY_BG_ALPHA, value.coerceIn(0, 90)).apply()
+
+    /** Plain, touch-through subtitles; changed appearance takes effect on the next session. */
+    fun immersiveSubtitles(context: Context): Boolean =
+        get(context).getBoolean(KEY_IMMERSIVE_SUBTITLES, false)
+
+    fun setImmersiveSubtitles(context: Context, enabled: Boolean) =
+        get(context).edit().putBoolean(KEY_IMMERSIVE_SUBTITLES, enabled).apply()
 
     /** Last overlay vertical offset from the bottom edge, persisted. */
     fun overlayYOffset(context: Context): Int =

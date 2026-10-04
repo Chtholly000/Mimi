@@ -1,9 +1,13 @@
 dist/
 work/
 .DS_Store
+.env
+.env.*
+!**/.env.example
 node_modules/
 .npm-cache/
 src-tauri/target/
+shared/**/target/
 src-tauri/gen/
 .cargo-home/
 dsh-blue-whale-maid/

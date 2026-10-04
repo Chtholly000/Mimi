@@ -2,7 +2,7 @@
 //! endpoint. Authentication uses a Bearer API key; the URL has no Workspace
 //! ID component.
 
-use crate::core::models::{SourceLanguage, TargetLanguage};
+use crate::core::models::{SourceLanguage, TargetLanguage, UtteranceRole};
 use base64::Engine;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -17,6 +17,8 @@ pub enum LiveTranslateProtocolError {
     InvalidJSON,
     #[error("The live translation event is missing its type.")]
     MissingEventType,
+    #[error("The live translation service does not support this language selection.")]
+    UnsupportedLanguage,
 }
 
 /// DashScope unified realtime WebSocket endpoint. The old MaaS host put the
@@ -61,6 +63,22 @@ impl LiveTranslateRequestEncoder {
         hotwords: &BTreeMap<String, String>,
         event_id: Option<&str>,
     ) -> Result<Value, LiveTranslateProtocolError> {
+        if !matches!(
+            source_language,
+            SourceLanguage::Automatic
+                | SourceLanguage::Chinese
+                | SourceLanguage::English
+                | SourceLanguage::Japanese
+                | SourceLanguage::Korean
+        ) || !matches!(
+            target_language,
+            TargetLanguage::Original
+                | TargetLanguage::SimplifiedChinese
+                | TargetLanguage::English
+                | TargetLanguage::Japanese
+        ) {
+            return Err(LiveTranslateProtocolError::UnsupportedLanguage);
+        }
         let mut translation = json!({ "language": target_language.raw_value() });
         if !hotwords.is_empty() {
             translation["corpus"] = json!({ "phrases": hotwords });
@@ -115,14 +133,71 @@ pub enum LiveTranslateServerEvent {
         text: String,
         language: Option<String>,
     },
+    /// A real Audio3 sentence identity, retained on its replaceable draft lane.
+    /// Empty text can mark the recognizer's explicit start of a new sentence.
+    SourceUtteranceDraft {
+        utterance_id: u64,
+        text: String,
+        language: Option<String>,
+    },
     SourceFinal {
         text: String,
         language: Option<String>,
     },
+    /// Audio3's real positive sentence ID, scoped to its recognizer task.
+    SourceUtteranceFinal {
+        utterance_id: u64,
+        text: String,
+        language: Option<String>,
+    },
     TranslationStarted,
+    /// Local, replaceable HTTP preview lifecycle. Never a final boundary.
+    PreviewTranslationStarted {
+        request_id: u64,
+    },
+    PreviewTranslationFinished {
+        request_id: u64,
+    },
+    SubtitlePreviewPair {
+        source_utterance_id: Option<u64>,
+        source: String,
+        language: Option<String>,
+        translation: String,
+    },
+    /// Invalidates only an obsolete preview at a real source sentence boundary.
+    SubtitlePreviewCleared,
+    /// Locally generated MT backoff; the system-audio/ASR session stays alive.
+    TranslationDeferred(crate::core::diagnostics::TranslationRecovery),
     TranslationDraft(String),
     TranslationFinal(String),
+    /// Text stamped with the provider utterance it belongs to. `utterance_id` is
+    /// always the *source* item: a translation's response item is resolved
+    /// through `previous_item_id` before it reaches this event, so both preview
+    /// lines of one utterance share the same identity.
+    UtteranceText {
+        utterance_id: String,
+        role: UtteranceRole,
+        text: String,
+        is_final: bool,
+        language: Option<String>,
+    },
     SubtitleFinalPair {
+        source: String,
+        language: Option<String>,
+        translation: String,
+    },
+    /// DashScope's complete pair retains its actual source item identity.
+    SubtitleIdentifiedFinalPair {
+        utterance_id: String,
+        source: String,
+        language: Option<String>,
+        translation: String,
+    },
+    /// Locally accepted HQ utterance identity, scoped to one connection.
+    /// Reliable final delivery preserves repeated text even without drafts.
+    SubtitleConfirmedPair {
+        utterance_id: u64,
+        source_utterance_id: Option<u64>,
         source: String,
         language: Option<String>,
         translation: String,
@@ -137,14 +212,106 @@ pub enum LiveTranslateServerEvent {
     },
 }
 
+/// Wire identity carried by DashScope realtime events.
+///
+/// `item_id` names the conversation item an event belongs to. `previous_item_id`
+/// appears on `conversation.item.created` and links a response item to the input
+/// item it answers. The live-translate protocol streams recognition and
+/// translation independently and the two finals of one utterance arrive tens of
+/// milliseconds apart in either order, so this identity — not arrival order — is
+/// what pairs an original line with its translation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LiveTranslateEventIdentity {
+    pub item_id: Option<String>,
+    pub previous_item_id: Option<String>,
+}
+
 impl LiveTranslateServerEvent {
-    pub fn decode(text: &str) -> Result<Self, LiveTranslateProtocolError> {
-        let json: Value =
-            serde_json::from_str(text).map_err(|_| LiveTranslateProtocolError::InvalidJSON)?;
-        Self::decode_value(&json)
+    pub fn text_within_limit(&self) -> bool {
+        use crate::core::models::subtitle_text_within_limit;
+        match self {
+            Self::SourceDraft { text, .. }
+            | Self::SourceUtteranceDraft { text, .. }
+            | Self::SourceFinal { text, .. }
+            | Self::SourceUtteranceFinal { text, .. }
+            | Self::UtteranceText { text, .. }
+            | Self::TranslationDraft(text)
+            | Self::TranslationFinal(text) => subtitle_text_within_limit(text),
+            Self::SubtitlePreviewPair {
+                source,
+                translation,
+                ..
+            }
+            | Self::SubtitleFinalPair {
+                source,
+                translation,
+                ..
+            }
+            | Self::SubtitleConfirmedPair {
+                source,
+                translation,
+                ..
+            } => subtitle_text_within_limit(source) && subtitle_text_within_limit(translation),
+            Self::SubtitleIdentifiedFinalPair {
+                utterance_id,
+                source,
+                translation,
+                ..
+            } => {
+                subtitle_text_within_limit(utterance_id)
+                    && subtitle_text_within_limit(source)
+                    && subtitle_text_within_limit(translation)
+            }
+            _ => true,
+        }
     }
 
-    pub fn decode_value(json: &Value) -> Result<Self, LiveTranslateProtocolError> {
+    pub fn text_limit_error() -> Self {
+        Self::Error {
+            code: "subtitle_text_too_large".into(),
+            message: "The subtitle service returned too much text.".into(),
+        }
+    }
+
+    /// Decodes one server frame together with the identity it carries.
+    pub fn decode_with_identity(
+        text: &str,
+    ) -> Result<(Self, LiveTranslateEventIdentity), LiveTranslateProtocolError> {
+        let json: Value =
+            serde_json::from_str(text).map_err(|_| LiveTranslateProtocolError::InvalidJSON)?;
+        Self::decode_value_with_identity(&json)
+    }
+
+    pub fn decode_value_with_identity(
+        json: &Value,
+    ) -> Result<(Self, LiveTranslateEventIdentity), LiveTranslateProtocolError> {
+        let identity = LiveTranslateEventIdentity {
+            item_id: item_id_of(json),
+            previous_item_id: json
+                .get("previous_item_id")
+                .and_then(Value::as_str)
+                .map(String::from),
+        };
+        let event = Self::decode_normalized(json)?;
+        let field_valid =
+            |text: Option<&str>| text.is_none_or(crate::core::models::subtitle_text_within_limit);
+        let language_valid = match &event {
+            Self::SourceDraft { language, .. } | Self::SourceFinal { language, .. } => {
+                field_valid(language.as_deref())
+            }
+            _ => true,
+        };
+        if !event.text_within_limit()
+            || !field_valid(identity.item_id.as_deref())
+            || !field_valid(identity.previous_item_id.as_deref())
+            || !language_valid
+        {
+            return Err(LiveTranslateProtocolError::InvalidJSON);
+        }
+        Ok((event, identity))
+    }
+
+    fn decode_normalized(json: &Value) -> Result<Self, LiveTranslateProtocolError> {
         let kind = json
             .get("type")
             .and_then(Value::as_str)
@@ -227,9 +394,88 @@ fn combined_text(json: &Value) -> String {
     format!("{confirmed}{tentative}").trim().to_string()
 }
 
+/// The conversation item an event belongs to: a top-level `item_id`, or the
+/// nested `item.id` of a created item.
+fn item_id_of(json: &Value) -> Option<String> {
+    json.get("item_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            json.get("item")
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str)
+        })
+        .map(String::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_pairing_identity_and_language_are_bounded_before_retention() {
+        let oversized = "x".repeat(crate::core::models::MAX_SUBTITLE_TEXT_BYTES + 1);
+        for json in [
+            json!({"type":"conversation.item.created","item_id":oversized,"previous_item_id":"valid"}),
+            json!({"type":"conversation.item.created","item_id":"valid","previous_item_id":oversized}),
+            json!({"type":"conversation.item.input_audio_transcription.completed","item_id":"valid","transcript":"Valid source","language":oversized}),
+        ] {
+            assert_eq!(
+                LiveTranslateServerEvent::decode_value_with_identity(&json),
+                Err(LiveTranslateProtocolError::InvalidJSON)
+            );
+        }
+    }
+
+    #[test]
+    fn expanded_app_languages_do_not_expand_the_legacy_realtime_wire_contract() {
+        for source in SourceLanguage::ALL.into_iter().filter(|source| {
+            !matches!(
+                source,
+                SourceLanguage::Automatic
+                    | SourceLanguage::Chinese
+                    | SourceLanguage::English
+                    | SourceLanguage::Japanese
+                    | SourceLanguage::Korean
+            )
+        }) {
+            assert_eq!(
+                LiveTranslateRequestEncoder::session_update(
+                    source,
+                    TargetLanguage::English,
+                    &BTreeMap::new(),
+                    None
+                )
+                .unwrap_err(),
+                LiveTranslateProtocolError::UnsupportedLanguage
+            );
+        }
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::Original
+                    | TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                LiveTranslateRequestEncoder::session_update(
+                    SourceLanguage::Automatic,
+                    target,
+                    &BTreeMap::new(),
+                    None
+                )
+                .unwrap_err(),
+                LiveTranslateProtocolError::UnsupportedLanguage
+            );
+        }
+    }
+
+    fn decode(text: &str) -> LiveTranslateServerEvent {
+        LiveTranslateServerEvent::decode_with_identity(text)
+            .expect("the test frame is a documented event")
+            .0
+    }
 
     #[test]
     fn endpoint_builds_the_unified_realtime_url() {
@@ -307,10 +553,9 @@ mod tests {
 
     #[test]
     fn source_preview_combines_confirmed_and_tentative_text() {
-        let event = LiveTranslateServerEvent::decode(
+        let event = decode(
             r#"{"type":"conversation.item.input_audio_transcription.text","text":"Hello","stash":" world","language":"en"}"#,
-        )
-        .unwrap();
+        );
         assert_eq!(
             event,
             LiveTranslateServerEvent::SourceDraft {
@@ -322,10 +567,9 @@ mod tests {
 
     #[test]
     fn asr_preview_combines_confirmed_text_and_stash() {
-        let event = LiveTranslateServerEvent::decode(
+        let event = decode(
             r#"{"type":"conversation.item.input_audio_transcription.text","text":"今日は","stash":"晴れです","language":"ja"}"#,
-        )
-        .unwrap();
+        );
         assert_eq!(
             event,
             LiveTranslateServerEvent::SourceDraft {
@@ -337,10 +581,9 @@ mod tests {
 
     #[test]
     fn source_completion_decodes_the_final_transcript() {
-        let event = LiveTranslateServerEvent::decode(
+        let event = decode(
             r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"Hello world.","language":"en"}"#,
-        )
-        .unwrap();
+        );
         assert_eq!(
             event,
             LiveTranslateServerEvent::SourceFinal {
@@ -351,15 +594,61 @@ mod tests {
     }
 
     #[test]
+    fn identity_keeps_the_recognition_item_of_source_events() {
+        let (event, identity) = LiveTranslateServerEvent::decode_with_identity(
+            r#"{"type":"conversation.item.input_audio_transcription.completed","transcript":"Hello world.","item_id":"item_source"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            event,
+            LiveTranslateServerEvent::SourceFinal {
+                text: "Hello world.".into(),
+                language: None
+            }
+        );
+        assert_eq!(
+            identity,
+            LiveTranslateEventIdentity {
+                item_id: Some("item_source".into()),
+                previous_item_id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn identity_keeps_the_response_item_of_translation_events() {
+        let (event, identity) = LiveTranslateServerEvent::decode_with_identity(
+            r#"{"type":"response.text.done","text":"你好，世界。","item_id":"item_response","response_id":"resp_1"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            event,
+            LiveTranslateServerEvent::TranslationFinal("你好，世界。".into())
+        );
+        assert_eq!(identity.item_id.as_deref(), Some("item_response"));
+        assert_eq!(identity.previous_item_id, None);
+    }
+
+    #[test]
+    fn identity_links_a_created_response_item_to_its_input_item() {
+        let (event, identity) = LiveTranslateServerEvent::decode_with_identity(
+            r#"{"type":"conversation.item.created","item":{"id":"item_response","role":"assistant"},"previous_item_id":"item_source"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            event,
+            LiveTranslateServerEvent::Ignored {
+                kind: "conversation.item.created".into()
+            }
+        );
+        assert_eq!(identity.item_id.as_deref(), Some("item_response"));
+        assert_eq!(identity.previous_item_id.as_deref(), Some("item_source"));
+    }
+
+    #[test]
     fn translation_preview_and_completion_decode() {
-        let preview = LiveTranslateServerEvent::decode(
-            r#"{"type":"response.text.text","text":"你好","stash":"，世界"}"#,
-        )
-        .unwrap();
-        let final_event = LiveTranslateServerEvent::decode(
-            r#"{"type":"response.text.done","text":"你好，世界。"}"#,
-        )
-        .unwrap();
+        let preview = decode(r#"{"type":"response.text.text","text":"你好","stash":"，世界"}"#);
+        let final_event = decode(r#"{"type":"response.text.done","text":"你好，世界。"}"#);
 
         assert_eq!(
             preview,
@@ -373,12 +662,10 @@ mod tests {
 
     #[test]
     fn session_and_error_events_decode() {
-        let updated = LiveTranslateServerEvent::decode(r#"{"type":"session.updated"}"#).unwrap();
-        let finished = LiveTranslateServerEvent::decode(r#"{"type":"session.finished"}"#).unwrap();
-        let failure = LiveTranslateServerEvent::decode(
-            r#"{"type":"error","error":{"code":"invalid_value","message":"Bad language"}}"#,
-        )
-        .unwrap();
+        let updated = decode(r#"{"type":"session.updated"}"#);
+        let finished = decode(r#"{"type":"session.finished"}"#);
+        let failure =
+            decode(r#"{"type":"error","error":{"code":"invalid_value","message":"Bad language"}}"#);
 
         assert_eq!(updated, LiveTranslateServerEvent::SessionUpdated);
         assert_eq!(finished, LiveTranslateServerEvent::SessionFinished);
@@ -393,7 +680,7 @@ mod tests {
 
     #[test]
     fn unknown_events_are_ignored_without_failing_the_receive_loop() {
-        let event = LiveTranslateServerEvent::decode(r#"{"type":"response.created"}"#).unwrap();
+        let event = decode(r#"{"type":"response.created"}"#);
         assert_eq!(
             event,
             LiveTranslateServerEvent::Ignored {
@@ -405,11 +692,11 @@ mod tests {
     #[test]
     fn malformed_json_and_missing_type_fail_cleanly() {
         assert!(matches!(
-            LiveTranslateServerEvent::decode("not json"),
+            LiveTranslateServerEvent::decode_with_identity("not json"),
             Err(LiveTranslateProtocolError::InvalidJSON)
         ));
         assert!(matches!(
-            LiveTranslateServerEvent::decode(r#"{"event_id":"x"}"#),
+            LiveTranslateServerEvent::decode_with_identity(r#"{"event_id":"x"}"#),
             Err(LiveTranslateProtocolError::MissingEventType)
         ));
     }

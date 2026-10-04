@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 const GENERIC_PROVIDER_ERROR: &str = "OpenAI Realtime Translation rejected the session.";
 const GENERIC_PROTOCOL_ERROR: &str = "OpenAI Realtime Translation returned an invalid response.";
@@ -27,6 +27,8 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum OpenAIRealtimeClientError {
+    #[error("credential_authentication_failed")]
+    AuthenticationFailed,
     #[error("Add an OpenAI API key in Settings.")]
     MissingAPIKey,
     #[error("OpenAI Realtime Translation requires a translated output language.")]
@@ -53,6 +55,8 @@ enum SetupState {
 }
 
 struct Inner {
+    // Serializes the content barrier with local assembly, never socket/audio state.
+    content_lock: Mutex<()>,
     sink: Mutex<Option<Sink>>,
     receive_task: Mutex<Option<JoinHandle<()>>>,
     audio_send_lock: Mutex<()>,
@@ -68,6 +72,7 @@ struct Inner {
 
 #[derive(Clone)]
 pub struct OpenAIRealtimeClient {
+    network: super::provider_network::ProviderNetwork,
     inner: Arc<Inner>,
     endpoint: url::Url,
     api_key: String,
@@ -76,6 +81,27 @@ pub struct OpenAIRealtimeClient {
 }
 
 impl OpenAIRealtimeClient {
+    pub fn content_revision(&self) -> u64 {
+        self.events.content_revision()
+    }
+
+    /// Clears locally accepted subtitles without reconnecting or dropping audio.
+    /// This protocol has no source-turn boundary: future deltas remain valid.
+    pub async fn clear_content(&self) -> u64 {
+        let _content = self.inner.content_lock.lock().await;
+        self.inner.committer.lock().await.reset();
+        self.events.advance_content_revision()
+    }
+
+    /// Applied before connect so ASR and translation share one immutable route.
+    pub fn set_network(
+        &mut self,
+        network: super::provider_network::ProviderNetwork,
+    ) -> Result<(), super::provider_network::ProviderNetworkError> {
+        self.network = network;
+        Ok(())
+    }
+
     pub fn new(
         api_key: &str,
         target_language: TargetLanguage,
@@ -86,7 +112,7 @@ impl OpenAIRealtimeClient {
         Self::with_endpoint(api_key, target_language, events, endpoint)
     }
 
-    fn with_endpoint(
+    pub(super) fn with_endpoint(
         api_key: &str,
         target_language: TargetLanguage,
         events: ProviderEventSender,
@@ -100,7 +126,9 @@ impl OpenAIRealtimeClient {
             return Err(OpenAIRealtimeClientError::InvalidTargetLanguage);
         }
         Ok(Self {
+            network: super::provider_network::ProviderNetwork::default(),
             inner: Arc::new(Inner {
+                content_lock: Mutex::new(()),
                 sink: Mutex::new(None),
                 receive_task: Mutex::new(None),
                 audio_send_lock: Mutex::new(()),
@@ -144,10 +172,19 @@ impl OpenAIRealtimeClient {
                 .map_err(|_| OpenAIRealtimeClientError::MissingAPIKey)?,
         );
 
-        let (socket, _) = tokio::time::timeout(Duration::from_secs(15), connect_async(request))
-            .await
-            .map_err(|_| OpenAIRealtimeClientError::TransportFailure)?
-            .map_err(|_| OpenAIRealtimeClientError::TransportFailure)?;
+        let (socket, _) = tokio::time::timeout(
+            Duration::from_secs(15),
+            super::provider_network::websocket(request, &self.network),
+        )
+        .await
+        .map_err(|_| OpenAIRealtimeClientError::TransportFailure)?
+        .map_err(|error| {
+            if super::connection_diagnostics::authentication_rejected(&error) {
+                OpenAIRealtimeClientError::AuthenticationFailed
+            } else {
+                OpenAIRealtimeClientError::TransportFailure
+            }
+        })?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);
@@ -354,10 +391,15 @@ impl OpenAIRealtimeClient {
         let Some(sink) = sink.as_mut() else {
             return Err(OpenAIRealtimeClientError::NotConnected);
         };
-        tokio::time::timeout(SEND_TIMEOUT, sink.send(Message::Text(text.into())))
-            .await
-            .map_err(|_| OpenAIRealtimeClientError::TransportFailure)?
-            .map_err(|_| OpenAIRealtimeClientError::TransportFailure)
+        let evidence =
+            crate::development_audio::begin_json(&text, OpenAIRealtimeEndpoint::SAMPLE_RATE_HZ);
+        tokio::time::timeout(
+            SEND_TIMEOUT,
+            evidence.observe(sink.send(Message::Text(text.into()))),
+        )
+        .await
+        .map_err(|_| OpenAIRealtimeClientError::TransportFailure)?
+        .map_err(|_| OpenAIRealtimeClientError::TransportFailure)
     }
 
     fn emit(&self, event: LiveTranslateServerEvent, generation: u64) {
@@ -474,6 +516,21 @@ async fn fail_receive_loop(context: &ReceiveContext, code: &str, message: &str) 
 
 /// Returns true when the receive loop must stop.
 async fn handle_server_event(context: &ReceiveContext, event: OpenAIRealtimeServerEvent) -> bool {
+    let revision = context.events.content_revision();
+    let _content = context.inner.content_lock.lock().await;
+    if context.inner.generation.load(Ordering::SeqCst) != context.generation {
+        return false;
+    }
+    if revision != context.events.content_revision()
+        && matches!(
+            &event,
+            OpenAIRealtimeServerEvent::SourceTranscriptDelta { .. }
+                | OpenAIRealtimeServerEvent::TranslationTranscriptDelta { .. }
+        )
+    {
+        return false;
+    }
+
     match event {
         OpenAIRealtimeServerEvent::SessionCreated => {
             emit_if_current(context, LiveTranslateServerEvent::SessionCreated);
@@ -593,6 +650,63 @@ fn emit_if_current(context: &ReceiveContext, event: LiveTranslateServerEvent) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn clear_discards_local_tail_and_queued_content_without_touching_audio_or_lifecycle() {
+        let (sender, mut receiver) = provider_event_channel();
+        let endpoint = url::Url::parse("ws://127.0.0.1:1/realtime").unwrap();
+        let client = OpenAIRealtimeClient::with_endpoint(
+            "test-key-not-real",
+            TargetLanguage::Japanese,
+            sender.clone(),
+            endpoint,
+        )
+        .unwrap();
+        client.inner.ready.store(true, Ordering::SeqCst);
+        client.inner.generation.store(7, Ordering::SeqCst);
+        *client.inner.pending_audio.lock().await = vec![1, 2, 3];
+        client
+            .inner
+            .committer
+            .lock()
+            .await
+            .append_source_delta("old source", None);
+        client
+            .inner
+            .committer
+            .lock()
+            .await
+            .append_translation_delta("old translation", None);
+
+        sender
+            .send(LiveTranslateServerEvent::SubtitleFinalPair {
+                source: "old queued source".into(),
+                language: None,
+                translation: "old queued translation".into(),
+            })
+            .unwrap();
+        sender
+            .send(LiveTranslateServerEvent::SessionUpdated)
+            .unwrap();
+        assert_eq!(client.clear_content().await, 1);
+        assert_eq!(client.content_revision(), 1);
+        assert_eq!(client.inner.generation.load(Ordering::SeqCst), 7);
+        assert!(client.inner.ready.load(Ordering::SeqCst));
+        assert_eq!(*client.inner.pending_audio.lock().await, vec![1, 2, 3]);
+        assert!(client.inner.committer.lock().await.finish().is_empty());
+
+        assert_eq!(
+            receiver.recv().await,
+            Some(LiveTranslateServerEvent::SessionUpdated)
+        );
+        assert!(receiver.try_recv().is_err());
+        let mut committer = client.inner.committer.lock().await;
+        committer.append_source_delta("new source", None);
+        committer.append_translation_delta("new translation", None);
+        assert!(committer.finish().iter().any(|event| matches!(event,
+            LiveTranslateServerEvent::SubtitleFinalPair {source,translation,..}
+                if source == "new source" && translation == "new translation")));
+    }
+
     use super::*;
     use crate::clients::provider_events::{provider_event_channel, ProviderEventReceiver};
     use base64::Engine;

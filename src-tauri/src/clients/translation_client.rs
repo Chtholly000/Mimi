@@ -9,13 +9,16 @@ use crate::clients::high_quality_client::HighQualityTranslationClient;
 use crate::clients::live_translate_client::{LiveTranslateClient, LiveTranslateClientError};
 use crate::clients::openai_realtime_client::{OpenAIRealtimeClient, OpenAIRealtimeClientError};
 use crate::clients::provider_events::ProviderEventSender;
+use crate::clients::provider_network::{ProviderNetwork, ProviderNetworkError};
 use crate::clients::tencent_cloud_client::{TencentCloudClient, TencentCloudClientError};
 use crate::clients::volcano_engine_client::{VolcanoEngineClient, VolcanoEngineClientError};
 use crate::clients::xai_realtime_client::{XAIRealtimeClient, XAIRealtimeClientError};
 use crate::core::configuration::LiveTranslationConfiguration;
 use crate::core::credentials::{ProviderCredentials, ProviderCredentialsError};
+use crate::core::diagnostics::TranslationLatency;
 use crate::core::models::TranslationMode;
-use crate::core::protocols::qwen_mt::{QwenMTClientError, QwenMTModel};
+use crate::core::preview_pacing::MTRequestBudget;
+use crate::core::protocols::qwen_mt::{QwenMTClientError, QwenMTModel, REALTIME_MT_MODEL};
 use crate::core::provider::ProviderKind;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -34,7 +37,43 @@ pub enum TranslationClient {
 }
 
 impl TranslationClient {
+    /// Only Audio3 synthesizes idle PCM; other provider transports are unchanged.
+    pub fn set_audio_pending_gate(&self, gate: crate::core::pending_pcm::PendingPcmGate) {
+        if let Self::HighQuality(client) = self {
+            client.set_audio_pending_gate(gate);
+        }
+    }
+
     pub fn new(
+        configuration: &LiveTranslationConfiguration,
+        events: ProviderEventSender,
+    ) -> Result<Self, TranslationClientError> {
+        let network = ProviderNetwork::resolve(&configuration.network_proxy)?;
+        let mut client = Self::new_without_network(configuration, events)?;
+        if let Self::HighQuality(pipeline) = &mut client {
+            let text = ProviderNetwork::resolve(&configuration.text_network_proxy)?;
+            pipeline.set_stage_networks(network, text)?;
+        } else {
+            client.set_network(network)?;
+        }
+        Ok(client)
+    }
+
+    fn set_network(&mut self, network: ProviderNetwork) -> Result<(), ProviderNetworkError> {
+        match self {
+            Self::LowLatency(client) => client.set_network(network),
+            Self::HighQuality(client) => client.set_stage_networks(network.clone(), network),
+            Self::OpenAIRealtime(client) => client.set_network(network),
+            Self::GeminiLive(client) => client.set_network(network),
+            Self::AzureOpenAIRealtime(client) => client.set_network(network),
+            Self::TencentCloud(client) => client.set_network(network),
+            Self::BaiduTranslate(client) => client.set_network(network),
+            Self::VolcanoEngine(client) => client.set_network(network),
+            Self::XaiRealtime(client) => client.set_network(network),
+        }
+    }
+
+    fn new_without_network(
         configuration: &LiveTranslationConfiguration,
         events: ProviderEventSender,
     ) -> Result<Self, TranslationClientError> {
@@ -42,6 +81,11 @@ impl TranslationClient {
             .credentials
             .validated_for(configuration.provider)?;
         match configuration.provider {
+            ProviderKind::CustomDashScopeASR | ProviderKind::CustomOpenAIASR => {
+                return HighQualityTranslationClient::new_custom(configuration, events)
+                    .map(Self::HighQuality)
+                    .map_err(TranslationClientError::MT);
+            }
             ProviderKind::OpenAIRealtime => {
                 return OpenAIRealtimeClient::new(
                     direct_api_key(&credentials)?,
@@ -123,7 +167,68 @@ impl TranslationClient {
                 .map(Self::BaiduTranslate)
                 .map_err(TranslationClientError::BaiduTranslate);
             }
-            ProviderKind::AlibabaCloud => {}
+            ProviderKind::DeepLX => {
+                let ProviderCredentials::DeepLX {
+                    asr_api_key,
+                    endpoint,
+                    token,
+                } = &credentials
+                else {
+                    return Err(ProviderCredentialsError::ProviderMismatch.into());
+                };
+                return HighQualityTranslationClient::new_deeplx(
+                    asr_api_key,
+                    endpoint,
+                    token,
+                    configuration.source_language,
+                    configuration.target_language,
+                    events,
+                )
+                .map(Self::HighQuality)
+                .map_err(TranslationClientError::MT);
+            }
+            ProviderKind::AlibabaCloud => {
+                if let ProviderCredentials::OpenAICompatible {
+                    asr_api_key,
+                    endpoint,
+                    api_key,
+                    model,
+                }
+                | ProviderCredentials::ChatMock {
+                    asr_api_key,
+                    endpoint,
+                    api_key,
+                    model,
+                } = &credentials
+                {
+                    return HighQualityTranslationClient::new_openai_compatible(
+                        asr_api_key,
+                        endpoint,
+                        api_key,
+                        model,
+                        configuration.source_language,
+                        configuration.target_language,
+                        events,
+                    )
+                    .map(Self::HighQuality)
+                    .map_err(TranslationClientError::MT);
+                }
+                if let ProviderCredentials::DeepL {
+                    asr_api_key,
+                    api_key,
+                } = &credentials
+                {
+                    return HighQualityTranslationClient::new_deepl(
+                        asr_api_key,
+                        api_key,
+                        configuration.source_language,
+                        configuration.target_language,
+                        events,
+                    )
+                    .map(Self::HighQuality)
+                    .map_err(TranslationClientError::MT);
+                }
+            }
         }
         // Automatic source recognition omits the transcription language on
         // the wire so the recognition service detects the language per
@@ -160,9 +265,9 @@ impl TranslationClient {
                     direct_api_key(&credentials)?,
                     configuration.source_language,
                     configuration.target_language,
-                    QwenMTModel::Flash,
-                    Duration::from_millis(500),
-                    Duration::from_millis(2_000),
+                    REALTIME_MT_MODEL,
+                    Duration::from_millis(250),
+                    Duration::from_millis(1_000),
                     12,
                     events,
                 )
@@ -191,6 +296,35 @@ impl TranslationClient {
                 client.connect().await.map_err(ConnectError::VolcanoEngine)
             }
             Self::XaiRealtime(client) => client.connect().await.map_err(ConnectError::Xai),
+        }
+    }
+
+    /// Content clearing preserves the provider connection and audio route.
+    pub async fn clear_content(&self) -> u64 {
+        match self {
+            Self::LowLatency(client) => client.clear_content().await,
+            Self::HighQuality(client) => client.clear_content().await,
+            Self::OpenAIRealtime(client) => client.clear_content().await,
+            Self::GeminiLive(client) => client.clear_content().await,
+            Self::AzureOpenAIRealtime(client) => client.clear_content().await,
+            Self::TencentCloud(client) => client.clear_content().await,
+            Self::BaiduTranslate(client) => client.clear_content().await,
+            Self::VolcanoEngine(client) => client.clear_content().await,
+            Self::XaiRealtime(client) => client.clear_content().await,
+        }
+    }
+
+    pub fn content_revision(&self) -> u64 {
+        match self {
+            Self::LowLatency(client) => client.content_revision(),
+            Self::HighQuality(client) => client.content_revision(),
+            Self::OpenAIRealtime(client) => client.content_revision(),
+            Self::GeminiLive(client) => client.content_revision(),
+            Self::AzureOpenAIRealtime(client) => client.content_revision(),
+            Self::TencentCloud(client) => client.content_revision(),
+            Self::BaiduTranslate(client) => client.content_revision(),
+            Self::VolcanoEngine(client) => client.content_revision(),
+            Self::XaiRealtime(client) => client.content_revision(),
         }
     }
 
@@ -261,17 +395,44 @@ impl TranslationClient {
         }
     }
 
-    pub async fn finish(&self) {
+    /// Providers with an unambiguous measured boundary expose it here; an
+    /// unavailable measurement must stay absent rather than guess a duration.
+    pub fn translation_latency(&self) -> Option<TranslationLatency> {
         match self {
-            Self::LowLatency(client) => client.finish(Duration::from_secs(1)).await,
+            Self::LowLatency(client) => client.translation_latency(),
+            Self::HighQuality(client) => client.translation_latency(),
+            _ => None,
+        }
+    }
+
+    pub async fn finish(&self) {
+        let recognition =
+            Duration::from_millis(mimi_core::translation_policy::RECOGNITION_FINISH_TIMEOUT_MS);
+        let realtime =
+            Duration::from_millis(mimi_core::translation_policy::REALTIME_FINISH_TIMEOUT_MS);
+        match self {
+            Self::LowLatency(client) => client.finish(recognition).await,
             Self::HighQuality(client) => client.finish().await,
-            Self::OpenAIRealtime(client) => client.finish(Duration::from_secs(2)).await,
-            Self::GeminiLive(client) => client.finish(Duration::from_secs(2)).await,
-            Self::AzureOpenAIRealtime(client) => client.finish(Duration::from_secs(2)).await,
-            Self::TencentCloud(client) => client.finish(Duration::from_secs(2)).await,
-            Self::BaiduTranslate(client) => client.finish(Duration::from_secs(2)).await,
-            Self::VolcanoEngine(client) => client.finish(Duration::from_secs(2)).await,
-            Self::XaiRealtime(client) => client.finish(Duration::from_secs(2)).await,
+            Self::OpenAIRealtime(client) => client.finish(realtime).await,
+            Self::GeminiLive(client) => client.finish(realtime).await,
+            Self::AzureOpenAIRealtime(client) => client.finish(realtime).await,
+            Self::TencentCloud(client) => client.finish(realtime).await,
+            Self::BaiduTranslate(client) => client.finish(realtime).await,
+            Self::VolcanoEngine(client) => client.finish(realtime).await,
+            Self::XaiRealtime(client) => client.finish(realtime).await,
+        }
+    }
+
+    pub(crate) async fn suspend_mt_request_budget(&self) -> Option<MTRequestBudget> {
+        match self {
+            Self::HighQuality(client) => Some(client.suspend_request_budget().await),
+            _ => None,
+        }
+    }
+
+    pub(crate) async fn restore_mt_request_budget(&self, budget: Option<MTRequestBudget>) {
+        if let (Self::HighQuality(client), Some(budget)) = (self, budget) {
+            client.restore_request_budget(budget).await;
         }
     }
 
@@ -334,6 +495,8 @@ impl ConnectError {
 #[derive(Debug, thiserror::Error)]
 pub enum TranslationClientError {
     #[error("{0}")]
+    Network(#[from] ProviderNetworkError),
+    #[error("{0}")]
     Live(#[from] LiveTranslateClientError),
     #[error("{0}")]
     MT(#[from] QwenMTClientError),
@@ -358,6 +521,7 @@ pub enum TranslationClientError {
 impl TranslationClientError {
     pub fn diagnostic_label(&self) -> &'static str {
         match self {
+            Self::Network(_) => "configuration.network_proxy",
             Self::Live(_) => "configuration.live_translate",
             Self::MT(_) => "configuration.alibaba_high_quality",
             Self::OpenAI(_) => "configuration.openai_realtime",
@@ -385,6 +549,94 @@ mod tests {
     use crate::core::models::{SourceLanguage, TargetLanguage};
 
     #[test]
+    fn invalid_proxy_is_rejected_before_provider_client_construction() {
+        let configuration = LiveTranslationConfiguration::for_provider(
+            ProviderKind::AlibabaCloud,
+            "synthetic-key",
+            SourceLanguage::English,
+            TargetLanguage::Japanese,
+            TranslationMode::Turbo,
+        )
+        .with_network_proxy(crate::core::network_proxy::ProxyConfig {
+            mode: crate::core::network_proxy::ProxyMode::Custom,
+            url: Some("http://synthetic-user:synthetic-password@127.0.0.1:8888".into()),
+        });
+        let (events, _receiver) = provider_event_channel();
+        let error = match TranslationClient::new(&configuration, events) {
+            Err(error) => error,
+            Ok(_) => panic!("authenticated proxy URLs must be rejected"),
+        };
+        assert_eq!(error.diagnostic_label(), "configuration.network_proxy");
+        assert!(!error.to_string().contains("synthetic-password"));
+    }
+
+    #[test]
+    fn deeplx_factory_reuses_audio3_pipeline_with_separate_credentials() {
+        let configuration = LiveTranslationConfiguration::with_credentials(
+            ProviderKind::DeepLX,
+            ProviderCredentials::DeepLX {
+                asr_api_key: "synthetic-asr".into(),
+                endpoint: "https://example.com/translate".into(),
+                token: "synthetic-token".into(),
+            },
+            SourceLanguage::Automatic,
+            TargetLanguage::English,
+            TranslationMode::Turbo,
+        );
+        let (events, _receiver) = provider_event_channel();
+        assert!(matches!(
+            TranslationClient::new(&configuration, events).unwrap(),
+            TranslationClient::HighQuality(_)
+        ));
+    }
+
+    #[test]
+    fn custom_recognition_factory_requires_an_independent_translation_route() {
+        use crate::core::credentials::TextTranslationCredentials;
+        for provider in [
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let mut configuration = LiveTranslationConfiguration::with_credentials(
+                provider,
+                ProviderCredentials::CustomSpeech {
+                    endpoint: "wss://example.com/recognition".into(),
+                    model: "synthetic-recognition-model".into(),
+                    api_key: "synthetic-recognition-key".into(),
+                },
+                SourceLanguage::Automatic,
+                TargetLanguage::Original,
+                TranslationMode::Turbo,
+            )
+            .validated()
+            .unwrap();
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events).unwrap(),
+                TranslationClient::HighQuality(_)
+            ));
+            configuration.target_language = TargetLanguage::Japanese;
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events),
+                Err(TranslationClientError::MT(
+                    QwenMTClientError::MissingTextTranslation
+                ))
+            ));
+            configuration.text_credentials = Some(TextTranslationCredentials::DeepLX {
+                endpoint: "https://example.com/translate".into(),
+                token: "synthetic-text-token".into(),
+            });
+            configuration = configuration.validated().unwrap();
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events).unwrap(),
+                TranslationClient::HighQuality(_)
+            ));
+        }
+    }
+
+    #[test]
     fn provider_factory_selects_openai_realtime() {
         let configuration = LiveTranslationConfiguration::for_provider(
             ProviderKind::OpenAIRealtime,
@@ -401,19 +653,92 @@ mod tests {
     }
 
     #[test]
-    fn provider_factory_selects_alibaba() {
-        let configuration = LiveTranslationConfiguration::for_provider(
-            ProviderKind::AlibabaCloud,
-            "sk-test-not-real",
-            SourceLanguage::Automatic,
-            TargetLanguage::SimplifiedChinese,
+    fn deepl_text_override_uses_the_bounded_pipeline_and_preserves_original_mode() {
+        for target in [TargetLanguage::SimplifiedChinese, TargetLanguage::Original] {
+            let configuration = LiveTranslationConfiguration::with_credentials(
+                ProviderKind::AlibabaCloud,
+                ProviderCredentials::DeepL {
+                    asr_api_key: "synthetic-asr".into(),
+                    api_key: "synthetic-deepl:fx".into(),
+                },
+                SourceLanguage::Automatic,
+                target,
+                TranslationMode::Turbo,
+            )
+            .validated()
+            .unwrap();
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events).unwrap(),
+                TranslationClient::HighQuality(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn openai_compatible_override_uses_audio3_and_preserves_original_mode() {
+        assert_compatible_factory(false);
+        assert_compatible_factory(true);
+    }
+
+    fn assert_compatible_factory(chatmock: bool) {
+        for target in [TargetLanguage::Japanese, TargetLanguage::Original] {
+            let configuration = LiveTranslationConfiguration::with_credentials(
+                ProviderKind::AlibabaCloud,
+                if chatmock {
+                    ProviderCredentials::ChatMock {
+                        asr_api_key: "synthetic-asr".into(),
+                        endpoint: "https://example.com/proxy/v1".into(),
+                        api_key: "synthetic-translation-key".into(),
+                        model: "synthetic-model".into(),
+                    }
+                } else {
+                    ProviderCredentials::OpenAICompatible {
+                        asr_api_key: "synthetic-asr".into(),
+                        endpoint: "https://example.com/proxy/v1".into(),
+                        api_key: "synthetic-translation-key".into(),
+                        model: "synthetic-model".into(),
+                    }
+                },
+                SourceLanguage::Automatic,
+                target,
+                TranslationMode::Turbo,
+            )
+            .validated()
+            .unwrap();
+            assert_eq!(configuration.capabilities().source_languages.len(), 5);
+            assert_eq!(configuration.capabilities().target_languages.len(), 4);
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events).unwrap(),
+                TranslationClient::HighQuality(_)
+            ));
+            let mut unsupported = configuration;
+            unsupported.source_language = SourceLanguage::French;
+            assert!(matches!(unsupported.validated(), Err(crate::core::configuration::LiveTranslationConfigurationError::UnsupportedSourceLanguage)));
+        }
+    }
+
+    #[test]
+    fn provider_factory_upgrades_every_alibaba_mode_to_the_turbo_pipeline() {
+        for mode in [
             TranslationMode::LowLatency,
-        );
-        let (events, _receiver) = provider_event_channel();
-        assert!(matches!(
-            TranslationClient::new(&configuration, events).unwrap(),
-            TranslationClient::LowLatency(_)
-        ));
+            TranslationMode::HighQuality,
+            TranslationMode::Turbo,
+        ] {
+            let configuration = LiveTranslationConfiguration::for_provider(
+                ProviderKind::AlibabaCloud,
+                "sk-test-not-real",
+                SourceLanguage::Automatic,
+                TargetLanguage::SimplifiedChinese,
+                mode,
+            );
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&configuration, events).unwrap(),
+                TranslationClient::HighQuality(_)
+            ));
+        }
     }
 
     #[test]

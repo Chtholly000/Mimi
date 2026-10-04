@@ -6,16 +6,25 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { observeSessionWireReceived } from "./developmentTrace";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  ProfileNetworkProxyDraft,
+  AudioInput,
+  AudioSource,
   ProviderCredentialsInput,
   SessionStateEvent,
   SessionArchiveState,
   SessionExportKind,
+  TranscriptPage,
+  SessionHistoryItem,
   ServiceProvider,
   SettingsDraft,
   SettingsSnapshot,
   SourceLanguage,
+  SystemAudioTarget,
+  TargetLanguage,
+  TextTranslation,
   TranslationMode,
 } from "./types";
 
@@ -52,6 +61,18 @@ export function sessionSwitchSourceLanguage(
   language: SourceLanguage,
 ): Promise<void> {
   return invoke("session_switch_source_language", { language });
+}
+
+export function sessionSwitchAudioInput(input: AudioInput): Promise<void> {
+  return invoke("session_switch_audio_input", { input });
+}
+
+export function sessionSwitchSystemAudioTarget(target: SystemAudioTarget): Promise<void> {
+  return invoke("session_switch_system_audio_target", { target });
+}
+
+export function sessionSwitchTargetLanguage(language: TargetLanguage): Promise<void> {
+  return invoke("session_switch_target_language", { language });
 }
 
 export function sessionSwitchTranslationMode(
@@ -98,8 +119,9 @@ export function profileCreate(
 export function profileUpdate(
   profileId: string,
   name: string,
+  proxies?: ProfileNetworkProxyDraft,
 ): Promise<SettingsSnapshot> {
-  return invoke<SettingsSnapshot>("profile_update", { profileId, name });
+  return invoke<SettingsSnapshot>("profile_update", { profileId, name, ...proxies });
 }
 
 export function profileSelect(profileId: string): Promise<SettingsSnapshot> {
@@ -124,6 +146,17 @@ export function profileDeleteAPIKey(
   profileId: string,
 ): Promise<SettingsSnapshot> {
   return invoke<SettingsSnapshot>("profile_delete_api_key", { profileId });
+}
+
+export type StoredCredentialField = "apiKey" | "asrApiKey" | "token" | "secretId" | "secretKey" | "appKey";
+
+/** Settings-only, explicit user reveal. Never includes secrets in a snapshot. */
+export function profileRevealCredential(request: {
+  profileId: string;
+  field: StoredCredentialField;
+  textTranslation?: Exclude<TextTranslation, "followService">;
+}): Promise<string | null> {
+  return invoke<string | null>("profile_reveal_credential", request);
 }
 
 export function overlaySetCollapsed(collapsed: boolean): Promise<void> {
@@ -163,10 +196,17 @@ export function overlayControlSetPanelHeight(height: number): Promise<void> {
   return invoke("overlay_control_set_panel_height", { height });
 }
 
+export function overlayControlSetIslandWidth(width: number): Promise<void> {
+  return invoke("overlay_control_set_island_width", { width });
+}
+
 /** Fetches the current session state snapshot (for windows that boot after
  * the last session-state broadcast). */
 export function sessionGetState(): Promise<SessionStateEvent> {
-  return invoke<SessionStateEvent>("session_get_state");
+  return invoke<SessionStateEvent>("session_get_state").then(state => {
+    if (__MIMI_DEVELOPMENT_BUILD__) observeSessionWireReceived(state);
+    return state;
+  });
 }
 
 export function trayPanelHide(): Promise<void> {
@@ -177,7 +217,7 @@ export function appQuit(): Promise<void> {
   return invoke("app_quit");
 }
 
-export type SettingsNavigationTarget = "service";
+export type SettingsNavigationTarget = "service" | "export";
 
 export function appShowSettings(
   target?: SettingsNavigationTarget,
@@ -192,9 +232,10 @@ export function appShowSettings(
 export function listenSessionState(
   handler: (state: SessionStateEvent) => void,
 ): Promise<UnlistenFn> {
-  return listen<SessionStateEvent>("session-state", (event) =>
-    handler(event.payload),
-  );
+  return listen<SessionStateEvent>("session-state", (event) => {
+    if (__MIMI_DEVELOPMENT_BUILD__) observeSessionWireReceived(event.payload);
+    handler(event.payload);
+  });
 }
 
 export function listenSettingsChanged(
@@ -209,6 +250,21 @@ export function listenOverlayControlMode(
   handler: (mode: OverlayControlMode) => void,
 ): Promise<UnlistenFn> {
   return listen<OverlayControlMode>("overlay-control-mode", (event) =>
+    handler(event.payload),
+  );
+}
+
+/** View-local logical coordinates for a nonactivating macOS overlay. */
+export type OverlayPointerMotion = { x: number; y: number } | null;
+
+export function setOverlayPointerCursor(point: NonNullable<OverlayPointerMotion>, pointing: boolean): Promise<boolean> {
+  return invoke<boolean>("overlay_set_pointer_cursor", { ...point, pointing });
+}
+
+export function listenOverlayPointerMotion(
+  handler: (point: OverlayPointerMotion) => void,
+): Promise<UnlistenFn> {
+  return listen<OverlayPointerMotion>("overlay-pointer-motion", (event) =>
     handler(event.payload),
   );
 }
@@ -233,10 +289,51 @@ export function sessionArchiveState(): Promise<SessionArchiveState> {
   return invoke("session_archive_state");
 }
 
-export function sessionExport(kind: SessionExportKind): Promise<boolean> {
-  return invoke("session_export", { kind });
+export function sessionTranscriptPage(query: string, page: number): Promise<TranscriptPage> {
+  return invoke("session_transcript_page", { query, page });
+}
+
+export function sessionHistoryList(): Promise<SessionHistoryItem[]> {
+  return invoke("session_history_list");
+}
+
+export function sessionHistoryPage(id: string, query: string, page: number): Promise<TranscriptPage> {
+  return invoke("session_history_page", { id, query, page });
+}
+
+export function sessionHistoryAudio(id: string, audioSource?: AudioSource): Promise<ArrayBuffer> {
+  return invoke("session_history_audio", { id, audioSource: audioSource ?? null });
+}
+
+export function sessionHistoryDelete(id: string): Promise<void> {
+  return invoke("session_history_delete", { id });
+}
+
+export function sessionExport(kind: SessionExportKind, id?: string, audioSource?: AudioSource): Promise<boolean> {
+  return invoke("session_export", { kind, id: id ?? null, audioSource: audioSource ?? null });
 }
 
 export function sessionArchiveClear(): Promise<void> {
   return invoke("session_archive_clear");
+}
+
+export interface DesktopShortcutCommands {
+  toggleSession: string;
+  toggleImmersive: string;
+  cycleSubtitleDisplay: string;
+}
+
+export function appDesktopShortcutCommands(): Promise<DesktopShortcutCommands | null> {
+  return invoke("app_desktop_shortcut_commands");
+}
+
+export interface ConnectionDiagnostic {
+  credential: "present" | "missing" | "unavailable" | "localDevUnavailable" | "serviceUnavailable" | "accessDenied" | "invalid";
+  service: "available" | "unavailable" | "notTested";
+  reason: null | "credentialsMissing" | "credentialsUnavailable" | "localDevCredentialsUnavailable" | "credentialsServiceUnavailable" | "credentialsAccessDenied" | "invalidConfiguration" | "authenticationRejected" | "serviceRejected" | "timeout" | "unreachable" | "textTranslationNotConfigured";
+  elapsedMs?: number | null;
+}
+export type ConnectionCheckStage = "speech" | "text";
+export function testProfileConnection(profileId: string, stage?: ConnectionCheckStage): Promise<ConnectionDiagnostic> {
+  return invoke("profile_test_connection", stage ? { profileId, stage } : { profileId });
 }

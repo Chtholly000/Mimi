@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SettingsSnapshot } from "./types";
 import {
-  initializeSnapshotStreams,
+  SnapshotStreamBootstrap,
   mergeSettingsSnapshot,
   SettingsSaveCoordinator,
   SnapshotResponseGate,
+  SNAPSHOT_STEP_TIMEOUT_MS,
 } from "./settingsState";
+
+afterEach(() => vi.useRealTimers());
 
 const SETTINGS: SettingsSnapshot = {
   profiles: [
@@ -21,26 +24,101 @@ const SETTINGS: SettingsSnapshot = {
   targetLanguage: "zh",
   translationMode: "lowLatency",
   fontSize: 18,
+  subtitleBackgroundOpacity: 80,
+  subtitleColor: "white",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  showSubtitleDividers: false,
+  pulseAnimation: null,
+  pulseStyle: "ribbon",
+  subtitleAnimation: null,
   subtitleBlendsWithBackground: false,
   isOverlayLocked: false,
   uiLanguage: null,
   retainSessionHistory: false,
-  recordSessionAudio: false,
+  recordSessionAudio: false, audioInput: "system",
+  windowsAudioSource: "",
+  systemAudioTarget: { kind: "system" },
+  showInDock: false,
+  networkProxy: { mode: "system", url: null },
 };
 
 describe("mergeSettingsSnapshot", () => {
+  it("preserves input choices and resets recording only when the actual source changes", () => {
+    const recording = { ...SETTINGS, recordSessionAudio: true };
+    const changed = mergeSettingsSnapshot(recording, { audioInput: "microphone", recordSessionAudio: true });
+    expect(changed).toMatchObject({ audioInput: "microphone", recordSessionAudio: false });
+    expect(mergeSettingsSnapshot(changed, { fontSize: 20 }).audioInput).toBe("microphone");
+    const optedIn = mergeSettingsSnapshot(changed, { recordSessionAudio: true });
+    expect(mergeSettingsSnapshot(optedIn, { audioInput: "microphone" }).recordSessionAudio).toBe(true);
+    expect(mergeSettingsSnapshot(optedIn, { audioInput: "system" }).recordSessionAudio).toBe(false);
+    expect(mergeSettingsSnapshot(recording, { audioInput: "both", recordSessionAudio: true }).recordSessionAudio).toBe(false);
+    expect(mergeSettingsSnapshot({ ...recording, audioInput: "both" }, { audioInput: "microphone" }).recordSessionAudio).toBe(false);
+    expect(mergeSettingsSnapshot({ ...recording, audioInput: "both" }, { audioInput: "system" }).recordSessionAudio).toBe(false);
+    expect(mergeSettingsSnapshot(recording, { audioInput: "system" }).recordSessionAudio).toBe(true);
+  });
+  it("normalizes the proxy route while preserving it across unrelated saves", () => {
+    const custom = mergeSettingsSnapshot(SETTINGS, { networkProxy: { mode: "custom", url: "socks5h://127.0.0.1" } });
+    expect(custom.networkProxy).toEqual({ mode: "custom", url: "socks5h://127.0.0.1:1080" });
+    expect(mergeSettingsSnapshot(custom, { fontSize: 20 }).networkProxy).toEqual(custom.networkProxy);
+    expect(mergeSettingsSnapshot(custom, { networkProxy: { mode: "direct", url: "discarded" } }).networkProxy).toEqual({ mode: "direct", url: null });
+    expect(mergeSettingsSnapshot(custom, { networkProxy: { mode: "custom", url: "http://user:synthetic-secret@127.0.0.1" } }).networkProxy).toEqual(custom.networkProxy);
+  });
+  it("keeps a divider choice through unrelated saves and permits disabling it", () => {
+    expect(mergeSettingsSnapshot(SETTINGS, {}).showIntermediateSubtitles).toBe(true);
+    const interimOff = mergeSettingsSnapshot(SETTINGS, { showIntermediateSubtitles: false });
+    expect(mergeSettingsSnapshot(interimOff, { fontSize: 20 }).showIntermediateSubtitles).toBe(false);
+    expect(mergeSettingsSnapshot(interimOff, { showIntermediateSubtitles: true }).showIntermediateSubtitles).toBe(true);
+    const enabled = mergeSettingsSnapshot(SETTINGS, { showSubtitleDividers: true });
+    expect(mergeSettingsSnapshot(enabled, { fontSize: 20 }).showSubtitleDividers).toBe(true);
+    expect(mergeSettingsSnapshot(enabled, { showSubtitleDividers: false }).showSubtitleDividers).toBe(false);
+    expect(enabled.sourceLanguage).toBe(SETTINGS.sourceLanguage);
+    expect(enabled.translationMode).toBe(SETTINGS.translationMode);
+  });
+  it("keeps a Dock choice through unrelated settings and allows explicitly hiding again", () => {
+    const enabled = mergeSettingsSnapshot(SETTINGS, { showInDock: true });
+    expect(mergeSettingsSnapshot(enabled, { uiLanguage: "ja" }).showInDock).toBe(true);
+    expect(mergeSettingsSnapshot(enabled, { showInDock: false }).showInDock).toBe(false);
+  });
+
+  it("defaults legacy time display off and preserves either choice across unrelated saves", () => {
+    expect(mergeSettingsSnapshot(SETTINGS, {}).showSubtitleTimestamps).toBe(false);
+    const enabled = mergeSettingsSnapshot(SETTINGS, { showSubtitleTimestamps: true });
+    expect(mergeSettingsSnapshot(enabled, { fontSize: 20 }).showSubtitleTimestamps).toBe(true);
+    const disabled = mergeSettingsSnapshot(enabled, { showSubtitleTimestamps: false });
+    expect(mergeSettingsSnapshot(disabled, { audioInput: "both" }).showSubtitleTimestamps).toBe(false);
+    expect(enabled.translationMode).toBe(SETTINGS.translationMode);
+  });
+
+  it("changes pulse style without changing explicit motion or unrelated choices", () => {
+    const previous = { ...SETTINGS, pulseAnimation: false, subtitleAnimation: true, fontSize: 19 };
+    const changed = mergeSettingsSnapshot(previous, { pulseStyle: "ribbon" });
+    expect(changed).toMatchObject({ pulseStyle: "ribbon", pulseAnimation: false, subtitleAnimation: true, fontSize: 19 });
+    expect(mergeSettingsSnapshot(changed, { fontSize: 20 }).pulseStyle).toBe("ribbon");
+  });
+  it("keeps an optimistic Windows source choice without changing pulse preferences", () => {
+    const changed = mergeSettingsSnapshot({ ...SETTINGS, pulseStyle: "ribbon", pulseAnimation: false }, { windowsAudioSource: "synthetic-render-endpoint" });
+    expect(changed).toMatchObject({ windowsAudioSource: "synthetic-render-endpoint", pulseStyle: "ribbon", pulseAnimation: false });
+    expect(mergeSettingsSnapshot(changed, { fontSize: 20 }).windowsAudioSource).toBe("synthetic-render-endpoint");
+  });
   it("merges runtime-safe subtitle presentation preferences", () => {
     expect(
       mergeSettingsSnapshot(SETTINGS, {
+        subtitleColor: "#123456",
         subtitleAlignment: "right",
         subtitleDisplayMode: "bilingual",
+        showSubtitleDividers: true,
+        subtitleAnimation: true,
+        pulseAnimation: false,
         subtitleBlendsWithBackground: true,
       }),
     ).toMatchObject({
+      subtitleColor: "#123456",
       subtitleAlignment: "right",
       subtitleDisplayMode: "bilingual",
+      showSubtitleDividers: true,
+      subtitleAnimation: true,
+      pulseAnimation: false,
       subtitleBlendsWithBackground: true,
     });
   });
@@ -206,140 +284,207 @@ describe("SettingsSaveCoordinator", () => {
   });
 });
 
-describe("initializeSnapshotStreams", () => {
-  it("cleans a partial failure so initialization can be retried", async () => {
-    let cleanupCount = 0;
-    const appliedSettings: string[] = [];
-    const appliedSessions: string[] = [];
+describe("SnapshotStreamBootstrap", () => {
+  function deferred<Value>() {
+    let resolve!: (value: Value) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<Value>((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+  }
 
-    await expect(
-      initializeSnapshotStreams(
-        {
-          listenSettings: async () => () => {
-            cleanupCount += 1;
-          },
-          listenSession: async () => {
-            throw new Error("listener unavailable");
-          },
-          getSettings: async () => "unused-settings",
-          getSession: async () => "unused-session",
-        },
-        {
-          applySettings: (settings) => appliedSettings.push(settings),
-          applySession: (session) => appliedSessions.push(session),
-        },
-      ),
-    ).rejects.toThrow("snapshot-listener-unavailable");
+  function fixture() {
+    let settingsHandler!: (value: string) => void;
+    let sessionHandler!: (value: string) => void;
+    const unlistenSettings = vi.fn();
+    const unlistenSession = vi.fn();
+    const sources = {
+      listenSettings: vi.fn(async (handler: (value: string) => void): Promise<() => void> => { settingsHandler = handler; return unlistenSettings; }),
+      listenSession: vi.fn(async (handler: (value: string) => void): Promise<() => void> => { sessionHandler = handler; return unlistenSession; }),
+      getSettings: vi.fn(async () => "boot-settings"),
+      getSession: vi.fn(async () => "idle"),
+    };
+    const consumers = { applySettings: vi.fn(), applySession: vi.fn(), onReady: vi.fn() };
+    const bootstrap = new SnapshotStreamBootstrap(sources, consumers);
+    return { sources, consumers, bootstrap, unlistenSettings, unlistenSession,
+      settings: (value: string) => settingsHandler(value), session: (value: string) => sessionHandler(value) };
+  }
 
-    expect(cleanupCount).toBe(1);
-    expect(appliedSettings).toEqual([]);
-    expect(appliedSessions).toEqual([]);
-
-    await initializeSnapshotStreams(
-      {
-        listenSettings: async () => () => {},
-        listenSession: async () => () => {},
-        getSettings: async () => "retry-settings",
-        getSession: async () => "retry-session",
-      },
-      {
-        applySettings: (settings) => appliedSettings.push(settings),
-        applySession: (session) => appliedSessions.push(session),
-      },
-    );
-
-    expect(appliedSettings).toEqual(["retry-settings"]);
-    expect(appliedSessions).toEqual(["retry-session"]);
+  it("keeps backend listening events alive after an overnight Keychain timeout and hydrates the late original read", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const read = deferred<string>();
+    f.sources.getSettings.mockReturnValue(read.promise);
+    const initialization = f.bootstrap.initialize();
+    const expired = expect(initialization).rejects.toThrow("snapshot-step-timeout");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.consumers.applySession).toHaveBeenCalledExactlyOnceWith("idle");
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS);
+    await expired;
+    expect(f.unlistenSession).not.toHaveBeenCalled();
+    expect(f.unlistenSettings).not.toHaveBeenCalled();
+    f.session("listening"); f.session("confirmed-subtitle-snapshot");
+    expect(f.consumers.applySession.mock.calls.flat()).toEqual(["idle", "listening", "confirmed-subtitle-snapshot"]);
+    await vi.advanceTimersByTimeAsync(8 * 60 * 60 * 1000);
+    expect(f.sources.getSettings).toHaveBeenCalledOnce();
+    read.resolve("persisted-display-and-proxy-preferences");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.consumers.applySettings).toHaveBeenCalledExactlyOnceWith("persisted-display-and-proxy-preferences");
+    expect(f.bootstrap.ready).toBe(true);
+    expect(f.consumers.onReady).toHaveBeenCalledOnce();
+    f.bootstrap.dispose();
+    expect(f.unlistenSession).toHaveBeenCalledOnce();
+    expect(f.unlistenSettings).toHaveBeenCalledOnce();
   });
 
-  it("keeps events received while stale boot snapshots are in flight", async () => {
-    let settingsHandler: ((settings: string) => void) | undefined;
-    let sessionHandler: ((session: string) => void) | undefined;
-    let finishSettingsListener: (() => void) | undefined;
-    let finishSessionListener: (() => void) | undefined;
-    let resolveSettingsSnapshot: ((settings: string) => void) | undefined;
-    let resolveSessionSnapshot: ((session: string) => void) | undefined;
-    const appliedSettings: string[] = [];
-    const appliedSessions: string[] = [];
-    const settingsSnapshot = new Promise<string>((resolve) => {
-      resolveSettingsSnapshot = resolve;
+  it("reuses a pending native read on explicit retry and lets a newer event beat its late response", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const read = deferred<string>();
+    f.sources.getSettings.mockReturnValue(read.promise);
+    const expired = expect(f.bootstrap.initialize()).rejects.toThrow("snapshot-step-timeout");
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS); await expired;
+    const retry = f.bootstrap.initialize();
+    await vi.advanceTimersByTimeAsync(0);
+    f.settings("new-settings-event");
+    expect(f.bootstrap.ready).toBe(true);
+    read.resolve("old-settings-response");
+    await retry;
+    expect(f.consumers.applySettings).toHaveBeenCalledExactlyOnceWith("new-settings-event");
+    expect(f.sources.getSettings).toHaveBeenCalledOnce();
+    expect(f.sources.getSession).toHaveBeenCalledOnce();
+    expect(f.sources.listenSettings).toHaveBeenCalledOnce();
+    expect(f.sources.listenSession).toHaveBeenCalledOnce();
+    expect(f.consumers.onReady).toHaveBeenCalledOnce();
+    f.bootstrap.dispose();
+  });
+
+  it("retries a rejected settings read without removing or duplicating the healthy session stream", async () => {
+    const f = fixture();
+    f.sources.getSettings.mockRejectedValueOnce("synthetic-native-error");
+    await expect(f.bootstrap.initialize()).rejects.toThrow("boot-snapshot-unavailable");
+    f.session("listening");
+    expect(f.consumers.applySession).toHaveBeenLastCalledWith("listening");
+    await f.bootstrap.initialize();
+    expect(f.bootstrap.ready).toBe(true);
+    expect(f.sources.getSettings).toHaveBeenCalledTimes(2);
+    expect(f.sources.getSession).toHaveBeenCalledOnce();
+    expect(f.sources.listenSettings).toHaveBeenCalledOnce();
+    expect(f.sources.listenSession).toHaveBeenCalledOnce();
+    expect(f.unlistenSession).not.toHaveBeenCalled();
+    f.bootstrap.dispose();
+  });
+
+  it("retries only a failed listener and retains the other hydrated stream", async () => {
+    const f = fixture();
+    f.sources.listenSession.mockRejectedValueOnce(new Error("synthetic-listener-error"));
+    await expect(f.bootstrap.initialize()).rejects.toThrow("snapshot-listener-unavailable");
+    expect(f.sources.getSession).not.toHaveBeenCalled();
+    expect(f.unlistenSettings).not.toHaveBeenCalled();
+    await f.bootstrap.initialize();
+    expect(f.bootstrap.ready).toBe(true);
+    expect(f.sources.listenSettings).toHaveBeenCalledOnce();
+    expect(f.sources.getSettings).toHaveBeenCalledOnce();
+    expect(f.sources.listenSession).toHaveBeenCalledTimes(2);
+    f.bootstrap.dispose();
+  });
+
+  it("reuses a listener pending past its deadline and accepts its later completion", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const listener = deferred<() => void>();
+    f.sources.listenSettings.mockReturnValue(listener.promise);
+    const expired = expect(f.bootstrap.initialize()).rejects.toThrow("snapshot-step-timeout");
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS); await expired;
+    const retry = f.bootstrap.initialize();
+    await vi.advanceTimersByTimeAsync(0);
+    listener.resolve(f.unlistenSettings);
+    await retry;
+    expect(f.bootstrap.ready).toBe(true);
+    expect(f.sources.listenSettings).toHaveBeenCalledOnce();
+    expect(f.sources.getSettings).toHaveBeenCalledOnce();
+    expect(f.unlistenSettings).not.toHaveBeenCalled();
+    f.bootstrap.dispose();
+  });
+
+  it("hydrates after a listener acknowledges past its deadline without requiring a retry or event", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const listener = deferred<() => void>();
+    f.sources.listenSettings.mockReturnValue(listener.promise);
+    const expired = expect(f.bootstrap.initialize()).rejects.toThrow("snapshot-step-timeout");
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_STEP_TIMEOUT_MS); await expired;
+    expect(f.sources.getSettings).not.toHaveBeenCalled();
+    listener.resolve(f.unlistenSettings); await vi.advanceTimersByTimeAsync(0);
+    expect(f.sources.getSettings).toHaveBeenCalledOnce();
+    expect(f.bootstrap.ready).toBe(true);
+    expect(f.consumers.onReady).toHaveBeenCalledOnce();
+    expect(f.consumers.applySettings).toHaveBeenCalledExactlyOnceWith("boot-settings");
+    f.bootstrap.dispose();
+  });
+
+  it("publishes events immediately and ignores stale boot snapshots for each stream", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const settings = deferred<string>(); const session = deferred<string>();
+    f.sources.getSettings.mockReturnValue(settings.promise);
+    f.sources.getSession.mockReturnValue(session.promise);
+    const initialization = f.bootstrap.initialize();
+    await vi.advanceTimersByTimeAsync(0);
+    f.settings("new-settings"); f.session("connecting"); f.session("listening");
+    expect(f.consumers.applySession.mock.calls.flat()).toEqual(["connecting", "listening"]);
+    settings.resolve("stale-settings"); session.resolve("idle"); await initialization;
+    expect(f.consumers.applySettings.mock.calls.flat()).toEqual(["new-settings"]);
+    expect(f.consumers.applySession.mock.calls.flat()).toEqual(["connecting", "listening"]);
+    f.bootstrap.dispose();
+  });
+
+  it("accepts an event before the listener acknowledgement without a redundant snapshot read", async () => {
+    const f = fixture();
+    f.sources.listenSettings.mockImplementationOnce(async (handler) => {
+      handler("new-settings-before-ack"); return f.unlistenSettings;
     });
-    const sessionSnapshot = new Promise<string>((resolve) => {
-      resolveSessionSnapshot = resolve;
-    });
+    await f.bootstrap.initialize();
+    expect(f.sources.getSettings).not.toHaveBeenCalled();
+    expect(f.consumers.applySettings).toHaveBeenCalledExactlyOnceWith("new-settings-before-ack");
+    expect(f.bootstrap.ready).toBe(true);
+    f.bootstrap.dispose();
+  });
 
-    const initialization = initializeSnapshotStreams(
-      {
-        listenSettings: (handler) => {
-          settingsHandler = handler;
-          return new Promise((resolve) => {
-            finishSettingsListener = () => resolve(() => {});
-          });
-        },
-        listenSession: (handler) => {
-          sessionHandler = handler;
-          return new Promise((resolve) => {
-            finishSessionListener = () => resolve(() => {});
-          });
-        },
-        getSettings: () => settingsSnapshot,
-        getSession: () => sessionSnapshot,
-      },
-      {
-        applySettings: (settings) => appliedSettings.push(settings),
-        applySession: (session) => appliedSessions.push(session),
-      },
-    );
-
-    // Both listeners are requested concurrently. An event can arrive while
-    // native listener setup is still completing and must survive the later
-    // snapshot response.
-    expect(settingsHandler).toBeDefined();
-    expect(sessionHandler).toBeDefined();
-    settingsHandler?.("new-settings");
-    sessionHandler?.("new-session");
-    finishSettingsListener?.();
-    finishSessionListener?.();
-    await Promise.resolve();
-
-    resolveSettingsSnapshot?.("old-settings");
-    resolveSessionSnapshot?.("old-session");
+  it("disposes pending listeners and reads safely without leaking late results into a replacement", async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const listener = deferred<() => void>(); const session = deferred<string>();
+    f.sources.listenSettings.mockReturnValue(listener.promise);
+    f.sources.getSession.mockReturnValue(session.promise);
+    const initialization = f.bootstrap.initialize();
+    await vi.advanceTimersByTimeAsync(0);
+    f.bootstrap.dispose(); f.bootstrap.dispose();
     await initialization;
-
-    expect(appliedSettings).toEqual(["new-settings"]);
-    expect(appliedSessions).toEqual(["new-session"]);
+    expect(vi.getTimerCount()).toBe(0);
+    f.session("stale-event"); session.resolve("stale-snapshot"); listener.resolve(f.unlistenSettings);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.unlistenSettings).toHaveBeenCalledOnce();
+    expect(f.unlistenSession).toHaveBeenCalledOnce();
+    expect(f.sources.getSettings).not.toHaveBeenCalled();
+    expect(f.consumers.applySession).not.toHaveBeenCalled();
+    expect(f.consumers.onReady).not.toHaveBeenCalled();
+    const replacement = fixture(); await replacement.bootstrap.initialize();
+    expect(replacement.bootstrap.ready).toBe(true); replacement.bootstrap.dispose();
   });
 
-  it("continues live updates after boot reconciliation", async () => {
-    let settingsHandler: ((settings: string) => void) | undefined;
-    let sessionHandler: ((session: string) => void) | undefined;
-    const appliedSettings: string[] = [];
-    const appliedSessions: string[] = [];
-
-    await initializeSnapshotStreams(
-      {
-        listenSettings: async (handler) => {
-          settingsHandler = handler;
-          return () => {};
-        },
-        listenSession: async (handler) => {
-          sessionHandler = handler;
-          return () => {};
-        },
-        getSettings: async () => "boot-settings",
-        getSession: async () => "boot-session",
-      },
-      {
-        applySettings: (settings) => appliedSettings.push(settings),
-        applySession: (session) => appliedSessions.push(session),
-      },
-    );
-
-    settingsHandler?.("live-settings");
-    sessionHandler?.("live-session");
-
-    expect(appliedSettings).toEqual(["boot-settings", "live-settings"]);
-    expect(appliedSessions).toEqual(["boot-session", "live-session"]);
+  it("disposes before native calls begin and cleans both streams even if one unlisten throws", async () => {
+    const early = fixture();
+    const initialization = early.bootstrap.initialize(); early.bootstrap.dispose(); await initialization;
+    expect(early.sources.listenSettings).not.toHaveBeenCalled();
+    expect(early.sources.listenSession).not.toHaveBeenCalled();
+    const f = fixture(); await f.bootstrap.initialize();
+    f.unlistenSettings.mockImplementation(() => { throw new Error("synthetic-cleanup-error"); });
+    f.bootstrap.dispose(); f.bootstrap.dispose();
+    f.settings("stale-settings"); f.session("stale-session");
+    expect(f.unlistenSession).toHaveBeenCalledOnce();
+    expect(f.unlistenSettings).toHaveBeenCalledOnce();
+    expect(f.consumers.applySettings).toHaveBeenCalledExactlyOnceWith("boot-settings");
+    expect(f.consumers.applySession).toHaveBeenCalledExactlyOnceWith("idle");
   });
 });
 
@@ -353,4 +498,21 @@ describe("SnapshotResponseGate", () => {
     expect(gate.applyIfCurrent(oldResponse)).toBe(false);
     expect(gate.applyIfCurrent(gate.capture())).toBe(true);
   });
+});
+
+it("updates background opacity immediately, preserves zero and keeps it through unrelated saves", () => {
+  const transparent = mergeSettingsSnapshot(SETTINGS, { subtitleBackgroundOpacity: 0 });
+  expect(transparent.subtitleBackgroundOpacity).toBe(0);
+  expect(mergeSettingsSnapshot(transparent, { fontSize: 20 }).subtitleBackgroundOpacity).toBe(0);
+  expect(mergeSettingsSnapshot(SETTINGS, { subtitleBackgroundOpacity: 35 }).subtitleBackgroundOpacity).toBe(35);
+});
+
+it("application target changes require a new recording opt-in, including combined drafts", () => {
+  const recording = { ...SETTINGS, recordSessionAudio: true };
+  const target = { kind: "application" as const, id: "com.example.player", name: "Player" };
+  const changed = mergeSettingsSnapshot(recording, { systemAudioTarget: target, recordSessionAudio: true });
+  expect(changed.recordSessionAudio).toBe(false);
+  const optedIn = mergeSettingsSnapshot(changed, { recordSessionAudio: true });
+  expect(mergeSettingsSnapshot(optedIn, { systemAudioTarget: target }).recordSessionAudio).toBe(true);
+  expect(mergeSettingsSnapshot(optedIn, { systemAudioTarget: { kind: "system" } }).recordSessionAudio).toBe(false);
 });

@@ -1,66 +1,77 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { SubtitleSessionControls } from "./SubtitleSessionControls";
 import { Icon } from "../../components/Icon";
 import { Switch } from "../../components/Switch";
 import { I18N, setStoredUiLanguage, type UiLanguage } from "../../lib/i18n";
 import { announceSettingsNavigationReady, isTauri, listenSettingsNavigation } from "../../lib/ipc";
-import { selectSessionErrorMessage, selectSessionStatusKind, useStore } from "../../lib/store";
-import {
-  effectiveTranslationModeForSettings,
-  sourceLanguagesForSettings,
-  targetLanguagesForSettings,
-  translationModesForSettings,
-} from "../../lib/providerCapabilities";
-import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
-  TARGET_LANGUAGE_DISPLAY_NAMES,
-  TRANSLATION_MODE_DISPLAY_NAMES,
-  type SettingsSnapshot,
-  type SourceLanguage,
-  type SubtitleAlignment,
-  type TargetLanguage,
-  type TranslationMode,
-} from "../../lib/types";
-import { sourceLanguageButtonTitle } from "../overlay/overlayModel";
+import { selectSessionStatusKind, useStore } from "../../lib/store";
+import type { SettingsDraft, SubtitleAlignment } from "../../lib/types";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
+import { subtitleBackgroundColor, subtitleColorHex } from "../../lib/subtitleColor";
 import type { SubtitleDisplayMode } from "../../lib/types";
+import { SubtitleColorControl } from "./SubtitleColorControl";
 import { ServiceProfiles } from "./ServiceProfiles";
+import { SupportDiagnostics } from "./SupportDiagnostics";
 import { SessionExport } from "./SessionExport";
 import { SoftwareUpdate } from "./SoftwareUpdate";
 import { useSettingsTheme } from "./useSettingsTheme";
+import { DockPreference } from "./DockPreference";
 import { AppearancePicker } from "./AppearancePicker";
-import {
-  SettingsSessionActionCoordinator,
-  settingsSessionControlState,
-  type SettingsSessionPendingAction,
-  type SettingsSessionVisibleStatus,
-} from "./settingsSessionControlModel";
+import { PulseRing } from "../overlay/PulseRing";
+import type { PulseStyle } from "../../lib/types";
+import { useResolvedMotion } from "../overlay/animation";
 import { SettingsRow, SettingsSection, SettingsSelect } from "./SettingsPrimitives";
+import { QuickStartGuide } from "./QuickStartGuide";
+import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
+import { SettingsQuitFooter } from "./SettingsQuitFooter";
+import { SettingsHelp } from "./SettingsHelp";
+import { SettingsConfirmation } from "./DestructiveConfirmation";
+import { SettingsInitializationStatus } from "./SettingsInitializationStatus";
+import { AudioInputSettings } from "./AudioInputSettings";
+import { SettingsToastRegion } from "./SettingsToast";
+import { useSettingsToast } from "./useSettingsToast";
 import "./settings.css";
 
-type SettingsCategory = "subtitles" | "service" | "general" | "export";
+const DevelopmentDebugger = __MIMI_DEVELOPMENT_BUILD__
+  ? lazy(() => import("./DevelopmentDebugger").then(module => ({ default: module.DevelopmentDebugger })))
+  : null;
+
+type SettingsCategory = "subtitles" | "service" | "general" | "export" | "diagnostics" | "guide";
 
 const CATEGORY_SECTION_IDS: Record<SettingsCategory, string> = {
   subtitles: "subtitle-settings",
   service: "service-profiles",
   general: "application-settings",
   export: "session-export",
+  diagnostics: "diagnostics",
+  guide: "getting-started",
 };
 
 /** Compact settings surface shared by the macOS and Windows shells. */
 export function SettingsView() {
+  const { nativeShortcuts, commands: desktopShortcutCommands } = useDesktopShortcuts();
+  const [showShortcutSetup, setShowShortcutSetup] = useState(false);
   const { theme, resolvedTheme, changeTheme } = useSettingsTheme();
   // Subscribe only to state rendered in this window. Subtitle text updates do
   // not re-render settings while a stream is active.
   const sessionStatusKind = useStore(selectSessionStatusKind);
-  const sessionErrorMessage = useStore(selectSessionErrorMessage);
   const sessionIsActive = useStore((state) => state.session.isActive);
   const sessionIsPaused = useStore((state) => state.session.isPaused);
   const settings = useStore((state) => state.settings);
-  const start = useStore((state) => state.start);
-  const stop = useStore((state) => state.stop);
-  const switchSourceLanguage = useStore((state) => state.switchSourceLanguage);
+  const initializationStatus = useStore((state) => state.initializationStatus);
+  const initializationError = useStore((state) => state.initializationError);
+  const initialize = useStore((state) => state.init);
+  const initializationReady = initializationStatus === "ready";
+  // Show the actual on/off state, including compatible legacy preferences.
+  // User changes persist an explicit boolean through saveSettings.
+  const pulseOn = useResolvedMotion(settings.pulseAnimation);
+  const motionOn = useResolvedMotion(settings.subtitleAnimation);
   const saveSettings = useStore((state) => state.saveSettings);
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
+  const quit = useStore((state) => state.quit);
+  const { runWithToast } = useSettingsToast();
+  const savePreference = (draft: SettingsDraft, label: string) =>
+    runWithToast(() => saveSettings(draft), I18N.settings.settingSaveFailed(label));
 
   const activeProfile =
     settings.profiles.find((profile) => profile.id === settings.activeProfileId) ??
@@ -71,10 +82,6 @@ export function SettingsView() {
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>(
     locationCategory ?? preferredCategory,
   );
-  const [sessionPendingAction, setSessionPendingAction] =
-    useState<SettingsSessionPendingAction>(null);
-  const [sessionActionError, setSessionActionError] = useState(false);
-  const [sessionActionCoordinator] = useState(() => new SettingsSessionActionCoordinator());
   const locationSelectedCategory = useRef(locationCategory !== null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const initialCredentialState = useRef(activeProfile?.credentialState);
@@ -94,24 +101,10 @@ export function SettingsView() {
     setActiveCategory(activeProfile?.credentialState === "present" ? "subtitles" : "service");
   }, [activeProfile?.credentialState]);
 
-  const sourceLanguages = sourceLanguagesForSettings(settings);
-  const targetLanguages = targetLanguagesForSettings(settings);
-  const chineseIsOriginalOnly = targetLanguages.includes("original");
-  const translationModes = translationModesForSettings(settings);
-  const effectiveTranslationMode = effectiveTranslationModeForSettings(settings);
-  const isChangingSession = sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
-  const sessionControl = settingsSessionControlState({
-    statusKind: sessionStatusKind,
-    isActive: sessionIsActive,
-    isPaused: sessionIsPaused,
-    credentialState: activeProfile?.credentialState ?? "unavailable",
-    pendingAction: sessionPendingAction,
-  });
-
   const categories: readonly {
     id: SettingsCategory;
     label: string;
-    icon: "captions-bubble" | "languages" | "gear" | "download";
+    icon: "captions-bubble" | "languages" | "gear" | "download" | "shield-check";
   }[] = [
     {
       id: "subtitles",
@@ -123,12 +116,13 @@ export function SettingsView() {
       label: I18N.settings.serviceProfilesTitle,
       icon: "languages",
     },
+    { id: "export", label: I18N.settings.sessionExportTitle, icon: "download" },
     {
       id: "general",
       label: I18N.settings.applicationTitle,
       icon: "gear",
     },
-    { id: "export", label: I18N.settings.sessionExportTitle, icon: "download" },
+    { id: "diagnostics", label: I18N.settings.diagnosticsTitle, icon: "shield-check" },
   ];
 
   const pageDescriptions: Record<SettingsCategory, string> = {
@@ -136,6 +130,8 @@ export function SettingsView() {
     service: I18N.settings.servicePageDescription,
     general: I18N.settings.generalPageDescription,
     export: I18N.settings.exportPageDescription,
+    diagnostics: `${I18N.settings.diagnosticsPageDescription}\n${I18N.settings.diagnosticsHelp}`,
+    guide: I18N.settings.quickStartDescription,
   };
 
   const selectCategory = useCallback((category: SettingsCategory) => {
@@ -145,42 +141,14 @@ export function SettingsView() {
     window.history.replaceState(null, "", `#${CATEGORY_SECTION_IDS[category]}`);
   }, []);
 
-  const changeSession = useCallback(
-    (checked: boolean) => {
-      const pendingAction: Exclude<SettingsSessionPendingAction, null> = checked ? "start" : "stop";
-      if (!sessionActionCoordinator.begin(pendingAction)) {
-        return;
-      }
-      setSessionPendingAction(pendingAction);
-      setSessionActionError(false);
-      void (checked ? start() : stop()).catch(() => {
-        if (!sessionActionCoordinator.commandRejected(pendingAction)) return;
-        setSessionActionError(true);
-        setSessionPendingAction(null);
-      });
-    },
-    [sessionActionCoordinator, start, stop],
-  );
-
   useEffect(() => {
-    return useStore.subscribe((state, previousState) => {
-      const statusKind = selectSessionStatusKind(state);
-      const previousStatusKind = selectSessionStatusKind(previousState);
-      const isActive = state.session.isActive;
-      if (statusKind === previousStatusKind && isActive === previousState.session.isActive) {
-        return;
-      }
-      // A fresh native transition is authoritative even when it came from the
-      // tray or global shortcut. Do not leave an earlier settings IPC failure
-      // visible beside a subsequently successful session state.
-      setSessionActionError(false);
-      const pendingAction = sessionActionCoordinator.observeNativeState({
-        statusKind,
-        isActive,
-      });
-      setSessionPendingAction((current) => (current === pendingAction ? current : pendingAction));
-    });
-  }, [sessionActionCoordinator]);
+    const navigateFromHash = () => {
+      const category = settingsCategoryFromHash(window.location.hash);
+      if (category) selectCategory(category);
+    };
+    window.addEventListener("hashchange", navigateFromHash);
+    return () => window.removeEventListener("hashchange", navigateFromHash);
+  }, [selectCategory]);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -188,10 +156,11 @@ export function SettingsView() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
-    void listenSettingsNavigation(() => {
-      selectCategory("service");
+    void listenSettingsNavigation((target) => {
+      const category = target === "export" ? "export" : "service";
+      selectCategory(category);
       window.requestAnimationFrame(() => {
-        document.getElementById("settings-category-service")?.focus();
+        document.getElementById(`settings-category-${category}`)?.focus();
       });
     })
       .then(async (installedUnlisten) => {
@@ -213,91 +182,65 @@ export function SettingsView() {
   return (
     <main className={`settings-console settings-console--${resolvedTheme}`}>
       <aside className="settings-sidebar">
-        <div className="settings-brand">
-          <span className="settings-brand__name">mimi</span>
-          <span className="settings-brand__label">{I18N.settings.windowTitle}</span>
-        </div>
-        <nav
-          key={activeCategory}
-          className="settings-category-nav"
-          aria-label={I18N.settings.windowTitle}
-        >
-          {categories.map((category) => {
-            const selected = activeCategory === category.id;
-            return (
-              <button
-                key={category.id}
-                id={`settings-category-${category.id}`}
-                type="button"
-                className={`settings-category-nav__item${selected ? " is-selected" : ""}`}
-                aria-current={selected ? "page" : undefined}
-                aria-controls={`${CATEGORY_SECTION_IDS[category.id]}-panel`}
-                onClick={() => selectCategory(category.id)}
-              >
-                <Icon name={category.icon} />
-                <span>{category.label}</span>
-              </button>
-            );
-          })}
-        </nav>
-        <section className="settings-session-card" aria-labelledby="settings-session-title">
-          <div className="settings-session-card__main">
-            <h2 id="settings-session-title">{I18N.settings.liveSubtitles}</h2>
-            <Switch
-              checked={sessionControl.checked}
-              disabled={sessionControl.disabled}
-              aria-label={I18N.settings.liveSubtitles}
-              aria-describedby="settings-session-status settings-session-shortcut"
-              onChange={changeSession}
-            />
+        <div className="settings-sidebar-scroll">
+          <div className="settings-brand">
+            <span className="settings-brand__name">mimi</span>
+            <span className="settings-brand__label">{I18N.settings.windowTitle}</span>
           </div>
-          <span
-            id="settings-session-status"
-            className="settings-session-status"
-            data-status={sessionControl.visibleStatus}
-            aria-live="polite"
+          <nav
+            className="settings-category-nav"
+            aria-label={I18N.settings.windowTitle}
           >
-            <span aria-hidden="true" />
-            {settingsSessionStatusText(sessionControl.visibleStatus, sessionErrorMessage)}
-          </span>
-          <p
-            id="settings-session-shortcut"
-            className="settings-session-shortcut"
-            aria-label={I18N.settings.startStopShortcut}
-          >
-            <kbd>{startStopShortcut()}</kbd>
-          </p>
-          {sessionControl.canConfigure && (
+            {categories.map((category) => {
+              const selected = activeCategory === category.id;
+              return (
+                <button
+                  key={category.id}
+                  id={`settings-category-${category.id}`}
+                  type="button"
+                  className={`settings-category-nav__item${selected ? " is-selected" : ""}`}
+                  aria-current={selected ? "page" : undefined}
+                  aria-controls={`${CATEGORY_SECTION_IDS[category.id]}-panel`}
+                  onClick={() => selectCategory(category.id)}
+                >
+                  <Icon name={category.icon} />
+                  <span>{category.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+          <div className="settings-sidebar-support">
             <button
               type="button"
-              className="settings-button settings-button--quiet settings-button--compact"
-              onClick={() => selectCategory("service")}
+              className={`settings-category-nav__item settings-guide-entry${activeCategory === "guide" ? " is-selected" : ""}`}
+              aria-current={activeCategory === "guide" ? "page" : undefined}
+              aria-controls="getting-started-panel"
+              onClick={() => selectCategory("guide")}
             >
-              {I18N.settings.configureService}
+              <Icon name="captions-bubble" />
+              <span>{I18N.settings.quickStartNav}</span>
             </button>
-          )}
-          {sessionActionError && (
-            <p className="settings-feedback" data-tone="error" role="alert">
-              {I18N.settings.sessionActionFailed}
-            </p>
-          )}
-          <details className="settings-session-help">
-            <summary>
-              {I18N.settings.sessionUsageHelp}
-              <Icon name="chevron-down" />
-            </summary>
-            <p>{I18N.settings.liveSubtitlesDescription}</p>
-            <p>{I18N.settings.closeToTrayHelp}</p>
-          </details>
-        </section>
+          </div>
+        </div>
+        <SettingsQuitFooter onQuit={quit} />
       </aside>
       <div className="settings-console__scroll" ref={contentScrollRef}>
         <div className="settings-console__frame">
-          <header className="settings-page-header">
-            <h1>{categories.find((category) => category.id === activeCategory)?.label}</h1>
-            <p>{pageDescriptions[activeCategory]}</p>
+          <header className="settings-page-header settings-page-header--help">
+            <h1>{activeCategory === "guide" ? I18N.settings.quickStartTitle : categories.find((category) => category.id === activeCategory)?.label}</h1>
+            <SettingsHelp text={pageDescriptions[activeCategory]} label={I18N.settings.helpLabel} />
           </header>
+          {initializationReady && <SubtitleSessionControls visible={activeCategory === "subtitles"} onConfigure={() => selectCategory("service")} />}
           <div className="settings-layout">
+            {!initializationReady ? <SettingsInitializationStatus status={initializationStatus} error={initializationError} onRetry={() => { void initialize(); }} /> : <>
+            {activeCategory === "guide" && (
+              <div id="getting-started-panel" className="settings-category-panel">
+                <QuickStartGuide
+                  onConfigureService={() => selectCategory("service")}
+                  onOpenSubtitles={() => selectCategory("subtitles")}
+                />
+              </div>
+            )}
             {activeCategory === "subtitles" && (
               <div id="subtitle-settings-panel" className="settings-category-panel">
                 <SettingsSection
@@ -317,12 +260,16 @@ export function SettingsView() {
                       className="subtitle-preview__stage"
                       style={{ textAlign: settings.subtitleAlignment }}
                     >
+                      <div className="subtitle-preview__pulse">
+                        <PulseRing phase="listening" pulseStyle={settings.pulseStyle} motionEnabled={pulseOn} />
+                      </div>
                       <div
                         className="subtitle-preview__text"
-                        style={{ fontSize: settings.fontSize }}
+                        style={{ fontSize: settings.fontSize, color: subtitleColorHex(settings.subtitleColor),
+                          background: settings.subtitleBlendsWithBackground ? "transparent" : subtitleBackgroundColor(settings.subtitleBackgroundOpacity) }}
                       >
                         {settings.subtitleDisplayMode !== "translation" && (
-                          <span>{I18N.settings.previewOriginal}</span>
+                          <span style={{ color: settings.subtitleDisplayMode === "original" ? "inherit" : "rgba(255,255,255,0.72)" }}>{I18N.settings.previewOriginal}</span>
                         )}
                         {settings.subtitleDisplayMode !== "original" && (
                           <strong>{I18N.settings.previewTranslation}</strong>
@@ -330,14 +277,82 @@ export function SettingsView() {
                       </div>
                     </div>
                     <div className="subtitle-preview__controls">
-                      <SettingsRow label={I18N.settings.subtitleDisplay} description={`${I18N.settings.subtitleDisplayHelp} ${subtitleDisplayShortcut()}`}>
+                      <SettingsRow label={I18N.settings.subtitleDisplay} description={`${I18N.settings.subtitleDisplayHelp}${nativeShortcuts ? ` ${subtitleDisplayShortcut()}` : ""}`}>
                         <SettingsSelect
                           label={I18N.settings.subtitleDisplay}
                           value={settings.subtitleDisplayMode}
                           options={SUBTITLE_DISPLAY_OPTIONS}
-                          onChange={(value) => void saveSettings({ subtitleDisplayMode: value as SubtitleDisplayMode })}
+                          onChange={(value) => void savePreference({ subtitleDisplayMode: value as SubtitleDisplayMode }, I18N.settings.subtitleDisplay)}
                         />
                       </SettingsRow>
+                      <SettingsRow label={I18N.settings.showIntermediateSubtitles} description={I18N.settings.showIntermediateSubtitlesHelp}>
+                        <Switch
+                          checked={settings.showIntermediateSubtitles !== false}
+                          aria-label={I18N.settings.showIntermediateSubtitles}
+                          onChange={(showIntermediateSubtitles) => void savePreference({ showIntermediateSubtitles }, I18N.settings.showIntermediateSubtitles)}
+                        />
+                      </SettingsRow>
+                      <SettingsRow label={I18N.settings.pulseStyle}>
+                        <SettingsSelect
+                          label={I18N.settings.pulseStyle}
+                          value={settings.pulseStyle}
+                          options={[
+                            { value: "syllable", label: I18N.settings.pulseStyleSyllable },
+                            { value: "ribbon", label: I18N.settings.pulseStyleRibbon },
+                          ]}
+                          onChange={(value) => void savePreference({ pulseStyle: value as PulseStyle }, I18N.settings.pulseStyle)}
+                        />
+                      </SettingsRow>
+                      <SettingsRow label={I18N.settings.subtitleDividers} description={I18N.settings.subtitleDividersHelp}>
+                        <Switch
+                          checked={settings.showSubtitleDividers}
+                          aria-label={I18N.settings.subtitleDividers}
+                          onChange={(showSubtitleDividers) => void savePreference({ showSubtitleDividers }, I18N.settings.subtitleDividers)}
+                        />
+                      </SettingsRow>
+                      <SettingsRow label={I18N.settings.subtitleTimestamps} description={I18N.settings.subtitleTimestampsHelp}>
+                        <Switch
+                          checked={settings.showSubtitleTimestamps ?? false}
+                          aria-label={I18N.settings.subtitleTimestamps}
+                          onChange={(showSubtitleTimestamps) => void savePreference({ showSubtitleTimestamps }, I18N.settings.subtitleTimestamps)}
+                        />
+                      </SettingsRow>
+                      <SettingsRow
+                        label={I18N.settings.pulseAnimation}
+                      >
+                        <Switch
+                          checked={pulseOn}
+                          aria-label={I18N.settings.pulseAnimation}
+                          onChange={(pulseAnimation) =>
+                            void savePreference({ pulseAnimation }, I18N.settings.pulseAnimation)
+                          }
+                        />
+                      </SettingsRow>
+                      <SettingsRow
+                        label={I18N.settings.textAnimation}
+                        description={I18N.settings.textAnimationHelp}
+                        align="start"
+                      >
+                        <Switch
+                          checked={motionOn}
+                          aria-label={I18N.settings.textAnimation}
+                          onChange={(subtitleAnimation) =>
+                            void savePreference({ subtitleAnimation }, I18N.settings.textAnimation)
+                          }
+                        />
+                      </SettingsRow>
+                      <SettingsRow label={I18N.settings.systemSubtitleColor}>
+                        <SubtitleColorControl label={I18N.settings.systemSubtitleColor}
+                          value={settings.subtitleColor}
+                          onChange={(subtitleColor) => void savePreference({ subtitleColor }, I18N.settings.systemSubtitleColor)}
+                        />
+                      </SettingsRow>
+                      {settings.microphoneInputAvailable && <SettingsRow label={I18N.settings.microphoneSubtitleColor}>
+                        <SubtitleColorControl label={I18N.settings.microphoneSubtitleColor}
+                          value={settings.microphoneSubtitleColor ?? "yellow"}
+                          onChange={(microphoneSubtitleColor) => void savePreference({ microphoneSubtitleColor }, I18N.settings.microphoneSubtitleColor)}
+                        />
+                      </SettingsRow>}
                       <SettingsRow label={I18N.settings.fontSize}>
                         <div className="font-size-control">
                           <span className="font-size-control__sample" aria-hidden="true">
@@ -351,110 +366,41 @@ export function SettingsView() {
                             value={settings.fontSize}
                             aria-label={I18N.settings.fontSize}
                             onChange={(event) =>
-                              void saveSettings({
+                              void savePreference({
                                 fontSize: Number(event.target.value),
-                              })
+                              }, I18N.settings.fontSize)
                             }
                           />
                           <output aria-live="polite">{Math.round(settings.fontSize)}</output>
                         </div>
                       </SettingsRow>
 
+                      <SettingsRow label={I18N.settings.backgroundTransparency}>
+                        <div className="font-size-control background-transparency-control">
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            step={1}
+                            value={100 - (settings.subtitleBackgroundOpacity ?? 80)}
+                            aria-label={I18N.settings.backgroundTransparency}
+                            disabled={settings.subtitleBlendsWithBackground}
+                            onChange={(event) => void savePreference({
+                              subtitleBackgroundOpacity: 100 - Number(event.target.value),
+                            }, I18N.settings.backgroundTransparency)}
+                          />
+                          <output aria-live="polite">{100 - (settings.subtitleBackgroundOpacity ?? 80)}%</output>
+                        </div>
+                      </SettingsRow>
+
                       <SettingsRow label={I18N.settings.subtitleAlignment}>
                         <SubtitleAlignmentControl
                           value={settings.subtitleAlignment}
-                          onChange={(subtitleAlignment) => void saveSettings({ subtitleAlignment })}
+                          onChange={(subtitleAlignment) => void savePreference({ subtitleAlignment }, I18N.settings.subtitleAlignment)}
                         />
                       </SettingsRow>
                     </div>
                   </div>
-                  <div className="settings-field-group">
-                    <span className="settings-field-group__label" id="source-language-label">
-                      {I18N.settings.sourceLanguage}
-                    </span>
-                    <div
-                      className="source-language-grid"
-                      data-count={sourceLanguages.length}
-                      role="group"
-                      aria-labelledby="source-language-label"
-                    >
-                      {sourceLanguages.map((language) => (
-                        <SourceLanguageButton
-                          key={language}
-                          language={language}
-                          selected={settings.sourceLanguage === language}
-                          chineseIsOriginalOnly={chineseIsOriginalOnly}
-                          disabled={isChangingSession || sourceLanguages.length === 1}
-                          onSelect={() => void switchSourceLanguage(language)}
-                        />
-                      ))}
-                    </div>
-                    <p className="settings-help">
-                      {sourceLanguageHelp(sessionStatusKind, settings, chineseIsOriginalOnly)}
-                    </p>
-                  </div>
-
-                  <div className="settings-divider" />
-
-                  <SettingsRow label={I18N.settings.translateTo}>
-                    <SettingsSelect
-                      value={settings.targetLanguage}
-                      disabled={
-                        sessionIsActive ||
-                        (settings.sourceLanguage === "zh" && targetLanguages.includes("original"))
-                      }
-                      label={I18N.settings.translateTo}
-                      onChange={(value) =>
-                        void saveSettings({
-                          targetLanguage: value as TargetLanguage,
-                        })
-                      }
-                      options={targetLanguages.map((language) => ({
-                        value: language,
-                        label: TARGET_LANGUAGE_DISPLAY_NAMES[language],
-                      }))}
-                    />
-                  </SettingsRow>
-
-                  <div className="settings-divider" />
-
-                  <SettingsRow
-                    label={I18N.settings.translationMode}
-                    description={translationModeHelp(effectiveTranslationMode)}
-                    align="start"
-                  >
-                    <SettingsSelect
-                      value={effectiveTranslationMode}
-                      disabled={sessionIsActive}
-                      label={I18N.settings.translationMode}
-                      onChange={(value) =>
-                        void saveSettings({
-                          translationMode: value as TranslationMode,
-                        })
-                      }
-                      options={translationModes.map((mode) => ({
-                        value: mode,
-                        label: TRANSLATION_MODE_DISPLAY_NAMES[mode],
-                      }))}
-                    />
-                  </SettingsRow>
-
-                  <div className="settings-divider" />
-
-                  <SettingsRow
-                    label={I18N.settings.blendBackground}
-                    description={I18N.settings.blendBackgroundHelp}
-                    align="start"
-                  >
-                    <Switch
-                      checked={settings.subtitleBlendsWithBackground}
-                      aria-label={I18N.settings.blendBackground}
-                      onChange={(subtitleBlendsWithBackground) =>
-                        void saveSettings({ subtitleBlendsWithBackground })
-                      }
-                    />
-                  </SettingsRow>
-
                   <div className="settings-divider" />
 
                   <details className="subtitle-placement">
@@ -471,7 +417,7 @@ export function SettingsView() {
                         checked={settings.isOverlayLocked}
                         aria-label={I18N.settings.lockPosition}
                         onChange={(checked) => {
-                          void setOverlayLocked(checked).catch(() => {});
+                          void runWithToast(() => setOverlayLocked(checked), I18N.settings.settingSaveFailed(I18N.settings.lockPosition));
                         }}
                       />
                     </SettingsRow>
@@ -480,11 +426,16 @@ export function SettingsView() {
               </div>
             )}
 
-            {activeCategory === "service" && (
-              <div id="service-profiles-panel" className="settings-category-panel">
-                <ServiceProfiles settings={settings} sessionIsActive={sessionIsActive} />
+            <div id="service-profiles-panel" className={`settings-category-panel${activeCategory !== "service" ? " is-inactive" : ""}`}>
+                <ServiceProfiles settings={settings} sessionIsActive={sessionIsActive} sessionIsPaused={sessionIsPaused} sessionStatusKind={sessionStatusKind} visible={activeCategory === "service"} overview={<AudioInputSettings />} />
               </div>
-            )}
+
+            <div id="diagnostics-panel" className={`settings-category-panel${activeCategory !== "diagnostics" ? " is-inactive" : ""}`}>
+              <SupportDiagnostics visible={activeCategory === "diagnostics"} />
+              {activeCategory === "diagnostics" && DevelopmentDebugger !== null && (
+                <Suspense fallback={null}><DevelopmentDebugger visible /></Suspense>
+              )}
+            </div>
 
             <div
               id="application-settings-panel"
@@ -504,11 +455,10 @@ export function SettingsView() {
                     label={I18N.settings.appLanguage}
                     onChange={(value) => {
                       const language = value as UiLanguage;
-                      void saveSettings({ uiLanguage: language })
-                        .then(() => {
-                          setStoredUiLanguage(language);
-                        })
-                        .catch(() => {});
+                      void runWithToast(async () => {
+                        await saveSettings({ uiLanguage: language });
+                        setStoredUiLanguage(language);
+                      }, I18N.settings.languageSaveFailed);
                     }}
                     options={[
                       {
@@ -522,7 +472,27 @@ export function SettingsView() {
                   />
                 </SettingsRow>
 
+                {desktopShortcutCommands && <div className="settings-shortcut-setup">
+                  <button type="button" className="settings-button settings-button--quiet" onClick={() => setShowShortcutSetup(true)}>
+                    <Icon name="gear" />{I18N.settings.systemShortcutSetup}
+                  </button>
+                </div>}
+                {desktopShortcutCommands && showShortcutSetup && activeCategory === "general" && <SettingsConfirmation
+                  message={I18N.settings.systemShortcutSetup} variant="default" hideConfirm cancelLabel={I18N.settings.closeDialog}
+                  onCancel={() => setShowShortcutSetup(false)} onConfirm={() => setShowShortcutSetup(false)}>
+                  <div className="settings-desktop-shortcuts">
+                    <p>{I18N.settings.systemShortcutInstructions}</p>
+                    <dl>
+                      <dt>{I18N.settings.startStopShortcut}</dt><dd><code>{desktopShortcutCommands.toggleSession}</code></dd>
+                      <dt>{I18N.tray.blendBackground}</dt><dd><code>{desktopShortcutCommands.toggleImmersive}</code></dd>
+                      <dt>{I18N.settings.subtitleDisplay}</dt><dd><code>{desktopShortcutCommands.cycleSubtitleDisplay}</code></dd>
+                    </dl>
+                  </div>
+                </SettingsConfirmation>}
+
                 <div className="settings-divider" />
+
+                <DockPreference />
 
                 <SoftwareUpdate />
               </SettingsSection>
@@ -531,43 +501,15 @@ export function SettingsView() {
               id="session-export-panel"
               className={`settings-category-panel${activeCategory !== "export" ? " is-inactive" : ""}`}
             >
-              <SessionExport />
+              <SessionExport visible={activeCategory === "export"} />
             </div>
+            </>}
           </div>
         </div>
       </div>
+      <SettingsToastRegion scopeKey={activeCategory} />
     </main>
   );
-}
-
-function startStopShortcut(): string {
-  return typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent)
-    ? "⌘⇧Space"
-    : "Ctrl+Shift+Space";
-}
-
-function settingsSessionStatusText(
-  status: SettingsSessionVisibleStatus,
-  sessionErrorMessage: string | null,
-): string {
-  switch (status) {
-    case "idle":
-      return I18N.settings.sessionIdle;
-    case "connecting":
-      return I18N.settings.sessionConnecting;
-    case "listening":
-      return I18N.settings.sessionListening;
-    case "paused":
-      return I18N.settings.sessionPaused;
-    case "stopping":
-      return I18N.settings.sessionStopping;
-    case "error":
-      return sessionErrorMessage ?? I18N.settings.sessionError;
-    case "setupRequired":
-      return I18N.settings.sessionSetupRequired;
-    case "credentialUnavailable":
-      return I18N.settings.sessionCredentialUnavailable;
-  }
 }
 
 const SUBTITLE_ALIGNMENTS: readonly SubtitleAlignment[] = ["left", "center", "right"];
@@ -612,82 +554,19 @@ function settingsCategoryFromHash(hash: string): SettingsCategory | null {
   switch (hash.replace(/^#/, "")) {
     case CATEGORY_SECTION_IDS.subtitles:
       return "subtitles";
+    case "network-proxy":
+    case "translation-languages":
     case CATEGORY_SECTION_IDS.service:
       return "service";
     case CATEGORY_SECTION_IDS.general:
       return "general";
     case CATEGORY_SECTION_IDS.export:
       return "export";
+    case CATEGORY_SECTION_IDS.diagnostics:
+      return "diagnostics";
+    case CATEGORY_SECTION_IDS.guide:
+      return "guide";
     default:
       return null;
   }
-}
-
-function SourceLanguageButton({
-  language,
-  selected,
-  chineseIsOriginalOnly,
-  disabled,
-  onSelect,
-}: {
-  language: SourceLanguage;
-  selected: boolean;
-  chineseIsOriginalOnly: boolean;
-  disabled: boolean;
-  onSelect: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={`source-language-button${selected ? " is-selected" : ""}`}
-      aria-pressed={selected}
-      disabled={disabled}
-      title={sourceLanguageButtonHelp(language, chineseIsOriginalOnly)}
-      onClick={onSelect}
-    >
-      <span>{sourceLanguageButtonTitle(language, chineseIsOriginalOnly)}</span>
-      {selected && <Icon name="checkmark-circle" />}
-    </button>
-  );
-}
-
-function translationModeHelp(mode: TranslationMode): string {
-  switch (mode) {
-    case "turbo":
-      return I18N.modes.turboHelp;
-    case "highQuality":
-      return I18N.modes.highQualityHelp;
-    case "lowLatency":
-      return I18N.modes.lowLatencyHelp;
-  }
-}
-
-function sourceLanguageHelp(
-  statusKind: ReturnType<typeof selectSessionStatusKind>,
-  settings: SettingsSnapshot,
-  chineseIsOriginalOnly: boolean,
-): string {
-  if (settings.sourceLanguage === "zh") {
-    if (!chineseIsOriginalOnly) {
-      return statusKind === "listening"
-        ? I18N.settings.recognizingChineseTranslatedListening
-        : I18N.settings.recognizingChineseTranslatedIdle;
-    }
-    return statusKind === "listening"
-      ? I18N.settings.recognizingChineseListening
-      : I18N.settings.recognizingChineseIdle;
-  }
-  if (statusKind === "listening") {
-    return I18N.settings.sourceHelpReconnecting;
-  }
-  return I18N.settings.sourceHelpIdle;
-}
-
-function sourceLanguageButtonHelp(
-  language: SourceLanguage,
-  chineseIsOriginalOnly: boolean,
-): string {
-  return language === "zh" && chineseIsOriginalOnly
-    ? I18N.settings.switchToChineseHelp
-    : I18N.settings.switchToLanguageHelp(SOURCE_LANGUAGE_DISPLAY_NAMES[language]);
 }

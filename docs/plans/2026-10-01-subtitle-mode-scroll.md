@@ -1,0 +1,11 @@
+# Preserve the reading anchor when changing subtitle display mode
+
+Linux native UI-only QA at ad51bcc repeatedly found that changing a640×136 overlay from Translation to Bilingual hid the original while staying at the old bottom. Scrolling up immediately showed the full original and translation at the same size. Source data was present; no window enlargement or lane redesign is needed for this fix.
+
+On a display-mode change, anchor a tail-following timeline at the start of its newest sentence before paint, exposing the original and actual translated line instead of aligning to the blank space reserved by the compact lane budget. Skip the ordinary content-follow effect for that render and preserve this anchor through ResizeObserver reflow. Subsequent actual content updates resume the existing instant live-growth/smooth new-sentence follow behavior and respect the motion switch.
+
+A user who scrolls up to read history keeps their visible sentence and offset through mode changes, reflow and incoming text. Wheel/touch/pointer/scroll-navigation intent distinguishes reading from programmatic scrolling; returning to the bottom resumes tail-following. An evicted bounded-history anchor does not force a jump to the tail. Sentence blocks, source/translation ordering, compact budgets, age fade, typography, window geometry and provider protocols stay intact.
+
+Regression tests must demonstrate the old bottom failure and historical reader interruption before the fix, then mode anchoring, continued streaming, resize stability, ignored programmatic events and returning-to-tail behavior. Browser tests are geometry simulations; actual640×136 native Linux must be repeated at the new exact package. ad51's automatic first-run save/continuation and language/native checks remain frozen as previous results, not new-package passes.
+
+Actual Chromium overlay regression also covers a wheel-scrolled history reader while switching bilingual to translation. If dropping a lane makes the former negative reading offset exceed that sentence’s new height, reveal the same sentence’s start; otherwise retain its offset. Synthetic incoming confirmed subtitles must still follow the tail and must not displace a reader.

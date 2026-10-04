@@ -1,10 +1,38 @@
 //! Immutable, provider-resolved live-translation configuration.
 
-use crate::core::credentials::{ProviderCredentials, ProviderCredentialsError};
+use crate::core::credentials::{
+    ProviderCredentials, ProviderCredentialsError, TextTranslationCredentials,
+};
 use crate::core::models::{SourceLanguage, TargetLanguage, TranslationMode};
-use crate::core::provider::ProviderKind;
+use crate::core::network_proxy::{ProxyConfig, ProxyConfigError};
+use crate::core::provider::{ProviderCapabilities, ProviderKind, TextTranslation};
 use std::fmt;
 use thiserror::Error;
+
+/// A text-only readiness request never needs a speech key or opens an audio session.
+#[derive(Clone)]
+pub enum TextTranslationProbeCredentials {
+    Qwen { api_key: String },
+    Independent(TextTranslationCredentials),
+}
+
+#[derive(Clone)]
+pub struct TextTranslationProbeConfiguration {
+    pub credentials: TextTranslationProbeCredentials,
+    pub target_language: TargetLanguage,
+    pub network_proxy: ProxyConfig,
+}
+
+impl fmt::Debug for TextTranslationProbeConfiguration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TextTranslationProbeConfiguration")
+            .field("credentials", &"[REDACTED]")
+            .field("target_language", &self.target_language)
+            .field("network_proxy", &self.network_proxy)
+            .finish()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum LiveTranslationConfigurationError {
@@ -16,15 +44,21 @@ pub enum LiveTranslationConfigurationError {
     UnsupportedTargetLanguage,
     #[error("The selected service does not support this translation mode.")]
     UnsupportedTranslationMode,
+    #[error("{0}")]
+    NetworkProxy(#[from] ProxyConfigError),
 }
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct LiveTranslationConfiguration {
     pub provider: ProviderKind,
     pub credentials: ProviderCredentials,
+    pub text_credentials: Option<TextTranslationCredentials>,
     pub source_language: SourceLanguage,
     pub target_language: TargetLanguage,
     pub translation_mode: TranslationMode,
+    /// Recognition (or the shared integrated realtime connection).
+    pub network_proxy: ProxyConfig,
+    pub text_network_proxy: ProxyConfig,
 }
 
 impl fmt::Debug for LiveTranslationConfiguration {
@@ -33,9 +67,12 @@ impl fmt::Debug for LiveTranslationConfiguration {
             .debug_struct("LiveTranslationConfiguration")
             .field("provider", &self.provider)
             .field("credentials", &"[REDACTED]")
+            .field("text_credentials", &"[REDACTED]")
             .field("source_language", &self.source_language)
             .field("target_language", &self.target_language)
+            .field("text_network_proxy", &self.text_network_proxy)
             .field("translation_mode", &self.translation_mode)
+            .field("network_proxy", &self.network_proxy)
             .finish()
     }
 }
@@ -52,9 +89,12 @@ impl LiveTranslationConfiguration {
         Self {
             provider,
             credentials: ProviderCredentials::api_key(api_key),
+            text_credentials: None,
             source_language,
             target_language,
             translation_mode,
+            network_proxy: ProxyConfig::default(),
+            text_network_proxy: ProxyConfig::default(),
         }
     }
 
@@ -68,33 +108,75 @@ impl LiveTranslationConfiguration {
         Self {
             provider,
             credentials,
+            text_credentials: None,
             source_language,
             target_language,
             translation_mode,
+            network_proxy: ProxyConfig::default(),
+            text_network_proxy: ProxyConfig::default(),
         }
     }
 
-    /// The mode actually used for a session: every non-Alibaba realtime
-    /// adapter uses its one supported turbo path. Alibaba preserves turbo and
-    /// otherwise routes automatic recognition to its low-latency pipeline.
+    pub fn with_network_proxy(mut self, network_proxy: ProxyConfig) -> Self {
+        self.text_network_proxy = network_proxy.clone();
+        self.network_proxy = network_proxy;
+        self
+    }
+
+    pub fn with_stage_network_proxies(mut self, speech: ProxyConfig, text: ProxyConfig) -> Self {
+        self.network_proxy = speech;
+        self.text_network_proxy = text;
+        self
+    }
+
+    pub fn with_text_credentials(mut self, credentials: TextTranslationCredentials) -> Self {
+        self.text_credentials = Some(credentials);
+        self
+    }
+
+    /// Legacy mode values remain readable, but every new session uses Turbo.
+    /// Provider-specific transports and independent text destinations remain
+    /// resolved by the provider facade.
     pub fn effective_translation_mode(&self) -> TranslationMode {
-        if self.provider != ProviderKind::AlibabaCloud {
-            return TranslationMode::Turbo;
-        }
-        if self.translation_mode == TranslationMode::Turbo {
-            return TranslationMode::Turbo;
-        }
-        if self.source_language == SourceLanguage::Automatic {
-            return TranslationMode::LowLatency;
-        }
-        self.translation_mode
+        TranslationMode::Turbo
+    }
+
+    pub fn capabilities(&self) -> ProviderCapabilities {
+        let route = self.text_credentials.as_ref().map_or_else(
+            || match self.credentials {
+                ProviderCredentials::DeepL { .. } => TextTranslation::DeepL,
+                ProviderCredentials::DeepLX { .. } => TextTranslation::DeepLX,
+                ProviderCredentials::OpenAICompatible { .. } => TextTranslation::OpenAICompatible,
+                ProviderCredentials::ChatMock { .. } => TextTranslation::ChatMock,
+                _ => TextTranslation::FollowService,
+            },
+            TextTranslationCredentials::translation,
+        );
+        self.provider
+            .capabilities_for_route(route, self.target_language)
     }
 
     /// Returns a trimmed, validated copy of the configuration.
     pub fn validated(&self) -> Result<Self, LiveTranslationConfigurationError> {
+        let network_proxy = self.network_proxy.validate()?;
+        let text_network_proxy = self.text_network_proxy.validate()?;
         let credentials = self.credentials.validated_for(self.provider)?;
 
-        let capabilities = self.provider.capabilities();
+        let text_credentials =
+            if self.provider.is_custom_speech() && self.target_language.translates_audio() {
+                Some(
+                    self.text_credentials
+                        .as_ref()
+                        .ok_or(ProviderCredentialsError::MissingTextTranslation)?
+                        .validated()?,
+                )
+            } else if self.provider.is_custom_speech() {
+                None
+            } else {
+                self.text_credentials.clone()
+            };
+
+        let capabilities = self.capabilities();
         if !capabilities
             .source_languages
             .contains(&self.source_language)
@@ -107,26 +189,172 @@ impl LiveTranslationConfiguration {
         {
             return Err(LiveTranslationConfigurationError::UnsupportedTargetLanguage);
         }
-        if !capabilities
-            .translation_modes
-            .contains(&self.translation_mode)
-        {
+        let translation_mode = self.effective_translation_mode();
+        if !capabilities.translation_modes.contains(&translation_mode) {
             return Err(LiveTranslationConfigurationError::UnsupportedTranslationMode);
         }
 
         Ok(Self {
             provider: self.provider,
             credentials,
+            text_credentials,
             source_language: self.source_language,
             target_language: self.target_language,
-            translation_mode: self.translation_mode,
+            translation_mode,
+            network_proxy,
+            text_network_proxy,
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn independent_routes_are_validated_immutable_and_redacted() {
+        use crate::core::network_proxy::ProxyMode;
+        let speech = ProxyConfig {
+            mode: ProxyMode::Custom,
+            url: Some("http://private-speech.example:7890".into()),
+        };
+        let text = ProxyConfig {
+            mode: ProxyMode::Direct,
+            url: None,
+        };
+        let mut configuration = config("synthetic-key", SourceLanguage::English)
+            .with_stage_network_proxies(speech.clone(), text.clone());
+        let resolved = configuration.validated().unwrap();
+        assert_eq!(resolved.network_proxy.mode, speech.mode);
+        assert_eq!(resolved.text_network_proxy, text);
+        configuration.text_network_proxy = ProxyConfig {
+            mode: ProxyMode::Custom,
+            url: Some("http://user:private-value@localhost".into()),
+        };
+        assert!(configuration.validated().is_err());
+        assert_eq!(resolved.text_network_proxy.mode, ProxyMode::Direct);
+        assert!(!format!("{configuration:?}").contains("private-value"));
+        assert!(!format!("{resolved:?}").contains("private-speech"));
+    }
+
     use super::*;
+
+    #[test]
+    fn custom_speech_configuration_requires_mt_only_for_translated_targets() {
+        for (provider, rate) in [
+            (ProviderKind::CustomDashScopeASR, 16_000),
+            (ProviderKind::CustomOpenAIASR, 24_000),
+        ] {
+            let mut configuration = LiveTranslationConfiguration::with_credentials(
+                provider,
+                ProviderCredentials::CustomSpeech {
+                    endpoint: "wss://speech.example/recognition".into(),
+                    model: "synthetic-speech-model".into(),
+                    api_key: "synthetic-speech-key".into(),
+                },
+                SourceLanguage::Automatic,
+                TargetLanguage::Original,
+                TranslationMode::Turbo,
+            );
+            assert_eq!(
+                configuration
+                    .validated()
+                    .unwrap()
+                    .capabilities()
+                    .input_sample_rate_hz,
+                rate
+            );
+            configuration.target_language = TargetLanguage::English;
+            assert_eq!(
+                configuration.validated(),
+                Err(LiveTranslationConfigurationError::Credentials(
+                    ProviderCredentialsError::MissingTextTranslation
+                ))
+            );
+            configuration.text_credentials = Some(TextTranslationCredentials::DeepL {
+                api_key: "synthetic-mt-key".into(),
+            });
+            let validated = configuration.validated().unwrap();
+            assert_eq!(
+                validated.credentials.direct_api_key(),
+                Some("synthetic-speech-key")
+            );
+            assert!(
+                matches!(validated.text_credentials, Some(TextTranslationCredentials::DeepL { api_key }) if api_key == "synthetic-mt-key")
+            );
+            configuration.target_language = TargetLanguage::Original;
+            configuration.text_credentials =
+                Some(TextTranslationCredentials::DeepL { api_key: "".into() });
+            assert_eq!(configuration.validated().unwrap().text_credentials, None);
+            assert!(!format!("{configuration:?}").contains("synthetic-speech"));
+            configuration.source_language = SourceLanguage::French;
+            assert_eq!(
+                configuration.validated(),
+                Err(LiveTranslationConfigurationError::UnsupportedSourceLanguage)
+            );
+        }
+    }
+
+    #[test]
+    fn default_alibaba_validates_every_lite_target_and_the_full_original_catalog() {
+        for source in SourceLanguage::ALL {
+            let mut configuration = config("synthetic", source);
+            configuration.target_language = TargetLanguage::Original;
+            assert_eq!(configuration.validated().unwrap().source_language, source);
+            for target in TargetLanguage::ALL
+                .into_iter()
+                .filter(|target| target.translates_audio())
+            {
+                configuration.target_language = target;
+                if configuration
+                    .capabilities()
+                    .source_languages
+                    .contains(&source)
+                {
+                    assert_eq!(configuration.validated().unwrap().target_language, target);
+                } else {
+                    assert_eq!(
+                        configuration.validated().unwrap_err(),
+                        LiveTranslationConfigurationError::UnsupportedSourceLanguage
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn independent_text_credentials_keep_their_language_contract() {
+        let mut configuration = LiveTranslationConfiguration::with_credentials(
+            ProviderKind::AlibabaCloud,
+            ProviderCredentials::DeepL {
+                asr_api_key: "synthetic".into(),
+                api_key: "synthetic:fx".into(),
+            },
+            SourceLanguage::Automatic,
+            TargetLanguage::French,
+            TranslationMode::Turbo,
+        );
+        assert_eq!(
+            configuration.validated().unwrap_err(),
+            LiveTranslationConfigurationError::UnsupportedTargetLanguage
+        );
+        configuration.target_language = TargetLanguage::English;
+        configuration.source_language = SourceLanguage::French;
+        assert_eq!(
+            configuration.validated().unwrap_err(),
+            LiveTranslationConfigurationError::UnsupportedSourceLanguage
+        );
+        configuration.provider = ProviderKind::DeepLX;
+        configuration.credentials = ProviderCredentials::DeepLX {
+            asr_api_key: "synthetic".into(),
+            endpoint: "https://example.com/translate".into(),
+            token: String::new(),
+        };
+        configuration.source_language = SourceLanguage::Automatic;
+        configuration.target_language = TargetLanguage::French;
+        assert_eq!(
+            configuration.validated().unwrap_err(),
+            LiveTranslationConfigurationError::UnsupportedTargetLanguage
+        );
+    }
 
     fn config(api_key: &str, source_language: SourceLanguage) -> LiveTranslationConfiguration {
         LiveTranslationConfiguration::for_provider(
@@ -139,11 +367,11 @@ mod tests {
     }
 
     #[test]
-    fn automatic_language_resolves_high_quality_to_low_latency() {
+    fn automatic_language_upgrades_legacy_high_quality_to_turbo() {
         let configuration = config("sk-test", SourceLanguage::Automatic);
         assert_eq!(
             configuration.effective_translation_mode(),
-            TranslationMode::LowLatency
+            TranslationMode::Turbo
         );
     }
 
@@ -173,22 +401,29 @@ mod tests {
         );
         assert_eq!(
             configuration.effective_translation_mode(),
-            TranslationMode::HighQuality
+            TranslationMode::Turbo
         );
     }
 
     #[test]
-    fn configuration_preserves_an_explicit_translation_mode() {
-        let configuration = LiveTranslationConfiguration::for_provider(
-            ProviderKind::AlibabaCloud,
-            "sk-test",
-            SourceLanguage::Japanese,
-            TargetLanguage::English,
+    fn configuration_normalizes_legacy_modes_without_changing_languages() {
+        for mode in [
+            TranslationMode::LowLatency,
             TranslationMode::HighQuality,
-        );
-        let validated = configuration.validated().unwrap();
-        assert_eq!(validated.translation_mode, TranslationMode::HighQuality);
-        assert_eq!(validated.target_language, TargetLanguage::English);
+            TranslationMode::Turbo,
+        ] {
+            let configuration = LiveTranslationConfiguration::for_provider(
+                ProviderKind::AlibabaCloud,
+                "sk-test",
+                SourceLanguage::Japanese,
+                TargetLanguage::English,
+                mode,
+            );
+            let validated = configuration.validated().unwrap();
+            assert_eq!(validated.translation_mode, TranslationMode::Turbo);
+            assert_eq!(validated.target_language, TargetLanguage::English);
+            assert_eq!(validated.source_language, SourceLanguage::Japanese);
+        }
     }
 
     #[test]
@@ -298,5 +533,23 @@ mod tests {
         let description = format!("{configuration:?}");
         assert!(!description.contains(secret));
         assert!(description.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn validated_proxy_is_an_immutable_copy_and_debug_does_not_disclose_its_address() {
+        use crate::core::network_proxy::ProxyMode;
+        let mut original =
+            config("synthetic-key", SourceLanguage::English).with_network_proxy(ProxyConfig {
+                mode: ProxyMode::Custom,
+                url: Some("http://private-proxy.example:8888".into()),
+            });
+        let validated = original.validated().unwrap();
+        original.network_proxy = ProxyConfig {
+            mode: ProxyMode::Direct,
+            url: None,
+        };
+        assert_eq!(validated.network_proxy.mode, ProxyMode::Custom);
+        assert_eq!(original.network_proxy.mode, ProxyMode::Direct);
+        assert!(!format!("{validated:?}").contains("private-proxy.example"));
     }
 }

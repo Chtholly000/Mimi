@@ -2,6 +2,21 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --mimi-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+    "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei",
+    "DengXian", "SimHei", "Noto Sans CJK SC", "Hiragino Sans",
+    "Yu Gothic UI", "Meiryo", "Malgun Gothic", system-ui, sans-serif;
+  font-family: var(--mimi-ui-font);
+}
+
+:root:lang(ja) {
+  --mimi-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+    "Segoe UI", "Hiragino Sans", "Yu Gothic UI", "Meiryo", "Noto Sans CJK JP",
+    "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei",
+    "DengXian", "SimHei", "Malgun Gothic", system-ui, sans-serif;
+}
+
 html,
 body,
 #root {
@@ -13,6 +28,27 @@ body,
   -webkit-user-select: none;
   user-select: none;
   cursor: default;
+}
+
+/* Shared click affordance; component-specific disabled, busy, and resize
+   cursors stay authoritative. Text fields and range inputs keep native cursors. */
+:where(
+  button,
+  a[href],
+  summary,
+  select,
+  [role="button"],
+  [role="switch"],
+  [role="option"],
+  [role="tab"],
+  input[type="button"],
+  input[type="submit"],
+  input[type="reset"],
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="color"]
+):where(:not(:disabled):not([disabled]):not([aria-disabled="true"]):not([aria-busy="true"])) {
+  cursor: pointer;
 }
 
 /* Settings window gets an opaque background instead. */
@@ -51,21 +87,142 @@ body.settings-body {
   animation: overlay-enter-expanded 180ms ease-in-out;
 }
 
-/* New subtitle rows rise in from below and fade — a brief settle that makes
-   the timeline feel alive without distracting from the text (runs once per
-   row on mount; streaming text updates keep the stable row id). */
-@keyframes subtitle-row-enter {
+/* Keep letters fully visible. A new sentence settles by position only;
+   revisions update the same text node without fading it out and back in. */
+@keyframes subtitle-block-enter {
   from {
-    opacity: 0.45;
-    transform: translateY(3px);
+    transform: translateY(2px);
   }
   to {
-    opacity: 1;
     transform: translateY(0);
   }
 }
 
+.subtitle-block {
+  animation: subtitle-block-enter 140ms ease-out;
+}
+
+/* Motion is resolved in JavaScript: the system's reduce-motion preference
+   unless the user picked an explicit value. Off means the surfaces keep every
+   state change but drop all decoration, so the overlay stays readable. */
+.motion-reduced .subtitle-block,
+.motion-reduced .subtitle-lane,
+.motion-reduced .subtitle-timestamp,
+.motion-reduced .overlay-swap-collapsed,
+.motion-reduced .overlay-swap-expanded {
+  animation: none !important;
+}
+
+.motion-reduced .subtitle-block {
+  transition: none;
+}
+
+/* Aging is a state change, not a decoration: glide between steps instead of
+   stepping in one frame, unless motion is off. */
+.subtitle-block {
+  transition: opacity 260ms ease;
+}
+
+/* A committed sentence replaces the live row it was already visible as; the
+   timestamp is the only new thing in that frame, so it fades in quietly. */
+.subtitle-timestamp {
+  animation: lane-enter 200ms ease-out;
+}
+
+/* Settings chrome belongs to no caption surface: it always yields to the
+   system preference. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-panel {
+    animation: none;
+  }
+}
+
+/* Optional sentence boundaries remain quiet beside the subtitle text. */
+.subtitle-separator {
+  background: rgba(255,255,255,0.34);
+  border-radius: 1px;
+}
+
+.pulse { position: relative; }
+.pulse__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  transform-origin: center;
+  transform: scale(calc(0.36 + var(--ring-index) * 0.16));
+  opacity: calc(0.24 - var(--ring-index) * 0.065);
+  transition: border-color 300ms ease;
+}
+.pulse__dot {
+  position: absolute;
+  left: 50%; top: 50%;
+  border-radius: 50%;
+  opacity: 0.8;
+  transition: background-color 300ms ease, box-shadow 300ms ease;
+}
+@keyframes phase-halo {
+  0%, 100% { transform: scale(0.56); opacity: 0.16; }
+  50% { transform: scale(0.65); opacity: 0.3; }
+}
+@keyframes phase-release {
+  0% { transform: scale(0.32); opacity: 0.32; }
+  70% { opacity: 0.08; }
+  100% { transform: scale(1); opacity: 0; }
+}
+@keyframes phase-orbit {
+  from { transform: scale(0.68) rotate(0deg); }
+  to { transform: scale(0.68) rotate(360deg); }
+}
+@keyframes phase-dot {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 0.9; }
+}
+.pulse--listening .pulse__ring:not(:first-child),
+.pulse--connecting .pulse__ring:not(:first-child),
+.pulse--translating .pulse__ring:nth-child(3) { visibility: hidden; }
+.pulse--listening.pulse--active .pulse__ring:first-child {
+  animation: phase-halo var(--phase-period) ease-in-out infinite;
+}
+.pulse--recognizing.pulse--active .pulse__ring {
+  animation: phase-release var(--phase-period) cubic-bezier(0.2, 0.4, 0.5, 1) infinite;
+}
+.pulse--connecting .pulse__ring:first-child,
+.pulse--translating .pulse__ring {
+  border-right-color: transparent !important;
+  border-bottom-color: transparent !important;
+  opacity: 0.38;
+}
+.pulse--connecting.pulse--active .pulse__ring:first-child,
+.pulse--translating.pulse--active .pulse__ring:nth-child(-n+2) {
+  animation: phase-orbit var(--phase-period) linear infinite;
+}
+.pulse--translating .pulse__ring:nth-child(2) { rotate: 180deg; }
+.pulse--translating.pulse--active .pulse__dot {
+  animation: phase-dot var(--phase-period) ease-in-out infinite;
+}
+.pulse--idle .pulse__ring:not(:first-child),
+.pulse--paused .pulse__ring:not(:first-child),
+.pulse--error .pulse__ring:not(:first-child) { visibility: hidden; }
+.pulse--idle .pulse__dot { opacity: 0.5; }
+.pulse--paused .pulse__dot { border-radius: 2px; }
+.pulse--error .pulse__dot { border-radius: 2px; transform: rotate(45deg) scale(0.75); }
+.pulse--still .pulse__ring, .pulse--still .pulse__dot,
+.pulse-off .pulse__ring, .pulse-off .pulse__dot { animation: none !important; transition: none; }
+
 /* Thin, unobtrusive scrollbars for the overlay timeline. */
+.overlay-timeline {
+  outline: none;
+}
+
+.overlay-timeline:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.6);
+  outline-offset: -1px;
+}
+
+@media (forced-colors: active) {
+  .overlay-timeline:focus-visible { outline-color: CanvasText; }
+}
+
 *::-webkit-scrollbar {
   width: 6px;
   height: 6px;

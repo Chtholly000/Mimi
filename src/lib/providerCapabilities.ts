@@ -1,15 +1,35 @@
 import {
-  SOURCE_LANGUAGE_QUICK_CASES,
+  AUDIO3_RECOGNITION_LANGUAGE_CODES,
+  QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES,
+  LEGACY_SOURCE_LANGUAGE_CASES,
   TRANSLATION_MODE_CASES,
   type ProviderCapabilities,
+  type CredentialState,
   type ServiceProfile,
   type ServiceProvider,
   type SettingsSnapshot,
   type SourceLanguage,
   type TargetLanguage,
+  type TextTranslation,
   type TranslationMode,
-  targetLanguageAfterQuickSwitch,
 } from "./types";
+
+type LanguageSettings = Pick<SettingsSnapshot, "profiles" | "activeProfileId"> &
+  Partial<Pick<SettingsSnapshot, "targetLanguage" | "languageCapabilities">>;
+
+const LITE_LANGUAGE_CODES = new Set<string>(QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES);
+const ALIBABA_RECOGNITION_SOURCES: readonly SourceLanguage[] = ["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES];
+const ALIBABA_TRANSLATION_SOURCES: readonly SourceLanguage[] = [
+  "auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES.filter((code) => LITE_LANGUAGE_CODES.has(code)),
+];
+const ALIBABA_TARGETS: readonly TargetLanguage[] = ["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES];
+const LEGACY_ALIBABA_CAPABILITIES: ProviderCapabilities = {
+  sourceLanguages: LEGACY_SOURCE_LANGUAGE_CASES,
+  targetLanguages: ["original", "zh", "en", "ja"],
+  translationModes: TRANSLATION_MODE_CASES,
+};
+const SOURCE_CODES = new Set<string>(ALIBABA_RECOGNITION_SOURCES);
+const TARGET_CODES = new Set<string>(ALIBABA_TARGETS);
 
 export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
   "alibabaCloud",
@@ -20,14 +40,19 @@ export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
   "tencentCloud",
   "baiduTranslate",
   "xAIRealtime",
+  "customDashScopeASR",
+  "customOpenAIASR",
 ];
 
 const PROVIDER_CAPABILITIES: Readonly<
   Record<ServiceProvider, ProviderCapabilities>
 > = {
+  customDashScopeASR: { sourceLanguages: ["auto", "zh", "en", "ja", "ko"], targetLanguages: ["original"], translationModes: ["turbo"] },
+  customOpenAIASR: { sourceLanguages: ["auto", "zh", "en", "ja", "ko"], targetLanguages: ["original"], translationModes: ["turbo"] },
+  deepLX: { sourceLanguages: LEGACY_SOURCE_LANGUAGE_CASES, targetLanguages: ["zh", "en", "ja"], translationModes: ["turbo"] },
   alibabaCloud: {
-    sourceLanguages: SOURCE_LANGUAGE_QUICK_CASES,
-    targetLanguages: ["original", "zh", "en", "ja"],
+    sourceLanguages: ALIBABA_TRANSLATION_SOURCES,
+    targetLanguages: ALIBABA_TARGETS,
     translationModes: TRANSLATION_MODE_CASES,
   },
   openAIRealtime: {
@@ -81,24 +106,91 @@ export function activeServiceProfile(
   );
 }
 
-function capabilitiesForSettings(
-  settings: Pick<SettingsSnapshot, "profiles" | "activeProfileId">,
+export function textTranslationForProfile(profile: ServiceProfile): TextTranslation {
+  return profile.textTranslation ?? (profile.provider === "deepLX" ? "deepLX" : "followService");
+}
+
+export function isChatCompletionsTranslation(translation: TextTranslation): translation is "openAICompatible" | "chatMock" {
+  return translation === "openAICompatible" || translation === "chatMock";
+}
+
+export function isCustomSpeechProvider(provider: ServiceProvider): boolean {
+  return provider === "customDashScopeASR" || provider === "customOpenAIASR";
+}
+
+export function credentialStateForTarget(profile: ServiceProfile | undefined, target: TargetLanguage): CredentialState {
+  return profile && isCustomSpeechProvider(profile.provider) && target === "original"
+    ? profile.speechCredentialState ?? profile.credentialState : profile?.credentialState ?? "unavailable";
+}
+
+export function effectiveProviderForProfile(profile: ServiceProfile): ServiceProvider {
+  if (profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") return profile.provider;
+  return textTranslationForProfile(profile) === "deepLX" ? "deepLX" : "alibabaCloud";
+}
+
+/** Local fallback for older snapshots and inactive-profile details. Routes keep independent ranges. */
+export function capabilitiesForProfile(
+  profile: ServiceProfile,
+  targetLanguage: TargetLanguage = "zh",
 ): ProviderCapabilities {
-  const provider = activeServiceProfile(settings)?.provider ?? "alibabaCloud";
-  return capabilitiesForProvider(provider);
+  if (isCustomSpeechProvider(profile.provider)) {
+    const capabilities = capabilitiesForProvider(profile.provider);
+    return textTranslationForProfile(profile) === "followService" ? capabilities
+      : { ...capabilities, targetLanguages: ["original", "zh", "en", "ja"] };
+  }
+  if (profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") {
+    return capabilitiesForProvider(profile.provider);
+  }
+  const route = textTranslationForProfile(profile);
+  if (route === "deepL" || isChatCompletionsTranslation(route)) return LEGACY_ALIBABA_CAPABILITIES;
+  if (route === "deepLX") return PROVIDER_CAPABILITIES.deepLX;
+  const capabilities = PROVIDER_CAPABILITIES.alibabaCloud;
+  return targetLanguage === "original"
+    ? { ...capabilities, sourceLanguages: ALIBABA_RECOGNITION_SOURCES }
+    : capabilities;
+}
+
+function capabilitiesForSettings(
+  settings: LanguageSettings,
+): ProviderCapabilities {
+  const profile = activeServiceProfile(settings);
+  const target = settings.targetLanguage ?? "zh";
+  const fallback = profile
+    ? capabilitiesForProfile(profile, target)
+    : target === "original"
+      ? { ...PROVIDER_CAPABILITIES.alibabaCloud, sourceLanguages: ALIBABA_RECOGNITION_SOURCES }
+      : PROVIDER_CAPABILITIES.alibabaCloud;
+  const native = settings.languageCapabilities;
+  // A profile can retain its ID while changing providers or text destinations.
+  // Never borrow options stamped for a different route/target or stale profile.
+  if (
+    profile && native &&
+    native.profileId === profile.id &&
+    native.provider === profile.provider &&
+    native.textTranslation === textTranslationForProfile(profile) &&
+    native.targetLanguage === target &&
+    Array.isArray(native.sourceLanguages) && native.sourceLanguages.length > 0 &&
+    Array.isArray(native.targetLanguages) && native.targetLanguages.length > 0 &&
+    native.sourceLanguages.every((code) => SOURCE_CODES.has(code)) &&
+    native.targetLanguages.every((code) => TARGET_CODES.has(code))
+  ) {
+    return {
+      sourceLanguages: [...new Set(native.sourceLanguages)],
+      targetLanguages: [...new Set(native.targetLanguages)],
+      translationModes: fallback.translationModes,
+    };
+  }
+  return fallback;
 }
 
 export function sourceLanguagesForSettings(
-  settings: Pick<SettingsSnapshot, "profiles" | "activeProfileId">,
+  settings: LanguageSettings,
 ): readonly SourceLanguage[] {
   return capabilitiesForSettings(settings).sourceLanguages;
 }
 
 export function targetLanguagesForSettings(
-  settings: Pick<
-    SettingsSnapshot,
-    "profiles" | "activeProfileId" | "sourceLanguage"
-  >,
+  settings: LanguageSettings & Pick<SettingsSnapshot, "sourceLanguage">,
 ): readonly TargetLanguage[] {
   const targetLanguages = capabilitiesForSettings(settings).targetLanguages;
   if (
@@ -134,17 +226,10 @@ export function targetLanguageAfterSourceSwitch(
   sourceLanguage: SourceLanguage,
 ): TargetLanguage {
   const capabilities = capabilitiesForSettings(settings);
-  if (capabilities.targetLanguages.includes("original")) {
-    return targetLanguageAfterQuickSwitch(
-      sourceLanguage,
-      settings.sourceLanguage,
-      settings.targetLanguage,
-    );
-  }
-
   if (
     capabilities.targetLanguages.includes(settings.targetLanguage) &&
-    !sourceMatchesTarget(sourceLanguage, settings.targetLanguage)
+    (capabilities.targetLanguages.includes("original") ||
+      !sourceMatchesTarget(sourceLanguage, settings.targetLanguage))
   ) {
     return settings.targetLanguage;
   }
@@ -162,18 +247,10 @@ export function translationModesForSettings(
     "profiles" | "activeProfileId" | "sourceLanguage"
   >,
 ): readonly TranslationMode[] {
-  const provider = activeServiceProfile(settings)?.provider ?? "alibabaCloud";
-  if (provider === "alibabaCloud" && settings.sourceLanguage === "auto") {
-    return ["lowLatency", "turbo"];
-  }
   return capabilitiesForSettings(settings).translationModes;
 }
 
-/**
- * Mirrors the backend's effective-mode priority: every non-Alibaba adapter
- * uses turbo; Alibaba preserves an explicitly selected turbo mode, then falls
- * back to low latency for automatic detection.
- */
+/** Legacy preferences remain readable; the active pipeline always uses Turbo. */
 export function effectiveTranslationModeForSettings(
   settings: Pick<
     SettingsSnapshot,
@@ -183,18 +260,7 @@ export function effectiveTranslationModeForSettings(
     | "translationMode"
   >,
 ): TranslationMode {
-  const provider = activeServiceProfile(settings)?.provider ?? "alibabaCloud";
-  const supportedModes = translationModesForSettings(settings);
-
-  if (provider !== "alibabaCloud") return "turbo";
-  if (settings.translationMode === "turbo") return "turbo";
-  if (settings.sourceLanguage === "auto") {
-    return "lowLatency";
-  }
-  if (supportedModes.includes(settings.translationMode)) {
-    return settings.translationMode;
-  }
-  return supportedModes[0] ?? settings.translationMode;
+  return translationModesForSettings(settings)[0] ?? "turbo";
 }
 
 export function subtitlePreferencesChanged(

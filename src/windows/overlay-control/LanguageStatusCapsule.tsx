@@ -1,24 +1,28 @@
+import { useLayoutEffect, useRef } from "react";
 import { Icon } from "../../components/Icon";
+import { AudioInputIndicator } from "../../components/AudioInputIndicator";
+import { audioInputLabel } from "../../lib/audioInput";
 import { I18N } from "../../lib/i18n";
 import {
   OVERLAY_ACTIVITY_PHASES,
-  TRANSLATION_MODE_DISPLAY_NAMES,
-  targetLanguageTranslatesAudio,
   type OverlayActivityPhaseKind,
   type SettingsSnapshot,
 } from "../../lib/types";
 import { PulseRing } from "../overlay/PulseRing";
+import { useResolvedMotion } from "../overlay/animation";
 import type { LanguageStatus } from "../overlay/overlayModel";
+import { capsuleLabels } from "./capsuleLabels";
 
 interface LanguageStatusCapsuleProps {
   phase: OverlayActivityPhaseKind;
   status: LanguageStatus;
   settings: SettingsSnapshot;
-  effectiveMode: SettingsSnapshot["translationMode"];
   isPaused: boolean;
   isWaitingForFinalTranslation: boolean;
   expanded: boolean;
+  isStopping?: boolean;
   onToggle: () => void;
+  onWidthChange?: (width: number) => void;
 }
 
 /** Compact, always-reachable entry point for the subtitle control panel. */
@@ -26,50 +30,66 @@ export function LanguageStatusCapsule({
   phase,
   status,
   settings,
-  effectiveMode,
   isPaused,
   isWaitingForFinalTranslation,
   expanded,
+  isStopping = false,
   onToggle,
+  onWidthChange,
 }: LanguageStatusCapsuleProps) {
-  const translatesAudio = targetLanguageTranslatesAudio(settings.targetLanguage);
-  const modeLabel = translatesAudio
-    ? TRANSLATION_MODE_DISPLAY_NAMES[effectiveMode]
-    : I18N.overlay.originalOnly;
-  const transientLabel =
-    phase === "error" || phase === "idle"
-      ? OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel
-      : isPaused
-        ? I18N.overlay.paused
-        : isWaitingForFinalTranslation
-          ? I18N.overlay.translating
-          : null;
+  const capsuleRef = useRef<HTMLButtonElement>(null);
+  const pulseOn = useResolvedMotion(settings.pulseAnimation);
+  const transientPhase = phase === "error" || phase === "idle" ? phase
+    : isStopping ? "stopping" : phase === "connecting" ? "connecting"
+      : isPaused ? "paused" : phase === "translating" || isWaitingForFinalTranslation ? "translating" : null;
   const actionLabel = expanded
     ? I18N.overlay.closeControls
     : I18N.overlay.openControls;
+  const compact = capsuleLabels(settings, transientPhase);
+  const sources = audioInputLabel(settings.audioInput, settings.systemAudioTarget);
+  const phaseLabel = isStopping ? I18N.overlay.stopping : OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;
+  const fullLabel = `${sources} · ${phaseLabel} · ${status.source} ${status.separator} ${status.target}`;
+
+  useLayoutEffect(() => {
+    const capsule = capsuleRef.current;
+    if (expanded || !onWidthChange || !capsule) return;
+    let lastWidth = 0;
+    const measure = () => {
+      const width = Math.ceil(capsule.getBoundingClientRect().width);
+      if (width <= 0 || width === lastWidth) return;
+      lastWidth = width;
+      onWidthChange(width);
+    };
+    // max-content makes this independent of the previous native window size.
+    // Measure synchronously too: a hidden WebView may defer animation frames.
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(capsule);
+    return () => observer.disconnect();
+  }, [expanded, onWidthChange]);
 
   return (
     <button
+      ref={capsuleRef}
       type="button"
       className={expanded ? "overlay-control-header" : "overlay-control-island"}
       onClick={onToggle}
-      title={actionLabel}
-      aria-label={`${OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel}${I18N.overlay.accessibilityCurrentLanguagePrefix}${status.source} ${status.separator} ${status.target}, ${modeLabel}. ${actionLabel}`}
+      title={`${fullLabel}. ${actionLabel}`}
+      aria-label={`${sources} · ${phaseLabel}${I18N.overlay.accessibilityCurrentLanguagePrefix}${status.source} ${status.separator} ${status.target}. ${actionLabel}`}
       aria-haspopup={expanded ? undefined : "dialog"}
       aria-expanded={expanded ? undefined : false}
       aria-controls={expanded ? undefined : "overlay-control-panel"}
     >
-      <PulseRing phase={phase} compact />
-      {transientLabel && (
-        <span className="overlay-control-island__phase">{transientLabel}</span>
+      <PulseRing phase={phase} compact motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
+      <AudioInputIndicator input={settings.audioInput} target={settings.systemAudioTarget} />
+      {transientPhase && (
+        <span className="overlay-control-island__phase">{compact.phase}</span>
       )}
       <span className="overlay-control-island__summary">
-        <strong>{status.source}</strong>
+        <strong>{compact.source}</strong>
         <span aria-hidden="true">{status.separator}</span>
-        <span>{status.target}</span>
+        <span>{compact.target}</span>
       </span>
-      <span className="overlay-control-island__divider" aria-hidden="true" />
-      <span className="overlay-control-island__mode">{modeLabel}</span>
       <Icon name={expanded ? "chevron-up" : "chevron-down"} />
     </button>
   );

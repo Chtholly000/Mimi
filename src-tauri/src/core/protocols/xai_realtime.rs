@@ -60,7 +60,10 @@ impl XAIRealtimeRequestEncoder {
         target_language: TargetLanguage,
         event_id: Option<&str>,
     ) -> Result<Value, XAIRealtimeProtocolError> {
-        if !target_language.translates_audio() {
+        if !matches!(
+            target_language,
+            TargetLanguage::SimplifiedChinese | TargetLanguage::English | TargetLanguage::Japanese
+        ) {
             return Err(XAIRealtimeProtocolError::InvalidTargetLanguage);
         }
         let mut value = json!({
@@ -128,10 +131,10 @@ fn translation_instructions(target_language: TargetLanguage) -> String {
 
 fn target_language_name(target_language: TargetLanguage) -> &'static str {
     match target_language {
-        TargetLanguage::Original => "",
         TargetLanguage::SimplifiedChinese => "Simplified Chinese",
         TargetLanguage::English => "English",
         TargetLanguage::Japanese => "Japanese",
+        _ => "",
     }
 }
 
@@ -389,6 +392,23 @@ fn is_recoverable_provider_error(kind: &str, code: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expanded_app_targets_do_not_expand_this_wire_contract() {
+        for target in TargetLanguage::ALL.into_iter().filter(|target| {
+            !matches!(
+                target,
+                TargetLanguage::SimplifiedChinese
+                    | TargetLanguage::English
+                    | TargetLanguage::Japanese
+            )
+        }) {
+            assert_eq!(
+                XAIRealtimeRequestEncoder::session_update(target, None).unwrap_err(),
+                XAIRealtimeProtocolError::InvalidTargetLanguage
+            );
+        }
+    }
 
     #[test]
     fn endpoint_and_audio_contract_match_xai_voice() {

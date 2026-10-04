@@ -1,6 +1,6 @@
 [package]
 name = "mimi"
-version = "1.5.2"
+version = "1.5.12"
 description = "Live translated subtitles for anything playing on your Mac or PC."
 authors = ["yuxino <nbsawz@gmail.com>"]
 edition = "2021"
@@ -17,11 +17,15 @@ tauri-build = { version = "2", features = [] }
 
 [features]
 default = []
-# The stable development bundle is compiled in release mode, so expose the
-# WebView inspector only when the launcher opts into this local-only feature.
+# Expose the WebView inspector when the signed development launcher opts in.
 devtools = ["tauri/devtools"]
+# Private evidence tooling is excluded from production builds.
+development-debugger = []
+# Read-only local .env keys; runtime also requires the exact macOS dev identifier.
+local-dev-credentials = []
 
 [dependencies]
+mimi-core = { path = "../shared/mimi-core" }
 tauri = { version = "2", default-features = false, features = ["wry", "compression", "common-controls-v6", "tray-icon", "image-png", "macos-private-api"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-opener = "2"
@@ -35,7 +39,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots", "url"] }
 futures-util = { version = "0.3", features = ["sink"] }
 # Share the updater's HTTP implementation and existing ring TLS provider.
-reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "stream", "system-proxy"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "stream", "system-proxy", "socks"] }
+# Reuse reqwest's already-locked native proxy matcher for provider WebSockets.
+hyper-util = { version = "0.1", default-features = false, features = ["client-proxy-system"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 base64 = "0.23"
 uuid = { version = "1", features = ["v4"] }
@@ -45,14 +51,18 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 rubato = "5"
+# Local SpeexDSP linear echo cancellation; wrapped with checked frame sizes.
+aec-rs-sys = "=1.0.0"
 tauri-plugin-dialog = "2"
 time = "0.3"
 tempfile = "3"
+tauri-plugin-clipboard-manager = "2"
 
 [dev-dependencies]
 minisign-verify = "0.2.5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+cpal = "0.18"
 block2 = "0.6"
 screen-capture-kit = "0.7.1"
 core-media = "0.8"
@@ -62,16 +72,24 @@ objc2-app-kit = { version = "0.3", features = ["NSWindow"] }
 objc2-core-audio-types = { version = "0.3", features = ["objc2"] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSString", "NSError", "NSObject", "NSBundle"] }
 dispatch2 = "0.3"
+# Existing transitive library; exact metadata-only login-Keychain lookup.
+security-framework = "3"
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel.git", rev = "c9ec2130422200f0863b23dfdad02b133a529b07" }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Direct reference required by the Windows COM implementation macro; already
+# part of the locked windows SDK dependency graph.
+windows-core = "0.61"
 cpal = "0.18"
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Media_Audio", "Win32_Media_Audio_Endpoints", "Win32_System_Threading", "Win32_System_SystemInformation", "Win32_UI_Shell", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+tauri-plugin-single-instance = "2.4.3"
 gtk = "0.18.2"
 libpulse-binding = "2.30.1"
+zbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"] }
+secret-service = { version = "5.1", features = ["crypto-rust"] }
 x11-dl = "2.21.0"
 
 # Keep the shipped desktop binary compact without changing the debug/test
@@ -83,6 +101,13 @@ lto = true
 opt-level = "s"
 panic = "abort"
 strip = true
+
+# Signed local bundles embed the frontend like a release, but favor rebuild speed
+# and useful backtraces. Keep these artifacts separate from production output.
+[profile.local-dev]
+inherits = "dev"
+debug = 1
+incremental = true
 
 # CPAL 0.18.1 discards WASAPI's AUDCLNT_BUFFERFLAGS_SILENT marker and can
 # expose undefined packet bytes to input callbacks. Keep an exact local copy

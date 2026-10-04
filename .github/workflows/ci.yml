@@ -2,6 +2,17 @@ name: ci
 
 on:
   workflow_dispatch:
+    inputs:
+      validation:
+        description: Validation scope (full checks every platform)
+        type: choice
+        default: quick
+        options: [quick, full]
+      packages:
+        description: Optional native acceptance package (no release)
+        type: choice
+        default: none
+        options: [none, linux, windows, macos, all]
   push:
     branches: [main]
     tags: ["v*"]
@@ -15,11 +26,35 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' && github.ref_type != 'tag' }}
 
 jobs:
+  scope:
+    runs-on: ubuntu-latest
+    outputs:
+      native: ${{ steps.plan.outputs.native }}
+      rust_os: ${{ steps.plan.outputs.rust_os }}
+      windows_arm: ${{ steps.plan.outputs.windows_arm }}
+      arm_bundle: ${{ steps.plan.outputs.arm_bundle }}
+      bundle: ${{ steps.plan.outputs.bundle }}
+      bundle_os: ${{ steps.plan.outputs.bundle_os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - name: Verify scope rules
+        run: python3 scripts/ci-scope-test.py
+      - id: plan
+        env:
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_VALIDATION: ${{ inputs.validation }}
+          CI_PACKAGES: ${{ inputs.packages }}
+        run: python3 scripts/ci-scope.py
+
   rust:
+    needs: scope
+    if: ${{ needs.scope.outputs.native == 'true' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-2025, ubuntu-22.04]
+        os: ${{ fromJSON(needs.scope.outputs.rust_os) }}
     runs-on: ${{ matrix.os }}
     env:
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.os == 'macos-latest' && '13.0' || '' }}
@@ -36,7 +71,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            shared/mimi-core -> ../target
+            shared/mimi-android-jni -> ../target
 
       - name: macOS release safety tests
         if: runner.os == 'macOS'
@@ -53,13 +91,29 @@ jobs:
       - name: Test
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
-      - name: Test Linux output-monitor capture with real PulseAudio
+      - name: Shared subtitle core and JNI adapter
+        shell: bash
+        run: bash scripts/check-shared-core.sh
+
+      - name: Test native Wayland input regions with isolated Weston
+        if: runner.os == 'Linux'
+        run: ./scripts/linux-wayland-input-smoke.sh
+
+      - name: Test Linux system and microphone capture with real PulseAudio
         if: runner.os == 'Linux'
         run: dbus-run-session -- ./scripts/linux-audio-smoke.sh
 
-      - name: Test Linux credential storage with isolated Secret Service
+      - name: Test legacy Linux credential compatibility with isolated Secret Service
         if: runner.os == 'Linux'
         run: ./scripts/linux-keyring-smoke.sh
+
+      - name: Test legacy Linux credential recovery after Secret Service appears
+        if: runner.os == 'Linux'
+        run: ./scripts/linux-keyring-recovery-smoke.sh
+
+      - name: Test legacy credential setup with a new Linux keyring
+        if: runner.os == 'Linux'
+        run: ./scripts/linux-keyring-first-save-smoke.sh
 
       - name: Check Intel macOS target
         if: runner.os == 'macOS'
@@ -72,6 +126,8 @@ jobs:
         run: cargo test --manifest-path src-tauri/vendor/cpal/Cargo.toml --lib capture_packet_tests
 
   windows-arm64:
+    needs: scope
+    if: ${{ needs.scope.outputs.windows_arm == 'true' }}
     runs-on: windows-11-arm
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -87,7 +143,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            shared/mimi-core -> ../target
+            shared/mimi-android-jni -> ../target
           shared-key: windows-arm64
 
       - run: npm ci
@@ -106,14 +165,22 @@ jobs:
       - name: Test
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
+      - name: Shared subtitle core and JNI adapter
+        shell: bash
+        run: bash scripts/check-shared-core.sh
+
       - name: Compile ARM64 app without an installer
+        if: ${{ needs.scope.outputs.arm_bundle == 'true' }}
         run: npm run tauri -- build --no-bundle -- --locked
 
       - name: Smoke launch ARM64 UI-test app
+        if: ${{ needs.scope.outputs.arm_bundle == 'true' }}
         shell: pwsh
         run: ./scripts/windows-ci-smoke.ps1 -ExecutablePath ./src-tauri/target/release/mimi.exe -ExpectedArchitecture arm64
 
   msrv:
+    needs: scope
+    if: ${{ needs.scope.outputs.native == 'true' }}
     runs-on: macos-latest
     env:
       MACOSX_DEPLOYMENT_TARGET: "13.0"
@@ -126,7 +193,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            shared/mimi-core -> ../target
+            shared/mimi-android-jni -> ../target
           shared-key: msrv
 
       - name: Check minimum supported Rust version
@@ -150,6 +220,15 @@ jobs:
       - name: Test
         run: npm run test
 
+      - name: Shared native packaging invariants
+        run: python3 -B scripts/shared-core-native-test.py
+
+      - name: Test AppImage permission regression
+        run: python3 scripts/check-appimage-permissions-test.py
+
+      - name: Test AppImage GLES dependency regression
+        run: python3 scripts/check-appimage-gles-test.py
+
       - name: Verify updater platform mapping
         run: node --test scripts/updater-manifest.node.mjs
 
@@ -159,11 +238,12 @@ jobs:
   # Compile macOS without producing an extra branch artifact. Tag builds below
   # verify maintainer-signed macOS assets and build Windows/Linux packages.
   bundle:
-    if: ${{ github.ref_type != 'tag' }}
+    needs: scope
+    if: ${{ github.ref_type != 'tag' && needs.scope.outputs.bundle == 'true' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-2025, ubuntu-22.04]
+        os: ${{ fromJSON(needs.scope.outputs.bundle_os) }}
     runs-on: ${{ matrix.os }}
     env:
       MACOSX_DEPLOYMENT_TARGET: ${{ matrix.os == 'macos-latest' && '13.0' || '' }}
@@ -180,7 +260,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            shared/mimi-core -> ../target
+            shared/mimi-android-jni -> ../target
 
       - run: npm ci
 
@@ -199,7 +282,7 @@ jobs:
 
       - name: Build Linux packages
         if: runner.os == 'Linux'
-        run: npm run tauri -- build --config src-tauri/tauri.ci.conf.json -- --locked
+        run: ./scripts/build-linux-packages.sh --config src-tauri/tauri.ci.conf.json
 
       - name: Install and smoke-test Linux packages
         if: runner.os == 'Linux'
@@ -240,6 +323,31 @@ jobs:
             src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
           retention-days: 7
+
+  ci-complete:
+    if: ${{ always() }}
+    needs: [scope, frontend, rust, msrv, windows-arm64, bundle]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require planned checks to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ["RESULTS"])
+          required = ["scope", "frontend"]
+          plan = results["scope"]["outputs"]
+          if plan.get("native") == "true":
+              required += ["rust", "msrv"]
+          if plan.get("windows_arm") == "true":
+              required.append("windows-arm64")
+          if plan.get("bundle") == "true":
+              required.append("bundle")
+          failed = [name for name in required if results[name]["result"] != "success"]
+          if failed:
+              raise SystemExit("Planned checks did not pass: " + ", ".join(failed))
+          PY
 
   release-preflight:
     if: ${{ github.ref_type == 'tag' }}
@@ -310,7 +418,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            shared/mimi-core -> ../target
+            shared/mimi-android-jni -> ../target
 
       - run: npm ci
       - run: npm run build
@@ -415,7 +526,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            shared/mimi-core -> ../target
+            shared/mimi-android-jni -> ../target
 
       - run: npm ci
 
@@ -433,6 +547,12 @@ jobs:
           Remove-Item -Recurse -Force "$env:GITHUB_WORKSPACE/src-tauri/target/release/bundle/nsis" -ErrorAction SilentlyContinue
 
       - run: npm run tauri -- build -- --locked
+
+      - name: Verify release excludes development debugger
+        shell: pwsh
+        run: |
+          python scripts/check-production-native-debugger.py src-tauri/target/release/mimi.exe
+          if ($LASTEXITCODE -ne 0) { throw "Development debugger was included in the release." }
 
       - name: Smoke launch release x64 UI-test app
         shell: pwsh
@@ -519,7 +639,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
-          workspaces: src-tauri
+          workspaces: |
+            src-tauri
+            shared/mimi-core -> ../target
+            shared/mimi-android-jni -> ../target
 
       - name: Install Linux build and smoke-test dependencies
         run: ./scripts/linux-ci-deps.sh
@@ -533,7 +656,10 @@ jobs:
         run: rm -rf src-tauri/target/release/bundle/deb src-tauri/target/release/bundle/appimage
 
       - name: Build signed Linux packages
-        run: npm run tauri -- build -- --locked
+        run: ./scripts/build-linux-packages.sh
+
+      - name: Verify release excludes development debugger
+        run: python3 scripts/check-production-native-debugger.py src-tauri/target/release/mimi
 
       - name: Verify, install, and smoke-test signed Linux packages
         run: ./scripts/verify-linux-bundles.sh "$(node -p 'require("./package.json").version')" --signed

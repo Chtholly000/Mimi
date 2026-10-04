@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { I18N } from "../../lib/i18n";
-import { appIsLinuxPackage, appIsPortable, appIsUiTest, appOpenReleases, isTauri } from "../../lib/ipc";
+import { appOpenReleases } from "../../lib/ipc";
 import { InlineFeedback, SettingsRow } from "./SettingsPrimitives";
 import {
   applyDownloadEvent,
@@ -12,13 +12,9 @@ import {
   type AvailableUpdate,
   type UpdateCheckState,
 } from "./softwareUpdateModel";
-import {
-  createFixtureSoftwareUpdater,
-  createTauriSoftwareUpdater,
-  isWindowsUserAgent,
-  type SoftwareUpdater,
-  type UpdateCandidate,
-} from "./softwareUpdater";
+import type { SoftwareUpdater, UpdateCandidate } from "./softwareUpdater";
+import { createUpdaterForEnvironment } from "./softwareUpdateEnvironment";
+import { useSettingsToast } from "./useSettingsToast";
 
 /** User-initiated signed updater. It never polls, downloads, or installs in the
  * background. */
@@ -28,10 +24,10 @@ export function SoftwareUpdate() {
   const [portable, setPortable] = useState(false);
   const [linuxPackage, setLinuxPackage] = useState(false);
   const [openingReleases, setOpeningReleases] = useState(false);
-  const [portableOpenError, setPortableOpenError] = useState(false);
   const [state, setState] = useState<UpdateCheckState>({ kind: "idle" });
   const candidateRef = useRef<UpdateCandidate | undefined>(undefined);
   const operationRef = useRef(false);
+  const { beginToast } = useSettingsToast();
 
   useEffect(() => {
     let disposed = false;
@@ -64,6 +60,7 @@ export function SoftwareUpdate() {
   const handleAction = async () => {
     if (!updater || !interaction.action || operationRef.current) return;
     operationRef.current = true;
+    const notify = beginToast();
 
     try {
       if (interaction.action === "check") {
@@ -74,6 +71,7 @@ export function SoftwareUpdate() {
           const candidate = await updater.check();
           if (!candidate) {
             setState({ kind: "noUpdate" });
+            notify(I18N.settings.noUpdateAvailable);
             return;
           }
 
@@ -128,6 +126,7 @@ export function SoftwareUpdate() {
       try {
         await updater.relaunch();
         setState({ kind: "restartRequested", update });
+        notify(I18N.settings.restartRequested);
       } catch {
         setState({ kind: "restartError", update, recovery: "idle" });
       }
@@ -138,12 +137,14 @@ export function SoftwareUpdate() {
 
   const handleRecovery = async () => {
     if (!isErrorState(state) || state.recovery === "opening") return;
+    const notify = beginToast();
     setState((current) => withRecoveryStatus(current, "opening"));
     try {
       await appOpenReleases();
       setState((current) => withRecoveryStatus(current, "idle"));
     } catch {
-      setState((current) => withRecoveryStatus(current, "error"));
+      setState((current) => withRecoveryStatus(current, "idle"));
+      notify(I18N.settings.openUpdateFailed, true);
     }
   };
 
@@ -167,9 +168,9 @@ export function SoftwareUpdate() {
             disabled={openingReleases}
             onClick={() => {
               setOpeningReleases(true);
-              setPortableOpenError(false);
+              const notify = beginToast();
               void appOpenReleases()
-                .catch(() => setPortableOpenError(true))
+                .catch(() => notify(I18N.settings.openUpdateFailed, true))
                 .finally(() => setOpeningReleases(false));
             }}
           >
@@ -181,7 +182,6 @@ export function SoftwareUpdate() {
         <span className="software-update-live-status" role="status">
           {linuxPackage ? I18N.settings.linuxPackageUpdateDescription : I18N.settings.portableUpdateDescription}
         </span>
-        {portableOpenError && <span role="alert">{I18N.settings.openUpdateFailed}</span>}
       </div>
     );
   }
@@ -226,52 +226,6 @@ export function SoftwareUpdate() {
       <UpdateDetails state={state} onRecovery={handleRecovery} />
     </div>
   );
-}
-
-type UpdateEnvironment =
-  | { kind: "portable" | "linuxPackage"; currentVersion: string }
-  | { kind: "installed"; updater: SoftwareUpdater };
-
-export async function createUpdaterForEnvironment(): Promise<UpdateEnvironment> {
-  if (!isTauri) {
-    return {
-      kind: "installed",
-      updater: createFixtureSoftwareUpdater({
-        currentVersion: "preview",
-        updateVersion: null,
-      }),
-    };
-  }
-
-  if (isWindowsUserAgent()) {
-    let portable = true;
-    try {
-      portable = await appIsPortable();
-    } catch {
-      // A failed mode check must not offer an installer to a portable copy.
-    }
-    if (portable) {
-      const { getVersion } = await import("@tauri-apps/api/app");
-      return { kind: "portable", currentVersion: await getVersion() };
-    }
-  }
-
-  // Native distribution detection avoids guessing from the WebView user agent.
-  // If detection fails, initialization fails closed before creating an updater.
-  if (await appIsLinuxPackage()) {
-    const { getVersion } = await import("@tauri-apps/api/app");
-    return { kind: "linuxPackage", currentVersion: await getVersion() };
-  }
-
-  if (await appIsUiTest()) {
-    const { getVersion } = await import("@tauri-apps/api/app");
-    return {
-      kind: "installed",
-      updater: createFixtureSoftwareUpdater({ currentVersion: await getVersion() }),
-    };
-  }
-
-  return { kind: "installed", updater: await createTauriSoftwareUpdater() };
 }
 
 function candidateMetadata(candidate: UpdateCandidate): AvailableUpdate {
@@ -393,9 +347,6 @@ function UpdateDetails({
               ? I18N.settings.openingUpdateRecovery
               : I18N.settings.openReleaseRecovery}
           </button>
-          {state.recovery === "error" && (
-            <span role="alert">{I18N.settings.openUpdateFailed}</span>
-          )}
         </div>
       )}
     </div>
@@ -405,11 +356,7 @@ function UpdateDetails({
 function UpdateFeedback({ state }: { state: UpdateCheckState }) {
   switch (state.kind) {
     case "noUpdate":
-      return (
-        <InlineFeedback tone="success">
-          {I18N.settings.noUpdateAvailable}
-        </InlineFeedback>
-      );
+      return null;
     case "downloaded":
       return (
         <InlineFeedback tone="success">
@@ -423,11 +370,7 @@ function UpdateFeedback({ state }: { state: UpdateCheckState }) {
         </InlineFeedback>
       );
     case "restartRequested":
-      return (
-        <InlineFeedback tone="success">
-          {I18N.settings.restartRequested}
-        </InlineFeedback>
-      );
+      return null;
     case "windowsInstallerStarted":
       return (
         <InlineFeedback tone="info">

@@ -1,6 +1,8 @@
 //! Settings-only manual export: native save picker, then atomic file replacement.
 use crate::commands::AppState;
-use crate::core::session_archive::ArchiveState;
+use crate::core::audio_input::AudioSource;
+use crate::core::session_archive::{ArchiveState, TranscriptPage};
+use crate::session_history::HistoryItem;
 use serde::Deserialize;
 use std::io::Write;
 use std::path::Path;
@@ -16,7 +18,7 @@ impl Drop for ExportGuard {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ExportKind {
     Transcript,
@@ -29,9 +31,81 @@ pub fn session_archive_state(state: State<'_, AppState>) -> ArchiveState {
 }
 
 #[tauri::command]
+pub async fn session_transcript_page(
+    state: State<'_, AppState>,
+    query: String,
+    page: usize,
+) -> Result<TranscriptPage, String> {
+    if query.chars().count() > 120 {
+        return Err("Search is too long.".into());
+    }
+    let session = std::sync::Arc::clone(&state.session);
+    tauri::async_runtime::spawn_blocking(move || session.transcript_page(&query, page))
+        .await
+        .map_err(|_| "Could not read current session.")?
+        .map_err(|_| "Could not read current session.".into())
+}
+
+#[tauri::command]
+pub async fn session_history_list(state: State<'_, AppState>) -> Result<Vec<HistoryItem>, String> {
+    let history = state.session.history();
+    let current_id = state.session.current_history_id();
+    let mut items = tauri::async_runtime::spawn_blocking(move || history.list())
+        .await
+        .map_err(|_| "Could not read session history.")?
+        .map_err(|_| "Could not read session history.")?;
+    items.retain(|item| Some(&item.id) != current_id.as_ref());
+    Ok(items)
+}
+
+#[tauri::command]
+pub async fn session_history_page(
+    state: State<'_, AppState>,
+    id: String,
+    query: String,
+    page: usize,
+) -> Result<TranscriptPage, String> {
+    if query.chars().count() > 120 {
+        return Err("Search is too long.".into());
+    }
+    let history = state.session.history();
+    tauri::async_runtime::spawn_blocking(move || history.page(&id, &query, page))
+        .await
+        .map_err(|_| "Could not read session history.")?
+        .map_err(|_| "Could not read session history.".into())
+}
+
+#[tauri::command]
+pub async fn session_history_audio(
+    state: State<'_, AppState>,
+    id: String,
+    audio_source: Option<AudioSource>,
+) -> Result<tauri::ipc::Response, String> {
+    let history = state.session.history();
+    let audio =
+        tauri::async_runtime::spawn_blocking(move || history.audio_selected(&id, audio_source))
+            .await
+            .map_err(|_| "Could not read session audio.")?
+            .map_err(|_| "Could not read session audio.")?;
+    Ok(tauri::ipc::Response::new(audio))
+}
+
+#[tauri::command]
+pub async fn session_history_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let history = state.session.history();
+    tauri::async_runtime::spawn_blocking(move || history.delete(&id))
+        .await
+        .map_err(|_| "Could not delete session history.")?
+        .map_err(|_| "Could not delete session history.".into())
+}
+
+#[tauri::command]
 pub async fn session_archive_clear(state: State<'_, AppState>) -> Result<(), String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
-    state.session.clear_archive();
+    state
+        .session
+        .clear_archive()
+        .map_err(|_| "Could not clear session content.")?;
     Ok(())
 }
 
@@ -40,6 +114,8 @@ pub async fn session_export(
     app: AppHandle,
     state: State<'_, AppState>,
     kind: ExportKind,
+    id: Option<String>,
+    audio_source: Option<AudioSource>,
 ) -> Result<bool, String> {
     if EXPORT_BUSY
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -48,24 +124,42 @@ pub async fn session_export(
         return Err("An export is already open.".into());
     }
     let _busy = ExportGuard;
-    let (revision, bytes) = {
+    let (revision, bytes) = if let Some(id) = id {
+        let history = state.session.history();
+        let bytes = tauri::async_runtime::spawn_blocking(move || match kind {
+            ExportKind::Transcript => history.export_transcript(&id),
+            ExportKind::Audio => history.audio_selected(&id, audio_source),
+        })
+        .await
+        .map_err(|_| "Could not read saved session.")?
+        .map_err(|_| "Could not read saved session.")?;
+        (None, bytes)
+    } else {
         let _lifecycle = state.session.settings_mutation_guard(true).await?;
         let bytes = match kind {
             ExportKind::Transcript => state.session.export_transcript(),
-            ExportKind::Audio => state.session.export_audio(),
+            ExportKind::Audio => state.session.export_audio_from(audio_source),
         }
+        .map_err(|_| "Could not read current session content.")?
         .ok_or("No session content is available to export.")?;
-        (state.session.archive_revision(), bytes)
+        (Some(state.session.archive_revision()), bytes)
     };
     let (extension, description) = match kind {
         ExportKind::Transcript => ("txt", "Text transcript"),
         ExportKind::Audio => ("wav", "WAV audio"),
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let file_name = match (kind, audio_source) {
+        (ExportKind::Audio, Some(AudioSource::System)) => "mimi-session-system.wav".to_owned(),
+        (ExportKind::Audio, Some(AudioSource::Microphone)) => {
+            "mimi-session-microphone.wav".to_owned()
+        }
+        _ => format!("mimi-session.{extension}"),
+    };
     app.dialog()
         .file()
         .add_filter(description, &[extension])
-        .set_file_name(format!("mimi-session.{extension}"))
+        .set_file_name(file_name)
         .save_file(move |path| {
             let _ = tx.send(path);
         });
@@ -81,9 +175,15 @@ pub async fn session_export(
     // Revalidate after the picker: toggling off, clearing or starting a session
     // must invalidate the old snapshot. Serialize only the final write, never
     // the user's time in the dialog, with lifecycle and preference changes.
-    let _lifecycle = state.session.settings_mutation_guard(true).await?;
-    if state.session.archive_revision() != revision {
-        return Err("The session changed. Please export again.".into());
+    let _lifecycle = if revision.is_some() {
+        Some(state.session.settings_mutation_guard(true).await?)
+    } else {
+        None
+    };
+    if let Some(revision) = revision {
+        if state.session.archive_revision() != revision {
+            return Err("The session changed. Please export again.".into());
+        }
     }
     tauri::async_runtime::spawn_blocking(move || write_export(&path, &bytes))
         .await

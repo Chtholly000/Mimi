@@ -21,6 +21,13 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   python3 "$SCRIPT_DIR/extract-macos-updater-test.py"
 fi
 
+python3 "$SCRIPT_DIR/check-appimage-permissions-test.py"
+python3 "$SCRIPT_DIR/check-appimage-gles-test.py"
+python3 -B "$SCRIPT_DIR/check-linux-input-region-trace-test.py"
+python3 -B "$SCRIPT_DIR/analyze-development-case-test.py"
+python3 -B "$SCRIPT_DIR/run-development-batch-test.py"
+bash "$SCRIPT_DIR/check-shared-core.sh"
+
 echo "==> cargo fmt --check"
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 

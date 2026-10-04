@@ -7,8 +7,8 @@ prompts. The visible app name and version are not enough to establish identity.
 
 | Use | Canonical app | Bundle identifier | Signing identity |
 | --- | --- | --- | --- |
-| Pre-push development and UI checks | `/Applications/mimi-dev.app` | `app.yuxino.mimi.dev` | `mimi Local Development` |
-| Local release-shaped bundle | `src-tauri/target/release/bundle/macos/mimi.app` | `app.yuxino.mimi` | `mimi Local Development` |
+| Pre-push development and UI checks | `/Applications/mimi-dev.app` | `app.yuxino.mimi.dev` | Dev-specific local pin, otherwise `mimi Local Development` |
+| Local release-shaped bundle | `src-tauri/target/release/bundle/macos/mimi.app` | `app.yuxino.mimi` | Formal-specific local pin, otherwise `mimi Local Development` |
 | New release pipeline | `/Applications/mimi.app` | `app.yuxino.mimi` | Certificate pinned in `scripts/macos-release-identity.txt` |
 | Historical releases through v1.4.1 | `/Applications/mimi.app` | `app.yuxino.mimi` | Ad-hoc (build-specific) |
 
@@ -21,7 +21,14 @@ not version labels. Keychain continuity is a separate concern below.
 Rules:
 
 - Use `./scripts/dev-app.sh` for normal local testing. Do not run `tauri dev`, a
-  bare `target/*/mimi` executable, or a copy at a disposable path.
+  bare `target/*/mimi` executable, or a copy at a disposable path. The launcher
+  uses the incremental `local-dev` Cargo profile and `npm run build:dev` (embedded
+  frontend with source maps, without minification or a repeated type/icon check).
+  `./scripts/check.sh` still runs all checks and the production frontend build.
+  The first `local-dev` build creates a separate cache; later builds reuse it.
+  `CARGO_TARGET_DIR` selects both the binary and temporary bundle location.
+  A fresh cache builds the existing SpeexDSP echo-cancellation dependency and
+  needs CMake on `PATH`, or an explicit `CMAKE=/absolute/path/to/cmake`.
 - `./scripts/package-app.sh` creates a local QA package without updater
   artifacts. `./scripts/prepare-macos-release.sh` creates public artifacts on
   the signing Mac with the pinned certificate. CI adds the existing updater
@@ -32,27 +39,83 @@ Rules:
   `./scripts/verify-macos-install-identity.sh NEW_APP /Applications/mimi.app`.
   A mismatch fails closed. `MIMI_ALLOW_IDENTITY_CHANGE=1` is reserved for a
   deliberate, one-time certificate migration whose extra prompts are expected.
+- After an explicitly approved local signing migration, keep the public
+  certificate fingerprint in `local-codesign-identity.txt` under that app's own
+  config directory: `app.yuxino.mimi` for formal packaging and
+  `app.yuxino.mimi.dev` for development. `dev-app.sh` selects the development
+  scope; it must never inherit a formal app's pin. The optional
+  `MIMI_LOCAL_CODESIGN_IDENTITY_FILE` and `MIMI_DEV_CODESIGN_IDENTITY_FILE`
+  overrides also apply only to their respective scope. `MIMI_CODESIGN_IDENTITY`
+  explicitly overrides either scope. An absent pin uses the unique stable
+  self-signed identity; an invalid, unavailable or ambiguous pin fails closed.
+  Complete designated-requirement checks still reject an unintended replacement.
+  Never use `MIMI_ALLOW_IDENTITY_CHANGE=1` just to make a routine build pass.
+  These files contain no private key or API credential and do not change the
+  public-release certificate policy.
 - Never use ad-hoc signing for local QA or new public releases. Missing or
   changed identities fail closed. Never use `tccutil reset`, delete Keychain
-  entries, or rotate a certificate as a routine fix.
+  entries outside the verified migration, or rotate a certificate as a routine fix.
 - Branch and pull-request CI compiles macOS with `--no-bundle`; tag CI verifies
   the prepared macOS assets and publishes only after both platforms pass.
 - Keep only one live mimi copy while testing. Confirm its executable path, not
   just the process name, before diagnosing shortcuts, windows, or permissions.
+- All worktrees install to the same development path. A later launch from
+  another worktree can replace the package, including with an older UI-only
+  build, even when the application name, version and signing identity match.
+  Coordinate canonical installs during acceptance; the install lock does not
+  reserve the app for the rest of a testing session. If controls disappear,
+  inspect the running window's mode, package modification time and build log,
+  then relaunch the intended worktree. Do not reset preferences or permissions
+  to repair a package mismatch.
+
+## ScreenCaptureKit native property types
+
+Use the Apple SDK and Objective-C runtime method signatures when checking native
+configuration accessors. In `screen-capture-kit` 0.7.1, `sampleRate` is bound as
+`f64`, although the native property is `NSInteger`. Use Mimi's integer setter
+adapter; a wrapper call completing without an exception does not prove that the
+native configuration received 16000 or 24000. The configuration-object regression
+checks both rates without starting capture or touching TCC.
+
+For a video with no subtitles, first check the actual sent-audio WAV and capture
+format diagnostics. A playing, decoded, unmuted browser video is not proof of
+nonzero system output. Entirely zero sent PCM cannot be scored as missed speech.
+Keep failed cases, compare a bounded authorized capture target, and distinguish
+configuration, source output, capture input, decode and provider evidence. Do not
+reset recording grants or expand an application filter from that observation
+alone.
+
+Browser tab/Space mute is separate from the media element's `muted` and `volume`
+properties. Ego's [changelog](https://www.egolite.ai/changelog) documents muted
+agent-created task tabs. Check the output boundary separately; extracting
+nonzero audio from an element does not prove the browser played it to the OS.
+If using a verified local clip as a playback control, record that source change
+and do not claim a causal before/after fix from it.
 
 ## Know which prompt appeared
+
+Production and ordinary development credentials use private local files on all
+desktop platforms. Legacy OS items are read only during automatic upgrade import,
+then deleted after durable write and read-back verification. Completed imports
+must never fall back to the OS store, even if the local file later goes missing.
+See [local credential storage](../plans/2026-10-04-local-credential-storage.md).
+The optional read-only dev `.env` presets remain separate; removing that file
+returns to editable local profiles. Signing-private-key and capture authorization
+are independent of provider credential storage. Never weaken native ACLs.
 
 These prompts have different causes and fixes:
 
 - **Screen & System Audio Recording:** TCC compares the bundle identifier and
   designated requirement. A changed certificate requires one new grant. A
   stable identity at a canonical path must not require repeated grants.
-- **API-key Keychain access:** the running app is reading a saved provider key.
-  A normal startup reads the profile key once and caches the result. Migration
-  tombstones and legacy slots are read only when the profile key is missing or
-  during an explicit save/delete/migration. Keep the same service/account and
-  update its value in place: deleting and recreating it discards accumulated
-  access rules and creates a crash window in which the secret can be lost.
+- **Legacy API-key Keychain access:** only the one-time importer reads an old
+  saved provider key. Verify a durable local copy before deleting its original
+  OS item. Checkpoint pending cleanup independently, so interrupted deletion
+  resumes without rereading the old secret. Routine startup, snapshots,
+  switching and credential edits use only the local file. On Windows, reading
+  an old Enterprise credential must not rewrite it as Local. Native migration
+  tests must verify the local file copy, retirement of the old item, and no
+  recreated native item after restarting or saving an edited key.
 - **Code-signing private-key access:** `/usr/bin/codesign` is using the private
   key for `mimi Local Development` while packaging the app and DMG. This is not
   API-key access. Grant persistent access only when the dialog names that exact
@@ -60,13 +123,16 @@ These prompts have different causes and fixes:
   whole keychain ACL in build scripts.
 - **Gatekeeper / Open Anyway:** the fixed self-signed GitHub package is not Apple-notarized. This is separate from capture and Keychain authorization.
 
+The historical OS-credential implementation needs the following distinction.
 The local development certificate is self-signed and has no Apple Team ID. It
 provides a stable requirement for local and newly prepared release TCC
 identities; historical ad-hoc signatures were build-specific. The file-based Keychain also applies a partition
 check that can fall back to the build's CDHash. Therefore:
 
-- eliminating the duplicate migration-item read reduces a normal startup to
-  one API-key authorization after an identity migration;
+- avoid secret reads in all macOS settings snapshots, not only unselected
+  profiles: the earlier inactive-only fix still prompted when users switched
+  keys. Test repeated selection of every saved profile and zero secret reads;
+  actual credential use must still validate and authorize required slots;
 - do not promise that a rebuilt self-signed local binary will never ask for
   Keychain access again;
 - do not solve this by deleting/recreating a credential, using an allow-all
@@ -123,6 +189,71 @@ translated output. Record only timing/counts/status, never speech or subtitles.
 
 ## Overlay and UI checks
 
+For shared layout, notification choices and the cross-page review checklist,
+read [UI consistency and feedback](ui-guidelines.md). A fix to one reported
+page must include a review of other instances of the same pattern.
+
+- Subtitle confirmation time follows its own display preference for every audio
+  input. Do not gate it on microphone selection or source-icon visibility. Test
+  system, microphone and both inputs explicitly in normal and immersive views;
+  the Timeline default input can otherwise hide a system-only regression. Keep
+  the Rust/TypeScript minimum-height contract in sync with the metadata row.
+- The multilingual label repair in `dc2143f` did not cover the Windows-only
+  output selector. Issue #132 put the selector and idle sentence in one inline
+  wrapper: its intrinsic width squeezed Chinese labels into one-character
+  lines and misaligned the picker even in a maximized window. Keep status out
+  of the control column, bound long device names, and test platform-only controls
+  with explicit fixtures on all three interface languages. An idle instruction
+  belongs in help; missing-device and live-capture states stay visible below.
+- The first #132 preview still let adjacent 36 px pickers touch: the shared
+  section body had no gap. Preserve explicit spacing between sibling rows and
+  assert the rendered gap in the same geometry regression. Inspect the actual
+  screenshot before delivery; correct label width does not prove visual quality.
+- Windows CJK glyph fallback cannot be inferred from a macOS screenshot or a
+  successful CSS `font-family` assertion. Keep Chinese sans families ahead of
+  Japanese fallbacks outside Japanese UI, include `Microsoft YaHei` as well as
+  `Microsoft YaHei UI`, and verify the actual installed font on the affected
+  Windows image before claiming its serif-font report resolved.
+- The #132 screenshot review also missed a lone shield below the configuration
+  list. It was storage help, but its detached position gave no clue what it
+  described. Attach it to the configuration count, and inspect diagnostics,
+  profile headings, credential toolbars, proxy rows and confirmation previews
+  for the same pattern. Help needs a visible context, not its own empty row.
+- The same review missed the saved-key eye below the translation field. Its
+  action text existed only for screen readers, so DOM text tests passed while
+  the visible action was ambiguous. Make the text visible in all three languages,
+  share the field's label line, and check actual caption dimensions plus preview
+  states. Do not populate a replacement draft with a revealed saved credential.
+
+- Moving a control between windows also requires updating its Tauri command
+  permissions. Settings audio switches once invoked a command authorized only
+  for the floating panel, so browser tests passed while native clicks failed.
+  The same gap recurred when pause/resume was added to the floating panel.
+  Check the actual calling windows, add a regression for the command registration
+  and that window's permission scope, then rebuild and restart the signed app
+  before exercising success and failure. Frontend reloads cannot update its
+  compiled Tauri permissions; do not widen unrelated start/stop permissions.
+- Searchable popups must scroll their result list directly. `scrollIntoView`
+  can scroll a clipped ancestor in WebKit and hide rows below the search field;
+  pointer hover must not move the list. Check a long list and keyboard search.
+  DOM focus does not prove a macOS floating NSPanel is key: explicit clicks must
+  give the actual WKWebView first-responder status and make the control panel
+  key, never main or proactively activating. Wry contentView is a wrapper:
+  `canBecomeKey` and `makeKeyWindow` alone do not prove keyboard delivery.
+  Use `with_webview` on the main thread, only for an explicit expanded panel.
+  Automation may activate the app before typing and hide the real failure.
+  Verify a human click from another app into search, then repeat after restart
+  and after removing any temporary diagnostics. `isKeyWindow` alone only
+  describes application-local key status, not system keyboard delivery.
+  Collapsing it must release key status. Before release, type English and Chinese
+  searches in the signed native panel and confirm media playback continues.
+- Language menus in settings, the subtitle controls and the tray use the full
+  `sourceLanguagesForSettings` route catalog and the shared `LanguageSelect`.
+  Keep the same choices, order and localized names; use search/scrolling for a
+  long list instead of introducing a second list of preferred languages.
+  Verify both translated and Original routes and a stale capability snapshot.
+  Explicit source selection retains the target subject to provider normalization;
+  Chinese must not silently switch translation off or rewrite an Original target.
 - AppKit window mutations, including window level and collection behavior,
   must run on the macOS main thread.
 - Full-screen visibility requires the overlay's all-spaces and full-screen
@@ -147,9 +278,57 @@ translated output. Record only timing/counts/status, never speech or subtitles.
   Mount only the active panel and remount the compact category navigation when
   the category changes. Verify that the highlighted category and visible
   heading agree after the initial settings snapshot arrives.
+- Transient settings feedback must also listen to native Tauri window blur and
+  close events. WKWebView may retain DOM focus when the macOS window loses
+  focus; DOM blur/visibility alone is insufficient. Verify app switching and
+  closing/reopening the settings window in the signed bundle.
 - Use `./scripts/dev-app.sh --ui-only` for visual states that do not require a
   provider. UI-only mode must never read Keychain items, open provider sockets,
   or start system-audio capture.
+
+## Validate the test audio before blaming capture
+
+In one macOS sandboxed integration run, `say -o` returned success but created
+an AIFF with zero audio frames. `afplay` also failed inside the sandbox with
+`AudioQueueStart failed (-66680)`. Check `afinfo` for nonzero frames and the
+expected duration before playback, then verify playback completes. If the
+environment blocks audio services, use an approved local execution path and
+validate the regenerated file again. An empty fixture or a failed player does
+not establish a Mimi capture or recognition defect. Keep the sample
+non-sensitive; do not change permissions or reset TCC to repair the fixture.
+
+See [the integration learning loop](integration-learning-loop.md) for comparable
+samples and [the run ledger](integration-runs.md) for this check's exact scope.
+
+## Native exit and acceptance evidence
+
+- macOS's predefined Quit invokes AppKit termination directly; in the locked
+  Tao runtime it can bypass `ExitRequested`. Keep application-menu/Cmd-Q and
+  ordinary Dock Quit on the shared stop/finalize path, not an asynchronous
+  cleanup task launched after `RunEvent::Exit`.
+- The public termination delegate wrapper retains and forwards to Tao's
+  original receiver. Keep Dock visibility on Mimi's direct AppKit activation
+  policy; Tao's runtime `set_dock_visibility` reads a private ivar from the
+  current delegate and is incompatible with the wrapper. See
+  [the termination design](../plans/2026-10-02-native-quit-finalization.md).
+- The dev bundle is named `mimi-dev.app`, while its executable may be named
+  `mimi`. Read `codesign -d -r-` and match the actual bundle executable path
+  when verifying processes; a `mimi-dev` binary-name filter can falsely report
+  that no instance exists.
+- A queued UI-state broadcast can be lost when normal exit completes before
+  its 60ms coalescing delay. Verify stop completion through content-free
+  lifecycle evidence and process exit, not an old UI-test state marker alone.
+- A frontend settings deadline cannot cancel a native Keychain authorization
+  wait. Keep real-provider acceptance pending until OS authorization finishes;
+  never use credential-free UI fixtures as proof that provider audio works.
+  In versions before the local-file migration, the initial settings snapshot
+  checked credential status for the whole profile catalog. Selecting the private
+  dev preset did not isolate ordinary profiles' Keychain reads. A sampled
+  `FileSecretStore -> Keyring -> SecKeychainFindGenericPassword` wait identified
+  that historical boundary; current snapshots must stay on the local-file path.
+  Record an unfinished upgrade import separately, quit normally, and keep UI-only
+  or offline replay results distinct from live provider acceptance. Repeated
+  frontend Retry cannot cancel an unfinished native authorization read.
 
 ## Before handing off
 

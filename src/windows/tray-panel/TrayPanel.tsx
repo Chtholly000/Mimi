@@ -1,4 +1,7 @@
+import { SettingsHelp } from "../settings/SettingsHelp";
+import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
+import { LanguageSelect } from "../../components/LanguageSelect";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "../../components/Icon";
@@ -6,9 +9,8 @@ import { I18N, providerDisplayName } from "../../lib/i18n";
 import { isTauri } from "../../lib/ipc";
 import {
   activeServiceProfile,
-  effectiveTranslationModeForSettings,
+  credentialStateForTarget,
   sourceLanguagesForSettings,
-  targetLanguagesForSettings,
 } from "../../lib/providerCapabilities";
 import {
   selectSessionErrorMessage,
@@ -16,16 +18,15 @@ import {
   useStore,
 } from "../../lib/store";
 import {
+  SOURCE_LANGUAGE_DISPLAY_NAMES,
   TARGET_LANGUAGE_DISPLAY_NAMES,
-  TRANSLATION_MODE_DISPLAY_NAMES,
   targetLanguageTranslatesAudio,
   type SettingsSnapshot,
   type SourceLanguage,
   type SubtitleAlignment,
 } from "../../lib/types";
-import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
+import { subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import type { SubtitleDisplayMode } from "../../lib/types";
-import { sourceLanguageButtonTitle } from "../overlay/overlayModel";
 import {
   actionErrorMessage,
   deriveTrayPresentation,
@@ -43,9 +44,11 @@ type PendingAction =
   | TraySessionAction
   | "language"
   | "display"
+  | "intermediate"
   | "alignment"
   | "blend"
   | "lock"
+  | "dock"
   | "show"
   | "clear"
   | "settings"
@@ -53,6 +56,7 @@ type PendingAction =
 
 /** Compact cross-platform command center shown from the tray icon. */
 export function TrayPanel() {
+  const { nativeShortcuts } = useDesktopShortcuts();
   // Keep streaming subtitle updates from repainting this hidden native window:
   // each selector returns only the primitive state rendered by the tray.
   const sessionStatusKind = useStore(selectSessionStatusKind);
@@ -76,19 +80,21 @@ export function TrayPanel() {
 
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
+  const operationPending = useRef(false);
   const panelRef = useRef<HTMLElement>(null);
 
   const activeProfile = activeServiceProfile(settings);
   const sourceLanguages = sourceLanguagesForSettings(settings);
-  const chineseIsOriginalOnly =
-    targetLanguagesForSettings(settings).includes("original");
   const presentation = deriveTrayPresentation({
     statusKind: sessionStatusKind,
     isPaused,
-    credentialState: activeProfile?.credentialState,
+    credentialState: credentialStateForTarget(activeProfile, settings.targetLanguage),
     hasSubtitleContent: subtitleHasContent,
   });
   const anyActionPending = pendingAction !== null;
+  const isMacOS =
+    typeof navigator !== "undefined" &&
+    /Macintosh|MacIntel/i.test(navigator.userAgent + " " + navigator.platform);
   const sourcePickerDisabled =
     anyActionPending ||
     !presentation.canChangeSourceLanguage ||
@@ -98,16 +104,26 @@ export function TrayPanel() {
     name: PendingAction,
     operation: () => Promise<void>,
   ) => {
-    if (pendingAction !== null) return;
+    if (operationPending.current) return;
+    operationPending.current = true;
     setPendingAction(name);
     setOperationError(null);
     void operation()
       .catch((error: unknown) => {
         setOperationError(
-          actionErrorMessage(error, I18N.settings.profileActionFailed),
+          name === "quit"
+            ? I18N.tray.quitFailed
+            : name === "dock"
+              ? I18N.settings.dockSaveFailed
+              : name === "intermediate"
+                ? I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles)
+                : actionErrorMessage(error, I18N.settings.profileActionFailed),
         );
       })
-      .finally(() => setPendingAction(null));
+      .finally(() => {
+        operationPending.current = false;
+        setPendingAction(null);
+      });
   };
 
   const runSessionAction = (action: TraySessionAction) => {
@@ -252,27 +268,46 @@ export function TrayPanel() {
             <Icon name="languages" />
           </span>
           <span className="tray-setting-row__copy">
-            <span>{I18N.tray.sourceLanguage}</span>
+            <span>{I18N.tray.sourceLanguage} <SettingsHelp text={I18N.settings.recognitionLanguageHelp} label={I18N.settings.helpLabel} /></span>
             <small>{translationSummary(settings)}</small>
           </span>
           <span className="tray-select-wrap">
-            <Select label={I18N.tray.sourceLanguage} value={settings.sourceLanguage}
+            <LanguageSelect label={I18N.tray.sourceLanguage} value={settings.sourceLanguage}
               disabled={sourcePickerDisabled}
-              options={sourceLanguages.map((language) => ({ value: language, label: sourceLanguageButtonTitle(language, chineseIsOriginalOnly) }))}
+              options={sourceLanguages.map((language) => ({ value: language, label: SOURCE_LANGUAGE_DISPLAY_NAMES[language] }))}
               onChange={(value) => performAction("language", () => switchSourceLanguage(value as SourceLanguage))} />
           </span>
         </div>
 
         <span className="tray-card__divider" />
 
-        <div className="tray-setting-row tray-setting-row--display" title={subtitleDisplayShortcut()}>
-          <span className="tray-setting-row__icon" aria-hidden="true"><Icon name="languages" /></span>
+        <div className="tray-setting-row tray-setting-row--display" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>
+          <span className="tray-setting-row__icon" aria-hidden="true"><Icon name="captions-bubble" /></span>
           <span className="tray-setting-row__copy"><span>{I18N.settings.subtitleDisplay}</span></span>
           <span className="tray-select-wrap">
             <Select label={I18N.settings.subtitleDisplay} value={settings.subtitleDisplayMode}
-              options={SUBTITLE_DISPLAY_OPTIONS} disabled={anyActionPending}
+              options={[
+                { value: "translation", label: I18N.tray.displayTranslation },
+                { value: "bilingual", label: I18N.tray.displayBilingual },
+                { value: "original", label: I18N.tray.displayOriginal },
+              ]} disabled={anyActionPending}
               onChange={(value) => performAction("display", () => saveSettings({ subtitleDisplayMode: value as SubtitleDisplayMode }))} />
           </span>
+        </div>
+        <span className="tray-card__divider" />
+
+        <div className="tray-setting-row tray-setting-row--intermediate">
+          <span className="tray-setting-row__icon" aria-hidden="true"><Icon name="captions-bubble" /></span>
+          <span className="tray-setting-row__copy">
+            <span>{I18N.settings.showIntermediateSubtitles} <SettingsHelp text={I18N.settings.showIntermediateSubtitlesHelp} label={I18N.settings.helpLabel} /></span>
+          </span>
+          <button type="button" role="switch"
+            className={`tray-switch${settings.showIntermediateSubtitles !== false ? " is-checked" : ""}`}
+            aria-checked={settings.showIntermediateSubtitles !== false}
+            aria-label={I18N.settings.showIntermediateSubtitles} disabled={anyActionPending}
+            onClick={() => performAction("intermediate", () => saveSettings({ showIntermediateSubtitles: settings.showIntermediateSubtitles === false }))}>
+            <span aria-hidden="true" />
+          </button>
         </div>
         <span className="tray-card__divider" />
 
@@ -302,7 +337,7 @@ export function TrayPanel() {
           aria-checked={settings.subtitleBlendsWithBackground}
           aria-label={I18N.tray.blendBackground}
           disabled={anyActionPending}
-          className="tray-setting-row tray-setting-row--toggle"
+          className={`tray-setting-row tray-setting-row--toggle${settings.subtitleBlendsWithBackground ? " is-checked" : ""}`}
           onClick={() =>
             performAction("blend", () =>
               saveSettings({
@@ -331,7 +366,7 @@ export function TrayPanel() {
           aria-checked={settings.isOverlayLocked}
           aria-label={I18N.tray.lockPosition}
           disabled={anyActionPending}
-          className="tray-setting-row tray-setting-row--toggle"
+          className={`tray-setting-row tray-setting-row--toggle${settings.isOverlayLocked ? " is-checked" : ""}`}
           onClick={() =>
             performAction("lock", () =>
               setOverlayLocked(!settings.isOverlayLocked),
@@ -348,6 +383,36 @@ export function TrayPanel() {
             <span />
           </span>
         </button>
+
+        {isMacOS && (
+          <>
+            <span className="tray-card__divider" />
+            <button
+              type="button"
+              role="switch"
+              aria-checked={settings.showInDock}
+              aria-label={I18N.settings.showInDock}
+              aria-busy={pendingAction === "dock"}
+              disabled={anyActionPending}
+              className={`tray-setting-row tray-setting-row--toggle${settings.showInDock ? " is-checked" : ""}`}
+              onClick={() =>
+                performAction("dock", () =>
+                  saveSettings({ showInDock: !settings.showInDock }),
+                )
+              }
+            >
+              <span className="tray-setting-row__icon" aria-hidden="true">
+                <Icon name="app-window" />
+              </span>
+              <span className="tray-setting-row__copy">
+                <span>{I18N.settings.showInDock}</span>
+              </span>
+              <span className="tray-switch" aria-hidden="true">
+                <span />
+              </span>
+            </button>
+          </>
+        )}
       </div>
 
       {(presentation.canShowOverlay || presentation.canClearSubtitles) && (
@@ -388,9 +453,11 @@ export function TrayPanel() {
         <button
           type="button"
           disabled={anyActionPending}
+          aria-busy={pendingAction === "quit"}
+          data-action="quit"
           onClick={() => performAction("quit", quit)}
         >
-          {I18N.tray.quit}
+          {pendingAction === "quit" ? I18N.tray.quitting : I18N.tray.quit}
         </button>
       </footer>
     </section>
@@ -573,9 +640,5 @@ function translationSummary(settings: SettingsSnapshot) {
     return I18N.tray.originalOnly;
   }
   const target = TARGET_LANGUAGE_DISPLAY_NAMES[settings.targetLanguage];
-  const mode =
-    TRANSLATION_MODE_DISPLAY_NAMES[
-      effectiveTranslationModeForSettings(settings)
-    ];
-  return `${I18N.settings.translateTo} ${target} · ${mode}`;
+  return `→ ${target}`;
 }

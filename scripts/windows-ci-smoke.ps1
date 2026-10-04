@@ -423,6 +423,35 @@ function Stop-SmokeProcess($TargetProcess) {
     }
 }
 
+function Reset-SmokeFrontendMarkers([string]$Directory) {
+    foreach ($label in @('settings', 'overlay')) {
+        $marker = Join-Path $Directory $label
+        Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $marker) {
+            throw "Could not reset the $label frontend readiness marker."
+        }
+    }
+}
+
+function Wait-SmokeFrontendReady($TargetProcess, [string]$Directory) {
+    $settingsMarker = Join-Path $Directory 'settings'
+    $overlayMarker = Join-Path $Directory 'overlay'
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        if ($TargetProcess.HasExited) {
+            throw "mimi exited before both frontends mounted with code $($TargetProcess.ExitCode)."
+        }
+        if ((Test-Path -LiteralPath $settingsMarker -PathType Leaf) -and
+            (Test-Path -LiteralPath $overlayMarker -PathType Leaf)) {
+            return
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    $settingsReady = Test-Path -LiteralPath $settingsMarker -PathType Leaf
+    $overlayReady = Test-Path -LiteralPath $overlayMarker -PathType Leaf
+    throw "mimi frontends did not mount within 30 seconds (settings=$settingsReady overlay=$overlayReady)."
+}
+
 $resolvedExecutable = (Resolve-Path -LiteralPath $ExecutablePath).Path
 $actualArchitecture = Get-PeArchitecture $resolvedExecutable
 if ($actualArchitecture -ne $ExpectedArchitecture) {
@@ -437,10 +466,12 @@ $previousStartupGateReadyFile = $env:MIMI_UI_TEST_STARTUP_GATE_READY_FILE
 $previousSessionStateFile = $env:MIMI_UI_TEST_SESSION_STATE_FILE
 $previousTrayVisibleFile = $env:MIMI_UI_TEST_TRAY_VISIBLE_FILE
 $previousSettingsActivationFile = $env:MIMI_UI_TEST_SETTINGS_ACTIVATION_FILE
+$previousFrontendReadyDir = $env:MIMI_UI_TEST_FRONTEND_READY_DIR
 $startupGateReadyFile = Join-Path ([IO.Path]::GetTempPath()) "mimi-startup-$([Guid]::NewGuid().ToString('N')).ready"
 $sessionStateFile = Join-Path ([IO.Path]::GetTempPath()) "mimi-session-$([Guid]::NewGuid().ToString('N')).state"
 $trayVisibleFile = Join-Path ([IO.Path]::GetTempPath()) "mimi-tray-$([Guid]::NewGuid().ToString('N')).ready"
 $settingsActivationFile = Join-Path ([IO.Path]::GetTempPath()) "mimi-settings-activation-$([Guid]::NewGuid().ToString('N')).state"
+$frontendReadyDir = Join-Path ([IO.Path]::GetTempPath()) "mimi-frontend-$([Guid]::NewGuid().ToString('N'))"
 $process = $null
 $spoofedProcess = $null
 $spoofedPluginMutex = [IntPtr]::Zero
@@ -455,6 +486,7 @@ try {
     $env:MIMI_UI_TEST_SESSION_STATE_FILE = $sessionStateFile
     $env:MIMI_UI_TEST_TRAY_VISIBLE_FILE = $trayVisibleFile
     $env:MIMI_UI_TEST_SETTINGS_ACTIVATION_FILE = $settingsActivationFile
+    $env:MIMI_UI_TEST_FRONTEND_READY_DIR = $frontendReadyDir
 
     if (@(Get-MatchingMimiProcesses $resolvedExecutable).Count -ne 0) {
         throw 'A matching mimi process was already running before the smoke test.'
@@ -569,6 +601,7 @@ try {
     # exercise the cold-start race instead of waiting for a warm primary.
     $env:MIMI_UI_TEST_STARTUP_GATE_DELAY_MS = '1500'
     $env:MIMI_UI_TEST_STARTUP_GATE_READY_FILE = $startupGateReadyFile
+    Reset-SmokeFrontendMarkers $frontendReadyDir
     $process = Start-Process -FilePath $resolvedExecutable -PassThru
 
     $gateReadyDeadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -609,6 +642,9 @@ try {
     if ($process.WaitForExit($StartupSeconds * 1000)) {
         throw "mimi exited during the $StartupSeconds-second startup smoke test with code $($process.ExitCode)."
     }
+    # Native window titles and backend listening do not prove that the packaged
+    # lazy imports, IPC capabilities and React surfaces mounted successfully.
+    Wait-SmokeFrontendReady $process $frontendReadyDir
 
     $settingsWindow = [IntPtr]::Zero
     $settingsDeadline = [DateTime]::UtcNow.AddSeconds(5)
@@ -751,7 +787,62 @@ try {
         throw "Expected the original mimi process $($process.Id) to be the only matching instance."
     }
 
-    Write-Output "mimi $actualArchitecture UI-test process passed cold-start, verified-listener handoff, tray/session retention, minimized/tray-hidden activation, and $StartupSeconds-second health checks."
+    # Only restart the exact-path synthetic primary after all native handoff
+    # checks. Clear one-shot markers: secondary handoffs reuse their WebViews,
+    # but a new process must prove its own frontend mount and automatic start.
+    Stop-SmokeProcess $process
+    $restartExitDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    while (@(Get-MatchingMimiProcesses $resolvedExecutable).Count -ne 0 -and [DateTime]::UtcNow -lt $restartExitDeadline) {
+        Start-Sleep -Milliseconds 100
+    }
+    if (@(Get-MatchingMimiProcesses $resolvedExecutable).Count -ne 0) {
+        throw 'The original smoke primary did not exit before the restart check.'
+    }
+    Reset-SmokeFrontendMarkers $frontendReadyDir
+    Remove-Item -LiteralPath $sessionStateFile -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $sessionStateFile) {
+        throw 'Could not reset the session marker before the automatic-start restart.'
+    }
+    $process = Start-Process -FilePath $resolvedExecutable -PassThru
+    Wait-SmokeFrontendReady $process $frontendReadyDir
+    $restartSessionDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    $restartSessionState = $null
+    while ($restartSessionState -ne 'listening' -and [DateTime]::UtcNow -lt $restartSessionDeadline) {
+        if ($process.HasExited) {
+            throw "The restarted mimi process exited before automatic start with code $($process.ExitCode)."
+        }
+        if (Test-Path -LiteralPath $sessionStateFile -PathType Leaf) {
+            try {
+                $restartSessionState = [IO.File]::ReadAllText($sessionStateFile).Trim()
+            }
+            catch [IO.IOException] {
+                # The native publisher may still be writing this tiny marker.
+                $restartSessionState = $null
+            }
+        }
+        if ($restartSessionState -ne 'listening') {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    if ($restartSessionState -ne 'listening') {
+        throw "The restarted session did not reach fresh automatic-start listening within 30 seconds (last state: $restartSessionState)."
+    }
+    $restartedSettingsWindow = [MimiWindowSmoke]::FindUniqueWindow(
+        [uint32]$process.Id,
+        'mimi UI test settings'
+    )
+    if ($restartedSettingsWindow -eq [IntPtr]::Zero -or -not [MimiWindowSmoke]::IsWindowVisible($restartedSettingsWindow)) {
+        throw 'The restarted process did not expose exactly one visible UI-test settings window.'
+    }
+    $matchingProcesses = @(Get-MatchingMimiProcesses $resolvedExecutable)
+    if ($matchingProcesses.Count -ne 1 -or $matchingProcesses[0].Id -ne $process.Id) {
+        throw 'The restarted smoke primary was not the only matching mimi process.'
+    }
+    if ($process.WaitForExit($StartupSeconds * 1000)) {
+        throw "The restarted mimi process exited during its $StartupSeconds-second health check with code $($process.ExitCode)."
+    }
+
+    Write-Output "mimi $actualArchitecture UI-test process passed cold-start, verified-listener handoff, tray/session retention, minimized/tray-hidden activation, fresh frontend mount/restart, and $StartupSeconds-second health checks."
 }
 finally {
     try {
@@ -796,6 +887,7 @@ finally {
         Remove-Item -LiteralPath $sessionStateFile -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $trayVisibleFile -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $settingsActivationFile -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $frontendReadyDir -Recurse -Force -ErrorAction SilentlyContinue
         $env:MIMI_UI_TEST = $previousUiTest
         $env:MIMI_UI_TEST_STANDARD_OVERLAY = $previousStandardOverlay
         $env:MIMI_AUTO_START = $previousAutoStart
@@ -804,5 +896,6 @@ finally {
         $env:MIMI_UI_TEST_SESSION_STATE_FILE = $previousSessionStateFile
         $env:MIMI_UI_TEST_TRAY_VISIBLE_FILE = $previousTrayVisibleFile
         $env:MIMI_UI_TEST_SETTINGS_ACTIVATION_FILE = $previousSettingsActivationFile
+        $env:MIMI_UI_TEST_FRONTEND_READY_DIR = $previousFrontendReadyDir
     }
 }

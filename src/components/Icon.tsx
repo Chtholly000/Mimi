@@ -14,12 +14,17 @@ import {
   ChevronRight,
   ChevronUp,
   Cloud,
+  CircleHelp,
+  Eye,
+  EyeOff,
+  ClipboardPaste,
   Eraser,
   Download,
   Key,
   Languages,
   LockKeyhole,
   LockKeyholeOpen,
+  Mic,
   Pause,
   Play,
   Plus,
@@ -28,6 +33,7 @@ import {
   Sparkles,
   Square,
   Trash2,
+  Volume2,
   Waves,
   type LucideIcon,
 } from "lucide-react";
@@ -59,6 +65,7 @@ export type IconName =
   | "exclamation-triangle"
   | "app-window"
   | "cloud"
+  | "help"
   | "languages"
   | "lock"
   | "unlock"
@@ -66,6 +73,11 @@ export type IconName =
   | "shield-check"
   | "trash"
   | "waves"
+  | "microphone"
+  | "speaker"
+  | "eye"
+  | "eye-off"
+  | "clipboard"
   | "download";
 
 const ICONS: Record<IconName, LucideIcon> = {
@@ -90,6 +102,7 @@ const ICONS: Record<IconName, LucideIcon> = {
   "exclamation-triangle": AlertTriangle,
   "app-window": AppWindow,
   cloud: Cloud,
+  help: CircleHelp,
   languages: Languages,
   lock: LockKeyhole,
   unlock: LockKeyholeOpen,
@@ -97,6 +110,11 @@ const ICONS: Record<IconName, LucideIcon> = {
   "shield-check": ShieldCheck,
   trash: Trash2,
   waves: Waves,
+  microphone: Mic,
+  speaker: Volume2,
+  eye: Eye,
+  "eye-off": EyeOff,
+  clipboard: ClipboardPaste,
   download: Download,
 };
 

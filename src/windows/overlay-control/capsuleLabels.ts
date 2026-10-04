@@ -1,0 +1,21 @@
+import { effectiveUiLanguage } from "../../lib/i18n";
+import { sourceLanguageDisplayName, targetLanguageDisplayName, type SettingsSnapshot } from "../../lib/types";
+
+const labels = {
+  en: { auto: "Auto", zh: "Chinese", en: "English", ja: "Japanese", ko: "Korean", original: "Original", error: "Error", idle: "Idle", paused: "Paused", translating: "Translating", connecting: "Connecting", stopping: "Stopping" },
+  zh: { auto: "自动", zh: "中文", en: "英语", ja: "日语", ko: "韩语", original: "原文", error: "错误", idle: "待机", paused: "暂停", translating: "翻译中", connecting: "连接中", stopping: "停止中" },
+  ja: { auto: "自動", zh: "中国語", en: "英語", ja: "日本語", ko: "韓国語", original: "原文", error: "エラー", idle: "待機", paused: "一時停止", translating: "翻訳中", connecting: "接続中", stopping: "終了中" },
+};
+
+export function capsuleLabels(settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage">, phase: "error" | "idle" | "paused" | "translating" | "connecting" | "stopping" | null, language = effectiveUiLanguage()) {
+  const text = labels[language];
+  return {
+    source: settings.sourceLanguage in text
+      ? text[settings.sourceLanguage as keyof typeof text]
+      : sourceLanguageDisplayName(settings.sourceLanguage, language),
+    target: settings.targetLanguage in text
+      ? text[settings.targetLanguage as keyof typeof text]
+      : targetLanguageDisplayName(settings.targetLanguage, language),
+    phase: phase ? text[phase] : null,
+  };
+}

@@ -1,0 +1,42 @@
+.provider-icon {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  vertical-align: middle;
+}
+
+.provider-icon__image {
+  display: block;
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
+.settings-console {
+  --provider-light-display: none;
+  --provider-dark-display: block;
+  --provider-backing-background: #fff;
+}
+
+.settings-console--light {
+  --provider-light-display: block;
+  --provider-dark-display: none;
+  --provider-backing-background: transparent;
+}
+
+.provider-icon__image--light {
+  display: var(--provider-light-display, block);
+}
+
+.provider-icon__image--dark {
+  display: var(--provider-dark-display, none);
+}
+
+.provider-icon__generic {
+  color: inherit;
+}
+
+.provider-icon__image--deeplx {
+  background: var(--provider-backing-background, transparent);
+  border-radius: 6px;
+}

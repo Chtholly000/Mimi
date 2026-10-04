@@ -6,13 +6,18 @@
 //! closures dispatched to the main thread; completions that fire on arbitrary
 //! queues re-dispatch there before touching those objects.
 
+use crate::audio::applications::{
+    sort_applications, ApplicationIconBudget, ApplicationSnapshot, AudioApplication,
+    MAX_APPLICATION_ICON_PNG_BYTES,
+};
+use crate::audio::macos_block_buffer;
 use crate::audio::send_pipeline::{AudioIngress, AudioIngressError};
 use crate::audio::{
     AudioCaptureFormat, CaptureFailureSender, SystemAudioCaptureError, SystemAudioCaptureFailure,
 };
 use crate::core::pcm16::PCM16Encoder;
+use crate::core::system_audio_target::SystemAudioTarget;
 use crate::pipeline_log;
-use core_media::block_buffer::{CMBlockBufferGetDataLength, CMBlockBufferGetDataPointer};
 use core_media::format_description::CMAudioFormatDescriptionGetStreamBasicDescription;
 use core_media::sample_buffer::{
     CMSampleBufferGetDataBuffer, CMSampleBufferGetFormatDescription, CMSampleBufferRef,
@@ -23,12 +28,14 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObject, ProtocolObject};
 use objc2::{define_class, msg_send, AnyThread, DefinedClass};
 use objc2_core_audio_types::{
-    kAudioFormatFlagIsFloat, kAudioFormatFlagIsSignedInteger, AudioStreamBasicDescription,
+    kAudioFormatFlagIsFloat, kAudioFormatFlagIsNonInterleaved, kAudioFormatFlagIsSignedInteger,
+    AudioStreamBasicDescription,
 };
 use objc2_foundation::{NSArray, NSObjectProtocol};
 use rubato::audioadapter_buffers::direct::SequentialSlice;
 use rubato::Resampler;
-use screen_capture_kit::shareable_content::{SCDisplay, SCRunningApplication, SCShareableContent};
+use screen_capture_kit::error::{SCStreamErrorCode, SCStreamErrorDomain};
+use screen_capture_kit::shareable_content::{SCDisplay, SCShareableContent};
 use screen_capture_kit::stream::{
     SCContentFilter, SCStream, SCStreamConfiguration, SCStreamDelegate, SCStreamOutput,
     SCStreamOutputType,
@@ -36,7 +43,6 @@ use screen_capture_kit::stream::{
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::panic::AssertUnwindSafe;
-use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -164,11 +170,8 @@ define_class!(
             error: &objc2_foundation::NSError,
         ) {
             let state = unsafe { &*(self.ivars().state_ptr as *const AudioHandlerState) };
-            let _ = error;
             if state.generation.is_current(state.generation_token) {
-                state
-                    .failure_tx
-                    .report(SystemAudioCaptureFailure::NativeStopped);
+                state.failure_tx.report(classify_native_stop_error(error));
             }
         }
     }
@@ -187,6 +190,7 @@ thread_local! {
         const { RefCell::new(None) };
     static MAIN_STATE: RefCell<Option<Box<AudioHandlerState>>> = const { RefCell::new(None) };
     static MAIN_GENERATION: Cell<Option<u64>> = const { Cell::new(None) };
+    static MAIN_TARGET_APPS: RefCell<Vec<Retained<objc2_app_kit::NSRunningApplication>>> = const { RefCell::new(Vec::new()) };
 }
 
 const CAPTURE_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -381,13 +385,63 @@ impl MacSystemAudioCapture {
         }
     }
 
-    /// Starts capture and resolves only after ScreenCaptureKit's asynchronous
-    /// start completion confirms that the native stream is running.
+    /// AppKit lists application metadata without requesting screen contents or
+    /// recording authorization. Only starting capture may access ScreenCaptureKit.
+    pub async fn audio_applications(&self) -> Result<ApplicationSnapshot, SystemAudioCaptureError> {
+        let (tx, rx) = oneshot::channel();
+        (self.dispatcher)(Box::new(move || {
+            let result = objc2::exception::catch(AssertUnwindSafe(|| {
+                let own = own_bundle_identifier();
+                let mut running_apps = std::collections::HashMap::new();
+                let mut applications = objc2_app_kit::NSWorkspace::sharedWorkspace()
+                    .runningApplications()
+                    .iter()
+                    .filter_map(|app| {
+                        let application = picker_application(
+                            app.isTerminated(),
+                            app.activationPolicy()
+                                == objc2_app_kit::NSApplicationActivationPolicy::Regular,
+                            app.bundleIdentifier().map(|id| id.to_string()),
+                            app.localizedName().map(|name| name.to_string()),
+                            own.as_deref(),
+                        )?;
+                        running_apps.entry(application.id.clone()).or_insert(app);
+                        Some(application)
+                    })
+                    .collect();
+                sort_applications(&mut applications);
+                let mut icon_budget = ApplicationIconBudget::default();
+                for application in &mut applications {
+                    application.icon_data_url = running_apps
+                        .get(&application.id)
+                        .and_then(|app| {
+                            objc2::exception::catch(AssertUnwindSafe(|| app.icon()))
+                                .ok()
+                                .flatten()
+                        })
+                        .and_then(|image| picker_icon_png(&image))
+                        .and_then(|png| icon_budget.encode_png(&png));
+                }
+                ApplicationSnapshot {
+                    supported: true,
+                    applications,
+                }
+            }))
+            .map_err(|_| SystemAudioCaptureError::ApplicationListFailed);
+            let _ = tx.send(result);
+        }));
+        tokio::time::timeout(CAPTURE_START_TIMEOUT, rx)
+            .await
+            .map_err(|_| SystemAudioCaptureError::StartTimedOut)?
+            .map_err(|_| SystemAudioCaptureError::ApplicationListFailed)?
+    }
+
     pub async fn start(
         &self,
         audio_ingress: AudioIngress,
         failure_tx: CaptureFailureSender,
         format: AudioCaptureFormat,
+        target: SystemAudioTarget,
     ) -> Result<(), SystemAudioCaptureError> {
         if self.started.swap(true, Ordering::SeqCst) {
             return Err(SystemAudioCaptureError::AlreadyRunning);
@@ -408,6 +462,8 @@ impl MacSystemAudioCapture {
             return Err(SystemAudioCaptureError::StartCancelled);
         }
 
+        let application_target = target.application_id().is_some();
+        let monitor_failure = failure_tx.clone();
         // Phase 1 (main thread): ask ScreenCaptureKit for shareable content.
         let dispatcher = Arc::clone(&self.dispatcher);
         let phase2_dispatcher = Arc::clone(&self.dispatcher);
@@ -450,6 +506,7 @@ impl MacSystemAudioCapture {
                         };
                         let ptr = MainThreadPtr(Box::into_raw(Box::new(content)) as *mut ());
                         let audio_ingress = audio_ingress.clone();
+                        let target = target.clone();
                         let failure_tx = failure_tx.clone();
                         let dispatcher = Arc::clone(&phase2_dispatcher);
                         let barrier = barrier_for_callback.clone();
@@ -474,6 +531,7 @@ impl MacSystemAudioCapture {
                                         generation_token,
                                         pending_teardown,
                                         start_barrier: barrier.clone(),
+                                        target,
                                     },
                                 )
                             }));
@@ -504,6 +562,37 @@ impl MacSystemAudioCapture {
         if result.is_err() {
             self.finish_failed_start(generation_token).await;
         }
+        if result.is_ok() && application_target {
+            let generation = self.generation.clone();
+            let dispatcher = Arc::clone(&self.dispatcher);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    if !generation.is_current(generation_token) || monitor_failure.has_reported() {
+                        break;
+                    }
+                    let generation = generation.clone();
+                    let failure = monitor_failure.clone();
+                    let (checked_tx, checked_rx) = oneshot::channel();
+                    dispatcher(Box::new(move || {
+                        if MAIN_GENERATION.get() == Some(generation_token)
+                            && generation.is_current(generation_token)
+                            && MAIN_TARGET_APPS
+                                .with(|apps| apps.borrow().iter().all(|app| app.isTerminated()))
+                        {
+                            failure.report(SystemAudioCaptureFailure::ApplicationUnavailable);
+                        }
+                        let _ = checked_tx.send(());
+                    }));
+                    if tokio::time::timeout(Duration::from_secs(2), checked_rx)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
         result
     }
 
@@ -516,16 +605,30 @@ impl MacSystemAudioCapture {
         self.teardown_generation(generation_token).await;
     }
 
+    /// Source changes must wait for actual native teardown, not just the
+    /// bounded stop acknowledgement. Timeouts keep the new source closed.
+    pub async fn wait_until_idle(&self) -> Result<(), SystemAudioCaptureError> {
+        tokio::time::timeout(
+            CAPTURE_STOP_TIMEOUT,
+            self.pending_teardown.wait_until_clear(),
+        )
+        .await
+        .map_err(|_| SystemAudioCaptureError::PreviousCaptureStopping)
+    }
+
     async fn teardown_generation(&self, generation_token: u64) {
         let (done_tx, done_rx) = oneshot::channel::<()>();
         let dispatcher = Arc::clone(&self.dispatcher);
-        let pending_teardown = self.pending_teardown.clone();
+        // Reserve before dispatch: a busy main thread must not leave an idle
+        // gap where another source opens while this SCStream is still live.
+        let teardown_guard = self.pending_teardown.begin();
         dispatcher(Box::new(move || {
             if MAIN_GENERATION.get() != Some(generation_token) {
                 let _ = done_tx.send(());
                 return;
             }
             MAIN_GENERATION.set(None);
+            MAIN_TARGET_APPS.with(|apps| apps.borrow_mut().clear());
             let stream = MAIN_STREAM.take();
             let state = MAIN_STATE.take();
             let handler = MAIN_HANDLER.take();
@@ -535,7 +638,6 @@ impl MacSystemAudioCapture {
                 let _ = done_tx.send(());
                 return;
             };
-            let teardown_guard = pending_teardown.begin();
             // ScreenCaptureKit requires the stream and its output to stay
             // retained until the stop completion fires. Releasing them right
             // after calling stop_capture can leave the capture session
@@ -597,6 +699,7 @@ struct CaptureStartRequest {
     generation_token: u64,
     pending_teardown: PendingTeardown,
     start_barrier: CaptureStartBarrier,
+    target: SystemAudioTarget,
 }
 
 fn start_capture_on_main(
@@ -611,6 +714,7 @@ fn start_capture_on_main(
         generation_token,
         pending_teardown,
         start_barrier,
+        target,
     } = request;
     if !generation.is_current(generation_token) {
         return Err(SystemAudioCaptureError::StartCancelled);
@@ -637,34 +741,67 @@ fn start_capture_on_main(
         return Err(SystemAudioCaptureError::NoDisplay);
     };
 
-    // Exclude this app from the captured audio.
     let own_bundle_id = own_bundle_identifier();
     let applications = content.applications();
-    let mut excluded: Vec<Retained<SCRunningApplication>> = Vec::new();
-    for index in 0..applications.len() {
-        let app = applications.objectAtIndex(index);
-        if own_bundle_id
-            .as_ref()
-            .is_some_and(|own| app.bundle_identifier().to_string() == *own)
-        {
-            excluded.push(app);
+    let mut selected = Vec::new();
+    for app in applications.iter() {
+        let bundle = app.bundle_identifier().to_string();
+        let own = own_bundle_id.as_ref().is_some_and(|own| bundle == *own);
+        if match target.application_id() {
+            Some(id) => !own && bundle == id,
+            None => own,
+        } {
+            selected.push(app);
         }
     }
-    let excluded = NSArray::from_retained_slice(&excluded);
+    if target.application_id().is_some() && selected.is_empty() {
+        return Err(SystemAudioCaptureError::ApplicationUnavailable);
+    }
+    let target_apps: Vec<_> = if target.application_id().is_some() {
+        selected
+            .iter()
+            .filter_map(|app| {
+                objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(
+                    app.process_id(),
+                )
+            })
+            .filter(|app| {
+                !app.isTerminated()
+                    && app.bundleIdentifier().is_some_and(|bundle| {
+                        Some(bundle.to_string().as_str()) == target.application_id()
+                    })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if target.application_id().is_some() && target_apps.is_empty() {
+        return Err(SystemAudioCaptureError::ApplicationUnavailable);
+    }
+    let selected = NSArray::from_retained_slice(&selected);
     let no_windows = NSArray::new();
-    let filter = SCContentFilter::init_with_display_exclude_applications(
-        SCContentFilter::alloc(),
-        &display,
-        &excluded,
-        &no_windows,
-    );
+    let filter = if target.application_id().is_some() {
+        SCContentFilter::init_with_display_include_applications(
+            SCContentFilter::alloc(),
+            &display,
+            &selected,
+            &no_windows,
+        )
+    } else {
+        SCContentFilter::init_with_display_exclude_applications(
+            SCContentFilter::alloc(),
+            &display,
+            &selected,
+            &no_windows,
+        )
+    };
     pipeline_log!("system audio capture filter built");
 
     // Audio-only stream configuration at the provider rate, own audio excluded.
     let configuration = SCStreamConfiguration::new();
     configuration.set_captures_audio(true);
     configuration.set_excludes_current_process_audio(true);
-    configuration.set_sample_rate(format.sample_rate_hz as f64);
+    set_capture_sample_rate(&configuration, format.sample_rate_hz);
     configuration.set_channel_count(1);
     configuration.set_width(2);
     configuration.set_height(2);
@@ -734,11 +871,13 @@ fn start_capture_on_main(
         return Err(SystemAudioCaptureError::StartCancelled);
     }
     MAIN_GENERATION.set(Some(generation_token));
+    MAIN_TARGET_APPS.with(|apps| *apps.borrow_mut() = target_apps);
     MAIN_STREAM.set(Some(stream));
     MAIN_HANDLER.set(Some(handler));
     MAIN_STATE.set(Some(state));
     if !generation.is_current(generation_token) {
         MAIN_GENERATION.set(None);
+        MAIN_TARGET_APPS.with(|apps| apps.borrow_mut().clear());
         let stream = MAIN_STREAM
             .take()
             .expect("capture stream was just installed");
@@ -749,6 +888,12 @@ fn start_capture_on_main(
     }
     start_barrier.did_install();
     Ok(())
+}
+
+/// The crate binds this property as f64, but ScreenCaptureKit expects NSInteger.
+fn set_capture_sample_rate(configuration: &SCStreamConfiguration, sample_rate_hz: u32) {
+    // SAFETY: The native setter takes NSInteger, represented by isize on macOS.
+    let _: () = unsafe { msg_send![configuration, setSampleRate: sample_rate_hz as isize] };
 }
 
 /// Stops a stream that lost its generation race before it could become the
@@ -776,13 +921,96 @@ fn stop_uninstalled_capture(
     });
 }
 
-const SC_STREAM_ERROR_USER_DECLINED: isize = -3801;
+fn picker_application(
+    terminated: bool,
+    regular: bool,
+    id: Option<String>,
+    name: Option<String>,
+    own: Option<&str>,
+) -> Option<AudioApplication> {
+    if terminated || !regular {
+        return None;
+    }
+    let (id, name) = (id?, name?);
+    let target = SystemAudioTarget::Application { id, name };
+    if !target.validate() || target.application_id() == own {
+        return None;
+    }
+    let SystemAudioTarget::Application { id, name } = target else {
+        unreachable!()
+    };
+    Some(AudioApplication {
+        id,
+        name,
+        icon_data_url: None,
+    })
+}
+
+/// Render an existing AppKit icon into a fixed-size bitmap. This does not read
+/// windows, enumerate screen contents, start capture or request a new permission.
+/// Runtime callers execute on the main thread. Failures leave a text-only choice.
+fn picker_icon_png(image: &objc2_app_kit::NSImage) -> Option<Vec<u8>> {
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace,
+        NSGraphicsContext,
+    };
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize};
+    const EDGE: isize = 32;
+    let previous_context = NSGraphicsContext::currentContext();
+    let result = objc2::exception::catch(AssertUnwindSafe(|| {
+        // SAFETY: Null planes let AppKit own one 32x32 RGBA buffer with an
+        // explicit 128-byte row. No caller-owned memory is retained by AppKit.
+        let bitmap = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                NSBitmapImageRep::alloc(), std::ptr::null_mut(), EDGE, EDGE, 8, 4,
+                true, false, NSDeviceRGBColorSpace, EDGE * 4, 32,
+            )
+        }?;
+        let pixels = bitmap.bitmapData();
+        if pixels.is_null() || bitmap.bytesPerRow() != EDGE * 4 {
+            return None;
+        }
+        // SAFETY: The bitmap owns this exact RGBA allocation. Clear alpha so
+        // transparent padding never includes uninitialized bitmap bytes.
+        unsafe { std::ptr::write_bytes(pixels, 0, (EDGE * EDGE * 4) as usize) };
+        let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)?;
+        NSGraphicsContext::setCurrentContext(Some(&context));
+        image.drawInRect_fromRect_operation_fraction(
+            NSRect::new(NSPoint::ZERO, NSSize::new(EDGE as f64, EDGE as f64)),
+            NSRect::ZERO, NSCompositingOperation::Copy, 1.0,
+        );
+        // SAFETY: An empty property dictionary supplies no incorrectly typed
+        // codec options. The newly rendered representation contains no source metadata.
+        let data = unsafe {
+            bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+        }?;
+        (data.len() <= MAX_APPLICATION_ICON_PNG_BYTES).then(|| data.to_vec())
+    })).ok().flatten();
+    // Restore even after an Objective-C drawing/encoding exception. A missing
+    // app icon must not disturb the graphics context used by the next UI draw.
+    NSGraphicsContext::setCurrentContext(previous_context.as_deref());
+    result
+}
+
+fn native_stream_error_code(error: &objc2_foundation::NSError) -> Option<SCStreamErrorCode> {
+    // Numeric NSError codes are scoped to their domain. An unrelated -3801
+    // must not be presented as a recording permission failure.
+    (&*error.domain() == unsafe { SCStreamErrorDomain }).then(|| SCStreamErrorCode(error.code()))
+}
 
 fn classify_native_start_error(error: &objc2_foundation::NSError) -> SystemAudioCaptureError {
-    if error.code() == SC_STREAM_ERROR_USER_DECLINED {
-        SystemAudioCaptureError::PermissionDenied
-    } else {
-        SystemAudioCaptureError::NativeStartFailed
+    match native_stream_error_code(error) {
+        Some(SCStreamErrorCode::UserDeclined) => SystemAudioCaptureError::PermissionDenied,
+        Some(SCStreamErrorCode::UserStopped) => SystemAudioCaptureError::UserStopped,
+        _ => SystemAudioCaptureError::NativeStartFailed,
+    }
+}
+
+fn classify_native_stop_error(error: &objc2_foundation::NSError) -> SystemAudioCaptureFailure {
+    match native_stream_error_code(error) {
+        Some(SCStreamErrorCode::UserDeclined) => SystemAudioCaptureFailure::PermissionDenied,
+        Some(SCStreamErrorCode::UserStopped) => SystemAudioCaptureFailure::UserStopped,
+        _ => SystemAudioCaptureFailure::NativeStopped,
     }
 }
 
@@ -805,55 +1033,49 @@ fn capture_to_pcm16(
         if block_buffer.is_null() {
             return Ok(None);
         }
-        let mut length_at_offset: usize = 0;
-        let mut total_length: usize = 0;
-        let mut data_ptr: *mut c_void = null_mut();
-        let status = CMBlockBufferGetDataPointer(
-            block_buffer,
-            0,
-            &mut length_at_offset,
-            &mut total_length,
-            (&mut data_ptr) as *mut *mut c_void,
-        );
-        if status != 0 || data_ptr.is_null() || length_at_offset == 0 {
-            let _ = CMBlockBufferGetDataLength(block_buffer);
-            return Ok(None);
-        }
-
-        let format_description = CMSampleBufferGetFormatDescription(sample_buffer);
-        if format_description.is_null() {
-            return Err(SystemAudioCaptureError::UnsupportedAudioFormat);
-        }
-        let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format_description);
-        if asbd.is_null() {
-            return Err(SystemAudioCaptureError::UnsupportedAudioFormat);
-        }
-        let asbd = &*asbd;
-        let bytes = std::slice::from_raw_parts(data_ptr as *const u8, length_at_offset);
-
-        // Log the stream format once per format change.
-        let signature = (
-            asbd.mBitsPerChannel,
-            asbd.mChannelsPerFrame,
-            asbd.mFormatFlags as u32,
-        );
-        let mut last_format = FORMAT_SIGNATURE.lock().unwrap();
-        if *last_format != Some(signature) {
-            *last_format = Some(signature);
-            let nonzero = bytes.iter().filter(|byte| **byte != 0).count();
-            pipeline_log!(
-                "capture format bytes={} asbd={}Hz {}ch {}bit flags={:#x} nonzero={}/{}",
-                bytes.len(),
-                asbd.mSampleRate as u64,
-                asbd.mChannelsPerFrame,
+        // The sample callback keeps this CoreMedia buffer and its format alive.
+        // Decode its complete logical byte range, even across native blocks.
+        // Empty buffers must return before requiring a format description.
+        let Some(decoded) = macos_block_buffer::with_bytes(block_buffer, |bytes| {
+            let format_description = CMSampleBufferGetFormatDescription(sample_buffer);
+            if format_description.is_null() {
+                return Err(SystemAudioCaptureError::UnsupportedAudioFormat);
+            }
+            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format_description);
+            if asbd.is_null() {
+                return Err(SystemAudioCaptureError::UnsupportedAudioFormat);
+            }
+            let asbd = &*asbd;
+            // Log the stream format once per format change.
+            let signature = (
                 asbd.mBitsPerChannel,
-                asbd.mFormatFlags,
-                nonzero,
-                bytes.len()
+                asbd.mChannelsPerFrame,
+                asbd.mFormatFlags as u32,
             );
-        }
+            let mut last_format = FORMAT_SIGNATURE.lock().unwrap();
+            if *last_format != Some(signature) {
+                *last_format = Some(signature);
+                let nonzero = bytes.iter().filter(|byte| **byte != 0).count();
+                pipeline_log!(
+                    "capture format bytes={} asbd={}Hz {}ch {}bit flags={:#x} nonzero={}/{}",
+                    bytes.len(),
+                    asbd.mSampleRate as u64,
+                    asbd.mChannelsPerFrame,
+                    asbd.mBitsPerChannel,
+                    asbd.mFormatFlags,
+                    nonzero,
+                    bytes.len()
+                );
+            }
 
-        (decode_to_f32_mono(bytes, asbd)?, asbd.mSampleRate)
+            decode_to_f32_mono(bytes, asbd).map(|samples| (samples, asbd.mSampleRate))
+        })
+        .map_err(|_| SystemAudioCaptureError::AudioProcessingFailed)?
+        else {
+            return Ok(None);
+        };
+
+        decoded?
     };
 
     if samples.is_empty() {
@@ -922,7 +1144,7 @@ fn decode_to_f32_mono(
     let channels = asbd.mChannelsPerFrame.max(1) as usize;
     let is_float = asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0;
     let is_signed_int = asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger != 0;
-    let is_planar = asbd.mFormatFlags & (1 << 6) != 0; // kAudioFormatFlagIsNonInterleaved
+    let is_planar = asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0;
 
     if is_planar {
         // Planar layout: channel data is contiguous per channel.
@@ -1047,7 +1269,7 @@ mod resampler_tests {
         AudioStreamBasicDescription {
             mSampleRate: 48_000.0,
             mFormatID: 0x6c70636d, // kAudioFormatLinearPCM
-            mFormatFlags: 0x29,    // float | packed | native-endian
+            mFormatFlags: 0x29,    // float | packed | non-interleaved
             mBytesPerPacket: 4,
             mFramesPerPacket: 1,
             mBytesPerFrame: 4,
@@ -1077,6 +1299,8 @@ mod resampler_tests {
     fn decode_handles_stereo_by_averaging_channels() {
         let asbd = AudioStreamBasicDescription {
             mChannelsPerFrame: 2,
+            mFormatFlags: kAudioFormatFlagIsFloat
+                | objc2_core_audio_types::kAudioFormatFlagIsPacked,
             ..asbd_48k_1ch_f32()
         };
         // Interleaved: L=0.5 R=0.5 -> mono 0.5; L=-1 R=1 -> mono 0.
@@ -1087,6 +1311,57 @@ mod resampler_tests {
         assert!(mono[1].abs() < 1e-6);
     }
 
+    #[test]
+    fn planar_stereo_f32_preserves_frame_order() {
+        let asbd = AudioStreamBasicDescription {
+            mChannelsPerFrame: 2,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsNonInterleaved,
+            ..asbd_48k_1ch_f32()
+        };
+        // L and R are separate planes; matching frames always average to 0.5.
+        let bytes = f32_bytes(&[0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25]);
+        let mono = decode_to_f32_mono(&bytes, &asbd).unwrap();
+        assert_eq!(mono, [0.5; 4]);
+    }
+
+    #[test]
+    fn planar_signed_integer_channels_keep_all_frames_in_order() {
+        for bits in [16, 32] {
+            let bytes = if bits == 16 {
+                [16_384i16, -16_384, 0, 0]
+                    .into_iter()
+                    .flat_map(i16::to_le_bytes)
+                    .collect::<Vec<_>>()
+            } else {
+                [1_073_741_824i32, -1_073_741_824, 0, 0]
+                    .into_iter()
+                    .flat_map(i32::to_le_bytes)
+                    .collect::<Vec<_>>()
+            };
+            let asbd = AudioStreamBasicDescription {
+                mChannelsPerFrame: 2,
+                mBitsPerChannel: bits,
+                mBytesPerFrame: bits / 8,
+                mBytesPerPacket: bits / 8,
+                mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsNonInterleaved,
+                ..asbd_48k_1ch_f32()
+            };
+            assert_eq!(decode_to_f32_mono(&bytes, &asbd).unwrap(), [0.25, -0.25]);
+        }
+    }
+
+    #[test]
+    fn nonmixable_flag_is_not_a_planar_layout_flag() {
+        let asbd = AudioStreamBasicDescription {
+            mChannelsPerFrame: 2,
+            mFormatFlags: kAudioFormatFlagIsFloat
+                | objc2_core_audio_types::kAudioFormatFlagIsNonMixable,
+            ..asbd_48k_1ch_f32()
+        };
+        let bytes = f32_bytes(&[0.0, 0.25, 0.5, 0.75]);
+        assert_eq!(decode_to_f32_mono(&bytes, &asbd).unwrap(), [0.125, 0.625]);
+    }
+
     use super::*;
     use rubato::audioadapter::Adapter;
     use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
@@ -1095,6 +1370,105 @@ mod resampler_tests {
 
     fn peak(data: &[f32]) -> f32 {
         data.iter().fold(0.0f32, |acc, s| acc.max(s.abs()))
+    }
+
+    #[test]
+    fn application_picker_keeps_regular_apps_without_window_or_capture_metadata() {
+        let own = Some("app.yuxino.mimi");
+        let app = |terminated, regular, id: Option<&str>, name: Option<&str>| {
+            picker_application(
+                terminated,
+                regular,
+                id.map(str::to_owned),
+                name.map(str::to_owned),
+                own,
+            )
+        };
+        let player = app(false, true, Some("test.player"), Some("Player")).unwrap();
+        assert_eq!(player.id, "test.player");
+        assert_eq!(player.name, "Player");
+        // Windowless and hidden regular applications remain selectable; no
+        // screen/window metadata or recording grant enters this decision.
+        assert!(app(true, true, Some("test.player"), Some("Player")).is_none());
+        assert!(app(false, false, Some("test.helper"), Some("Helper")).is_none());
+        assert!(app(false, true, own, Some("Mimi")).is_none());
+        assert!(app(false, true, None, Some("Player")).is_none());
+        assert!(app(false, true, Some("test.player"), None).is_none());
+        assert!(app(false, true, Some("test.player"), Some(" ")).is_none());
+        assert!(app(false, true, Some("test.player\n"), Some("Player")).is_none());
+    }
+
+    #[test]
+    fn application_picker_icon_is_a_small_png_and_restores_the_graphics_context() {
+        use objc2_app_kit::{NSGraphicsContext, NSImage};
+        let data =
+            objc2_foundation::NSData::with_bytes(include_bytes!("../../icons/128x128@2x.png"));
+        let image = NSImage::initWithData(NSImage::alloc(), &data).unwrap();
+        let previous = NSGraphicsContext::currentContext();
+        let png = picker_icon_png(&image).unwrap();
+        assert!(png.len() <= MAX_APPLICATION_ICON_PNG_BYTES);
+        let decoded = tauri::image::Image::from_bytes(&png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (32, 32));
+        assert!(decoded
+            .rgba()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] != 0));
+        assert_eq!(NSGraphicsContext::currentContext(), previous);
+    }
+
+    #[test]
+    fn native_permission_and_user_stop_errors_are_terminal_at_start_and_runtime() {
+        for (code, start, runtime) in [
+            (
+                SCStreamErrorCode::UserDeclined,
+                SystemAudioCaptureError::PermissionDenied,
+                SystemAudioCaptureFailure::PermissionDenied,
+            ),
+            (
+                SCStreamErrorCode::UserStopped,
+                SystemAudioCaptureError::UserStopped,
+                SystemAudioCaptureFailure::UserStopped,
+            ),
+        ] {
+            // No native stream is created: only NSError classification is tested.
+            let error = unsafe {
+                objc2_foundation::NSError::errorWithDomain_code_userInfo(
+                    SCStreamErrorDomain,
+                    code.0,
+                    None,
+                )
+            };
+            assert_eq!(classify_native_start_error(&error), start);
+            assert_eq!(classify_native_stop_error(&error), runtime);
+            assert!(!runtime.is_recoverable());
+        }
+    }
+
+    #[test]
+    fn unrelated_native_errors_do_not_claim_a_permission_denial() {
+        for (domain, code) in [
+            (
+                objc2_foundation::ns_string!("test.other"),
+                SCStreamErrorCode::UserDeclined.0,
+            ),
+            (
+                unsafe { SCStreamErrorDomain },
+                SCStreamErrorCode::InternalError.0,
+            ),
+        ] {
+            let error = unsafe {
+                objc2_foundation::NSError::errorWithDomain_code_userInfo(domain, code, None)
+            };
+            assert_eq!(
+                classify_native_start_error(&error),
+                SystemAudioCaptureError::NativeStartFailed
+            );
+            let failure = classify_native_stop_error(&error);
+            assert_eq!(failure, SystemAudioCaptureFailure::NativeStopped);
+            assert!(failure.is_recoverable());
+        }
     }
 
     #[test]
@@ -1185,6 +1559,32 @@ mod resampler_tests {
     }
 
     #[tokio::test]
+    async fn source_switch_waits_for_queued_main_thread_teardown_after_stop_is_dropped() {
+        let (dispatch_tx, dispatch_rx) = std::sync::mpsc::channel::<Box<dyn FnOnce() + Send>>();
+        let capture = MacSystemAudioCapture::new(Arc::new(move |task| {
+            dispatch_tx.send(task).unwrap();
+        }));
+        capture.started.store(true, Ordering::SeqCst);
+        capture.generation.begin();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), capture.stop())
+                .await
+                .is_err()
+        );
+        assert!(!capture.started.load(Ordering::SeqCst));
+        // The second stop returns immediately, but it cannot imply native
+        // release while the first teardown is still waiting for the main queue.
+        capture.stop().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), capture.wait_until_idle())
+                .await
+                .is_err()
+        );
+        dispatch_rx.try_recv().unwrap()();
+        capture.wait_until_idle().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn timed_out_native_stop_keeps_the_teardown_barrier_closed() {
         let pending = PendingTeardown::default();
         let native_completion = pending.begin();
@@ -1233,6 +1633,17 @@ mod resampler_tests {
         })
         .await
         .expect("all retries resume after the real native completion");
+    }
+
+    #[test]
+    fn native_configuration_preserves_provider_sample_rate() {
+        let configuration = SCStreamConfiguration::new();
+        for sample_rate_hz in [16_000, 24_000] {
+            set_capture_sample_rate(&configuration, sample_rate_hz);
+            // SAFETY: The native getter returns NSInteger, rather than the crate's f64.
+            let actual: isize = unsafe { msg_send![&*configuration, sampleRate] };
+            assert_eq!(actual, sample_rate_hz as isize);
+        }
     }
 
     #[test]

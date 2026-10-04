@@ -7,7 +7,8 @@
 //!
 //! * `user_frame` — the user's chosen expanded size/position. The only frame
 //!   that is ever persisted. Mutated exclusively by resize drags and window
-//!   moves (debounced); the child control and collapse never touch it.
+//!   moves (debounced), with height clamped when subtitle requirements grow;
+//!   the child control and collapse never replace its expanded size.
 //! * `presentation_frame` — a runtime-only frame used while following the
 //!   display that owns the active macOS Space. Matching native geometry events
 //!   are ignored; a different frame is explicit user movement and is promoted
@@ -72,15 +73,41 @@ pub fn dev_title(base: &str) -> String {
     }
 }
 
+use crate::core::overlay_layout::{minimum_overlay_height, BASE_MINIMUM_HEIGHT};
 use crate::pipeline_log;
-use crate::settings_store::{OverlayFrame, SettingsStore};
+use crate::settings_store::{OverlayFrame, Preferences, SettingsStore};
 use crate::windows::resize::{apply_drag, ResizeRegion};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+#[cfg(target_os = "linux")]
+mod linux_input_region;
+
 #[cfg(target_os = "macos")]
 mod macos_control_dismiss;
+
+#[cfg(target_os = "macos")]
+mod macos_pointer;
+
+#[cfg(target_os = "macos")]
+pub fn remove_overlay_pointer_tracking(app: &AppHandle) {
+    macos_pointer::clear(app, true);
+}
+
+#[cfg(target_os = "macos")]
+pub fn clear_overlay_pointer_hover(app: &AppHandle) {
+    macos_pointer::clear(app, false);
+}
+
+#[cfg(target_os = "macos")]
+pub async fn set_overlay_pointer_cursor(
+    app: &AppHandle,
+    point: crate::core::overlay_pointer::OverlayPointerPosition,
+    pointing: bool,
+) -> Result<bool, String> {
+    macos_pointer::set_pointer_cursor(app, point, pointing).await
+}
 
 #[cfg(target_os = "windows")]
 mod windows_workspace;
@@ -97,10 +124,14 @@ pub fn install_windows_workspace_follower(app: &AppHandle) -> WindowsWorkspaceFo
 tauri_nspanel::tauri_panel! {
     panel!(SubtitleOverlayPanel {
         config: {
-            can_become_key_window: false,
+            // Permit keyboard reading only after a click needs the WebView's
+            // responder. NonactivatingPanel and orderFrontRegardless still
+            // show/refresh subtitles without activating Mimi or stealing key.
+            can_become_key_window: true,
             can_become_main_window: false,
             is_floating_panel: true,
-            hides_on_deactivate: false
+            hides_on_deactivate: false,
+            becomes_key_only_if_needed: true
         }
     })
 
@@ -110,7 +141,11 @@ tauri_nspanel::tauri_panel! {
             can_become_main_window: false,
             is_floating_panel: true,
             hides_on_deactivate: false,
-            becomes_key_only_if_needed: true
+            // HTML inputs live inside WKWebView, not an AppKit text field
+            // whose hit view opts into needsPanelToBecomeKey. Let an explicit
+            // click give this control panel keyboard input. NonactivatingPanel
+            // and passive ordering still leave the media application active.
+            becomes_key_only_if_needed: false
         }
     })
 }
@@ -159,10 +194,10 @@ fn frame_layout_is_current(version: u64) -> bool {
 pub struct SubtitleOverlayMetrics;
 
 impl SubtitleOverlayMetrics {
-    pub const REFERENCE_WIDTH: f64 = 640.0;
-    pub const REFERENCE_HEIGHT: f64 = 136.0;
+    pub const REFERENCE_WIDTH: f64 = 659.0;
+    pub const REFERENCE_HEIGHT: f64 = 328.0;
     pub const MINIMUM_WIDTH: f64 = 360.0;
-    pub const MINIMUM_HEIGHT: f64 = 100.0;
+    pub const MINIMUM_HEIGHT: f64 = BASE_MINIMUM_HEIGHT;
     pub const MAXIMUM_WIDTH: f64 = 1_200.0;
     pub const MAXIMUM_HEIGHT: f64 = 600.0;
     pub const COLLAPSED_WIDTH: f64 = 280.0;
@@ -183,6 +218,8 @@ pub enum OverlayMode {
 #[derive(Debug)]
 pub struct OverlayState {
     pub mode: OverlayMode,
+    /// Current subtitle requirement; part of every queued geometry transaction.
+    minimum_height: f64,
     /// The user's chosen expanded frame; the only persisted frame.
     pub user_frame: OverlayFrame,
     /// Runtime-only frame used to present the overlay on the screen owning the
@@ -211,6 +248,7 @@ pub struct OverlayState {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct OverlayApplySnapshot {
     mode: OverlayMode,
+    minimum_height: f64,
     user_frame: OverlayFrame,
     presentation_frame: Option<OverlayFrame>,
     resize_drag: Option<ResizeRegion>,
@@ -228,6 +266,7 @@ impl From<&OverlayState> for OverlayApplySnapshot {
     fn from(state: &OverlayState) -> Self {
         Self {
             mode: state.mode,
+            minimum_height: state.minimum_height,
             user_frame: state.user_frame,
             presentation_frame: state.presentation_frame,
             resize_drag: state.resize_drag,
@@ -282,6 +321,7 @@ pub enum OverlayControlMode {
 #[derive(Debug)]
 struct OverlayControlStateInner {
     mode: OverlayControlMode,
+    island_width: f64,
     panel_height: f64,
     generation: u64,
 }
@@ -295,10 +335,16 @@ pub struct OverlayControlState(std::sync::Mutex<OverlayControlStateInner>);
 /// Cached native presentation state. Session snapshots can arrive many times
 /// per second while subtitles stream; the cache keeps identical snapshots
 /// from repeatedly crossing into the OS window API.
+#[cfg(not(target_os = "linux"))]
 #[derive(Debug, Default)]
 pub struct OverlayPresentationState(std::sync::Mutex<Option<bool>>);
 
+#[cfg(target_os = "linux")]
+#[derive(Debug, Default)]
+pub struct OverlayPresentationState(std::sync::Mutex<linux_input_region::InputRegionState>);
+
 impl OverlayPresentationState {
+    #[cfg(not(target_os = "linux"))]
     fn apply_click_through_if_changed(&self, window: &tauri::WebviewWindow, enabled: bool) {
         let mut current = self.0.lock().unwrap();
         if *current == Some(enabled) {
@@ -306,11 +352,50 @@ impl OverlayPresentationState {
         }
         if window.set_ignore_cursor_events(enabled).is_ok() {
             *current = Some(enabled);
+            #[cfg(target_os = "macos")]
+            if enabled {
+                macos_pointer::clear(window.app_handle(), false);
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_click_through_if_changed(&self, window: &tauri::WebviewWindow, enabled: bool) {
+        // Record intent before dispatch, without holding the mutex while GTK
+        // waits for the main loop. Older queued requests read the latest intent
+        // instead of re-locking a window after a newer explicit unlock.
+        self.0.lock().unwrap().request(enabled);
+        let app = window.app_handle().clone();
+        let label = window.label().to_string();
+        if window
+            .run_on_main_thread(move || {
+                // Resolve the current instance: a queued request may outlive
+                // the native window it was originally sent through.
+                let Some(window) = app.get_webview_window(&label) else {
+                    return;
+                };
+                let Ok(native) = window.gtk_window() else {
+                    return;
+                };
+                if let Some(presentation) = app.try_state::<OverlayPresentationState>() {
+                    presentation.0.lock().unwrap().reconcile(false, |enabled| {
+                        linux_input_region::apply(&native, enabled);
+                    });
+                }
+            })
+            .is_err()
+        {
+            pipeline_log!("overlay input region failed label=main_thread_unavailable");
         }
     }
 
     fn invalidate(&self) {
-        *self.0.lock().unwrap() = None;
+        #[cfg(not(target_os = "linux"))]
+        {
+            *self.0.lock().unwrap() = None;
+        }
+        #[cfg(target_os = "linux")]
+        self.0.lock().unwrap().invalidate();
     }
 }
 
@@ -318,6 +403,7 @@ impl Default for OverlayControlState {
     fn default() -> Self {
         Self(std::sync::Mutex::new(OverlayControlStateInner {
             mode: OverlayControlMode::Hidden,
+            island_width: OverlayControlWindowManager::DEFAULT_ISLAND_WIDTH,
             panel_height: OverlayControlWindowManager::DEFAULT_PANEL_HEIGHT,
             generation: 0,
         }))
@@ -353,6 +439,20 @@ impl OverlayControlState {
         true
     }
 
+    fn dimensions(&self) -> (f64, f64) {
+        let state = self.0.lock().unwrap();
+        (state.island_width, state.panel_height)
+    }
+
+    fn set_island_width(&self, width: f64) -> bool {
+        let mut state = self.0.lock().unwrap();
+        if (state.island_width - width).abs() < 0.5 {
+            return false;
+        }
+        state.island_width = width;
+        true
+    }
+
     fn cancel_scheduled_dismiss(&self) {
         let mut state = self.0.lock().unwrap();
         state.generation = state.generation.wrapping_add(1);
@@ -364,6 +464,7 @@ impl OverlayState {
     /// starts in the expanded mode.
     pub fn load(app: &AppHandle, settings: &SettingsStore) -> Self {
         let prefs = settings.preferences();
+        let minimum_height = minimum_height_for_preferences(&prefs);
         let trusted = frame_layout_is_current(prefs.frame_layout_version)
             .then_some(prefs.overlay_frame)
             .flatten()
@@ -376,7 +477,8 @@ impl OverlayState {
             .map_or(SubtitleOverlayMetrics::REFERENCE_WIDTH, |f| f.width);
         let height = trusted
             .as_ref()
-            .map_or(SubtitleOverlayMetrics::REFERENCE_HEIGHT, |f| f.height);
+            .map_or(SubtitleOverlayMetrics::REFERENCE_HEIGHT, |f| f.height)
+            .max(minimum_height);
         let (x, y) = default_overlay_origin(app, width, height, &trusted);
         let mut user_frame = OverlayFrame {
             x,
@@ -387,9 +489,10 @@ impl OverlayState {
         // A saved frame can outgrow the current work area after a monitor is
         // removed or its resolution changes. Fit the complete frame, not just
         // its origin, so restore can never bring back a half-missing overlay.
-        fit_user_frame_to_screen(app, &mut user_frame);
+        fit_user_frame_to_screen(app, &mut user_frame, minimum_height);
         Self {
             mode: OverlayMode::Expanded,
+            minimum_height,
             user_frame,
             presentation_frame: None,
             native_drag_start: None,
@@ -404,6 +507,30 @@ impl OverlayState {
     fn effective_frame(&self) -> OverlayFrame {
         self.presentation_frame.unwrap_or(self.user_frame)
     }
+
+    fn update_minimum_height(&mut self, minimum_height: f64) -> bool {
+        if self.minimum_height == minimum_height {
+            return false;
+        }
+        self.minimum_height = minimum_height;
+        // A smaller requirement lets the user resize later; it never shrinks
+        // their chosen frame or resets its position/width automatically.
+        self.user_frame.height = self.user_frame.height.max(minimum_height);
+        if let Some(frame) = self.presentation_frame.as_mut() {
+            frame.height = frame.height.max(minimum_height);
+        }
+        true
+    }
+}
+
+fn minimum_height_for_preferences(preferences: &Preferences) -> f64 {
+    minimum_overlay_height(
+        preferences.audio_input,
+        preferences.subtitle_display_mode,
+        preferences.target_language,
+        preferences.font_size,
+        preferences.show_subtitle_timestamps,
+    )
 }
 
 /// OS window geometry derived from `(mode, user_frame)`; all logical pixels.
@@ -419,11 +546,12 @@ struct WindowGeometry {
 
 /// Pure derivation of the window geometry from the overlay state. `screen` is
 /// the logical size of the screen the overlay currently sits on.
-fn geometry_for(mode: OverlayMode, user_frame: &OverlayFrame) -> WindowGeometry {
-    let min = (
-        SubtitleOverlayMetrics::MINIMUM_WIDTH,
-        SubtitleOverlayMetrics::MINIMUM_HEIGHT,
-    );
+fn geometry_for(
+    mode: OverlayMode,
+    user_frame: &OverlayFrame,
+    minimum_height: f64,
+) -> WindowGeometry {
+    let min = (SubtitleOverlayMetrics::MINIMUM_WIDTH, minimum_height);
     let max = (
         SubtitleOverlayMetrics::MAXIMUM_WIDTH,
         SubtitleOverlayMetrics::MAXIMUM_HEIGHT,
@@ -433,7 +561,7 @@ fn geometry_for(mode: OverlayMode, user_frame: &OverlayFrame) -> WindowGeometry 
             x: user_frame.x,
             y: user_frame.y,
             width: user_frame.width,
-            height: user_frame.height,
+            height: user_frame.height.max(minimum_height),
             min,
             max,
         },
@@ -458,19 +586,38 @@ fn geometry_for(mode: OverlayMode, user_frame: &OverlayFrame) -> WindowGeometry 
 pub struct OverlayWindowManager;
 
 impl OverlayWindowManager {
+    /// Update constraints before broadcasting new visual/capture preferences.
+    /// Read current preferences under the same overlay→settings lock order as
+    /// geometry persistence, so an older broadcast cannot apply stale rules.
+    pub fn sync_minimum_height(
+        app: &AppHandle,
+        overlay_state: &Arc<std::sync::Mutex<OverlayState>>,
+        settings: &SettingsStore,
+    ) {
+        let expected = {
+            let mut state = overlay_state.lock().unwrap();
+            let minimum = minimum_height_for_preferences(&settings.preferences());
+            if !state.update_minimum_height(minimum) {
+                return;
+            }
+            OverlayApplySnapshot::from(&*state)
+        };
+        Self::apply_if_geometry_current(app, overlay_state, expected, false);
+    }
+
     pub fn ensure_overlay(app: &AppHandle, state: &Arc<std::sync::Mutex<OverlayState>>) {
         if app.get_webview_window("overlay").is_some() {
             return;
         }
-        let frame = state.lock().unwrap().user_frame;
+        let (frame, minimum_height) = {
+            let state = state.lock().unwrap();
+            (state.user_frame, state.minimum_height)
+        };
         let builder =
             WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
                 .title(dev_title("mimi Subtitles"))
                 .inner_size(frame.width, frame.height)
-                .min_inner_size(
-                    SubtitleOverlayMetrics::MINIMUM_WIDTH,
-                    SubtitleOverlayMetrics::MINIMUM_HEIGHT,
-                )
+                .min_inner_size(SubtitleOverlayMetrics::MINIMUM_WIDTH, minimum_height)
                 .max_inner_size(
                     SubtitleOverlayMetrics::MAXIMUM_WIDTH,
                     SubtitleOverlayMetrics::MAXIMUM_HEIGHT,
@@ -488,6 +635,10 @@ impl OverlayWindowManager {
             .visible_on_all_workspaces(true);
         #[cfg(target_os = "windows")]
         let builder = builder.focusable(false).focused(false);
+        // A nonactivating panel's first deliberate click must also reach its
+        // WebView control, rather than merely focusing the native window.
+        #[cfg(target_os = "macos")]
+        let builder = builder.accept_first_mouse(true);
 
         match builder.build() {
             Ok(window) => {
@@ -506,6 +657,8 @@ impl OverlayWindowManager {
                     presentation.invalidate();
                 }
                 configure_overlay_window(&window);
+                #[cfg(target_os = "macos")]
+                macos_pointer::install(&window);
                 #[cfg(target_os = "linux")]
                 follow_linux_overlay_on_map(&window);
                 pipeline_log!("overlay window created");
@@ -531,6 +684,11 @@ impl OverlayWindowManager {
                 // Ordinary position locking keeps the independent control
                 // island as an unlock escape hatch. Immersive Mode hides all
                 // overlay chrome and is exited via shortcut, tray, or settings.
+                // GTK can store an input shape before the first native map.
+                // Record lock intent first so realize/map cannot briefly
+                // restore an old unlocked shape when a worker shows a window.
+                #[cfg(target_os = "linux")]
+                Self::update_locked(app, true);
                 Self::sync_overlay_visibility(app, true);
                 OverlayControlWindowManager::sync_presentation(
                     app,
@@ -538,6 +696,7 @@ impl OverlayWindowManager {
                     is_collapsed,
                     is_immersive,
                 );
+                #[cfg(not(target_os = "linux"))]
                 Self::update_locked(app, true);
             } else {
                 // Restore canvas interaction before changing either visible
@@ -566,6 +725,8 @@ impl OverlayWindowManager {
         if is_active && !visible {
             show_overlay_window(&window);
         } else if !is_active && visible {
+            #[cfg(target_os = "macos")]
+            macos_pointer::clear(app, false);
             let _ = window.hide();
         }
     }
@@ -632,7 +793,12 @@ impl OverlayWindowManager {
                 primary_work_area,
             )
             .map(|source_area| {
-                let next = map_frame_between_work_areas(state.user_frame, source_area, target_area);
+                let next = map_frame_between_work_areas(
+                    state.user_frame,
+                    source_area,
+                    target_area,
+                    state.minimum_height,
+                );
                 update_presentation_frame(&mut state, next)
             })
             .unwrap_or(false)
@@ -673,7 +839,17 @@ impl OverlayWindowManager {
         if let Some(presentation) = app.try_state::<OverlayPresentationState>() {
             presentation.apply_click_through_if_changed(&window, locked);
         } else {
+            #[cfg(not(target_os = "linux"))]
             let _ = window.set_ignore_cursor_events(locked);
+            #[cfg(target_os = "linux")]
+            {
+                let native_window = window.clone();
+                let _ = window.run_on_main_thread(move || {
+                    if let Ok(native) = native_window.gtk_window() {
+                        linux_input_region::apply(&native, locked);
+                    }
+                });
+            }
         }
     }
 
@@ -683,20 +859,27 @@ impl OverlayWindowManager {
         app: &AppHandle,
         mode: OverlayMode,
         frame: OverlayFrame,
+        minimum_height: f64,
         animation: Option<GeometryAnimationGuard>,
     ) {
         let Some(window) = app.get_webview_window("overlay") else {
             return;
         };
-        let geometry = geometry_for(mode, &frame);
-        let _ = window.set_min_size(Some(tauri::LogicalSize::new(
-            geometry.min.0,
-            geometry.min.1,
-        )));
-        let _ = window.set_max_size(Some(tauri::LogicalSize::new(
-            geometry.max.0,
-            geometry.max.1,
-        )));
+        let geometry = geometry_for(mode, &frame, minimum_height);
+        let minimum = Some(tauri::LogicalSize::new(geometry.min.0, geometry.min.1));
+        let maximum = Some(tauri::LogicalSize::new(geometry.max.0, geometry.max.1));
+        // Expanding must lift the collapsed maximum before raising its
+        // minimum. Collapsing first lowers the expanded minimum instead.
+        match mode {
+            OverlayMode::Expanded => {
+                let _ = window.set_max_size(maximum);
+                let _ = window.set_min_size(minimum);
+            }
+            OverlayMode::Collapsed => {
+                let _ = window.set_min_size(minimum);
+                let _ = window.set_max_size(maximum);
+            }
+        }
         if let Some(animation) = animation {
             let scale = desktop_scale_for_frame(app, &window, &frame);
             set_desktop_position(&window, geometry.x, geometry.y);
@@ -722,18 +905,18 @@ impl OverlayWindowManager {
         let state_for_main = Arc::clone(state);
         if app
             .run_on_main_thread(move || {
-                let (mode, frame) = {
+                let (mode, frame, minimum_height) = {
                     let state = state_for_main.lock().unwrap();
                     if !apply_snapshot_is_current(&state, expected) {
                         return;
                     }
-                    (state.mode, state.effective_frame())
+                    (state.mode, state.effective_frame(), state.minimum_height)
                 };
                 let animation = animate.then(|| GeometryAnimationGuard {
                     state: Arc::clone(&state_for_main),
                     expected,
                 });
-                Self::apply_frame(&app_for_main, mode, frame, animation);
+                Self::apply_frame(&app_for_main, mode, frame, minimum_height, animation);
             })
             .is_err()
         {
@@ -812,15 +995,22 @@ impl OverlayWindowManager {
             if should_sync_before_collapse(manual_drag, &state) {
                 if let Some(observed_frame) = observed_frame {
                     state.user_frame = observed_frame;
+                    state.user_frame.height = state.user_frame.height.max(state.minimum_height);
                 }
             }
         } else {
             // The screen configuration may have changed while collapsed;
             // keep the expanded frame on the visible screen.
+            let minimum_height = state.minimum_height;
             if let Some(frame) = state.presentation_frame.as_mut() {
-                fit_user_frame_to_work_areas(frame, &work_areas, primary_work_area);
+                fit_user_frame_to_work_areas(frame, &work_areas, primary_work_area, minimum_height);
             } else {
-                fit_user_frame_to_work_areas(&mut state.user_frame, &work_areas, primary_work_area);
+                fit_user_frame_to_work_areas(
+                    &mut state.user_frame,
+                    &work_areas,
+                    primary_work_area,
+                    minimum_height,
+                );
             }
         }
         state.mode = new_mode;
@@ -916,12 +1106,16 @@ impl OverlayWindowManager {
                 // A different native frame means the user moved the followed
                 // overlay. Promote that intentional placement to canonical
                 // state and resume the ordinary persistence path.
+                let minimum_height = state.minimum_height;
                 let geometry_changed = match state.mode {
-                    OverlayMode::Expanded => fit_user_frame_to_work_areas(
-                        &mut state.user_frame,
-                        &work_areas,
-                        primary_work_area,
-                    ),
+                    OverlayMode::Expanded => {
+                        fit_user_frame_to_work_areas(
+                            &mut state.user_frame,
+                            &work_areas,
+                            primary_work_area,
+                            minimum_height,
+                        ) || !frames_approximately_equal(&state.user_frame, &observed_frame)
+                    }
                     OverlayMode::Collapsed => {
                         // Only the position is meaningful while collapsed; the
                         // remembered expanded size must survive.
@@ -1000,6 +1194,7 @@ impl OverlayWindowManager {
         state.presentation_frame = None;
         if let Some(observed_frame) = observed_frame {
             state.user_frame = observed_frame;
+            state.user_frame.height = state.user_frame.height.max(state.minimum_height);
         }
         state.resize_drag = Some(region);
         state.resize_start = Some(ResizeGesture {
@@ -1041,7 +1236,12 @@ impl OverlayWindowManager {
         let Some(start) = state.resize_start else {
             return;
         };
-        let frame = resized_frame_for_pointer(region, start, resize_pointer_position((x, y)));
+        let frame = resized_frame_for_pointer(
+            region,
+            start,
+            resize_pointer_position((x, y)),
+            state.minimum_height,
+        );
         // Skip sub-pixel jitter: unchanged frames do not need window ops.
         if (frame.x - state.user_frame.x).abs() < 0.5
             && (frame.y - state.user_frame.y).abs() < 0.5
@@ -1082,7 +1282,13 @@ impl OverlayWindowManager {
         }
         state.presentation_frame = None;
         state.native_drag_start = None;
-        fit_user_frame_to_work_areas(&mut state.user_frame, &work_areas, primary_work_area);
+        let minimum_height = state.minimum_height;
+        fit_user_frame_to_work_areas(
+            &mut state.user_frame,
+            &work_areas,
+            primary_work_area,
+            minimum_height,
+        );
         let frame_to_persist = state.user_frame;
         let expected_state = OverlayApplySnapshot::from(&*state);
         drop(state);
@@ -1115,6 +1321,7 @@ fn resized_frame_for_pointer(
     region: ResizeRegion,
     start: ResizeGesture,
     pointer: (f64, f64),
+    minimum_height: f64,
 ) -> OverlayFrame {
     let work_area = start.work_area;
     let scale = work_area.coordinate_scale;
@@ -1131,7 +1338,7 @@ fn resized_frame_for_pointer(
         (pointer.0 - work_area.x, pointer.1 - work_area.y),
         (
             SubtitleOverlayMetrics::MINIMUM_WIDTH * scale,
-            SubtitleOverlayMetrics::MINIMUM_HEIGHT * scale,
+            minimum_height * scale,
         ),
         (
             SubtitleOverlayMetrics::MAXIMUM_WIDTH * scale,
@@ -1203,16 +1410,50 @@ fn reassert_overlay_window_on_active_space(window: &tauri::WebviewWindow) {
     configure_overlay_window_impl(window, true);
 }
 
-/// Expanding the control surface follows a click that already gives its
-/// nonactivating panel any key status it needs. Tao's macOS `set_focus` path
-/// activates the entire application, which would steal focus from the media
-/// app and can pull the user out of its full-screen Space.
+/// Only an explicit request to open controls grants keyboard input. On macOS,
+/// use AppKit's key-window operation directly: Tao's `set_focus` also activates
+/// the application and can pull the media app out of its full-screen Space.
+/// A WKWebView click alone does not reliably make a nonactivating panel key.
 fn focus_overlay_control(window: &tauri::WebviewWindow) {
     #[cfg(not(target_os = "macos"))]
     let _ = window.set_focus();
 
     #[cfg(target_os = "macos")]
-    let _ = window;
+    {
+        let current_window = window.clone();
+        let _ = window.with_webview(move |webview| {
+            use objc2_app_kit::{NSView, NSWindow};
+
+            if OverlayControlWindowManager::mode(current_window.app_handle())
+                != OverlayControlMode::Panel
+            {
+                return;
+            }
+            let Ok(pointer) = current_window.ns_window() else {
+                return;
+            };
+            let view_pointer = webview.inner();
+            if view_pointer.is_null() {
+                return;
+            }
+            // SAFETY: with_webview runs on the main thread and keeps the
+            // app-owned WKWebView/window alive for this callback. contentView
+            // is a Wry wrapper, so use the actual webview for keyboard input.
+            let panel: &NSWindow = unsafe { &*pointer.cast() };
+            let view: &NSView = unsafe { &*view_pointer.cast() };
+            if !panel.isVisible() {
+                return;
+            }
+            let responder_accepted = panel.makeFirstResponder(Some(view));
+            panel.makeKeyWindow();
+            pipeline_log!(
+                "overlay control keyboard key={} main={} responder_accepted={}",
+                panel.isKeyWindow(),
+                panel.isMainWindow(),
+                responder_accepted
+            );
+        });
+    }
 }
 
 fn configure_overlay_window_impl(window: &tauri::WebviewWindow, order_front: bool) {
@@ -1243,7 +1484,7 @@ fn configure_overlay_window_impl_macos(
     // parent restoration, and ordering happen in one dispatched transaction.
     let window_for_main = window.clone();
     let _ = window.run_on_main_thread(move || unsafe {
-        use objc2_app_kit::{NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
+        use objc2_app_kit::{NSWindow, NSWindowStyleMask};
 
         let Ok(pointer) = window_for_main.ns_window() else {
             return;
@@ -1262,17 +1503,7 @@ fn configure_overlay_window_impl_macos(
             match parent_window.ns_window() {
                 Ok(parent_pointer) => {
                     let parent_ns_window: &NSWindow = &*parent_pointer.cast();
-                    let current_parent = ns_window.parentWindow();
-                    let already_attached = current_parent
-                        .as_deref()
-                        .is_some_and(|current| std::ptr::eq(current, parent_ns_window));
-                    if !already_attached {
-                        if let Some(current) = current_parent {
-                            current.removeChildWindow(ns_window);
-                        }
-                        parent_ns_window
-                            .addChildWindow_ordered(ns_window, NSWindowOrderingMode::Above);
-                    }
+                    attach_overlay_control_parent_macos(ns_window, parent_ns_window);
                 }
                 Err(_) => pipeline_log!("overlay control show failed label=parent_unavailable"),
             }
@@ -1282,6 +1513,30 @@ fn configure_overlay_window_impl_macos(
             ns_window.orderFrontRegardless();
         }
     });
+}
+
+/// Main-thread-only parent restoration shared by initial presentation and
+/// keyboard release. AppKit detaches a child when orderOut hides it.
+#[cfg(target_os = "macos")]
+fn attach_overlay_control_parent_macos(
+    window: &objc2_app_kit::NSWindow,
+    parent: &objc2_app_kit::NSWindow,
+) {
+    use objc2_app_kit::NSWindowOrderingMode;
+
+    let current_parent = window.parentWindow();
+    if current_parent
+        .as_deref()
+        .is_some_and(|current| std::ptr::eq(current, parent))
+    {
+        return;
+    }
+    if let Some(current) = current_parent {
+        current.removeChildWindow(window);
+    }
+    // SAFETY: Both are distinct app-owned windows, accessed on the main thread;
+    // the child is detached from any previous parent before attaching above.
+    unsafe { parent.addChildWindow_ordered(window, NSWindowOrderingMode::Above) };
 }
 
 #[cfg(target_os = "macos")]
@@ -1433,6 +1688,14 @@ fn follow_linux_overlay_on_map(window: &tauri::WebviewWindow) {
     let app = window.app_handle().clone();
     let _ = window.run_on_main_thread(move || {
         if let Ok(window) = native_window.gtk_window() {
+            let input_app = app.clone();
+            linux_input_region::restore_on_surface_change(&window, move |window| {
+                if let Some(presentation) = input_app.try_state::<OverlayPresentationState>() {
+                    presentation.0.lock().unwrap().reconcile(true, |enabled| {
+                        linux_input_region::apply(window, enabled);
+                    });
+                }
+            });
             window.connect_map_event(move |_, _| {
                 // Wait until GTK has processed the mapping event, without a
                 // timer or a polling loop. Re-read mode so a stop wins races.
@@ -1482,7 +1745,7 @@ fn presentation_frame_matches_observed(state: &OverlayState, observed: &OverlayF
     let Some(presentation) = state.presentation_frame else {
         return false;
     };
-    let geometry = geometry_for(state.mode, &presentation);
+    let geometry = geometry_for(state.mode, &presentation, state.minimum_height);
     let expected = OverlayFrame {
         x: geometry.x,
         y: geometry.y,
@@ -1515,7 +1778,10 @@ fn promote_observed_user_frame(state: &mut OverlayState, observed: OverlayFrame)
     state.presentation_frame = None;
     state.native_drag_start = None;
     match state.mode {
-        OverlayMode::Expanded => state.user_frame = observed,
+        OverlayMode::Expanded => {
+            state.user_frame = observed;
+            state.user_frame.height = state.user_frame.height.max(state.minimum_height);
+        }
         OverlayMode::Collapsed => {
             state.user_frame.x = observed.x;
             state.user_frame.y = observed.y;
@@ -1549,10 +1815,14 @@ fn reconcile_native_drag(
         return NativeDragReconcile::default();
     }
     promote_observed_user_frame(state, observed);
+    let minimum_height = state.minimum_height;
     let fit_changed = match state.mode {
-        OverlayMode::Expanded => {
-            fit_user_frame_to_work_areas(&mut state.user_frame, work_areas, primary_work_area)
-        }
+        OverlayMode::Expanded => fit_user_frame_to_work_areas(
+            &mut state.user_frame,
+            work_areas,
+            primary_work_area,
+            minimum_height,
+        ),
         OverlayMode::Collapsed => fit_collapsed_position_to_work_areas(
             &mut state.user_frame,
             work_areas,
@@ -1637,20 +1907,25 @@ fn persist_user_frame_if_current(
 /// Fits the complete expanded frame inside the work area that contains most of
 /// it. This is intentionally called only on restore or after native movement
 /// settles; live dragging stays entirely in the window server.
-fn fit_user_frame_to_screen(app: &AppHandle, frame: &mut OverlayFrame) -> bool {
+fn fit_user_frame_to_screen(
+    app: &AppHandle,
+    frame: &mut OverlayFrame,
+    minimum_height: f64,
+) -> bool {
     let (areas, primary) = available_work_areas(app);
-    fit_user_frame_to_work_areas(frame, &areas, primary)
+    fit_user_frame_to_work_areas(frame, &areas, primary, minimum_height)
 }
 
 fn fit_user_frame_to_work_areas(
     frame: &mut OverlayFrame,
     areas: &[LogicalWorkArea],
     primary: Option<LogicalWorkArea>,
+    minimum_height: f64,
 ) -> bool {
     let Some(work_area) = choose_work_area_for_frame(frame, areas.iter().copied(), primary) else {
         return false;
     };
-    fit_frame_to_work_area(frame, work_area)
+    fit_frame_to_work_area(frame, work_area, minimum_height)
 }
 
 fn fit_collapsed_position_to_work_areas(
@@ -1873,6 +2148,7 @@ fn map_frame_between_work_areas(
     frame: OverlayFrame,
     source: LogicalWorkArea,
     target: LogicalWorkArea,
+    minimum_height: f64,
 ) -> OverlayFrame {
     let mut mapped = if work_areas_approximately_equal(source, target) {
         frame
@@ -1894,7 +2170,7 @@ fn map_frame_between_work_areas(
             ..frame
         }
     };
-    fit_frame_to_work_area(&mut mapped, target);
+    fit_frame_to_work_area(&mut mapped, target, minimum_height);
     mapped
 }
 
@@ -1926,14 +2202,18 @@ fn clamp_frame_origin_to_work_area(frame: &mut OverlayFrame, area: LogicalWorkAr
 
 /// Normalizes dimensions first, then origin. Origin-only clamping cannot make
 /// an oversized frame fully visible after a display or resolution change.
-fn fit_frame_to_work_area(frame: &mut OverlayFrame, area: LogicalWorkArea) -> bool {
+fn fit_frame_to_work_area(
+    frame: &mut OverlayFrame,
+    area: LogicalWorkArea,
+    minimum_height: f64,
+) -> bool {
     let previous = *frame;
     let maximum_width = area.width.clamp(1.0, SubtitleOverlayMetrics::MAXIMUM_WIDTH);
     let maximum_height = area
         .height
         .clamp(1.0, SubtitleOverlayMetrics::MAXIMUM_HEIGHT);
     let minimum_width = SubtitleOverlayMetrics::MINIMUM_WIDTH.min(maximum_width);
-    let minimum_height = SubtitleOverlayMetrics::MINIMUM_HEIGHT.min(maximum_height);
+    let minimum_height = minimum_height.min(maximum_height);
     frame.width = frame.width.clamp(minimum_width, maximum_width);
     frame.height = frame.height.clamp(minimum_height, maximum_height);
     clamp_frame_origin_to_work_area(frame, area);
@@ -1971,13 +2251,15 @@ const OVERLAY_CONTROL_MODE_EVENT: &str = "overlay-control-mode";
 pub struct OverlayControlWindowManager;
 
 impl OverlayControlWindowManager {
-    pub const ISLAND_WIDTH: f64 = 236.0;
+    pub const DEFAULT_ISLAND_WIDTH: f64 = 200.0;
     pub const ISLAND_HEIGHT: f64 = 30.0;
-    pub const PANEL_WIDTH: f64 = 276.0;
-    // Matches the first-open height of the full Alibaba control set; React
+    const MIN_ISLAND_WIDTH: f64 = 80.0;
+    const MAX_ISLAND_WIDTH: f64 = 512.0;
+    pub const PANEL_WIDTH: f64 = 280.0;
+    // Matches the compact control panel on first open; React
     // immediately replaces it with the measured provider/locale-specific
     // height, but this default avoids a visible clipped first frame.
-    pub const DEFAULT_PANEL_HEIGHT: f64 = 428.0;
+    pub const DEFAULT_PANEL_HEIGHT: f64 = 270.0;
     const MIN_PANEL_HEIGHT: f64 = 132.0;
     const MAX_PANEL_HEIGHT: f64 = 520.0;
     const ANCHOR_OFFSET_X: f64 = 18.0;
@@ -1995,7 +2277,7 @@ impl OverlayControlWindowManager {
         let builder =
             WebviewWindowBuilder::new(app, "overlay-control", WebviewUrl::App("index.html".into()))
                 .title(dev_title("mimi"))
-                .inner_size(Self::ISLAND_WIDTH, Self::ISLAND_HEIGHT)
+                .inner_size(Self::DEFAULT_ISLAND_WIDTH, Self::ISLAND_HEIGHT)
                 .resizable(false)
                 .transparent(true)
                 .decorations(false)
@@ -2008,6 +2290,8 @@ impl OverlayControlWindowManager {
         let builder = builder.visible_on_all_workspaces(true);
         #[cfg(target_os = "windows")]
         let builder = builder.focusable(false);
+        #[cfg(target_os = "macos")]
+        let builder = builder.accept_first_mouse(true);
         let builder = match builder.parent(&overlay) {
             Ok(builder) => builder,
             Err(_) => {
@@ -2138,6 +2422,24 @@ impl OverlayControlWindowManager {
         }
     }
 
+    /// Caches the collapsed capsule's intrinsic width independently of the
+    /// panel. Hidden and expanded surfaces only remember this measurement;
+    /// a late report must neither reveal a hidden window nor shrink a panel.
+    pub fn set_island_width(app: &AppHandle, width: f64) {
+        let Some(width) = measured_island_width(width) else {
+            return;
+        };
+        let current_app = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let Some(state) = current_app.try_state::<OverlayControlState>() else {
+                return;
+            };
+            if state.set_island_width(width) && state.mode() == OverlayControlMode::Island {
+                Self::apply_geometry(&current_app, OverlayControlMode::Island);
+            }
+        });
+    }
+
     /// Keeps the child surface attached to the overlay on platforms where an
     /// owned/transient window does not automatically move with its owner, and
     /// performs the final cross-platform clamp after movement settles. macOS
@@ -2213,11 +2515,18 @@ impl OverlayControlWindowManager {
         let Some((anchor_x, anchor_y, work_area)) = Self::overlay_anchor(app) else {
             return false;
         };
-        let panel_height = app
+        let (island_width, panel_height) = app
             .try_state::<OverlayControlState>()
-            .map(|state| state.snapshot().1)
-            .unwrap_or(Self::DEFAULT_PANEL_HEIGHT);
-        let geometry = overlay_control_geometry(mode, anchor_x, anchor_y, panel_height, work_area);
+            .map(|state| state.dimensions())
+            .unwrap_or((Self::DEFAULT_ISLAND_WIDTH, Self::DEFAULT_PANEL_HEIGHT));
+        let geometry = overlay_control_geometry(
+            mode,
+            anchor_x,
+            anchor_y,
+            island_width,
+            panel_height,
+            work_area,
+        );
         #[cfg(target_os = "linux")]
         {
             use gtk::prelude::*;
@@ -2324,21 +2633,31 @@ fn control_mode_for_presentation(
     }
 }
 
+fn measured_island_width(width: f64) -> Option<f64> {
+    width.is_finite().then(|| {
+        width.ceil().clamp(
+            OverlayControlWindowManager::MIN_ISLAND_WIDTH,
+            OverlayControlWindowManager::MAX_ISLAND_WIDTH,
+        )
+    })
+}
+
 fn overlay_control_geometry(
     mode: OverlayControlMode,
     anchor_x: f64,
     anchor_y: f64,
+    island_width: f64,
     panel_height: f64,
     work_area: LogicalWorkArea,
 ) -> OverlayControlGeometry {
     let margin = OverlayControlWindowManager::WORK_AREA_MARGIN;
     let (width, requested_height) = match mode {
         OverlayControlMode::Panel => (OverlayControlWindowManager::PANEL_WIDTH, panel_height),
-        OverlayControlMode::Hidden | OverlayControlMode::Island => (
-            OverlayControlWindowManager::ISLAND_WIDTH,
-            OverlayControlWindowManager::ISLAND_HEIGHT,
-        ),
+        OverlayControlMode::Hidden | OverlayControlMode::Island => {
+            (island_width, OverlayControlWindowManager::ISLAND_HEIGHT)
+        }
     };
+    let width = width.min((work_area.width - margin * 2.0).max(1.0));
     let available_height = (work_area.height - margin * 2.0).max(1.0);
     let height = requested_height.min(available_height);
     let min_x = work_area.x + work_area.coordinate_distance(margin);
@@ -2678,6 +2997,30 @@ pub fn install_active_space_observer(
 mod geometry_tests {
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn control_panel_declares_key_eligibility_without_main_window_eligibility() {
+        use objc2::{msg_send, ClassType};
+
+        // This checks declared policy, not runtime keyboard delivery. Native
+        // typing still requires the explicit makeKeyWindow path and real UI
+        // verification; class selectors do not prove a live first responder.
+        let control = RawSubtitleControlPanel::class();
+        let can_become_key: bool = unsafe { msg_send![control, canBecomeKeyWindow] };
+        let can_become_main: bool = unsafe { msg_send![control, canBecomeMainWindow] };
+        let key_only_if_needed: bool = unsafe { msg_send![control, becomesKeyOnlyIfNeeded] };
+        assert!(can_become_key);
+        assert!(!can_become_main);
+        assert!(!key_only_if_needed);
+
+        // Reading subtitles keeps the more restrictive existing key policy.
+        let subtitles = RawSubtitleOverlayPanel::class();
+        let key_only_if_needed: bool = unsafe { msg_send![subtitles, becomesKeyOnlyIfNeeded] };
+        assert!(key_only_if_needed);
+        let can_become_main: bool = unsafe { msg_send![subtitles, canBecomeMainWindow] };
+        assert!(!can_become_main);
+    }
+
     fn frame(x: f64, y: f64, w: f64, h: f64) -> OverlayFrame {
         OverlayFrame {
             x,
@@ -2698,6 +3041,7 @@ mod geometry_tests {
     fn state_with_frame(user_frame: OverlayFrame) -> OverlayState {
         OverlayState {
             mode: OverlayMode::Expanded,
+            minimum_height: SubtitleOverlayMetrics::MINIMUM_HEIGHT,
             user_frame,
             presentation_frame: None,
             native_drag_start: None,
@@ -2711,18 +3055,160 @@ mod geometry_tests {
 
     #[test]
     fn expanded_passes_user_frame_through() {
-        let geometry = geometry_for(OverlayMode::Expanded, &frame(400.0, 300.0, 640.0, 136.0));
+        let geometry = geometry_for(
+            OverlayMode::Expanded,
+            &frame(400.0, 300.0, 640.0, 136.0),
+            136.0,
+        );
         assert_eq!(
             (geometry.x, geometry.y, geometry.width, geometry.height),
             (400.0, 300.0, 640.0, 136.0)
         );
-        assert_eq!(geometry.min, (360.0, 100.0));
+        assert_eq!(geometry.min, (360.0, 136.0));
         assert_eq!(geometry.max, (1200.0, 600.0));
     }
 
     #[test]
+    fn source_display_and_font_changes_raise_only_the_needed_height() {
+        let mut state = state_with_frame(frame(410.0, 300.0, 730.0, 136.0));
+        let mut preferences = Preferences {
+            subtitle_display_mode: crate::core::models::SubtitleDisplayMode::Bilingual,
+            font_size: 18.0,
+            ..Preferences::default()
+        };
+        assert!(state.update_minimum_height(minimum_height_for_preferences(&preferences)));
+        assert_eq!(state.user_frame, frame(410.0, 300.0, 730.0, 156.0));
+        preferences.audio_input = crate::core::audio_input::AudioInput::Both;
+        assert!(state.update_minimum_height(minimum_height_for_preferences(&preferences)));
+        assert_eq!(state.user_frame, frame(410.0, 300.0, 730.0, 252.0));
+        preferences.font_size = 20.0;
+        assert!(state.update_minimum_height(minimum_height_for_preferences(&preferences)));
+        assert_eq!(state.user_frame, frame(410.0, 300.0, 730.0, 264.0));
+        preferences.subtitle_display_mode = crate::core::models::SubtitleDisplayMode::Original;
+        assert!(state.update_minimum_height(minimum_height_for_preferences(&preferences)));
+        assert_eq!(state.minimum_height, 216.0);
+        assert_eq!(state.user_frame, frame(410.0, 300.0, 730.0, 264.0));
+        preferences.audio_input = crate::core::audio_input::AudioInput::System;
+        assert!(state.update_minimum_height(minimum_height_for_preferences(&preferences)));
+        assert_eq!(state.minimum_height, 156.0);
+        assert_eq!(state.user_frame, frame(410.0, 300.0, 730.0, 264.0));
+        preferences.show_subtitle_timestamps = true;
+        assert!(state.update_minimum_height(minimum_height_for_preferences(&preferences)));
+        assert_eq!(state.minimum_height, 180.0);
+        assert_eq!(state.user_frame, frame(410.0, 300.0, 730.0, 264.0));
+        preferences.audio_input = crate::core::audio_input::AudioInput::Microphone;
+        assert!(!state.update_minimum_height(minimum_height_for_preferences(&preferences)));
+        assert_eq!(state.minimum_height, 180.0);
+        assert_eq!(state.user_frame, frame(410.0, 300.0, 730.0, 264.0));
+        preferences.show_subtitle_timestamps = false;
+        assert!(state.update_minimum_height(minimum_height_for_preferences(&preferences)));
+        assert_eq!(state.minimum_height, 156.0);
+        assert_eq!(state.user_frame, frame(410.0, 300.0, 730.0, 264.0));
+    }
+
+    #[test]
+    fn system_timestamp_toggle_expands_a_compact_frame_without_losing_user_geometry() {
+        let mut state = state_with_frame(frame(410.0, 300.0, 730.0, 136.0));
+        let mut preferences = Preferences {
+            show_subtitle_timestamps: true,
+            ..Preferences::default()
+        };
+        assert!(state.update_minimum_height(minimum_height_for_preferences(&preferences)));
+        assert_eq!(state.minimum_height, 180.0);
+        assert_eq!(state.user_frame, frame(410.0, 300.0, 730.0, 180.0));
+
+        preferences.show_subtitle_timestamps = false;
+        assert!(state.update_minimum_height(minimum_height_for_preferences(&preferences)));
+        assert_eq!(state.minimum_height, 156.0);
+        assert_eq!(state.user_frame, frame(410.0, 300.0, 730.0, 180.0));
+    }
+
+    #[test]
+    fn requirement_changes_invalidate_native_reads_and_queued_writes_without_frame_changes() {
+        let mut state = state_with_frame(frame(400.0, 300.0, 640.0, 482.0));
+        let pending_read = OverlayGeometrySnapshot::from(&state);
+        let pending_resize_or_animation = OverlayApplySnapshot::from(&state);
+        let before = state.user_frame;
+        assert!(state.update_minimum_height(200.0));
+        assert_eq!(state.user_frame, before);
+        assert!(!geometry_snapshot_is_current(&state, pending_read));
+        assert!(!apply_snapshot_is_current(
+            &state,
+            pending_resize_or_animation
+        ));
+    }
+
+    #[test]
+    fn collapsed_requirement_changes_keep_the_fixed_bar_and_remember_expanded_geometry() {
+        let mut state = state_with_frame(frame(400.0, 300.0, 730.0, 136.0));
+        state.mode = OverlayMode::Collapsed;
+        state.update_minimum_height(200.0);
+        let collapsed = geometry_for(state.mode, &state.effective_frame(), state.minimum_height);
+        assert_eq!((collapsed.width, collapsed.height), (280.0, 54.0));
+        assert_eq!(collapsed.min, collapsed.max);
+        assert_eq!((collapsed.x, collapsed.y), (400.0, 300.0));
+        state.mode = OverlayMode::Expanded;
+        let expanded = geometry_for(state.mode, &state.effective_frame(), state.minimum_height);
+        assert_eq!((expanded.width, expanded.height), (730.0, 200.0));
+        assert_eq!(expanded.min, (360.0, 200.0));
+    }
+
+    #[test]
+    fn followed_and_saved_frames_grow_independently_without_changing_their_origins() {
+        let mut state = state_with_frame(frame(400.0, 300.0, 730.0, 136.0));
+        state.presentation_frame = Some(frame(-1200.0, 200.0, 600.0, 144.0));
+        state.update_minimum_height(200.0);
+        assert_eq!(state.user_frame, frame(400.0, 300.0, 730.0, 200.0));
+        assert_eq!(state.effective_frame(), frame(-1200.0, 200.0, 600.0, 200.0));
+        assert!(presentation_frame_matches_observed(
+            &state,
+            &state.effective_frame()
+        ));
+        assert!(!adopt_observed_frame(
+            &mut state,
+            frame(-1200.0, 200.0, 600.0, 200.0)
+        ));
+        assert_eq!(state.user_frame, frame(400.0, 300.0, 730.0, 200.0));
+    }
+
+    #[test]
+    fn native_resize_uses_the_current_minimum_and_keeps_the_opposite_edge_anchored() {
+        let start = ResizeGesture {
+            pointer: (400.0, 300.0),
+            frame: frame(400.0, 300.0, 640.0, 482.0),
+            work_area: WORK_AREA,
+        };
+        let resized = resized_frame_for_pointer(ResizeRegion::Top, start, (400.0, 900.0), 200.0);
+        assert_eq!(resized.height, 200.0);
+        assert_eq!(
+            resized.y + resized.height,
+            start.frame.y + start.frame.height
+        );
+        assert_eq!((resized.x, resized.width), (400.0, 640.0));
+    }
+
+    #[test]
+    fn fitting_and_native_observation_cannot_restore_a_height_below_the_current_requirement() {
+        let mut state = state_with_frame(frame(400.0, 300.0, 640.0, 136.0));
+        state.update_minimum_height(200.0);
+        promote_observed_user_frame(&mut state, frame(400.0, 300.0, 640.0, 136.0));
+        assert_eq!(state.user_frame.height, 200.0);
+        let mut fitted = frame(400.0, 300.0, 640.0, 136.0);
+        assert!(fit_frame_to_work_area(
+            &mut fitted,
+            WORK_AREA,
+            state.minimum_height
+        ));
+        assert_eq!(fitted, state.user_frame);
+    }
+
+    #[test]
     fn collapsed_is_fixed_size_at_user_origin() {
-        let geometry = geometry_for(OverlayMode::Collapsed, &frame(400.0, 300.0, 640.0, 136.0));
+        let geometry = geometry_for(
+            OverlayMode::Collapsed,
+            &frame(400.0, 300.0, 640.0, 136.0),
+            136.0,
+        );
         assert_eq!(
             (geometry.x, geometry.y, geometry.width, geometry.height),
             (400.0, 300.0, 280.0, 54.0)
@@ -2845,7 +3331,8 @@ mod geometry_tests {
             work_area,
         };
 
-        let resized = resized_frame_for_pointer(ResizeRegion::BottomRight, start, (3180.0, 429.0));
+        let resized =
+            resized_frame_for_pointer(ResizeRegion::BottomRight, start, (3180.0, 429.0), 136.0);
 
         assert_eq!(resized, frame(2070.0, 150.0, 740.0, 186.0));
     }
@@ -2885,7 +3372,7 @@ mod geometry_tests {
         };
         let saved = frame(436.0, 774.0, 640.0, 136.0);
 
-        let mapped = map_frame_between_work_areas(saved, WORK_AREA, target);
+        let mapped = map_frame_between_work_areas(saved, WORK_AREA, target, 136.0);
 
         assert_eq!(mapped, frame(-1184.0, 752.0, 640.0, 136.0));
     }
@@ -2901,7 +3388,7 @@ mod geometry_tests {
         };
         let saved = frame(400.0, 400.0, 640.0, 300.0);
 
-        let mapped = map_frame_between_work_areas(saved, WORK_AREA, target);
+        let mapped = map_frame_between_work_areas(saved, WORK_AREA, target, 136.0);
 
         assert_eq!(mapped, frame(1600.0, 100.0, 520.0, 200.0));
     }
@@ -2910,7 +3397,7 @@ mod geometry_tests {
     fn same_screen_mapping_still_fits_a_stale_offscreen_frame() {
         let stale = frame(1400.0, 900.0, 900.0, 400.0);
 
-        let mapped = map_frame_between_work_areas(stale, WORK_AREA, WORK_AREA);
+        let mapped = map_frame_between_work_areas(stale, WORK_AREA, WORK_AREA, 136.0);
 
         assert_eq!(mapped, frame(612.0, 582.0, 900.0, 400.0));
     }
@@ -3094,7 +3581,7 @@ mod geometry_tests {
     fn settled_frame_returns_fully_inside_the_right_edge() {
         let mut moved = frame(1_200.0, 400.0, 640.0, 136.0);
 
-        assert!(fit_frame_to_work_area(&mut moved, WORK_AREA));
+        assert!(fit_frame_to_work_area(&mut moved, WORK_AREA, 136.0));
 
         assert_eq!(moved, frame(872.0, 400.0, 640.0, 136.0));
     }
@@ -3110,7 +3597,7 @@ mod geometry_tests {
         };
         let mut oversized = frame(480.0, 260.0, 1_200.0, 600.0);
 
-        assert!(fit_frame_to_work_area(&mut oversized, narrow));
+        assert!(fit_frame_to_work_area(&mut oversized, narrow, 136.0));
 
         assert_eq!(oversized, frame(100.0, 50.0, 520.0, 320.0));
     }
@@ -3126,7 +3613,7 @@ mod geometry_tests {
         };
         let mut moved = frame(-400.0, 900.0, 640.0, 136.0);
 
-        assert!(fit_frame_to_work_area(&mut moved, left));
+        assert!(fit_frame_to_work_area(&mut moved, left, 136.0));
 
         assert_eq!(moved, frame(-640.0, 824.0, 640.0, 136.0));
     }
@@ -3135,7 +3622,7 @@ mod geometry_tests {
     fn settled_frame_that_is_already_visible_stays_exactly_unchanged() {
         let mut visible = frame(400.0, 300.0, 640.0, 136.0);
 
-        assert!(!fit_frame_to_work_area(&mut visible, WORK_AREA));
+        assert!(!fit_frame_to_work_area(&mut visible, WORK_AREA, 136.0));
 
         assert_eq!(visible, frame(400.0, 300.0, 640.0, 136.0));
     }
@@ -3175,17 +3662,29 @@ mod geometry_tests {
 
     #[test]
     fn panel_grows_upward_when_it_would_overflow_bottom() {
-        let geometry =
-            overlay_control_geometry(OverlayControlMode::Panel, 400.0, 900.0, 356.0, WORK_AREA);
+        let geometry = overlay_control_geometry(
+            OverlayControlMode::Panel,
+            400.0,
+            900.0,
+            180.0,
+            356.0,
+            WORK_AREA,
+        );
         assert_eq!(geometry.y, 900.0 + 30.0 - 356.0);
-        assert_eq!(geometry.width, 276.0);
+        assert_eq!(geometry.width, 280.0);
         assert_eq!(geometry.height, 356.0);
     }
 
     #[test]
     fn panel_keeps_its_anchor_when_there_is_room_below() {
-        let geometry =
-            overlay_control_geometry(OverlayControlMode::Panel, 400.0, 300.0, 356.0, WORK_AREA);
+        let geometry = overlay_control_geometry(
+            OverlayControlMode::Panel,
+            400.0,
+            300.0,
+            180.0,
+            356.0,
+            WORK_AREA,
+        );
         assert_eq!(geometry.y, 300.0);
     }
 
@@ -3202,6 +3701,7 @@ mod geometry_tests {
             OverlayControlMode::Island,
             -1800.0,
             -200.0,
+            180.0,
             356.0,
             work_area,
         );
@@ -3218,11 +3718,98 @@ mod geometry_tests {
             height: 180.0,
             coordinate_scale: 1.0,
         };
-        let geometry =
-            overlay_control_geometry(OverlayControlMode::Panel, 400.0, 160.0, 520.0, work_area);
-        assert_eq!(geometry.x, 136.0);
+        let geometry = overlay_control_geometry(
+            OverlayControlMode::Panel,
+            400.0,
+            160.0,
+            180.0,
+            520.0,
+            work_area,
+        );
+        assert_eq!(geometry.x, 132.0);
+        assert_eq!(geometry.width, 280.0);
         assert_eq!(geometry.y, 58.0);
         assert_eq!(geometry.height, 164.0);
+    }
+
+    #[test]
+    fn island_hugs_measured_content_without_changing_the_panel_width_or_left_anchor() {
+        for width in [148.0, 188.0, 312.0] {
+            let island = overlay_control_geometry(
+                OverlayControlMode::Island,
+                400.0,
+                300.0,
+                width,
+                356.0,
+                WORK_AREA,
+            );
+            let panel = overlay_control_geometry(
+                OverlayControlMode::Panel,
+                400.0,
+                300.0,
+                width,
+                356.0,
+                WORK_AREA,
+            );
+            assert_eq!((island.x, island.y, island.width), (400.0, 300.0, width));
+            assert_eq!((panel.x, panel.y, panel.width), (400.0, 300.0, 280.0));
+        }
+    }
+
+    #[test]
+    fn measured_width_updates_keep_hidden_and_panel_modes_and_dismiss_generation() {
+        let state = OverlayControlState::default();
+        assert!(state.set_island_width(148.0));
+        assert_eq!(state.snapshot(), (OverlayControlMode::Hidden, 270.0, 0));
+        assert_eq!(state.dimensions(), (148.0, 270.0));
+        assert!(state.set_mode(OverlayControlMode::Panel));
+        assert!(state.set_panel_height(356.0));
+        assert!(state.set_island_width(312.0));
+        assert!(!state.set_island_width(312.0));
+        assert_eq!(state.snapshot(), (OverlayControlMode::Panel, 356.0, 1));
+        assert_eq!(state.dimensions(), (312.0, 356.0));
+    }
+
+    #[test]
+    fn island_measurements_are_finite_rounded_and_bounded() {
+        assert_eq!(measured_island_width(173.2), Some(174.0));
+        assert_eq!(measured_island_width(2.0), Some(80.0));
+        assert_eq!(measured_island_width(10000.0), Some(512.0));
+        assert_eq!(measured_island_width(f64::NAN), None);
+        assert_eq!(measured_island_width(f64::INFINITY), None);
+    }
+
+    #[test]
+    fn island_width_clamps_to_short_screens_without_using_panel_width() {
+        let work_area = LogicalWorkArea {
+            x: 100.0,
+            y: 50.0,
+            width: 320.0,
+            height: 180.0,
+            coordinate_scale: 1.0,
+        };
+        let island = overlay_control_geometry(
+            OverlayControlMode::Island,
+            400.0,
+            160.0,
+            180.0,
+            520.0,
+            work_area,
+        );
+        assert_eq!((island.x, island.y, island.width), (232.0, 160.0, 180.0));
+        let narrow = LogicalWorkArea {
+            width: 100.0,
+            ..work_area
+        };
+        let island = overlay_control_geometry(
+            OverlayControlMode::Island,
+            400.0,
+            160.0,
+            312.0,
+            520.0,
+            narrow,
+        );
+        assert_eq!((island.x, island.y, island.width), (108.0, 160.0, 84.0));
     }
 
     #[test]

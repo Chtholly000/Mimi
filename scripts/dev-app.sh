@@ -10,7 +10,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
-BUILD_APP="$PROJECT_DIR/src-tauri/target/release/mimi-dev.app"
+TARGET_DIR="${CARGO_TARGET_DIR:-$PROJECT_DIR/src-tauri/target}"
+if [[ "$TARGET_DIR" != /* ]]; then
+  TARGET_DIR="$PROJECT_DIR/$TARGET_DIR"
+fi
+BUILD_DIR="$TARGET_DIR/local-dev"
+BUILD_APP="$BUILD_DIR/mimi-dev.app"
 DEV_TAURI_CONFIG="$PROJECT_DIR/src-tauri/tauri.dev.conf.json"
 RELEASE_TAURI_CONFIG="$PROJECT_DIR/src-tauri/tauri.conf.json"
 CANONICAL_APP="${MIMI_DEV_APP_PATH:-/Applications/mimi-dev.app}"
@@ -18,13 +23,15 @@ BUNDLE_IDENTIFIER="app.yuxino.mimi.dev"
 RELEASE_BUNDLE_IDENTIFIER="app.yuxino.mimi"
 MODE="live"
 SHOULD_LAUNCH=1
+EVIDENCE_WORKSPACE=""
 
 usage() {
   cat <<'EOF'
-Usage: ./scripts/dev-app.sh [--ui-only] [--no-launch]
+Usage: ./scripts/dev-app.sh [--ui-only] [--no-launch] [--evidence-workspace NAME]
 
   --ui-only   Open local UI fixtures without credentials, network, or audio capture.
   --no-launch Build and install the canonical development app without opening it.
+  --evidence-workspace NAME  Select a private dev evidence batch; recordings remain off until explicitly enabled.
 
 Live development always uses a stable signing identity and a fixed app path.
 The default is /Applications/mimi-dev.app. Override it only with another path
@@ -41,6 +48,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-launch)
       SHOULD_LAUNCH=0
+      ;;
+    --evidence-workspace)
+      if [[ $# -lt 2 || ! "$2" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$ ]]; then
+        echo "error: evidence workspace must be 1–48 ASCII letters, digits, underscores or hyphens, starting with a letter or digit." >&2
+        exit 2
+      fi
+      EVIDENCE_WORKSPACE="$2"
+      shift
       ;;
     -h | --help)
       usage
@@ -273,7 +288,7 @@ if [[ "${MIMI_DEV_RECOVERY_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
-IDENTITY="$("$SCRIPT_DIR/codesign-identity.sh")"
+IDENTITY="$("$SCRIPT_DIR/codesign-identity.sh" --development)"
 if [[ "$IDENTITY" == "-" ]]; then
   cat >&2 <<'EOF'
 error: development launch requires a stable code-signing identity.
@@ -293,17 +308,24 @@ cd "$PROJECT_DIR"
 export CARGO_HOME="${CARGO_HOME:-$PROJECT_DIR/.cargo-home}"
 export npm_config_cache="${npm_config_cache:-$PROJECT_DIR/.npm-cache}"
 export MACOSX_DEPLOYMENT_TARGET="13.0"
+export MIMI_DEBUG_REVISION="$(git rev-parse HEAD)"
+if [[ -n "$(git status --porcelain)" ]]; then
+  export MIMI_DEBUG_TREE_STATE="dirty"
+else
+  export MIMI_DEBUG_TREE_STATE="clean"
+fi
 
-npm run build
-TAURI_CONFIG="$(<"$DEV_TAURI_CONFIG")" cargo build --release \
+npm run build:dev
+TAURI_CONFIG="$(<"$DEV_TAURI_CONFIG")" cargo build --profile local-dev \
   --locked \
-  --features tauri/custom-protocol,devtools \
+  --features tauri/custom-protocol,devtools,development-debugger,local-dev-credentials \
   --manifest-path src-tauri/Cargo.toml
 
 rm -rf "$BUILD_APP"
 mkdir -p "$BUILD_APP/Contents/MacOS" "$BUILD_APP/Contents/Resources"
-cp "$PROJECT_DIR/src-tauri/target/release/mimi" "$BUILD_APP/Contents/MacOS/mimi"
+cp "$BUILD_DIR/mimi" "$BUILD_APP/Contents/MacOS/mimi"
 cp "$PROJECT_DIR/src-tauri/icons/icon.icns" "$BUILD_APP/Contents/Resources/icon.icns"
+cp "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" "$BUILD_APP/Contents/Resources/THIRD_PARTY_NOTICES.md"
 chmod 755 "$BUILD_APP/Contents/MacOS/mimi"
 
 cat > "$BUILD_APP/Contents/Info.plist" <<PLIST
@@ -338,13 +360,17 @@ cat > "$BUILD_APP/Contents/Info.plist" <<PLIST
   <key>NSScreenCaptureUsageDescription</key>
   <string>mimi uses ScreenCaptureKit only to capture system audio for live subtitles.</string>
   <key>NSAudioCaptureUsageDescription</key>
-  <string>mimi captures system audio only to create live subtitles.</string>
+  <string>mimi captures system audio to create live subtitles. Audio is saved locally only when you enable audio recording.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>mimi uses your microphone for live subtitles only when you select Microphone as the audio input and start subtitles.</string>
 </dict>
 </plist>
 PLIST
 
 plutil -lint "$BUILD_APP/Contents/Info.plist" >/dev/null
-codesign --force --deep --timestamp=none --sign "$IDENTITY" "$BUILD_APP"
+codesign --force --deep --timestamp=none \
+  --entitlements "$PROJECT_DIR/src-tauri/Entitlements.plist" \
+  --sign "$IDENTITY" "$BUILD_APP"
 codesign --verify --deep --strict "$BUILD_APP"
 
 NEW_REQUIREMENT="$(designated_requirement "$BUILD_APP")"
@@ -420,6 +446,10 @@ if ! codesign --verify --deep --strict "$CANONICAL_APP" \
 fi
 INSTALL_COMMITTED=1
 rm -rf "$PREVIOUS_APP"
+# The signed bundle is a disposable copy of the incremental build binary.
+# Keep one discoverable dev application; retaining this copy makes Spotlight
+# offer a second launch target with the same bundle identifier.
+rm -rf "$BUILD_APP"
 
 echo "Installed stable development app: $CANONICAL_APP"
 echo "Designated requirement: $NEW_REQUIREMENT"
@@ -439,9 +469,9 @@ if [[ "$SHOULD_LAUNCH" == "1" ]]; then
   fi
 
   if [[ "$MODE" == "ui-only" ]]; then
-    open -n --env MIMI_UI_TEST=1 "$CANONICAL_APP"
+    open -n --env MIMI_UI_TEST=1 --env "MIMI_DEVELOPMENT_EVIDENCE_WORKSPACE=$EVIDENCE_WORKSPACE" "$CANONICAL_APP"
   else
-    open -n "$CANONICAL_APP"
+    open -n --env "MIMI_DEVELOPMENT_EVIDENCE_WORKSPACE=$EVIDENCE_WORKSPACE" "$CANONICAL_APP"
   fi
 
   RUNNING_CANONICAL_PIDS=()
@@ -459,6 +489,7 @@ if [[ "$SHOULD_LAUNCH" == "1" ]]; then
     exit 1
   fi
   echo "Opened exact development app: $CANONICAL_APP (pid ${RUNNING_CANONICAL_PIDS[0]})"
+  echo "Development evidence workspace: ${EVIDENCE_WORKSPACE:-default}"
   if [[ "$MODE" == "ui-only" ]]; then
     echo "UI-only mode does not access credentials, network services, or system audio."
   fi

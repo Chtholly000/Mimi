@@ -1,147 +1,185 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { subtitleBackgroundColor } from "../../lib/subtitleColor";
 import { I18N } from "../../lib/i18n";
-import { isTauri } from "../../lib/ipc";
+import { AudioInputIndicator } from "../../components/AudioInputIndicator";
+import { audioInputLabel } from "../../lib/audioInput";
+import { isTauri, listenOverlayPointerMotion } from "../../lib/ipc";
 import { useStore } from "../../lib/store";
+import { DevelopmentOverlayTrace } from "./DevelopmentOverlayTrace";
 import { OVERLAY_ACTIVITY_PHASES, hexToRgba } from "../../lib/types";
 import { ControlButton } from "./ControlButton";
 import { DragHandle } from "./DragHandle";
 import { PulseRing } from "./PulseRing";
+import { OverlayLatency } from "./OverlayLatency";
+import { OverlayTranslationService } from "./OverlayTranslationService";
+import { translationService } from "./translationService";
 import { ResizeHandles } from "./ResizeHandles";
 import { Timeline } from "./Timeline";
-import { useStableText } from "./animation";
-import { overlayTopChromeLayout } from "./overlayChromeLayout";
-import { visibleDraftSegments } from "./segmenter";
+import { useResolvedMotion } from "./animation";
+import { useSubtitleTail } from "./useSubtitleTail";
+import type { SourceSubtitleSnapshot } from "../../lib/types";
+import { overlaySessionChromeLayout } from "./overlayChromeLayout";
+import { minimumOverlayHeight } from "./overlayMinimumHeight";
+import { useSessionAction } from "./useSessionAction";
+import { publishOverlayPointerMotion } from "../../lib/overlayPointer";
 import {
+  buildSubtitleBlocks,
+  buildMultiSourceSubtitleBlocks,
   computeActivityPhase,
-  computeVisibleRows,
   emptyStateDensity,
   emptyStateIsError,
   emptyStateText,
   hasSubtitleContent,
-  subtitleSegmentLength,
-  visibleLiveSubtitle,
+  usesAtomicSubtitlePreview,
 } from "./overlayModel";
 
 const ACCENT = "#7AA8FF";
 const OVERLAY_INSET = 6;
+const EMPTY_MICROPHONE: SourceSubtitleSnapshot = {
+  audioSource: "microphone", source: { text: "", isFinal: false }, translation: { text: "", isFinal: false },
+  history: [], detectedLanguage: null, isTranslationPending: false, isTranslationTimedOut: false,
+};
+const EMPTY_SYSTEM: SourceSubtitleSnapshot = { ...EMPTY_MICROPHONE, audioSource: "system" };
+type ControlAction = "collapse" | "clear" | "immersive" | "lock" | "settings";
 
 /** Floating subtitle overlay driven by native session and geometry state. */
 export function OverlayWindow() {
+  const subtitleRootRef = useRef<HTMLDivElement>(null);
   const session = useStore((state) => state.session);
   const settings = useStore((state) => state.settings);
   const togglePaused = useStore((state) => state.togglePaused);
+  const start = useStore((state) => state.start);
   const clearSubtitles = useStore((state) => state.clearSubtitles);
   const setOverlayCollapsed = useStore((state) => state.setOverlayCollapsed);
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
   const saveSettings = useStore((state) => state.saveSettings);
   const showSettings = useStore((state) => state.showSettings);
+  const sessionAction = useSessionAction();
+  const controlAction = useSessionAction();
+  const { run: runGuardedControl, clearFailure: clearControlFailure } = controlAction;
+  const [pendingControl, setPendingControl] = useState<ControlAction | null>(null);
+  const { clearFailure } = sessionAction;
+  useEffect(() => {
+    clearFailure();
+    clearControlFailure();
+  }, [session.status.kind, session.isActive, session.isPaused, clearFailure, clearControlFailure]);
+
+  const runControlAction = (action: ControlAction, operation: () => Promise<void>) => {
+    void runGuardedControl(async () => {
+      setPendingControl(action);
+      try {
+        await operation();
+      } finally {
+        setPendingControl(null);
+      }
+    });
+  };
 
   const [isHovering, setIsHovering] = useState(false);
+  const [readingHistory, setReadingHistory] = useState(false);
+  const [followTailRequest, setFollowTailRequest] = useState(0);
+  useEffect(() => {
+    if (!isTauri) return;
+    let disposed = false;
+    let pointerInside = false;
+    let removeListener: (() => void) | undefined;
+    const blurWindow = () => {
+      pointerInside = false;
+      publishOverlayPointerMotion(null);
+      setIsHovering(false);
+    };
+    window.addEventListener("blur", blurWindow);
+    void listenOverlayPointerMotion((point) => {
+      if (disposed) return;
+      publishOverlayPointerMotion(point);
+      const nextInside = point !== null;
+      if (pointerInside !== nextInside) {
+        pointerInside = nextInside;
+        setIsHovering(nextInside);
+      }
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else removeListener = unlisten;
+    }).catch(() => {});
+    return () => {
+      disposed = true;
+      window.removeEventListener("blur", blurWindow);
+      removeListener?.();
+      publishOverlayPointerMotion(null);
+    };
+  }, []);
   const [overlaySize, setOverlaySize] = useState(() => ({
     width: typeof window === "undefined" || !isTauri ? 640 : window.innerWidth,
     height:
-      typeof window === "undefined" || !isTauri ? 136 : window.innerHeight,
+      typeof window === "undefined" || !isTauri ? 482 : window.innerHeight,
   }));
-  const topChromeLayout = overlayTopChromeLayout(
+  const topChromeLayout = overlaySessionChromeLayout(
     Math.max(0, overlaySize.width - OVERLAY_INSET * 2),
-    session.isActive,
+    session,
   );
+  const showSessionControls = topChromeLayout.showControls;
+  const service = translationService(settings);
+  const separateMetadataRow = Boolean(service) && overlaySize.width < 552;
+  const contentTopBandHeight = topChromeLayout.topBandHeight + (separateMetadataRow ? 20 : 0);
 
   const collapsed = session.isOverlayCollapsed;
   const blendsWithBackground = settings.subtitleBlendsWithBackground;
+  // Resolved once per render: an explicit switch overrides the system, and the
+  // body class is what the CSS animations key off.
+  const pulseOn = useResolvedMotion(settings.pulseAnimation);
+  const motionOn = useResolvedMotion(settings.subtitleAnimation);
+  useEffect(() => {
+    document.body.classList.toggle("motion-reduced", !motionOn);
+    document.body.classList.toggle("pulse-off", !pulseOn);
+  }, [motionOn, pulseOn]);
   const presentationCollapsed = collapsed && !blendsWithBackground;
   const phase = computeActivityPhase(session, settings);
-  const detectedLanguage = session.detectedLanguage;
-  const segmentLength = subtitleSegmentLength(
-    settings.targetLanguage,
-    detectedLanguage,
-  );
-  const sourceSegmentLength = subtitleSegmentLength(
-    "original",
-    detectedLanguage ?? (settings.sourceLanguage === "auto" ? null : settings.sourceLanguage),
-  );
-  // Recompute rows only when HISTORY changes. The live draft streams at tens
-  // of events per second and must not re-run the segmenter over the whole
-  // history (that was the main cost during live listening). Rows depend on
-  // the history array reference, not the whole subtitles object.
-  const rows = useMemo(
-    () => computeVisibleRows(
-      session.subtitles.history,
-      segmentLength,
-      settings.subtitleDisplayMode,
-      sourceSegmentLength,
-    ),
-    // Keying on the history array reference (plus segmentLength) makes
-    // draft churn a no-op here.
-    [session.subtitles.history, segmentLength, sourceSegmentLength, settings.subtitleDisplayMode],
-  );
-  // The live preview line is the timeline's LAST row (dimmed with a trailing
-  // ellipsis), so it naturally follows history instead of piling up at the
-  // bottom of the panel. Its text is stabilized: original-mode text settles
-  // quickly, translated text stays calmer, and confirmed/removed tails update
-  // immediately. Source and translation previews have separate stabilization
-  // identities so a display-mode change cannot retain the previous source.
-  const liveSubtitle = useMemo(
-    () =>
-      visibleLiveSubtitle(
-        session.subtitles,
-        settings,
-        detectedLanguage,
-        session.isTranslationPending,
-        session.isTranslationTimedOut,
-      ),
-    [
-      session.subtitles,
-      session.isTranslationPending,
-      session.isTranslationTimedOut,
-      settings,
-      detectedLanguage,
-    ],
-  );
-  const draftText = useStableText(
-    liveSubtitle?.text ?? "",
-    liveSubtitle === null || liveSubtitle.isFinal
-      ? 0
-      : liveSubtitle.kind === "source"
-        ? 180
-        : 400,
-    liveSubtitle?.kind === "source" ? 750 : 1_500,
-    `${settings.subtitleDisplayMode}-${liveSubtitle?.kind ?? ""}`,
-  );
-  const hasLiveDraft = draftText !== "" && !liveSubtitle?.isFinal;
-  // Full row list: history rows plus the stabilized draft segments as the
-  // trailing rows. Rebuilt only when history or the (settled) draft changes.
-  const liveSegmentLength = liveSubtitle?.kind === "source" ? sourceSegmentLength : segmentLength;
-  const allRows = useMemo(() => {
-    if (draftText === "") {
-      return rows;
-    }
-    const draftSegments = visibleDraftSegments(draftText, liveSegmentLength, 2);
-    return [
-      ...rows,
-      ...draftSegments.map((text, index) => ({
-        id: `draft-${index}`,
-        text,
-        createdAt: null,
-      })),
-    ];
-  }, [rows, draftText, liveSegmentLength]);
+  const activeProvider = settings.profiles.find(profile => profile.id === settings.activeProfileId)?.provider;
+  const atomicProvider = usesAtomicSubtitlePreview(activeProvider);
+  // Disabling an input keeps its confirmed captions and source identity.
+  const dual = new Set([
+    ...(session.subtitles.tracks ?? []).map(track => track.audioSource),
+    ...session.subtitles.history.map(pair => pair.audioSource ?? "system"),
+  ]).size > 1;
+  const systemTrack = dual ? session.subtitles.tracks?.find(track => track.audioSource === "system") : undefined;
+  const microphoneTrack = dual ? session.subtitles.tracks?.find(track => track.audioSource === "microphone") : undefined;
+  const primarySubtitles = dual ? systemTrack ?? EMPTY_SYSTEM : session.subtitles;
+  const microphoneSubtitles = microphoneTrack ?? EMPTY_MICROPHONE;
+  const primaryAudioSource = session.subtitles.tracks?.[0]?.audioSource
+    ?? (settings.audioInput === "microphone" ? "microphone" : "system");
+  const running = OVERLAY_ACTIVITY_PHASES[phase].animationSpeed > 0;
+  const primaryTail = useSubtitleTail(primarySubtitles, settings, dual ? systemTrack ?? EMPTY_SYSTEM : session, running, atomicProvider, "primary");
+  const microphoneTail = useSubtitleTail(microphoneSubtitles, settings, microphoneSubtitles, running, atomicProvider, "microphone");
+  const blocks = useMemo(() => dual
+    ? buildMultiSourceSubtitleBlocks(session.subtitles.history, settings.subtitleDisplayMode, [
+      { audioSource: "system", history: primarySubtitles.history, tail: primaryTail },
+      { audioSource: "microphone", history: microphoneSubtitles.history, tail: microphoneTail },
+    ])
+    : buildSubtitleBlocks(session.subtitles.history, settings.subtitleDisplayMode, primaryTail)
+      .map(block => ({ ...block, audioSource: block.audioSource ?? primaryAudioSource })),
+  [dual, session.subtitles.history, settings.subtitleDisplayMode, primarySubtitles.history, primaryTail, primaryAudioSource, microphoneSubtitles.history, microphoneTail]);
   const hasContent = hasSubtitleContent(session.subtitles);
-
-  const phaseLabel = OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;
+  const phaseLabel = session.status.kind === "stopping" ? I18N.overlay.stopping : OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;
   const pauseLabel = session.isPaused
     ? I18N.overlay.resume
     : I18N.overlay.pause;
+  const sessionActionBusy = sessionAction.pending || session.status.kind === "connecting" || session.status.kind === "stopping";
+  const sessionActionLabel = sessionActionBusy
+    ? session.status.kind === "stopping" ? I18N.overlay.stopping : I18N.overlay.connecting
+    : session.status.kind === "error" ? I18N.overlay.retry : pauseLabel;
+  const runSessionAction = () => {
+    void sessionAction.run(session.status.kind === "error" ? start : togglePaused);
+  };
 
   const toggleCollapsed = () => {
-    void setOverlayCollapsed(!collapsed);
+    runControlAction("collapse", () => setOverlayCollapsed(!collapsed));
   };
 
   useEffect(() => {
     if (blendsWithBackground && collapsed) {
-      void setOverlayCollapsed(false);
+      void runGuardedControl(() => setOverlayCollapsed(false));
     }
-  }, [blendsWithBackground, collapsed, setOverlayCollapsed]);
+  }, [blendsWithBackground, collapsed, setOverlayCollapsed, runGuardedControl]);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -159,7 +197,7 @@ export function OverlayWindow() {
 
   const content = (
     <>
-      <div className="h-full w-full" style={{ padding: OVERLAY_INSET }}>
+      <div ref={subtitleRootRef} className="h-full w-full" style={{ padding: OVERLAY_INSET }}>
         <div
           key={presentationCollapsed ? "collapsed" : "expanded"}
           className={
@@ -173,8 +211,14 @@ export function OverlayWindow() {
         </div>
       </div>
       {!settings.isOverlayLocked && !presentationCollapsed && !blendsWithBackground && (
-        <ResizeHandles disabled={false} onResize={handleResize} />
+        <ResizeHandles disabled={false} onResize={handleResize} minimumHeight={minimumOverlayHeight(settings)} />
       )}
+      {__MIMI_DEVELOPMENT_BUILD__ && <DevelopmentOverlayTrace
+        subtitleRootRef={subtitleRootRef} session={session} settings={settings} blocks={blocks}
+        dual={dual} primarySubtitles={primarySubtitles} microphoneSubtitles={microphoneSubtitles}
+        primaryTail={primaryTail} microphoneTail={microphoneTail} atomicProvider={atomicProvider}
+        presentationCollapsed={presentationCollapsed}
+      />}
     </>
   );
 
@@ -194,11 +238,45 @@ export function OverlayWindow() {
     </div>
   );
 
+  function renderStatusLine() {
+    const returnToLive = readingHistory && blocks.length > 0 && !presentationCollapsed;
+    const showTiming = session.isActive && !blendsWithBackground;
+    const actionFailed = sessionAction.failed || controlAction.failed;
+    const visibleService = blendsWithBackground ? null : service;
+    if (!showTiming && !sessionAction.pending && !actionFailed && !returnToLive && !visibleService) return null;
+    return <div className={`overlay-status-row${separateMetadataRow ? " overlay-status-row--narrow" : ""}`}
+      style={{ top: contentTopBandHeight - 14, columnGap: separateMetadataRow || blendsWithBackground ? 8 : topChromeLayout.dragHandleWidth + 16 }}>
+      <div className="overlay-status-row__leading">
+        {sessionAction.pending || actionFailed ? <div role={sessionAction.pending ? "status" : "alert"} className="overlay-action-feedback">
+          {sessionAction.pending ? I18N.overlay.connecting : I18N.overlay.controlActionFailed}
+        </div> : showTiming ? <OverlayLatency session={session} translationRequired={settings.targetLanguage !== "original"} /> : null}
+      </div>
+      <div className={`overlay-status-row__trailing${returnToLive ? " overlay-status-row__trailing--reading" : ""}`}>
+        {visibleService && <OverlayTranslationService service={visibleService}
+          onClick={() => runControlAction("settings", () => showSettings("service"))}
+          disabled={controlAction.pending} />}
+        {returnToLive && <button type="button" className="overlay-return-to-live" onClick={() => {
+          setReadingHistory(false);
+          setFollowTailRequest(request => request + 1);
+        }}>{I18N.overlay.returnToLive}</button>}
+      </div>
+    </div>;
+  }
+
   function renderExpanded() {
-    const topBandHeight = (session.isActive ? 38 : 24) + 13;
+    const topBandHeight = contentTopBandHeight;
     const emptyDensity = emptyStateDensity(overlaySize.height);
-    const showEmptyPulse = session.isActive && emptyDensity !== "minimal";
     const compactEmptyPulse = emptyDensity === "compact";
+    const pulseBaseSize = compactEmptyPulse ? 48 : 80;
+    const emptyFontSize = emptyDensity === "minimal" ? 12 : Math.max(12, settings.fontSize * 0.68);
+    const emptyGap = emptyDensity === "comfortable" ? 4 : 2;
+    const statusLines = overlaySize.width < 480 ? 2 : 1;
+    // Subtract the canvas inset, border, padding and the actual status-line
+    // budget so the prominent light also fits short native windows.
+    const emptyPulseSize = Math.min(pulseBaseSize, Math.max(0,
+      overlaySize.height - 24 - topBandHeight - emptyFontSize * 1.25 * statusLines - emptyGap,
+    ));
+    const showEmptyPulse = session.isActive && emptyDensity !== "minimal" && emptyPulseSize >= 24;
 
     if (blendsWithBackground) {
       return (
@@ -206,6 +284,7 @@ export function OverlayWindow() {
           className="relative flex h-full w-full overflow-hidden"
           data-presentation="background-blend"
         >
+          {renderStatusLine()}
           <div
             className="flex min-h-0 w-full flex-col"
             style={{
@@ -216,13 +295,21 @@ export function OverlayWindow() {
               height: "100%",
             }}
           >
-            {allRows.length > 0 && (
+            {blocks.length > 0 && (
               <Timeline
-                rows={allRows}
+                blocks={blocks}
                 fontSize={settings.fontSize}
+                color={settings.subtitleColor}
                 alignment={settings.subtitleAlignment}
+                displayMode={settings.subtitleDisplayMode}
+                showSubtitleDividers={settings.showSubtitleDividers}
+                showTimestamps={settings.showSubtitleTimestamps}
+                audioInput={settings.audioInput}
+                microphoneColor={settings.microphoneSubtitleColor}
+                motionEnabled={motionOn}
                 blendsWithBackground
-                draft={hasLiveDraft}
+                followTailRequest={followTailRequest}
+                onReadingHistoryChange={setReadingHistory}
               />
             )}
           </div>
@@ -240,24 +327,14 @@ export function OverlayWindow() {
         className="relative h-full w-full overflow-hidden"
         style={{
           borderRadius: 16,
-          background: "var(--overlay-card-background, rgba(0,0,0,0.62))",
+          background: subtitleBackgroundColor(settings.subtitleBackgroundOpacity),
           border: `${borderWidth}px solid ${borderColor}`,
         }}
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}
       >
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            borderRadius: 16,
-            background:
-              "linear-gradient(to bottom, rgba(255,255,255,0.035), rgba(255,255,255,0))",
-            pointerEvents: "none",
-          }}
-        />
-
         <div className="relative flex h-full flex-col" style={{ padding: 5 }}>
+          {renderStatusLine()}
           {/* Top band: the drag handle is absolutely positioned — centered
               horizontally on the window (left 50% + translateX) and pinned
               to the band's bottom — so no flex layout or the capsule/button
@@ -266,7 +343,7 @@ export function OverlayWindow() {
           <div
             className="absolute inset-x-0 top-0"
             style={{
-              height: topBandHeight,
+              height: topChromeLayout.topBandHeight,
               pointerEvents: "none",
               // Always-visible drag affordance: dimmed while idle, full on
               // hover. A fully transparent handle leaves no cue that the
@@ -287,61 +364,75 @@ export function OverlayWindow() {
               <DragHandle
                 onToggleCollapsed={toggleCollapsed}
                 width={topChromeLayout.dragHandleWidth}
+                disabled={controlAction.pending}
+                busy={pendingControl === "collapse"}
               />
             </div>
           </div>
 
-          {session.isActive &&
+          {showSessionControls &&
             !settings.isOverlayLocked &&
-            topChromeLayout.showActions && (
+            topChromeLayout.showPrimaryAction && (
             <div
               className="absolute flex"
               style={{
                 top: 10,
                 right: 10,
                 gap: 4,
-                opacity: isHovering || session.isPaused ? 1 : 0.54,
+                opacity: isHovering || session.isPaused || session.status.kind === "error" ? 1 : 0.75,
                 pointerEvents: "auto",
                 transition: "opacity 120ms ease",
               }}
             >
               <ControlButton
-                icon={session.isPaused ? "play" : "pause"}
-                label={pauseLabel}
-                onClick={() => void togglePaused()}
+                icon={session.status.kind === "error" || session.isPaused ? "play" : "pause"}
+                label={sessionActionLabel}
+                onClick={runSessionAction}
+                busy={sessionActionBusy}
+                disabled={sessionActionBusy}
               />
+              {topChromeLayout.showActions && <>
               <ControlButton
                 icon="chevron-up"
                 label={I18N.overlay.collapseSubtitle}
-                onClick={() => void setOverlayCollapsed(true)}
+                onClick={() => runControlAction("collapse", () => setOverlayCollapsed(true))}
+                busy={pendingControl === "collapse"}
+                disabled={controlAction.pending}
                 data-testid="collapse-subtitles"
               />
-              {hasContent && (
-                <ControlButton
-                  icon="eraser"
-                  label={I18N.overlay.clearSubtitles}
-                  onClick={() => void clearSubtitles()}
-                />
-              )}
+              <ControlButton
+                icon="eraser"
+                label={I18N.overlay.clearSubtitles}
+                onClick={() => runControlAction("clear", clearSubtitles)}
+                busy={pendingControl === "clear"}
+                disabled={!hasContent || controlAction.pending}
+              />
               <ControlButton
                 icon="blend"
                 label={I18N.overlay.enterImmersiveMode}
                 onClick={() =>
-                  void saveSettings({ subtitleBlendsWithBackground: true })
+                  runControlAction("immersive", () => saveSettings({ subtitleBlendsWithBackground: true }))
                 }
+                busy={pendingControl === "immersive"}
+                disabled={controlAction.pending}
                 data-testid="toggle-immersive-mode"
               />
               <ControlButton
                 icon="lock"
                 label={I18N.overlay.lockPosition}
-                onClick={() => void setOverlayLocked(true)}
+                onClick={() => runControlAction("lock", () => setOverlayLocked(true))}
+                busy={pendingControl === "lock"}
+                disabled={controlAction.pending}
                 data-testid="toggle-overlay-lock"
               />
               <ControlButton
                 icon="gear"
                 label={I18N.overlay.openSettings}
-                onClick={() => void showSettings()}
+                onClick={() => runControlAction("settings", () => showSettings())}
+                busy={pendingControl === "settings"}
+                disabled={controlAction.pending}
               />
+              </>}
             </div>
           )}
 
@@ -350,32 +441,32 @@ export function OverlayWindow() {
             style={{
               // The top band floats over the canvas, so reserve its exact
               // height or subtitle rows will slide underneath the controls.
-              // The extra 13px follows the lowered handle position.
+              // The band includes space below the native control capsule.
               paddingTop: topBandHeight,
               height: "100%",
             }}
           >
-          {allRows.length === 0 ? (
+          {blocks.length === 0 ? (
             <div
               className="flex flex-1 flex-col items-center justify-center"
-              style={{ gap: emptyDensity === "comfortable" ? 12 : 4 }}
+              style={{ gap: emptyGap }}
             >
               {showEmptyPulse && (
                 <div
-                  className="flex items-center"
-                  style={{ height: compactEmptyPulse ? 24 : 56 }}
+                  className="flex shrink-0 items-center justify-center"
+                  style={{ height: emptyPulseSize, width: emptyPulseSize }}
                 >
-                  <PulseRing phase={phase} compact={compactEmptyPulse} />
+                  <div style={{ transform: `scale(${emptyPulseSize / pulseBaseSize})` }}>
+                    <PulseRing phase={phase} prominent compact={compactEmptyPulse} motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
+                  </div>
                 </div>
               )}
               <div
                 style={{
                   width: "100%",
                   minWidth: 0,
-                  fontSize:
-                    emptyDensity === "minimal"
-                      ? 12
-                      : Math.max(12, settings.fontSize * 0.68),
+                  fontSize: emptyFontSize,
+                  lineHeight: 1.25,
                   fontWeight: 500,
                   color: emptyStateIsError(session)
                     ? "rgba(255,69,58,0.9)"
@@ -393,10 +484,18 @@ export function OverlayWindow() {
             </div>
           ) : (
             <Timeline
-              rows={allRows}
+              blocks={blocks}
               fontSize={settings.fontSize}
+              color={settings.subtitleColor}
               alignment={settings.subtitleAlignment}
-              draft={hasLiveDraft}
+              displayMode={settings.subtitleDisplayMode}
+              showSubtitleDividers={settings.showSubtitleDividers}
+              showTimestamps={settings.showSubtitleTimestamps}
+              audioInput={settings.audioInput}
+              microphoneColor={settings.microphoneSubtitleColor}
+              motionEnabled={motionOn}
+              followTailRequest={followTailRequest}
+              onReadingHistoryChange={setReadingHistory}
             />
           )}
           </div>
@@ -410,10 +509,10 @@ export function OverlayWindow() {
       <div
         className="relative h-full w-full"
         role="group"
-        aria-label={`${I18N.overlay.collapsedAccessibilityPrefix}${phaseLabel}`}
+        aria-label={`${I18N.overlay.collapsedAccessibilityPrefix}${phaseLabel} · ${audioInputLabel(settings.audioInput, settings.systemAudioTarget)}`}
         style={{
           borderRadius: 14,
-          background: "var(--overlay-card-background, rgba(0,0,0,0.68))",
+          background: subtitleBackgroundColor(settings.subtitleBackgroundOpacity),
           border: `0.75px solid ${hexToRgba(ACCENT, isHovering ? 0.3 : 0.16)}`,
         }}
         onMouseEnter={() => setIsHovering(true)}
@@ -421,42 +520,40 @@ export function OverlayWindow() {
         onWheel={(event) => {
           if (event.deltaY !== 0) {
             event.preventDefault();
-            void setOverlayCollapsed(false);
+            runControlAction("collapse", () => setOverlayCollapsed(false));
           }
         }}
       >
         <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            borderRadius: 14,
-            background:
-              "linear-gradient(to bottom, rgba(255,255,255,0.05), rgba(255,255,255,0))",
-            pointerEvents: "none",
-          }}
-        />
-        <div
           className="relative flex h-full items-center"
           style={{ gap: 8, padding: "0 10px" }}
         >
-          <DragHandle onToggleCollapsed={toggleCollapsed} compact />
-          <PulseRing phase={phase} compact />
+          <DragHandle onToggleCollapsed={toggleCollapsed} compact
+            disabled={controlAction.pending} busy={pendingControl === "collapse"} />
+          <PulseRing phase={phase} compact motionEnabled={pulseOn} pulseStyle={settings.pulseStyle} />
+          <AudioInputIndicator input={settings.audioInput} target={settings.systemAudioTarget} />
           <span
             className="truncate"
-            style={{ fontSize: 11, fontWeight: 500, color: "rgba(255,255,255,0.76)" }}
+            role={sessionAction.failed || controlAction.failed ? "alert" : undefined}
+            title={sessionAction.failed || controlAction.failed ? I18N.overlay.controlActionFailed : phaseLabel}
+            style={{ minWidth: 0, fontSize: 12, fontWeight: 500, color: "rgba(255,255,255,0.76)" }}
           >
-            {phaseLabel}
+            {sessionAction.failed || controlAction.failed ? I18N.overlay.controlActionFailed : phaseLabel}
           </span>
           <span className="flex-1" style={{ minWidth: 4 }} />
           <ControlButton
-            icon={session.isPaused ? "play" : "pause"}
-            label={pauseLabel}
-            onClick={() => void togglePaused()}
+            icon={session.status.kind === "error" || session.isPaused ? "play" : "pause"}
+            label={sessionActionLabel}
+            onClick={runSessionAction}
+            busy={sessionActionBusy}
+            disabled={sessionActionBusy}
           />
           <ControlButton
             icon="chevron-down"
             label={I18N.overlay.expandSubtitle}
-            onClick={() => void setOverlayCollapsed(false)}
+            onClick={() => runControlAction("collapse", () => setOverlayCollapsed(false))}
+            busy={pendingControl === "collapse"}
+            disabled={controlAction.pending}
             data-testid="expand-subtitles"
           />
         </div>

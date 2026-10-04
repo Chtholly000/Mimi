@@ -1,5 +1,6 @@
 package app.yuxino.mimi.android
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.widget.AdapterView
@@ -12,6 +13,8 @@ import android.widget.Spinner
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.materialswitch.MaterialSwitch
+import app.yuxino.mimi.android.capture.MimiService
 
 class SettingsActivity : AppCompatActivity() {
 
@@ -20,6 +23,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var bgAlphaSeek: SeekBar
     private lateinit var historySeek: SeekBar
     private lateinit var colorSpinner: Spinner
+    private val immersiveHelp = ImmersiveModeHelp(this)
 
     // Display the neutral default first without changing persisted preset indices.
     private val colorIndices = listOf(1, 0, 2, 3, 4)
@@ -62,6 +66,36 @@ class SettingsActivity : AppCompatActivity() {
         bgAlphaSeek = findViewById(R.id.overlay_bg_alpha)
         historySeek = findViewById(R.id.history_lines)
         colorSpinner = findViewById(R.id.translation_color)
+        val immersiveSwitch = findViewById<MaterialSwitch>(R.id.immersive_subtitles)
+        immersiveSwitch.isChecked = SettingsStore.immersiveSubtitles(this)
+        var updatingImmersiveSwitch = false
+        fun syncImmersiveSwitch() {
+            updatingImmersiveSwitch = true
+            try { immersiveSwitch.isChecked = SettingsStore.immersiveSubtitles(this) }
+            finally { updatingImmersiveSwitch = false }
+        }
+        fun applyImmersiveMode(enabled: Boolean) {
+            SettingsStore.setImmersiveSubtitles(this, enabled)
+            syncImmersiveSwitch()
+            if (MimiService.isRunning) {
+                startService(Intent(this, MimiService::class.java)
+                    .setAction(MimiService.ACTION_APPLY_APPEARANCE))
+            }
+            refreshPreview()
+        }
+        immersiveSwitch.setOnCheckedChangeListener { _, enabled ->
+            if (updatingImmersiveSwitch) return@setOnCheckedChangeListener
+            if (enabled) {
+                syncImmersiveSwitch()
+                immersiveHelp.requestEnable(
+                    onConfirmed = { applyImmersiveMode(true) },
+                    onCancelled = { syncImmersiveSwitch(); refreshPreview() },
+                )
+            } else {
+                immersiveHelp.dismiss()
+                runCatching { applyImmersiveMode(false) }.onFailure { syncImmersiveSwitch() }
+            }
+        }
 
         fontSeek.progress = SettingsStore.fontSize(this)
         opacitySeek.progress = SettingsStore.overlayOpacity(this)
@@ -111,6 +145,12 @@ class SettingsActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         ServiceSettingsUi.renderList(this, findViewById(R.id.service_panel))
+        refreshPreview()
+    }
+
+    override fun onDestroy() {
+        immersiveHelp.dismiss()
+        super.onDestroy()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -120,6 +160,9 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private fun refreshPreview() {
+        val immersive = SettingsStore.immersiveSubtitles(this)
+        bgAlphaSeek.isEnabled = !immersive
+        opacitySeek.isEnabled = !immersive
         findViewById<TextView>(R.id.font_size_value).text = getString(R.string.settings_font_value, fontSeek.progress)
         findViewById<TextView>(R.id.overlay_opacity_value).text = getString(R.string.settings_percent_value, opacitySeek.progress)
         findViewById<TextView>(R.id.overlay_bg_alpha_value).text = getString(R.string.settings_percent_value, bgAlphaSeek.progress)
@@ -130,7 +173,7 @@ class SettingsActivity : AppCompatActivity() {
         findViewById<SubtitlePreviewView>(R.id.subtitle_preview).configure(
             fontSeek.progress, SettingsStore.COLOR_PRESETS[colorIndex].toInt(),
             opacitySeek.progress, bgAlphaSeek.progress,
-            SettingsStore.targetLang(this),
+            SettingsStore.targetLang(this), immersive, SettingsStore.originalTextOnly(this),
         )
     }
 
