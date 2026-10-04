@@ -2,7 +2,7 @@
 # Prints the unique code-signing identity for local mimi builds, or fails when
 # no stable identity exists. Selection order:
 #   1. MIMI_CODESIGN_IDENTITY (explicit override)
-#   2. an explicitly saved per-Mac certificate fingerprint after migration
+#   2. the formal app pin, or the separate dev app pin with --development
 #   3. the SHA-1 fingerprint of the one self-signed
 #      "mimi Local Development" identity in the login keychain
 #   4. fail closed (no ad-hoc fallback)
@@ -19,6 +19,16 @@
 
 set -euo pipefail
 
+DEVELOPMENT=0
+case "$#:${1:-}" in
+  0:) ;;
+  1:--development) DEVELOPMENT=1 ;;
+  *)
+    echo "Usage: $0 [--development]" >&2
+    exit 2
+    ;;
+esac
+
 if [[ -n "${MIMI_CODESIGN_IDENTITY:-}" ]]; then
   if [[ "$MIMI_CODESIGN_IDENTITY" == "-" ]]; then
     echo "error: ad-hoc signing is forbidden for Mimi." >&2
@@ -32,7 +42,13 @@ IDENTITY_LIST="$(security find-identity -v -p codesigning 2>/dev/null || true)"
 # This file stores a public certificate fingerprint, never a private key or API
 # credential. A missing/expired pinned certificate must not silently fall back
 # to self-signing and change the installed app's identity again.
-LOCAL_IDENTITY_FILE="${MIMI_LOCAL_CODESIGN_IDENTITY_FILE:-$HOME/Library/Application Support/app.yuxino.mimi/local-codesign-identity.txt}"
+# Dev and formal bundles have separate TCC identities. A formal certificate
+# migration must not change the next development build's selected certificate.
+if [[ "$DEVELOPMENT" == "1" ]]; then
+  LOCAL_IDENTITY_FILE="${MIMI_DEV_CODESIGN_IDENTITY_FILE:-$HOME/Library/Application Support/app.yuxino.mimi.dev/local-codesign-identity.txt}"
+else
+  LOCAL_IDENTITY_FILE="${MIMI_LOCAL_CODESIGN_IDENTITY_FILE:-$HOME/Library/Application Support/app.yuxino.mimi/local-codesign-identity.txt}"
+fi
 if [[ -e "$LOCAL_IDENTITY_FILE" || -L "$LOCAL_IDENTITY_FILE" ]]; then
   [[ -f "$LOCAL_IDENTITY_FILE" && ! -L "$LOCAL_IDENTITY_FILE" ]] || {
     echo "error: the local signing pin must be a regular file." >&2

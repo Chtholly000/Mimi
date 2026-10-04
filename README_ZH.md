@@ -43,6 +43,10 @@
 
 [使用与常见问题](docs/usage.zh-CN.md) · [Android](android/README.md) · [反馈问题](https://github.com/yuxino/mimi/issues) · [贡献指南](CONTRIBUTING.md)
 
+## 常见问题
+
+**macOS 已开启录音权限，仍反复要求授权？** 先退出 Mimi，在「系统设置 → 隐私与安全性 → 录屏与系统录音」中，仅删除并重新添加对应应用：正式版为 `/Applications/mimi.app`，开发版为 `/Applications/mimi-dev.app`，开启权限后重新打开同一个应用。详见[权限恢复步骤](docs/usage.zh-CN.md#macos-更新后重复授权)。
+
 ## 贡献者
 
 感谢每一位写代码、提问题、试用和分享的朋友 (๑•̀ㅂ•́)و✧

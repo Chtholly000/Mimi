@@ -288,7 +288,7 @@ if [[ "${MIMI_DEV_RECOVERY_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
-IDENTITY="$("$SCRIPT_DIR/codesign-identity.sh")"
+IDENTITY="$("$SCRIPT_DIR/codesign-identity.sh" --development)"
 if [[ "$IDENTITY" == "-" ]]; then
   cat >&2 <<'EOF'
 error: development launch requires a stable code-signing identity.

@@ -155,6 +155,9 @@ pub enum SystemAudioCaptureError {
     #[cfg(target_os = "macos")]
     #[error("System audio capture permission was denied.")]
     PermissionDenied,
+    #[cfg(target_os = "macos")]
+    #[error("System audio capture was stopped by the user.")]
+    UserStopped,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     #[error("Audio capture setup timed out.")]
     StartTimedOut,
@@ -195,6 +198,12 @@ pub enum SystemAudioCaptureFailure {
     ApplicationUnavailable,
     #[error("Audio capture stopped unexpectedly.")]
     NativeStopped,
+    #[cfg(any(target_os = "macos", test))]
+    #[error("System audio capture permission was denied.")]
+    PermissionDenied,
+    #[cfg(any(target_os = "macos", test))]
+    #[error("System audio capture was stopped by the user.")]
+    UserStopped,
     #[error("Audio capture could not process the device audio format.")]
     AudioProcessingFailed,
     #[error("Audio streaming fell behind. mimi is reconnecting.")]
@@ -202,9 +211,22 @@ pub enum SystemAudioCaptureFailure {
 }
 
 impl SystemAudioCaptureFailure {
+    pub fn is_recoverable(self) -> bool {
+        match self {
+            Self::ApplicationUnavailable => false,
+            #[cfg(any(target_os = "macos", test))]
+            Self::PermissionDenied | Self::UserStopped => false,
+            Self::NativeStopped | Self::AudioProcessingFailed | Self::Backpressure => true,
+        }
+    }
+
     pub fn diagnostic_label(self) -> &'static str {
         match self {
             Self::NativeStopped => "capture.native_stopped",
+            #[cfg(any(target_os = "macos", test))]
+            Self::PermissionDenied => "capture.permission_denied",
+            #[cfg(any(target_os = "macos", test))]
+            Self::UserStopped => "capture.user_stopped",
             Self::ApplicationUnavailable => "capture.application_unavailable",
             Self::AudioProcessingFailed => "capture.audio_processing_failed",
             Self::Backpressure => "capture.backpressure",
@@ -556,6 +578,24 @@ mod format_tests {
             system_output_device_name: (source == AudioSource::System)
                 .then(|| "Synthetic speaker".into()),
             observation,
+        }
+    }
+
+    #[test]
+    fn explicit_capture_stops_never_enter_automatic_recovery() {
+        for failure in [
+            SystemAudioCaptureFailure::PermissionDenied,
+            SystemAudioCaptureFailure::UserStopped,
+            SystemAudioCaptureFailure::ApplicationUnavailable,
+        ] {
+            assert!(!failure.is_recoverable());
+        }
+        for failure in [
+            SystemAudioCaptureFailure::NativeStopped,
+            SystemAudioCaptureFailure::AudioProcessingFailed,
+            SystemAudioCaptureFailure::Backpressure,
+        ] {
+            assert!(failure.is_recoverable());
         }
     }
 

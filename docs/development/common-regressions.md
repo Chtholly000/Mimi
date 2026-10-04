@@ -7,8 +7,8 @@ prompts. The visible app name and version are not enough to establish identity.
 
 | Use | Canonical app | Bundle identifier | Signing identity |
 | --- | --- | --- | --- |
-| Pre-push development and UI checks | `/Applications/mimi-dev.app` | `app.yuxino.mimi.dev` | `mimi Local Development` |
-| Local release-shaped bundle | `src-tauri/target/release/bundle/macos/mimi.app` | `app.yuxino.mimi` | `mimi Local Development` |
+| Pre-push development and UI checks | `/Applications/mimi-dev.app` | `app.yuxino.mimi.dev` | Dev-specific local pin, otherwise `mimi Local Development` |
+| Local release-shaped bundle | `src-tauri/target/release/bundle/macos/mimi.app` | `app.yuxino.mimi` | Formal-specific local pin, otherwise `mimi Local Development` |
 | New release pipeline | `/Applications/mimi.app` | `app.yuxino.mimi` | Certificate pinned in `scripts/macos-release-identity.txt` |
 | Historical releases through v1.4.1 | `/Applications/mimi.app` | `app.yuxino.mimi` | Ad-hoc (build-specific) |
 
@@ -39,13 +39,19 @@ Rules:
   `./scripts/verify-macos-install-identity.sh NEW_APP /Applications/mimi.app`.
   A mismatch fails closed. `MIMI_ALLOW_IDENTITY_CHANGE=1` is reserved for a
   deliberate, one-time certificate migration whose extra prompts are expected.
-- After an explicitly approved local Apple signing migration, keep the public
-  certificate fingerprint in the per-Mac `local-codesign-identity.txt` under the
-  formal app-config directory. Local packaging/development launch reads this pin
-  after `MIMI_CODESIGN_IDENTITY` and before the self-signed default. An invalid,
-  unavailable or ambiguous pin fails closed; never silently revert a migrated
-  app to self-signing. The pin contains no private key or API credential and does
-  not change the public-release certificate policy.
+- After an explicitly approved local signing migration, keep the public
+  certificate fingerprint in `local-codesign-identity.txt` under that app's own
+  config directory: `app.yuxino.mimi` for formal packaging and
+  `app.yuxino.mimi.dev` for development. `dev-app.sh` selects the development
+  scope; it must never inherit a formal app's pin. The optional
+  `MIMI_LOCAL_CODESIGN_IDENTITY_FILE` and `MIMI_DEV_CODESIGN_IDENTITY_FILE`
+  overrides also apply only to their respective scope. `MIMI_CODESIGN_IDENTITY`
+  explicitly overrides either scope. An absent pin uses the unique stable
+  self-signed identity; an invalid, unavailable or ambiguous pin fails closed.
+  Complete designated-requirement checks still reject an unintended replacement.
+  Never use `MIMI_ALLOW_IDENTITY_CHANGE=1` just to make a routine build pass.
+  These files contain no private key or API credential and do not change the
+  public-release certificate policy.
 - Never use ad-hoc signing for local QA or new public releases. Missing or
   changed identities fail closed. Never use `tccutil reset`, delete Keychain
   entries outside the verified migration, or rotate a certificate as a routine fix.

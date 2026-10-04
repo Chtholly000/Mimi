@@ -24,13 +24,13 @@ Versions older than v1.3.8 need one manual installation to enable in-app updates
 
 ### macOS permissions after an update
 
-The release pipeline now requires one fixed self-signed certificate across macOS builds. Earlier releases through v1.4.1 used ad-hoc signatures that changed with each build; installing the first release with the fixed identity may require one new recording grant. This source change does not alter an already installed app. Fixed signing prevents build-specific identity changes; it does not promise that macOS will never request consent again. Deleting a local signing certificate does not change the installed app's identity or fix this. Keep the release app at `/Applications/mimi.app`; use the separate `mimi-dev.app` for development.
+The release pipeline now requires one fixed self-signed certificate across macOS builds. Earlier releases through v1.4.1 used ad-hoc signatures that changed with each build; installing the first release with the fixed identity may require one new recording grant. This source change does not alter an already installed app. Fixed signing prevents build-specific identity changes; it does not promise that macOS will never request consent again. Deleting a local signing certificate does not change the installed app's identity or fix this. Keep the release app at `/Applications/mimi.app`; use `/Applications/mimi-dev.app` for development. Each app keeps its own signing pin and recording authorization; a development build must not inherit a release app's changed identity.
 
 Recording is enabled, but Mimi still reports permission denied: first quit and reopen Mimi and follow the normal permission prompt. If capture is still denied:
 
-1. Quit Mimi. In System Settings → Privacy & Security → Screen & System Audio Recording (the label varies by macOS version), select and remove only the old mimi entry.
-2. Use + to add `/Applications/mimi.app`, enable its permission, and complete any system authentication yourself. Leave `mimi-dev` and other apps alone.
-3. Reopen that same app, start a session, and play audio containing speech to check that subtitles actually appear. An enabled switch alone does not confirm recovery.
+1. Quit the affected app. In System Settings → Privacy & Security → Screen & System Audio Recording (the label varies by macOS version), select and remove only its old entry: **mimi** for the release app or **mimi-dev** for development.
+2. Use + to add the matching `/Applications/mimi.app` or `/Applications/mimi-dev.app`, enable its permission, and complete any system authentication yourself. Leave the other Mimi app and unrelated entries alone.
+3. Reopen that same app, start subtitles with the shortcut or the Start control, and play audio containing speech to check that subtitles actually appear. An enabled switch alone does not confirm recovery.
 
 This removes an old recording authorization, not a certificate or API key. If one attempt does not help, stop repeating the reset and [report the error](https://github.com/yuxino/mimi/issues), including your macOS and Mimi versions and installation source. Do not include API keys or subtitle content.
 
