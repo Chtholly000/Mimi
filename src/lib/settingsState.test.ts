@@ -65,6 +65,10 @@ describe("mergeSettingsSnapshot", () => {
     expect(mergeSettingsSnapshot(custom, { networkProxy: { mode: "custom", url: "http://user:synthetic-secret@127.0.0.1" } }).networkProxy).toEqual(custom.networkProxy);
   });
   it("keeps a divider choice through unrelated saves and permits disabling it", () => {
+    expect(mergeSettingsSnapshot(SETTINGS, {}).showIntermediateSubtitles).toBe(true);
+    const interimOff = mergeSettingsSnapshot(SETTINGS, { showIntermediateSubtitles: false });
+    expect(mergeSettingsSnapshot(interimOff, { fontSize: 20 }).showIntermediateSubtitles).toBe(false);
+    expect(mergeSettingsSnapshot(interimOff, { showIntermediateSubtitles: true }).showIntermediateSubtitles).toBe(true);
     const enabled = mergeSettingsSnapshot(SETTINGS, { showSubtitleDividers: true });
     expect(mergeSettingsSnapshot(enabled, { fontSize: 20 }).showSubtitleDividers).toBe(true);
     expect(mergeSettingsSnapshot(enabled, { showSubtitleDividers: false }).showSubtitleDividers).toBe(false);

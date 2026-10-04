@@ -127,6 +127,9 @@ pub struct SourceSubtitleSnapshot {
         skip_serializing_if = "Option::is_none"
     )]
     pub display_pair: Option<PreviewSubtitlePair>,
+    /// True only after the reducer accepts a final pair; a completed preview is false.
+    #[serde(default, rename = "displayPairFinal")]
+    pub display_pair_final: bool,
     pub detected_language: Option<String>,
     pub is_translation_pending: bool,
     pub is_translation_preview_pending: bool,
@@ -149,6 +152,9 @@ pub struct SubtitleSnapshot {
         skip_serializing_if = "Option::is_none"
     )]
     pub display_pair: Option<PreviewSubtitlePair>,
+    /// True only after the reducer accepts a final pair; a completed preview is false.
+    #[serde(default, rename = "displayPairFinal")]
+    pub display_pair_final: bool,
 }
 
 impl SubtitleSnapshot {
@@ -160,6 +166,7 @@ impl SubtitleSnapshot {
             history: Vec::new(),
             preview_pair: None,
             display_pair: None,
+            display_pair_final: false,
         }
     }
 }
@@ -526,10 +533,13 @@ mod wire_tests {
     }
 
     #[test]
-    fn old_snapshots_without_display_pair_keep_the_existing_wire_contract() {
+    fn old_snapshots_default_display_pair_to_unconfirmed() {
         let original = serde_json::json!({"source":{"text":"","isFinal":false,"utteranceId":null},"translation":{"text":"","isFinal":false,"utteranceId":null},"history":[],"previewPair":null});
         let snapshot: SubtitleSnapshot = serde_json::from_value(original.clone()).unwrap();
         assert!(snapshot.display_pair.is_none());
-        assert_eq!(serde_json::to_value(snapshot).unwrap(), original);
+        assert!(!snapshot.display_pair_final);
+        let mut upgraded = original;
+        upgraded["displayPairFinal"] = serde_json::json!(false);
+        assert_eq!(serde_json::to_value(snapshot).unwrap(), upgraded);
     }
 }

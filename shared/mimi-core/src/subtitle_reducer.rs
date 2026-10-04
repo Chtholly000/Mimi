@@ -64,8 +64,6 @@ pub struct SubtitleReducer<A: ArchiveSink = NoopArchive> {
     preview_source_utterance_id: Option<u64>,
     #[serde(default)]
     display_pair_source_utterance_id: Option<u64>,
-    #[serde(default)]
-    display_pair_final: bool,
     /// Source observation order controls presentation only. Pairing always
     /// uses the provider's explicit ID, never this order or text equality.
     #[serde(default)]
@@ -94,7 +92,6 @@ impl<A: ArchiveSink> SubtitleReducer<A> {
             last_confirmed_source_id: None,
             preview_source_utterance_id: None,
             display_pair_source_utterance_id: None,
-            display_pair_final: false,
             identified_sources: VecDeque::new(),
             discarded_source_ids: VecDeque::new(),
             next_source_ordinal: 0,
@@ -455,7 +452,7 @@ impl<A: ArchiveSink> SubtitleReducer<A> {
                         source: source.clone(),
                         translation: translation.clone(),
                     });
-                    self.display_pair_final = true;
+                    self.snapshot.display_pair_final = true;
                     self.display_pair_source_utterance_id = None;
                     self.display_source_ordinal = Some(ordinal);
                 }
@@ -529,7 +526,7 @@ impl<A: ArchiveSink> SubtitleReducer<A> {
                 self.latest_source_utterance_id = None;
                 self.preview_source_utterance_id = None;
                 self.display_pair_source_utterance_id = None;
-                self.display_pair_final = false;
+                self.snapshot.display_pair_final = false;
                 self.layout_epoch = fresh_layout_epoch();
                 self.source_draft_since_confirmation = false;
                 // Clearing the display is not a new generation. Keep its
@@ -635,11 +632,11 @@ impl<A: ArchiveSink> SubtitleReducer<A> {
         self.snapshot.display_pair = Some(pair);
         self.display_source_ordinal = None;
         self.display_pair_source_utterance_id = source_id;
-        self.display_pair_final = is_final;
+        self.snapshot.display_pair_final = is_final;
     }
 
     fn clear_unconfirmed_display_pair(&mut self) {
-        if !self.display_pair_final {
+        if !self.snapshot.display_pair_final {
             self.snapshot.display_pair = None;
             self.display_source_ordinal = None;
             self.display_pair_source_utterance_id = None;

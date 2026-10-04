@@ -69,3 +69,19 @@ it("preserves the session appearance choice and explains that storage failed", a
   expect(host.textContent).not.toContain("private storage error");
   vi.restoreAllMocks();
 });
+
+
+it("keeps the interim preference unchanged on failure and saves a quiet retry while running", async () => {
+  useStore.setState({ session: { ...initial.session, isActive: true, status: { kind: "listening" } } });
+  save.mockRejectedValueOnce(new Error("synthetic-private-error"));
+  await render();
+  const toggleInterim = async () => act(async () => host.querySelector<HTMLButtonElement>(`[aria-label="${I18N.settings.showIntermediateSubtitles}"][role="switch"]`)!.click());
+  await toggleInterim();
+  expect(save).toHaveBeenLastCalledWith({ showIntermediateSubtitles: false });
+  expect(useStore.getState().settings.showIntermediateSubtitles).not.toBe(false);
+  expect(host.querySelector('.settings-toast[role="alert"]')?.textContent).toBe(I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles));
+  await toggleInterim();
+  expect(useStore.getState().settings.showIntermediateSubtitles).toBe(false);
+  expect(useStore.getState().session.isActive).toBe(true);
+  expect(host.querySelector(".settings-toast")).toBeNull();
+});

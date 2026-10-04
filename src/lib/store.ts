@@ -118,6 +118,7 @@ const INITIAL_SETTINGS: SettingsSnapshot = {
   microphoneSubtitleColor: "yellow",
   subtitleAlignment: "center",
   subtitleDisplayMode: "translation",
+  showIntermediateSubtitles: true,
   showSubtitleDividers: false,
   keepSubtitleTextOpaque: false,
   pulseAnimation: null,

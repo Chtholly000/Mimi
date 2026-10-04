@@ -193,6 +193,7 @@ pub struct Preferences {
     pub microphone_subtitle_color: SubtitleColor,
     pub subtitle_alignment: SubtitleAlignment,
     pub subtitle_display_mode: SubtitleDisplayMode,
+    pub show_intermediate_subtitles: bool,
     pub show_subtitle_dividers: bool,
     pub keep_subtitle_text_opaque: bool,
     /// Animation switches: `None` follows the system reduce-motion setting.
@@ -230,6 +231,7 @@ impl Default for Preferences {
             microphone_subtitle_color: SubtitleColor::Yellow,
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
+            show_intermediate_subtitles: true,
             show_subtitle_dividers: false,
             keep_subtitle_text_opaque: false,
             pulse_animation: None,
@@ -7080,8 +7082,22 @@ mod tests {
             SubtitleDisplayMode::Translation
         );
         assert!(!preferences.subtitle_blends_with_background);
+        assert!(preferences.show_intermediate_subtitles);
         assert!(!preferences.show_subtitle_dividers);
         assert_eq!(preferences.pulse_style, PulseStyle::Ribbon);
+    }
+
+    #[test]
+    fn intermediate_subtitle_preference_round_trips_both_choices() {
+        for enabled in [false, true] {
+            let prefs = Preferences {
+                show_intermediate_subtitles: enabled,
+                ..Preferences::default()
+            };
+            let restored: Preferences =
+                serde_json::from_str(&serde_json::to_string(&prefs).unwrap()).unwrap();
+            assert_eq!(restored.show_intermediate_subtitles, enabled);
+        }
     }
 
     #[test]

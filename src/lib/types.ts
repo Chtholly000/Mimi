@@ -36,6 +36,8 @@ interface SubtitleHistoryItem {
 
 export interface SourceSubtitleSnapshot {
   displayPair?: SubtitleSnapshot["previewPair"];
+  /** Reducer confirmation, independent of preview completion. Missing means unconfirmed. */
+  displayPairFinal?: boolean;
   audioSource: AudioSource;
   source: SubtitleLineSnapshot;
   translation: SubtitleLineSnapshot;
@@ -51,6 +53,8 @@ export interface SourceSubtitleSnapshot {
 export interface SubtitleSnapshot {
   /** One bounded complete current pair, independent from saved history. */
   displayPair?: SubtitleSnapshot["previewPair"];
+  /** Reducer confirmation, independent of preview completion. Missing means unconfirmed. */
+  displayPairFinal?: boolean;
   /** Independent source streams; top-level history remains chronological. */
   tracks?: SourceSubtitleSnapshot[];
   /** One replaceable completed preview; never confirmed history. */
@@ -115,6 +119,8 @@ export interface SettingsSnapshot {
   microphoneSubtitleColor?: SubtitleColor;
   subtitleAlignment: SubtitleAlignment;
   subtitleDisplayMode: SubtitleDisplayMode;
+  /** Missing legacy settings preserve immediate previews. */
+  showIntermediateSubtitles?: boolean;
   showSubtitleDividers: boolean;
   keepSubtitleTextOpaque?: boolean;
   /** `null` follows the system reduce-motion setting. */
@@ -164,6 +170,7 @@ export interface SettingsDraft {
   microphoneSubtitleColor?: SubtitleColor;
   subtitleAlignment?: SubtitleAlignment;
   subtitleDisplayMode?: SubtitleDisplayMode;
+  showIntermediateSubtitles?: boolean;
   showSubtitleDividers?: boolean;
   keepSubtitleTextOpaque?: boolean;
   pulseAnimation?: boolean;

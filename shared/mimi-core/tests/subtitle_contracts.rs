@@ -47,6 +47,12 @@ fn shared_synthetic_contracts_preserve_every_complete_field_and_identity_boundar
                 case["id"],
                 index
             );
+            if let Some(expected) = step.get("displayPairFinal") {
+                assert_eq!(
+                    reducer.snapshot.display_pair_final,
+                    expected.as_bool().unwrap()
+                );
+            }
             assert!(reducer.validate_state(6).is_ok());
             // Opaque state round-trip must keep watermarks and ownership, not
             // just the visible strings. Every subsequent operation uses it.
@@ -88,6 +94,9 @@ fn stateless_bridge_executes_the_same_contract_cases_without_a_second_reducer() 
                 .unwrap(),
             )
             .unwrap();
+            if let Some(expected) = step.get("displayPairFinal") {
+                assert_eq!(response["snapshot"]["displayPairFinal"], *expected);
+            }
             let snapshot: SubtitleSnapshot =
                 serde_json::from_value(response["snapshot"].clone()).unwrap();
             assert_eq!(

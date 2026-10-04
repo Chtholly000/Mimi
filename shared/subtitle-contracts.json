@@ -1680,6 +1680,203 @@
           }
         }
       ]
+    },
+    {
+      "id": "completed-preview-is-not-a-confirmation",
+      "audioSource": "system",
+      "maxHistoryCount": 3,
+      "steps": [
+        {
+          "event": {
+            "type": "preview_pair",
+            "source_utterance_id": 1,
+            "source": "Synthetic utterance.",
+            "translation": "合成句子。"
+          },
+          "displayPairFinal": false,
+          "expected": {
+            "source": {
+              "text": "",
+              "isFinal": false
+            },
+            "translation": {
+              "text": "",
+              "isFinal": false
+            },
+            "previewPair": {
+              "source": "Synthetic utterance.",
+              "translation": "合成句子。"
+            },
+            "displayPair": {
+              "source": "Synthetic utterance.",
+              "translation": "合成句子。"
+            },
+            "history": []
+          }
+        },
+        {
+          "event": {
+            "type": "confirmed_pair",
+            "utterance_id": 1,
+            "source_utterance_id": 1,
+            "source": "Synthetic utterance.",
+            "translation": "合成句子。"
+          },
+          "displayPairFinal": true,
+          "expected": {
+            "source": {
+              "text": "Synthetic utterance.",
+              "isFinal": true
+            },
+            "translation": {
+              "text": "合成句子。",
+              "isFinal": true
+            },
+            "previewPair": null,
+            "displayPair": {
+              "source": "Synthetic utterance.",
+              "translation": "合成句子。"
+            },
+            "history": [
+              {
+                "audioSource": "system",
+                "source": "Synthetic utterance.",
+                "translation": "合成句子。"
+              }
+            ]
+          }
+        },
+        {
+          "historyLimit": 0,
+          "displayPairFinal": true,
+          "expected": {
+            "source": {
+              "text": "Synthetic utterance.",
+              "isFinal": true
+            },
+            "translation": {
+              "text": "合成句子。",
+              "isFinal": true
+            },
+            "previewPair": null,
+            "displayPair": {
+              "source": "Synthetic utterance.",
+              "translation": "合成句子。"
+            },
+            "history": []
+          }
+        },
+        {
+          "resetTransient": true,
+          "displayPairFinal": true,
+          "expected": {
+            "source": {
+              "text": "Synthetic utterance.",
+              "isFinal": true
+            },
+            "translation": {
+              "text": "合成句子。",
+              "isFinal": true
+            },
+            "previewPair": null,
+            "displayPair": {
+              "source": "Synthetic utterance.",
+              "translation": "合成句子。"
+            },
+            "history": []
+          }
+        },
+        {
+          "event": {
+            "type": "preview_pair",
+            "source_utterance_id": 2,
+            "source": "Synthetic utterance.",
+            "translation": "合成句子。"
+          },
+          "displayPairFinal": false,
+          "expected": {
+            "source": {
+              "text": "Synthetic utterance.",
+              "isFinal": true
+            },
+            "translation": {
+              "text": "合成句子。",
+              "isFinal": true
+            },
+            "previewPair": {
+              "source": "Synthetic utterance.",
+              "translation": "合成句子。"
+            },
+            "displayPair": {
+              "source": "Synthetic utterance.",
+              "translation": "合成句子。"
+            },
+            "history": []
+          }
+        },
+        {
+          "resetTransient": true,
+          "displayPairFinal": false,
+          "expected": {
+            "source": {
+              "text": "Synthetic utterance.",
+              "isFinal": true
+            },
+            "translation": {
+              "text": "合成句子。",
+              "isFinal": true
+            },
+            "previewPair": null,
+            "displayPair": null,
+            "history": []
+          }
+        },
+        {
+          "event": {
+            "type": "confirmed_pair",
+            "utterance_id": 2,
+            "source_utterance_id": 2,
+            "source": "Synthetic utterance.",
+            "translation": "合成句子。"
+          },
+          "displayPairFinal": true,
+          "expected": {
+            "source": {
+              "text": "Synthetic utterance.",
+              "isFinal": true
+            },
+            "translation": {
+              "text": "合成句子。",
+              "isFinal": true
+            },
+            "previewPair": null,
+            "displayPair": {
+              "source": "Synthetic utterance.",
+              "translation": "合成句子。"
+            },
+            "history": []
+          }
+        },
+        {
+          "event": {
+            "type": "clear"
+          },
+          "displayPairFinal": false,
+          "expected": {
+            "source": {
+              "text": "",
+              "isFinal": false
+            },
+            "translation": {
+              "text": "",
+              "isFinal": false
+            },
+            "previewPair": null,
+            "displayPair": null,
+            "history": []
+          }
+        }
+      ]
     }
   ]
 }

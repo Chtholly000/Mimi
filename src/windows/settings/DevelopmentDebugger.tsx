@@ -60,7 +60,7 @@ function traceEntryLabel(entry: DebugEntry): string {
 
 function ReplayTimeline({ session, settings, route }: { session: SessionStateEvent; settings: SettingsSnapshot; route: Record<string, unknown> }) {
   const mode = ["original", "translation", "bilingual"].includes(String(route.subtitleDisplayMode)) ? route.subtitleDisplayMode as SettingsSnapshot["subtitleDisplayMode"] : settings.subtitleDisplayMode;
-  const replaySettings = { ...settings, subtitleDisplayMode: mode, sourceLanguage: (route.sourceLanguage ?? settings.sourceLanguage) as SettingsSnapshot["sourceLanguage"], targetLanguage: (route.targetLanguage ?? settings.targetLanguage) as SettingsSnapshot["targetLanguage"] };
+  const replaySettings = { ...settings, showIntermediateSubtitles: typeof route.showIntermediateSubtitles === "boolean" ? route.showIntermediateSubtitles : settings.showIntermediateSubtitles, subtitleDisplayMode: mode, sourceLanguage: (route.sourceLanguage ?? settings.sourceLanguage) as SettingsSnapshot["sourceLanguage"], targetLanguage: (route.targetLanguage ?? settings.targetLanguage) as SettingsSnapshot["targetLanguage"] };
   const tracks = session.subtitles.tracks?.length ? session.subtitles.tracks : [{ ...session.subtitles, audioSource: "system" as const, detectedLanguage: session.detectedLanguage, isTranslationPending: session.isTranslationPending, isTranslationTimedOut: session.isTranslationTimedOut }];
   const atomic = usesAtomicSubtitlePreview(route.provider);
   const tail = (subtitles: typeof session.subtitles, signals: Pick<SessionStateEvent, "detectedLanguage" | "isTranslationPending" | "isTranslationTimedOut">) => {

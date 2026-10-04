@@ -98,3 +98,5 @@ are not unified by the shared-core extraction.
   be copied into a final-only Android flow without a product need.
 
 Desktop subtitle controls additionally support keeping text opaque while backgrounds remain transparent and system subtitle color. The microphone color control is temporarily hidden with microphone input. These are desktop presentation preferences; Android does not currently expose matching controls.
+
+Desktop offers a default-on **Show interim subtitles** preference, including live session changes. With it off, only final lines and confirmed pairs appear; bounded Stop-tail fallback still follows the existing desktop final lane. This affects presentation, not provider requests or accuracy. Android currently has no matching switch. Shared snapshots expose `displayPairFinal` on both platforms, and Rust/JNI fixtures distinguish a completed preview from an accepted final even without retained presentation history.

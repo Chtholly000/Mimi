@@ -363,7 +363,7 @@ interface LiveSubtitlePreview {
 export function visibleLiveSubtitle(
   subtitles: SubtitleSnapshot,
   settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage"> &
-    Partial<Pick<SettingsSnapshot, "subtitleDisplayMode">>,
+    Partial<Pick<SettingsSnapshot, "subtitleDisplayMode" | "showIntermediateSubtitles">>,
   detectedLanguage: string | null,
   isTranslationPending: boolean,
   isTranslationTimedOut: boolean,
@@ -427,20 +427,32 @@ export function visibleLiveSubtitle(
 export function visibleLiveSubtitles(
   subtitles: SubtitleSnapshot,
   settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage"> &
-    Partial<Pick<SettingsSnapshot, "subtitleDisplayMode">>,
+    Partial<Pick<SettingsSnapshot, "subtitleDisplayMode" | "showIntermediateSubtitles">>,
   detectedLanguage: string | null,
   isTranslationPending: boolean,
   isTranslationTimedOut: boolean,
   preferAtomicPreview = false,
 ): LiveSubtitlePreview[] {
+  if (settings.showIntermediateSubtitles === false) {
+    // Filter at the presentation boundary only: confirmations, history and
+    // provider work keep their original identities and ordering. Never infer
+    // confirmation from a stable preview or text matching a history entry.
+    subtitles = {
+      ...subtitles,
+      source: subtitles.source.isFinal ? subtitles.source : { text: "", isFinal: false },
+      translation: subtitles.translation.isFinal ? subtitles.translation : { text: "", isFinal: false },
+      previewPair: null,
+      displayPair: subtitles.displayPairFinal === true ? subtitles.displayPair : null,
+    };
+  }
   const displayPair = subtitles.displayPair;
   if (displayPair && settings.subtitleDisplayMode !== "original" && !isSameLanguageMode(settings, detectedLanguage)) {
     // A confirmed current pair is already readable in the bounded history lane.
     const last = subtitles.history.at(-1);
     if (last?.source === displayPair.source && last.translation === displayPair.translation && subtitles.previewPair == null) return [];
     const owner = displayPair.utteranceId == null ? {} : { utteranceId: displayPair.utteranceId };
-    const source: LiveSubtitlePreview = { kind: "source", text: displayPair.source, isFinal: false, isStable: true, ...owner };
-    const translation: LiveSubtitlePreview = { kind: "translation", text: displayPair.translation, isFinal: false, isStable: true, ...owner };
+    const source: LiveSubtitlePreview = { kind: "source", text: displayPair.source, isFinal: subtitles.displayPairFinal === true, isStable: true, ...owner };
+    const translation: LiveSubtitlePreview = { kind: "translation", text: displayPair.translation, isFinal: subtitles.displayPairFinal === true, isStable: true, ...owner };
     if (settings.subtitleDisplayMode !== "bilingual") return [translation];
     return displayPair.source.trim() === displayPair.translation.trim() ? [source] : [source, translation];
   }
