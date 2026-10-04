@@ -6,10 +6,12 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bridge import Bridge, BridgeError, Worker, check_request, validate_start
 from auth import ensure_token, read_token
+import control
 from segmentation import FRAME_BYTES, LANGUAGES, MAX_SEGMENT_BYTES, MODEL, Segmenter
 from websockets.asyncio.client import connect as raw_connect
 from websockets.asyncio.server import serve
@@ -33,6 +35,17 @@ def run_task(task="fixture", language="en"):
 
 
 class SegmentTests(unittest.TestCase):
+    def test_stale_pid_file_never_signals_an_unrelated_process(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            (state / "service.json").write_text(json.dumps({"pid": 12345, "port": 8767}))
+            class Process:
+                stdout = "unrelated-service --port 8767"
+            with patch.object(control.subprocess, "run", return_value=Process()), patch.object(control.os, "killpg") as kill:
+                control.stop(state)
+                kill.assert_not_called()
+            self.assertFalse((state / "service.json").exists())
+
     def test_token_is_private_stable_and_symlinks_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             token = Path(directory) / "token"
@@ -279,6 +292,20 @@ class WebSocketTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(process.returncode, -9)
         with self.assertRaises(BridgeError):
             await worker.decode(b"third")
+        await worker.close()
+
+    async def test_queued_final_precedes_other_source_preview(self):
+        worker = Worker(Path("unused"))
+        draft = asyncio.create_task(worker.decode(b"draft"))
+        final = asyncio.create_task(worker.decode(b"final", final=True))
+        await asyncio.sleep(0)
+        first = worker.jobs.get_nowait()
+        second = worker.jobs.get_nowait()
+        self.assertEqual(first[2], b"final")
+        self.assertEqual(second[2], b"draft")
+        first[3].set_result("final")
+        second[3].set_result("draft")
+        await asyncio.gather(draft, final)
         await worker.close()
 
     async def test_rejected_language_echoes_the_requested_task(self):
