@@ -1,6 +1,6 @@
 import { effectiveUiLanguage } from "./i18n";
 
-export interface AudioApplication { id: string; name: string }
+export interface AudioApplication { id: string; name: string; iconDataUrl?: string | null }
 export interface ApplicationSnapshot { supported: boolean; applications: AudioApplication[] }
 const copy = {
   en: {
@@ -9,7 +9,7 @@ const copy = {
     empty: "No applications found. Open the app, then refresh.", noMatch: "No matching applications.", missing: "Unavailable",
     unavailable: "The selected application is no longer available. Open it and select it again, or choose All applications.",
     unsupported: "Application audio capture is available on macOS and Windows 11 (build 20348 or later).",
-    failed: "Could not load applications. Check audio capture permissions, then refresh.",
+    failed: "Could not load applications. Refresh to try again.",
     saveFailed: "Could not switch the captured application. Check subtitle status, then try again.",
     help: "Captures only this application’s audio. Browser tabs share an application. Selecting an app does not mute it. On Windows, select it again after reopening it.",
   },
@@ -19,7 +19,7 @@ const copy = {
     empty: "没有找到应用，请打开目标应用后刷新。", noMatch: "没有匹配的应用。", missing: "不可用",
     unavailable: "所选应用已不可用，请打开应用后重新选择，或选择全部应用。",
     unsupported: "应用声音采集支持 macOS 和 Windows 11（build 20348 及以上）。",
-    failed: "无法加载应用，请检查声音采集权限后刷新。", saveFailed: "采集应用未能切换，请查看字幕状态后重试。",
+    failed: "无法加载应用，请刷新重试。", saveFailed: "采集应用未能切换，请查看字幕状态后重试。",
     help: "仅采集所选应用的声音，浏览器标签页属于同一个应用。选择应用不会将它静音。Windows 上重新打开应用后需要重新选择。",
   },
   ja: {
@@ -28,7 +28,7 @@ const copy = {
     empty: "アプリが見つかりません。対象のアプリを開いて更新してください。", noMatch: "一致するアプリがありません。", missing: "利用不可",
     unavailable: "選択したアプリを利用できません。アプリを開いて選び直すか、すべてのアプリを選択してください。",
     unsupported: "アプリ音声の取得は macOS と Windows 11（ビルド 20348 以降）に対応しています。",
-    failed: "アプリを読み込めません。音声取得の権限を確認して更新してください。", saveFailed: "音声を取得するアプリを切り替えられませんでした。字幕の状態を確認して再試行してください。",
+    failed: "アプリを読み込めません。一覧を更新して再試行してください。", saveFailed: "音声を取得するアプリを切り替えられませんでした。字幕の状態を確認して再試行してください。",
     help: "選択したアプリの音声だけを取得します。ブラウザーのタブは同じアプリに属します。選択してもアプリはミュートされません。Windows ではアプリを開き直した後に再選択が必要です。",
   },
 };

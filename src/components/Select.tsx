@@ -27,13 +27,15 @@ interface SelectProps {
   emptyMessage?: string;
   /** Label for a saved selection that is not in the current results. */
   valueLabel?: string;
+  /** Decorative fallback for a saved selection not in the current results. */
+  valueIcon?: ReactNode;
   /** Load choices only after the user opens the picker. */
   onOpen?: () => void;
   onChange: (value: string) => void;
 }
 
 /** One app-styled picker for Settings, the subtitle controls, and the tray. */
-export function Select({ label, value, options, disabled = false, searchLabel, emptyMessage, valueLabel, onOpen, onChange }: SelectProps) {
+export function Select({ label, value, options, disabled = false, searchLabel, emptyMessage, valueLabel, valueIcon, onOpen, onChange }: SelectProps) {
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -50,6 +52,7 @@ export function Select({ label, value, options, disabled = false, searchLabel, e
     return options.filter(option => !text || option.label.toLocaleLowerCase().includes(text) || option.value.toLocaleLowerCase().includes(text));
   }, [options, query, searchable]);
   const selected = options.findIndex((option) => option.value === value);
+  const selectedIcon = selected >= 0 ? options[selected].icon : valueIcon;
   const selectedVisible = visible.findIndex(option => option.value === value);
   const [cursor, setCursor] = useState({ selection: value, query: "", index: 0 });
   // A shortcut/another window can change the value while the menu is open.
@@ -232,7 +235,7 @@ export function Select({ label, value, options, disabled = false, searchLabel, e
         {/* Replacing the label node also invalidates retained WebKit pixels on
             external value changes, while the focused trigger remains stable. */}
         <span key={value} className="mimi-select__content">
-          {options[selected]?.icon && <span className="mimi-select__icon" aria-hidden="true">{options[selected].icon}</span>}
+          {selectedIcon && <span className="mimi-select__icon" aria-hidden="true">{selectedIcon}</span>}
           <span className="mimi-select__label">{options[selected]?.label ?? valueLabel ?? value}</span>
         </span><Icon name="chevron-down" />
       </button>

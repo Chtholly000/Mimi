@@ -35,8 +35,9 @@ export function useApplicationAudioPicker(disabled = false) {
   const valueLabel = target.kind === "application" ? `${target.name}${missing ? ` · ${text.missing}` : ""}` : text.all;
   const names = new Map<string, number>();
   for (const app of applications) names.set(app.name, (names.get(app.name) ?? 0) + 1);
-  const options = [{ value: "", label: text.all }, ...applications.map(app => ({
+  const options = [{ value: "", label: text.all, iconDataUrl: null }, ...applications.map(app => ({
     value: app.id,
+    iconDataUrl: app.iconDataUrl,
     label: (names.get(app.name) ?? 0) > 1 && app.id.startsWith("windows:") ? `${app.name} · ${app.id.split(":")[1]}` : app.name,
   }))];
 

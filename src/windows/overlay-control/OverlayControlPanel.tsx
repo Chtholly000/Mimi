@@ -2,7 +2,7 @@ import { SettingsHelp } from "../settings/SettingsHelp";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
 import { LanguageSelect } from "../../components/LanguageSelect";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
 import {
@@ -29,6 +29,7 @@ type PendingAction =
   | "display"
   | "source"
   | "translation"
+  | "intermediate"
   | "immersive"
   | "lock"
   | "settings";
@@ -45,6 +46,7 @@ interface OverlayControlPanelProps {
   onDismiss: () => void;
   onSwitchSourceLanguage: (language: SourceLanguage) => Promise<void>;
   onSetSkipTranslation: (enabled: boolean) => Promise<void>;
+  onSetIntermediateSubtitles: (enabled: boolean) => Promise<void>;
   onSetSubtitleDisplayMode: (mode: SubtitleDisplayMode) => Promise<void>;
   onSetImmersiveMode: (enabled: boolean) => Promise<void>;
   onSetOverlayLocked: (locked: boolean) => Promise<void>;
@@ -63,6 +65,7 @@ export function OverlayControlPanel({
   onDismiss,
   onSwitchSourceLanguage,
   onSetSkipTranslation,
+  onSetIntermediateSubtitles,
   onSetSubtitleDisplayMode,
   onSetImmersiveMode,
   onSetOverlayLocked,
@@ -75,6 +78,8 @@ export function OverlayControlPanel({
   const displayControlRef = useRef<HTMLDivElement>(null);
   const immersiveRef = useRef<HTMLButtonElement>(null);
   const lockRef = useRef<HTMLButtonElement>(null);
+  const intermediateHelpId = useId();
+  const actionInFlight = useRef(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const canChangeSessionSettings = !isChangingSession && pendingAction === null;
@@ -124,7 +129,8 @@ export function OverlayControlPanel({
     operation: () => Promise<void>,
     dismissAfter = true,
   ) => {
-    if (pendingAction !== null) return;
+    if (actionInFlight.current) return;
+    actionInFlight.current = true;
     setPendingAction(name);
     setOperationError(null);
     void operation()
@@ -132,7 +138,7 @@ export function OverlayControlPanel({
         if (dismissAfter) onDismiss();
       })
       .catch(() => setOperationError(I18N.overlay.controlActionFailed))
-      .finally(() => setPendingAction(null));
+      .finally(() => { actionInFlight.current = false; setPendingAction(null); });
   };
 
   return (
@@ -199,6 +205,24 @@ export function OverlayControlPanel({
           <span className="overlay-control-setting__copy"><strong>{I18N.settings.skipTranslation}</strong></span>
           <span className="overlay-control-switch" aria-hidden="true"><span /></span>
         </button>}
+
+        <div className="overlay-control-setting-row">
+          <span className="overlay-control-setting__icon" aria-hidden="true"><Icon name="captions-bubble" /></span>
+          <span className="overlay-control-setting__copy">
+            <strong>{I18N.settings.showIntermediateSubtitles}</strong>
+            <SettingsHelp id={intermediateHelpId} text={I18N.settings.showIntermediateSubtitlesHelp} label={I18N.settings.helpLabel} />
+          </span>
+          <button type="button" role="switch"
+            aria-checked={settings.showIntermediateSubtitles !== false}
+            aria-label={I18N.settings.showIntermediateSubtitles}
+            aria-describedby={intermediateHelpId}
+            className={`overlay-control-setting overlay-control-setting--toggle${settings.showIntermediateSubtitles !== false ? " is-on" : ""}`}
+            disabled={pendingAction !== null}
+            onClick={() => performAction("intermediate", () => onSetIntermediateSubtitles(settings.showIntermediateSubtitles === false), false)}
+          >
+            <span className="overlay-control-switch" aria-hidden="true"><span /></span>
+          </button>
+        </div>
 
         <button
           ref={immersiveRef}

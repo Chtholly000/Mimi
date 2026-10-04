@@ -2,9 +2,26 @@
 
 The user reported the macOS Screen & System Audio Recording consent dialog when
 starting subtitles with the shortcut, after a local certificate migration. The
-credential migration is complete and independent. Extend this followup to the
-recording permission path in both canonical apps, while keeping the branch
-unmerged and preserving existing configuration and credentials.
+credential migration is complete and independent. The initial followup extended
+to the recording permission path in both canonical apps, with the user's earlier
+instruction to keep the branch unmerged and preserve existing configuration and
+credentials.
+
+## Later authorization for v1.5.10
+
+After reviewing the fixes, the user asked for plain-language wording and the
+subtitle-preview switch in the floating panel, then explicitly said
+“这里说人话，就可以发布了” (make this wording plain, then it can be released).
+This later instruction authorizes publication after those changes and validation
+are complete; it supersedes the earlier hold on merging and releasing. It does
+not change the scope or authorization of work already recorded above.
+
+Prepare v1.5.10 with Android versionCode 10510 and reviewed English-first bilingual
+release notes. Complete the UI and native checks, merge the reviewed source into
+main, and build the signed macOS assets from the exact release commit before
+staging the draft and pushing its tag. Publication remains subject to the normal
+cross-platform release checks. Version edits and a draft are preparation, not
+evidence that a release is public.
 
 ## Established causes and boundaries
 

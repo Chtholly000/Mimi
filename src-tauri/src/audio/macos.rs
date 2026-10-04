@@ -6,7 +6,10 @@
 //! closures dispatched to the main thread; completions that fire on arbitrary
 //! queues re-dispatch there before touching those objects.
 
-use crate::audio::applications::{sort_applications, ApplicationSnapshot, AudioApplication};
+use crate::audio::applications::{
+    sort_applications, ApplicationIconBudget, ApplicationSnapshot, AudioApplication,
+    MAX_APPLICATION_ICON_PNG_BYTES,
+};
 use crate::audio::macos_block_buffer;
 use crate::audio::send_pipeline::{AudioIngress, AudioIngressError};
 use crate::audio::{
@@ -389,21 +392,36 @@ impl MacSystemAudioCapture {
         (self.dispatcher)(Box::new(move || {
             let result = objc2::exception::catch(AssertUnwindSafe(|| {
                 let own = own_bundle_identifier();
+                let mut running_apps = std::collections::HashMap::new();
                 let mut applications = objc2_app_kit::NSWorkspace::sharedWorkspace()
                     .runningApplications()
                     .iter()
                     .filter_map(|app| {
-                        picker_application(
+                        let application = picker_application(
                             app.isTerminated(),
                             app.activationPolicy()
                                 == objc2_app_kit::NSApplicationActivationPolicy::Regular,
                             app.bundleIdentifier().map(|id| id.to_string()),
                             app.localizedName().map(|name| name.to_string()),
                             own.as_deref(),
-                        )
+                        )?;
+                        running_apps.entry(application.id.clone()).or_insert(app);
+                        Some(application)
                     })
                     .collect();
                 sort_applications(&mut applications);
+                let mut icon_budget = ApplicationIconBudget::default();
+                for application in &mut applications {
+                    application.icon_data_url = running_apps
+                        .get(&application.id)
+                        .and_then(|app| {
+                            objc2::exception::catch(AssertUnwindSafe(|| app.icon()))
+                                .ok()
+                                .flatten()
+                        })
+                        .and_then(|image| picker_icon_png(&image))
+                        .and_then(|png| icon_budget.encode_png(&png));
+                }
                 ApplicationSnapshot {
                     supported: true,
                     applications,
@@ -921,7 +939,57 @@ fn picker_application(
     let SystemAudioTarget::Application { id, name } = target else {
         unreachable!()
     };
-    Some(AudioApplication { id, name })
+    Some(AudioApplication {
+        id,
+        name,
+        icon_data_url: None,
+    })
+}
+
+/// Render an existing AppKit icon into a fixed-size bitmap. This does not read
+/// windows, enumerate screen contents, start capture or request a new permission.
+/// Runtime callers execute on the main thread. Failures leave a text-only choice.
+fn picker_icon_png(image: &objc2_app_kit::NSImage) -> Option<Vec<u8>> {
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace,
+        NSGraphicsContext,
+    };
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize};
+    const EDGE: isize = 32;
+    let previous_context = NSGraphicsContext::currentContext();
+    let result = objc2::exception::catch(AssertUnwindSafe(|| {
+        // SAFETY: Null planes let AppKit own one 32x32 RGBA buffer with an
+        // explicit 128-byte row. No caller-owned memory is retained by AppKit.
+        let bitmap = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                NSBitmapImageRep::alloc(), std::ptr::null_mut(), EDGE, EDGE, 8, 4,
+                true, false, NSDeviceRGBColorSpace, EDGE * 4, 32,
+            )
+        }?;
+        let pixels = bitmap.bitmapData();
+        if pixels.is_null() || bitmap.bytesPerRow() != EDGE * 4 {
+            return None;
+        }
+        // SAFETY: The bitmap owns this exact RGBA allocation. Clear alpha so
+        // transparent padding never includes uninitialized bitmap bytes.
+        unsafe { std::ptr::write_bytes(pixels, 0, (EDGE * EDGE * 4) as usize) };
+        let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)?;
+        NSGraphicsContext::setCurrentContext(Some(&context));
+        image.drawInRect_fromRect_operation_fraction(
+            NSRect::new(NSPoint::ZERO, NSSize::new(EDGE as f64, EDGE as f64)),
+            NSRect::ZERO, NSCompositingOperation::Copy, 1.0,
+        );
+        // SAFETY: An empty property dictionary supplies no incorrectly typed
+        // codec options. The newly rendered representation contains no source metadata.
+        let data = unsafe {
+            bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+        }?;
+        (data.len() <= MAX_APPLICATION_ICON_PNG_BYTES).then(|| data.to_vec())
+    })).ok().flatten();
+    // Restore even after an Objective-C drawing/encoding exception. A missing
+    // app icon must not disturb the graphics context used by the next UI draw.
+    NSGraphicsContext::setCurrentContext(previous_context.as_deref());
+    result
 }
 
 fn native_stream_error_code(error: &objc2_foundation::NSError) -> Option<SCStreamErrorCode> {
@@ -1328,6 +1396,21 @@ mod resampler_tests {
         assert!(app(false, true, Some("test.player"), None).is_none());
         assert!(app(false, true, Some("test.player"), Some(" ")).is_none());
         assert!(app(false, true, Some("test.player\n"), Some("Player")).is_none());
+    }
+
+    #[test]
+    fn application_picker_icon_is_a_small_png_and_restores_the_graphics_context() {
+        use objc2_app_kit::{NSGraphicsContext, NSImage};
+        let data =
+            objc2_foundation::NSData::with_bytes(include_bytes!("../../icons/128x128@2x.png"));
+        let image = NSImage::initWithData(NSImage::alloc(), &data).unwrap();
+        let previous = NSGraphicsContext::currentContext();
+        let png = picker_icon_png(&image).unwrap();
+        assert!(png.len() <= MAX_APPLICATION_ICON_PNG_BYTES);
+        let decoded = tauri::image::Image::from_bytes(&png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (32, 32));
+        assert!(decoded.rgba().chunks_exact(4).any(|pixel| pixel[3] != 0));
+        assert_eq!(NSGraphicsContext::currentContext(), previous);
     }
 
     #[test]

@@ -155,6 +155,7 @@ export function OverlayControlWindow() {
           onDismiss={dismiss}
           onSwitchSourceLanguage={switchSourceLanguage}
           onSetSkipTranslation={setSkipTranslation}
+          onSetIntermediateSubtitles={(showIntermediateSubtitles) => saveSettings({ showIntermediateSubtitles })}
           onSetSubtitleDisplayMode={(subtitleDisplayMode) => saveSettings({ subtitleDisplayMode })}
           onSetImmersiveMode={(subtitleBlendsWithBackground) =>
             saveSettings({ subtitleBlendsWithBackground })

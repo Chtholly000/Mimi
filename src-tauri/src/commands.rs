@@ -1996,6 +1996,7 @@ pub async fn audio_applications(
             applications: vec![crate::audio::applications::AudioApplication {
                 id: "test.player".into(),
                 name: "Test Player".into(),
+                icon_data_url: None,
             }],
         });
     }

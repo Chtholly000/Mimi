@@ -30,6 +30,7 @@ beforeEach(() => {
     isPaused: false, isWaitingForFinalTranslation: false, isChangingSession: false,
     onDismiss: vi.fn(), onSwitchSourceLanguage: vi.fn().mockResolvedValue(undefined),
     onSetSkipTranslation: vi.fn().mockResolvedValue(undefined),
+    onSetIntermediateSubtitles: vi.fn().mockResolvedValue(undefined),
     onSetSubtitleDisplayMode: vi.fn().mockResolvedValue(undefined), onSetImmersiveMode: vi.fn().mockResolvedValue(undefined),
     onSetOverlayLocked: vi.fn().mockResolvedValue(undefined), onShowSettings: vi.fn().mockResolvedValue(undefined),
   };
@@ -66,7 +67,7 @@ it.each(["zh", "en", "ja"] as const)("keeps %s language, display and application
   expect(host.querySelectorAll('[role="combobox"]')).toHaveLength(3);
   expect(host.querySelectorAll('.application-audio-picker')).toHaveLength(1);
   expect(host.querySelector('fieldset, .overlay-control-options, .overlay-control-group')).toBeNull();
-  expect(host.querySelectorAll('[role="switch"]')).toHaveLength(3);
+  expect(host.querySelectorAll('[role="switch"]')).toHaveLength(4);
   expect(host.querySelector('.overlay-control-setting small')).toBeNull();
   expect(picker(I18N.overlay.sourceLanguage)).toBe(document.activeElement);
   expect(props.onSwitchSourceLanguage).not.toHaveBeenCalled();
@@ -223,4 +224,44 @@ it("locks skipping during a reconnect and hides it for integrated providers with
   configure({ profiles: [{ id: "ali", provider: "openAIRealtime", name: "OpenAI", credentialState: "present" }] });
   await mount();
   expect(host.querySelector(`[aria-label="${I18N.settings.skipTranslation}"]`)).toBeNull();
+});
+
+
+it.each([true, false, undefined])("changes early subtitle display from saved %s without closing or restarting the session", async enabled => {
+  configure({ showIntermediateSubtitles: enabled });
+  props.isChangingSession = true;
+  props.isPaused = true;
+  await mount();
+  const toggle = () => host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${I18N.settings.showIntermediateSubtitles}"]`)!;
+  expect(toggle().getAttribute("aria-checked")).toBe(String(enabled !== false));
+  expect(toggle().disabled).toBe(false);
+  await act(async () => toggle().click());
+  expect(props.onSetIntermediateSubtitles).toHaveBeenCalledExactlyOnceWith(enabled === false);
+  expect(props.onDismiss).not.toHaveBeenCalled();
+  expect(props.onSetSkipTranslation).not.toHaveBeenCalled();
+  expect(props.onSetImmersiveMode).not.toHaveBeenCalled();
+  configure({ showIntermediateSubtitles: enabled === false });
+  await mount();
+  expect(toggle().getAttribute("aria-checked")).toBe(String(enabled === false));
+});
+
+it("retains the saved subtitle preference after failure, blocks duplicate saves and allows retry", async () => {
+  let reject!: (reason: Error) => void;
+  props.onSetIntermediateSubtitles = vi.fn()
+    .mockImplementationOnce(() => new Promise<void>((_resolve, failure) => { reject = failure; }))
+    .mockResolvedValue(undefined);
+  configure({ showIntermediateSubtitles: true });
+  await mount();
+  const toggle = () => host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${I18N.settings.showIntermediateSubtitles}"]`)!;
+  await act(async () => { toggle().click(); toggle().click(); });
+  expect(props.onSetIntermediateSubtitles).toHaveBeenCalledTimes(1);
+  expect(toggle().disabled).toBe(true);
+  await act(async () => reject(new Error("private synthetic error")));
+  expect(toggle().getAttribute("aria-checked")).toBe("true");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(I18N.overlay.controlActionFailed);
+  expect(host.textContent).not.toContain("private synthetic error");
+  await act(async () => toggle().click());
+  expect(props.onSetIntermediateSubtitles).toHaveBeenCalledTimes(2);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(props.onDismiss).not.toHaveBeenCalled();
 });

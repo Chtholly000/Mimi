@@ -224,6 +224,10 @@ page must include a review of other instances of the same pattern.
 - Searchable popups must scroll their result list directly. `scrollIntoView`
   can scroll a clipped ancestor in WebKit and hide rows below the search field;
   pointer hover must not move the list. Check a long list and keyboard search.
+  DOM focus does not prove a macOS floating NSPanel is key: explicit clicks must
+  allow the control panel to become key, never main or proactively activating.
+  Collapsing it must release key status. Before release, type English and Chinese
+  searches in the signed native panel and confirm media playback continues.
 - Language menus in settings, the subtitle controls and the tray use the full
   `sourceLanguagesForSettings` route catalog and the shared `LanguageSelect`.
   Keep the same choices, order and localized names; use search/scrolling for a

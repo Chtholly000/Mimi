@@ -184,7 +184,8 @@
   justify-content: center;
 }
 
-.overlay-control-capture .settings-help-control__button {
+.overlay-control-capture .settings-help-control__button,
+.overlay-control-setting-row .settings-help-control__button {
   width: 20px;
   height: 24px;
   font-size: 12px;
@@ -192,7 +193,9 @@
 }
 
 .overlay-control-capture .settings-help-control__button:hover,
-.overlay-control-capture .settings-help-control__button:focus-visible {
+.overlay-control-capture .settings-help-control__button:focus-visible,
+.overlay-control-setting-row .settings-help-control__button:hover,
+.overlay-control-setting-row .settings-help-control__button:focus-visible {
   color: var(--control-text);
 }
 
@@ -235,7 +238,8 @@
   background: var(--control-border);
 }
 
-.overlay-control-setting {
+.overlay-control-setting,
+.overlay-control-setting-row {
   display: grid;
   width: 100%;
   min-height: 32px;
@@ -245,6 +249,20 @@
   padding: 3px 8px;
   border-radius: 8px;
   text-align: left;
+}
+
+.overlay-control-setting-row .overlay-control-setting__copy {
+  align-items: center;
+  gap: 4px;
+}
+
+.overlay-control-setting--toggle {
+  display: flex;
+  width: auto;
+  min-height: 26px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
 }
 
 .overlay-control-setting__icon {
