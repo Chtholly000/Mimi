@@ -127,6 +127,9 @@ impl FileCredentialStore {
         if !self.path.is_absolute() {
             return Err(SecretStoreError::Unavailable);
         }
+        // Completion remains authoritative for this live store too, including
+        // when a credential file disappears or an older copy is restored.
+        let import_complete = fs::symlink_metadata(&self.complete_path).is_ok();
         let directory = self.path.parent().ok_or(SecretStoreError::Unavailable)?;
         private_directory(directory).map_err(|_| SecretStoreError::Unavailable)?;
         let metadata = match fs::symlink_metadata(&self.path) {
@@ -135,11 +138,15 @@ impl FileCredentialStore {
                 if self.initial_unavailable {
                     return Err(SecretStoreError::Unavailable);
                 }
-                self.write(&self.initial)?;
-                if self.initial.pending_import.is_empty() {
+                let mut document = self.initial.clone();
+                if import_complete {
+                    document.pending_import.clear();
+                }
+                self.write(&document)?;
+                if document.pending_import.is_empty() {
                     self.mark_complete()?;
                 }
-                return Ok(self.initial.clone());
+                return Ok(document);
             }
             Err(_) => return Err(SecretStoreError::Unavailable),
         };
@@ -173,8 +180,12 @@ impl FileCredentialStore {
         if bytes.len() as u64 > MAX_BYTES {
             return Err(SecretStoreError::Unavailable);
         }
-        let document: Document =
+        let mut document: Document =
             serde_json::from_slice(&bytes).map_err(|_| SecretStoreError::Unavailable)?;
+        if import_complete {
+            document.pending_import.clear();
+            document.pending_cleanup.clear();
+        }
         let mut seen = HashSet::new();
         if document.schema_version != 1
             || document.pending_import.iter().any(|slot| {
@@ -1032,6 +1043,9 @@ mod tests {
         );
         store.migrate_legacy().unwrap();
         fs::remove_file(&store.path).unwrap();
+        // The live process may observe the missing file before it exits.
+        assert!(!store.contains("test.service", "key").unwrap());
+        assert_eq!(store.pending_imports().unwrap(), 0);
         drop(store);
         let store = FileCredentialStore::new(
             directory.path(),
@@ -1043,6 +1057,41 @@ mod tests {
         assert!(!store.contains("test.service", "key").unwrap());
         assert_eq!(reads(&legacy), 1);
         assert_eq!(legacy.0.lock().unwrap().deletes, 1);
+    }
+
+    #[test]
+    fn completed_marker_overrides_restored_import_and_cleanup_bookkeeping() {
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = Legacy::default();
+        legacy_value(&legacy, "key", "public-placeholder");
+        let store = FileCredentialStore::new(
+            directory.path(),
+            "test.service",
+            vec![slot("key")],
+            Box::new(legacy.clone()),
+        );
+        store.read().unwrap();
+        let before_import = fs::read(&store.path).unwrap();
+        legacy.0.lock().unwrap().deny_deletion = true;
+        assert_eq!(store.migrate_legacy(), Err(SecretStoreError::Unavailable));
+        let before_cleanup = fs::read(&store.path).unwrap();
+        legacy.0.lock().unwrap().deny_deletion = false;
+        store.migrate_legacy().unwrap();
+        for stale in [before_import, before_cleanup] {
+            fs::write(&store.path, stale).unwrap();
+            assert_eq!(store.pending_imports().unwrap(), 0);
+            store.migrate_legacy().unwrap();
+            let restarted = FileCredentialStore::new(
+                directory.path(),
+                "test.service",
+                vec![slot("key")],
+                Box::new(legacy.clone()),
+            );
+            assert_eq!(restarted.pending_imports().unwrap(), 0);
+            restarted.migrate_legacy().unwrap();
+            assert_eq!(reads(&legacy), 1);
+            assert_eq!(legacy.0.lock().unwrap().deletes, 2);
+        }
     }
 
     #[cfg(unix)]

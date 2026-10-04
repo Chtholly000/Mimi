@@ -29,7 +29,9 @@ the old secret. Only Mimi-owned profile and obsolete Alibaba slots are retired.
 A saved replacement or deletion also retires that slot's import, preventing old
 secrets from reappearing. Once import completes, no native store call is made on
 reads, saves, deletion, switching, restarts or updates. A separate non-secret completion marker prevents a missing local credential file
-from reopening OS authorization after an upgrade. Native APIs remain only for
+from reopening OS authorization after an upgrade. The marker is authoritative
+on every read, including file loss in the same process and restoration of an
+older document containing pending import/cleanup entries. Native APIs remain only for
 legacy reads and verified retirement; new credential writes always go to the file.
 
 The latest scope is credential management only. Preserve the current signing
