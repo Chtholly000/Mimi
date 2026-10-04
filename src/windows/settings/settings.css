@@ -1954,20 +1954,6 @@
   opacity: 0.55;
   cursor: default;
 }
-.stored-credential-reveal {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-}
-.stored-credential-reveal > .settings-link {
-  font-size: 11.5px;
-}
-.stored-credential-reveal > input {
-  width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 12px;
-}
 .subtitle-preview {
   border-radius: 12px;
   background: var(--settings-panel-raised);
@@ -2567,7 +2553,6 @@
 }
 .service-stage .settings-field > input,
 .service-stage .settings-field > .settings-select-wrap,
-.service-stage .settings-field > .stored-credential-reveal,
 .service-stage .settings-field > .credential-unavailable {
   grid-column: 2;
 }
@@ -2630,7 +2615,6 @@
   }
   .service-stage .settings-field > input,
   .service-stage .settings-field > .settings-select-wrap,
-  .service-stage .settings-field > .stored-credential-reveal,
   .service-stage .settings-field > .credential-unavailable {
     grid-column: 1;
   }
@@ -2733,46 +2717,39 @@
 .config-input__paste:disabled { opacity: .4; cursor: default; }
 .config-input__paste:focus-visible { outline: 2px solid var(--settings-text-muted); outline-offset: 2px; border-radius: 4px; }
 /* A compound field has one focus outline; its action buttons keep their own. */
-.settings-console .config-input:has(> input:focus-visible) {
+.settings-console .config-input:has(> :is(input, textarea):focus-visible) {
   outline: 2px solid var(--settings-text);
   outline-offset: -1px;
 }
-.settings-console .config-input > input:focus-visible { outline: none; }
+.settings-console .config-input > :is(input, textarea):focus-visible { outline: none; }
 @media (forced-colors: active) {
-  .settings-console .config-input:has(> input:focus-visible) { outline-color: Highlight; }
+  .settings-console .config-input:has(> :is(input, textarea):focus-visible) { outline-color: Highlight; }
 }
 .service-stage .settings-field > .config-input-group { grid-column: 2; }
-.stored-credential-reveal > .stored-credential-reveal__toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 4px 6px;
-  font-size: 14px;
-  text-align: start;
-}
-.stored-credential-reveal { min-width: 0; max-width: 100%; }
-.stored-credential-reveal > input { min-width: 0; }
-.service-stage__heading > .stored-credential-reveal { margin-inline-start: auto; }
-/* Saved-value actions share their field's label line, never a lone icon below it. */
-.settings-field:has(> .stored-credential-reveal) {
+.config-input--with-action {
   display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(0, auto);
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto 32px;
+  gap: 4px;
+  border: 1px solid var(--settings-border);
+  border-radius: 8px;
+  background: var(--settings-control);
 }
-.settings-field:has(> .stored-credential-reveal) > label,
-.settings-field:has(> .stored-credential-reveal) > .service-stage__field-label {
-  grid-column: 1;
-  grid-row: 1;
+.config-input--with-action > input { padding-right: 8px; border: 0; background: transparent; }
+.config-input--with-action .config-input__paste { position: static; justify-self: center; }
+.config-input--with-action .saved-credential-input__toggle { position: static; align-items: center; gap: 6px; white-space: nowrap; font: inherit; font-size: 12px; }
+.config-input--with-action:focus-within { border-color: var(--settings-text-muted); }
+.saved-credential-input__toggle {
+  position: absolute;
+  right: 41px;
+  display: flex;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--settings-text-muted);
+  cursor: pointer;
 }
-.settings-field:has(> .stored-credential-reveal) > .stored-credential-reveal {
-  grid-column: 2;
-  grid-row: 1;
-}
-.settings-field:has(> .stored-credential-reveal) > .config-input-group {
-  grid-column: 1 / -1;
-  grid-row: 2;
-}
+.saved-credential-input__toggle:disabled { opacity: .4; cursor: default; }
+.saved-credential-input__toggle:focus-visible { outline: 2px solid var(--settings-text-muted); outline-offset: 2px; border-radius: 4px; }
 @media (max-width: 700px) { .service-stage .settings-field > .config-input-group { grid-column: 1 / -1; } }
 
 /* Restored session controls from the previous settings layout. */
@@ -2950,3 +2927,55 @@
 .session-export__explanation[open] summary svg {
   transform: rotate(180deg);
 }
+
+.translation-name-field .settings-field__inline {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+.translation-name-field .settings-field__inline input { min-width: 0; flex: 1; }
+.translation-name-field__error { grid-column: 2; }
+@media (max-width: 680px) { .translation-name-field__error { grid-column: 1; } }
+
+.settings-field__inline > .config-input-group { flex: 1; min-width: 0; }
+
+/* Long configuration values keep one native textbox and wrap only on request. */
+.config-input--expandable { align-items: flex-start; }
+.config-input--expandable > input { padding-right: 74px; }
+.config-input__expand {
+  position: absolute;
+  top: 6px;
+  right: 41px;
+  display: flex;
+  padding: 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--settings-text-muted);
+  cursor: pointer;
+}
+.config-input__expand:disabled { opacity: .4; cursor: default; }
+.config-input__expand:focus-visible { outline: 2px solid var(--settings-text-muted); outline-offset: 2px; }
+.config-input--expandable .config-input__paste { top: 6px; }
+.config-input--expanded > textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 76px;
+  max-height: 240px;
+  padding: 8px 74px 8px 10px;
+  border: 1px solid var(--settings-border-strong);
+  border-radius: 9px;
+  color: var(--settings-text);
+  background: var(--settings-control);
+  font: inherit;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  resize: vertical;
+  outline: 0;
+}
+.config-input--expanded > textarea::placeholder { color: var(--settings-text-faint); }
+.config-input--expanded > textarea:focus { border-color: var(--settings-text-muted); }
+.config-input--expanded > textarea:disabled { opacity: .55; }

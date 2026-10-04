@@ -7,7 +7,7 @@ use crate::core::models::{
     SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
 };
 use crate::core::network_proxy::ProxyConfig;
-use crate::core::provider::{ProviderKind, ServiceProfile, TextTranslation};
+use crate::core::provider::{ProviderKind, ServiceProfile, TextTranslation, TextTranslationName};
 use crate::session_manager::{SessionManager, SessionStateEvent};
 use crate::settings_store::{CredentialState, PulseStyle, SettingsStore, SubtitleAlignment};
 use crate::windows::{
@@ -58,6 +58,7 @@ pub struct ServiceProfilePayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_credential_state: Option<CredentialState>,
     pub text_translation: crate::core::provider::TextTranslation,
+    pub text_translation_names: std::collections::BTreeMap<TextTranslation, String>,
     pub speech_network_proxy: Option<ProxyConfig>,
     pub text_network_proxy: Option<ProxyConfig>,
 }
@@ -82,6 +83,7 @@ impl ServiceProfilePayload {
             speech_credential_state: states.map(|(speech, _)| speech),
             text_credential_state: states.map(|(_, text)| text),
             text_translation,
+            text_translation_names: profile.text_translation_names,
         }
     }
 
@@ -104,6 +106,7 @@ impl ServiceProfilePayload {
                 .is_custom_speech()
                 .then_some(CredentialState::Unavailable),
             text_translation,
+            text_translation_names: profile.text_translation_names,
         }
     }
 }
@@ -176,6 +179,33 @@ pub struct SettingsSnapshotPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_snapshots_keep_translation_names_when_credentials_are_unavailable() {
+        let store = SettingsStore::in_memory(Box::new(PartiallyUnavailableSecretStore), false);
+        let mut profile = ServiceProfile::alibaba_default();
+        profile
+            .set_text_translation_name(TextTranslation::OpenAICompatible, "Work translator")
+            .unwrap();
+        for payload in [
+            ServiceProfilePayload::from_profile(&store, profile.clone()),
+            ServiceProfilePayload::unavailable(profile),
+        ] {
+            let json = serde_json::to_value(payload).unwrap();
+            assert_eq!(
+                json["textTranslationNames"]["openAICompatible"],
+                "Work translator"
+            );
+            for field in ["endpoint", "apiKey", "token", "model"] {
+                assert!(json.get(field).is_none());
+            }
+        }
+        let patch: TextTranslationName = serde_json::from_value(serde_json::json!({
+            "route": "openAICompatible", "name": "Work translator"
+        }))
+        .unwrap();
+        assert_eq!(patch.route, TextTranslation::OpenAICompatible);
+    }
 
     #[test]
     fn language_capability_snapshot_is_stamped_and_tracks_the_atomic_profile_route() {
@@ -282,6 +312,7 @@ mod tests {
             "support_diagnostics",
             "app_open_support_issue",
             "profile_reveal_credential",
+            "profile_credential_editor_state",
         ] {
             assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
             let permissions = include_str!("../permissions/app.toml");
@@ -574,6 +605,7 @@ mod tests {
                 speech_credential_state: None,
                 text_credential_state: None,
                 text_translation: crate::core::provider::TextTranslation::FollowService,
+                text_translation_names: std::collections::BTreeMap::new(),
             }],
             active_profile_id: "alibaba-default".into(),
             language_capabilities: None,
@@ -1467,6 +1499,7 @@ pub async fn profile_update(
     name: String,
     speech_network_proxy: Option<ProxyConfig>,
     text_network_proxy: Option<ProxyConfig>,
+    text_translation_name: Option<TextTranslationName>,
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
@@ -1475,6 +1508,7 @@ pub async fn profile_update(
         &name,
         speech_network_proxy,
         text_network_proxy,
+        text_translation_name,
     )?;
     emit_settings_snapshot(&app, &state.settings)
 }
@@ -1534,6 +1568,24 @@ fn ensure_credential_reveal_window(label: &str) -> Result<(), String> {
     } else {
         Err("credential_reveal_not_allowed".into())
     }
+}
+
+/// Returns private configuration only to the requesting settings editor.
+/// Saved API-key flags do not include credential bytes or emit an event.
+#[tauri::command]
+pub async fn profile_credential_editor_state(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    profile_id: String,
+    text_translation: Option<crate::core::provider::TextTranslation>,
+) -> Result<crate::settings_store::CredentialEditorState, String> {
+    ensure_credential_reveal_window(window.label())?;
+    let settings = Arc::clone(&state.settings);
+    tauri::async_runtime::spawn_blocking(move || {
+        settings.credential_editor_state(&profile_id, text_translation)
+    })
+    .await
+    .map_err(|_| "credential_store_unavailable".to_string())?
 }
 
 /// Returns one explicitly requested secret only to this invoke's requester.
@@ -1961,6 +2013,7 @@ pub async fn profile_test_connection(
     state: tauri::State<'_, AppState>,
     profile_id: String,
     stage: Option<crate::clients::connection_diagnostics::ConnectionCheckStage>,
+    credentials: Option<ProviderCredentials>,
 ) -> Result<crate::clients::connection_diagnostics::ConnectionDiagnostic, String> {
     use crate::clients::connection_diagnostics::{
         check_service, check_speech_service, check_text_service, preparation_failure,
@@ -1971,6 +2024,29 @@ pub async fn profile_test_connection(
         .iter()
         .find(|p| p.id == profile_id)
         .ok_or("profile_not_found")?;
+    if let Some(credentials) = credentials {
+        // A draft is an explicit, ephemeral check, never a saved-profile
+        // readiness request. In particular it must not emit a credential snapshot.
+        return Ok(match stage {
+            Some(ConnectionCheckStage::Text) => match state
+                .settings
+                .configuration_for_text_draft_probe(profile, &credentials)
+            {
+                Err(error) => preparation_failure(&error),
+                Ok(_) if app_is_ui_test() => ConnectionDiagnostic::not_tested("present"),
+                Ok(configuration) => check_text_service(&configuration).await,
+            },
+            stage => match state.settings.configuration_for_speech_draft_probe(
+                profile,
+                &credentials,
+                stage.is_some(),
+            ) {
+                Err(error) => preparation_failure(&error),
+                Ok(_) if app_is_ui_test() => ConnectionDiagnostic::not_tested("present"),
+                Ok(configuration) => check_speech_service(&configuration, stage.is_none()).await,
+            },
+        });
+    }
     if let Some(stage) = stage {
         // Stage checks deliberately avoid an aggregate credential snapshot: a
         // text-only check must not prompt for or require the recognizer's key.
