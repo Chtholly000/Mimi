@@ -39,6 +39,13 @@ Rules:
   `./scripts/verify-macos-install-identity.sh NEW_APP /Applications/mimi.app`.
   A mismatch fails closed. `MIMI_ALLOW_IDENTITY_CHANGE=1` is reserved for a
   deliberate, one-time certificate migration whose extra prompts are expected.
+- After an explicitly approved local Apple signing migration, keep the public
+  certificate fingerprint in the per-Mac `local-codesign-identity.txt` under the
+  formal app-config directory. Local packaging/development launch reads this pin
+  after `MIMI_CODESIGN_IDENTITY` and before the self-signed default. An invalid,
+  unavailable or ambiguous pin fails closed; never silently revert a migrated
+  app to self-signing. The pin contains no private key or API credential and does
+  not change the public-release certificate policy.
 - Never use ad-hoc signing for local QA or new public releases. Missing or
   changed identities fail closed. Never use `tccutil reset`, delete Keychain
   entries, or rotate a certificate as a routine fix.

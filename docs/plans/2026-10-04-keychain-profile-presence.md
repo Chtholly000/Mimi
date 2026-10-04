@@ -1,14 +1,14 @@
 # Settings and profile selection without authorizing saved keys
 
 The September 30 inactive-profile fix dd1295a was absent from this feature
-branch and was first ported in ffa9fd6. Native user feedback then confirmed that
+branch and was first ported in ffa9fd6. The user then reported that
 selecting another saved profile still requested a Keychain password: emitting
 the settings snapshot validated the newly active profile's secret. Selection
 and saved-item badges do not require secret bytes, even for the active profile.
 
 On macOS all profile states in settings snapshots use exact service/account
 attribute-only presence queries in the User keychain. Cached results, including
-access errors and invalid/empty values, still take precedence. Custom speech and
+access errors and missing/blank values, still take precedence. Custom speech and
 independent text slots both use presence; FollowService needs no text item.
 Legacy discovery respects its tombstone and uses metadata only; migration stays
 on actual credential use. Badges establish presence, not provider authentication
@@ -33,3 +33,12 @@ were changed. This proves newly created test-item continuity on this Mac, not
 migration of existing Mimi items or capture grants. An Apple signing migration
 must be explicit and should be verified across installed Mimi rebuilds; public
 Developer ID distribution is a separate requirement from local development.
+
+
+The user subsequently explicitly approved the existing Apple Development
+certificate for the local formal installation. The installed production-mode
+bundle retains configuration and Keychain items; native selection of four saved
+profiles completed without password prompts. Actual old-key use and TCC capture
+migration remain unverified. Local scripts now support an explicitly saved
+per-Mac public fingerprint after migration, fail closed if it is unavailable,
+and preserve the separate public-release pin. No private key enters that file.

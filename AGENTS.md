@@ -41,7 +41,7 @@ Preserve these product constraints:
   gaps in `docs/development/integration-runs.md`.
 - `scripts/check.sh`: canonical automated test and strict-build entry point.
 - `scripts/package-app.sh`: release-shaped local build via `tauri build`, signed with the stable local identity; compare its identity before replacing a release, especially older ad-hoc installations.
-- `scripts/codesign-identity.sh`: honors an explicit `MIMI_CODESIGN_IDENTITY`; otherwise it selects the exact fingerprint of the unique `mimi Local Development` identity or reports unavailable. macOS packaging and development launch fail closed rather than use ad-hoc signing.
+- `scripts/codesign-identity.sh`: honors explicit `MIMI_CODESIGN_IDENTITY`, then a per-Mac public certificate fingerprint saved after an approved local migration; otherwise it selects the exact fingerprint of the unique `mimi Local Development` identity or reports unavailable. A missing/invalid pinned identity fails closed rather than reverting to self-signing. macOS packaging and development launch fail closed rather than use ad-hoc signing.
 - `scripts/prepare-macos-release.sh`: prepares public macOS assets on the signing Mac using the certificate pinned in `scripts/macos-release-identity.txt`. Keep the private key local. Tag CI verifies the staged draft assets, source revision, updater signature, and DMG; never restore an ad-hoc fallback. See `docs/development/macos-release-signing.md`.
 - `scripts/verify-macos-install-identity.sh`: compares the complete designated requirement before a formal app is replaced.
 - `.github/workflows/ci.yml`: CI (Rust fmt/clippy/test on macOS, Windows, and Linux, frontend checks).

@@ -2,9 +2,10 @@
 # Prints the unique code-signing identity for local mimi builds, or fails when
 # no stable identity exists. Selection order:
 #   1. MIMI_CODESIGN_IDENTITY (explicit override)
-#   2. the SHA-1 fingerprint of the one self-signed
+#   2. an explicitly saved per-Mac certificate fingerprint after migration
+#   3. the SHA-1 fingerprint of the one self-signed
 #      "mimi Local Development" identity in the login keychain
-#   3. fail closed (no ad-hoc fallback)
+#   4. fail closed (no ad-hoc fallback)
 #
 # Ad-hoc signatures change on every build (the cdhash is derived from the
 # binary), which makes macOS forget Screen & System Audio Recording grants.
@@ -28,6 +29,30 @@ if [[ -n "${MIMI_CODESIGN_IDENTITY:-}" ]]; then
 fi
 
 IDENTITY_LIST="$(security find-identity -v -p codesigning 2>/dev/null || true)"
+# This file stores a public certificate fingerprint, never a private key or API
+# credential. A missing/expired pinned certificate must not silently fall back
+# to self-signing and change the installed app's identity again.
+LOCAL_IDENTITY_FILE="${MIMI_LOCAL_CODESIGN_IDENTITY_FILE:-$HOME/Library/Application Support/app.yuxino.mimi/local-codesign-identity.txt}"
+if [[ -e "$LOCAL_IDENTITY_FILE" || -L "$LOCAL_IDENTITY_FILE" ]]; then
+  [[ -f "$LOCAL_IDENTITY_FILE" && ! -L "$LOCAL_IDENTITY_FILE" ]] || {
+    echo "error: the local signing pin must be a regular file." >&2
+    exit 1
+  }
+  LOCAL_PIN="$(tr -d '[:space:]' < "$LOCAL_IDENTITY_FILE" | tr '[:lower:]' '[:upper:]')"
+  [[ "$LOCAL_PIN" =~ ^[0-9A-F]{40}$ ]] || {
+    echo "error: invalid local signing certificate fingerprint." >&2
+    exit 1
+  }
+  AVAILABLE_PINS="$(printf '%s\n' "$IDENTITY_LIST" | sed -n \
+    's/^[[:space:]]*[0-9][0-9]*) \([0-9A-Fa-f][0-9A-Fa-f]*\) ".*"$/\1/p' | tr '[:lower:]' '[:upper:]')"
+  PIN_MATCHES="$(printf '%s\n' "$AVAILABLE_PINS" | awk -v pin="$LOCAL_PIN" '$0 == pin { count += 1 } END { print count + 0 }')"
+  [[ "$PIN_MATCHES" == 1 ]] || {
+    echo "error: the pinned local signing certificate is unavailable or ambiguous." >&2
+    exit 1
+  }
+  printf '%s\n' "$LOCAL_PIN"
+  exit 0
+fi
 MATCHING_IDENTITIES="$({
   printf '%s\n' "$IDENTITY_LIST" \
     | /usr/bin/sed -n \
