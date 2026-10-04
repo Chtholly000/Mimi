@@ -58,7 +58,7 @@ This does not change the signing-private-key or system-audio permission prompts.
    selected initially when the existing selection is the default Alibaba profile;
    later explicit selections are retained across restarts. Add or edit ordinary
    configurations for other recognition or independent translation services.
-   Those credentials always use the development OS store, never this file.
+   Those credentials use the development app's private local credential file, never this preset file.
    Select **Google Gemini · dev** for the Gemini Live Translation preset; it uses
    only `GEMINI_API_KEY` and keeps its built-in translation route.
 

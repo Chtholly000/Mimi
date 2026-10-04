@@ -1,7 +1,7 @@
 <div align="center">
   <img src="src-tauri/icons/128x128@2x.png" width="96" alt="mimi">
   <h1>mimi</h1>
-  <p>系统音频实时字幕与翻译，支持 Apple 芯片和 Intel Mac（macOS 13+），以及 Windows / Linux x86_64。</p>
+  <p>系统声音或麦克风实时字幕与翻译，支持 Apple 芯片和 Intel Mac（macOS 13+），以及 Windows / Linux x86_64。</p>
   <p>
     <a href="https://mimi.yuxino.cn">官网</a>
     · <a href="https://github.com/yuxino/mimi/releases/latest"><strong>下载最新版</strong></a>
@@ -21,12 +21,14 @@
   </p>
 </div>
 
-<p align="center">Mimi 把电脑正在播放的人声翻译成实时字幕。看电影、直播或网课时，字幕会悬浮显示在屏幕上。</p>
+<p align="center">Mimi 把电脑或麦克风中的人声翻译成实时字幕。看电影、直播或网课时，字幕会悬浮显示在屏幕上。</p>
 
 ![Mimi 双语字幕窗口，搭配原创插画与示例对白](docs/assets/readme-preview.png)
 
 ## 功能
 
+- 选择系统声音、麦克风，或同时开启两路。默认使用系统声音，麦克风需要主动选择。
+- 选择要翻译的应用声音（macOS / Windows 11）。
 - 显示原文、译文，或双语字幕。
 - 调整字幕的位置、大小和颜色，也可让鼠标点击穿过字幕窗口。
 - 按需保存字幕或音频到本机，导出 TXT / WAV；默认不保存、不录音。

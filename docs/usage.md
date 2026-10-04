@@ -8,7 +8,7 @@
 2. Open Settings → Speech & Translation, add a configuration, enter the requested provider credentials, and save. Choose the recognition and translation languages.
 3. Play something and turn on Live Subtitles under Subtitles. You can also start from the mimi menu bar/system tray icon. macOS asks for Screen & System Audio Recording access to capture system audio.
 
-Bring your own provider API credentials; usage charges may apply. Credentials are stored in the OS credential store.
+Bring your own provider API credentials; usage charges may apply. Desktop credentials are stored in a private plaintext file protected by local file permissions.
 
 For macOS, Windows installer copies, and Linux AppImage, open Settings → General → Software Update. Mimi downloads the
 update with progress, then lets you install it. Windows reopens Mimi after
@@ -38,15 +38,21 @@ Desktop credentials are stored in a private plaintext file protected by file per
 
 ## Audio and saved sessions
 
-Desktop microphone input is temporarily unavailable. Startup changes a saved microphone or both-input selection to system audio and switches audio recording off; explicitly enable recording again if needed.
+Desktop uses system audio by default. In Settings or the floating controls, select system audio, microphone, or both. Microphone capture uses the system's default microphone and requests permission when capture starts, if needed. With both selected, each input has its own recognition connection, subtitles and service usage. Changing inputs turns audio recording off; enable it again in Save & export if needed.
 
-Under Settings → Save & export, choose whether to save subtitles or record system audio. Both switches are off by default. When enabled, content is written incrementally to private local session files. Turning an option off clears its current-session content; saved sessions require explicit deletion.
+On macOS and Windows build 20348+, use the application picker to translate a selected app's audio. Linux captures the system output monitor and does not offer this picker.
+
+Under Settings → Save & export, choose whether to save subtitles or record the selected audio inputs. Both switches are off by default. When enabled, content is written incrementally to private local session files; system and microphone audio stay separate. Turning an option off clears its current-session content; saved sessions require explicit deletion.
+
+Starting another desktop session keeps the bounded confirmed subtitles already on screen. Clear removes them. This does not enable transcript saving, copy old lines into the new session's saved transcript, or restore unsaved subtitles after quitting the app.
 
 Transcript retention is limited to 10,000 confirmed pairs / 2 MiB of text and audio to 64 MiB. Reaching a limit stops retention and shows a notice. Transcript timestamps mark confirmation time; WAV omits pauses and reconnect gaps, so the two are not synchronized.
 
 ## Subtitle display
 
-In Settings, choose one of the five subtitle color swatches (white by default), or use the custom swatch after them to open the desktop color picker. The preview and floating subtitles update immediately, including immersive mode. In bilingual mode, original and translated text use the source’s selected color.
+In Settings, choose one of the five subtitle color swatches (white by default), or use the custom swatch after them to open the desktop color picker. System audio and microphone have separate color settings. The preview and floating subtitles update immediately, including immersive mode. In bilingual mode, the original stays visually softer than the translation.
+
+Show time is available in subtitle settings and the floating controls, and is off by default. While the microphone is selected, it shows local confirmation time (HH:mm:ss) beside confirmed subtitles, including in immersive mode. It hides for system audio only and returns when the microphone is selected again. This is not the exact start of speech. Retained microphone lines keep a small source icon when switching back to system audio. The floating controls also provide pause/resume.
 
 Choose Translation only, Original + translation, or Original only
 in Settings, the overlay control panel, or the tray. Switch instantly with

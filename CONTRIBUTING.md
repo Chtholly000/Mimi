@@ -32,9 +32,9 @@ macOS 可通过 `brew install cmake` 安装 CMake；Xcode Command Line Tools 提
 
 On macOS, install CMake with `brew install cmake`; Xcode Command Line Tools supply the compiler and libclang. Windows needs Visual Studio Desktop development with C++, CMake, and LLVM. If bindgen cannot locate `libclang.dll`, set `LIBCLANG_PATH` to LLVM’s `bin` directory.
 
-macOS 本机开发可以使用私有、只读的 `.env` 测试凭证，减少重编译后的 API Key 钥匙串授权。仅固定 dev 应用启用，正式版不支持；设置步骤及恢复钥匙串方式见[本机开发凭证](docs/development/local-dev-credentials.md)。
+macOS 本机开发可为固定 dev 应用配置私有、只读的 `.env` 测试预设；正式版和 UI-only 模式不读取它。普通配置使用开发版自己的私有本地凭据文件，不借用预设密钥，也不改动正式版凭据。设置步骤及移除预设的方法见[本机开发凭证](docs/development/local-dev-credentials.md)。
 
-For macOS development, an optional private, read-only `.env` can avoid API-key Keychain prompts after rebuilds. Only the fixed dev app supports it. See [local development credentials](docs/development/local-dev-credentials.md) for read-only preset setup. Production and ordinary development credentials now use separate private local files.
+For macOS development, the fixed dev app supports optional private, read-only `.env` test presets; production and UI-only modes do not read them. Ordinary profiles use the development app's own private local credential file without borrowing preset keys or changing production credentials. See [local development credentials](docs/development/local-dev-credentials.md) for setup and removal.
 
 Windows 安装包需在 Windows 上构建 / Build Windows installers on Windows:
 
