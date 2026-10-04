@@ -68,7 +68,7 @@ update both implementations and their platform-specific tests in the same change
 | Subtitle background | Adjustable card opacity (80% default); history does not fade with age | Existing native overlay background settings and history styling |
 | Audio capture | System audio only in the current release; microphone selection temporarily unavailable (implementation retained). OS-specific desktop capture; selected-app audio on macOS and Windows build 20348+, Linux retains output-monitor capture | Android playback-capture consent and foreground service; no selected-app picker |
 | Proxy preferences | Per-profile independent recognition/text routes; integrated realtime uses one route | Platform network defaults; no per-stage proxy controls |
-| Secret storage | OS keychain | Android Keystore-backed encrypted preferences |
+| Secret storage | Private local credential file; one-time OS-store migration | Android Keystore-backed encrypted preferences |
 | Local HTTP | Existing loopback endpoint validation | Explicit per-config opt-in and Android network allowlist; includes emulator host |
 | History/recording | Optional bounded local session files and selected-input recordings | Existing optional bounded subtitle history; no desktop recording/export parity claimed |
 | Development evidence | Exact dev app only; opt-in sent audio, subtitle snapshots, causal traces, saved-case playback and bounded evidence workspaces | No matching debugger or sent-audio recording claimed |

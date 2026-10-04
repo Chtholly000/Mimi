@@ -238,13 +238,13 @@ it("does not carry a DeepL key draft into an externally selected custom destinat
   expect(props.onSave).not.toHaveBeenCalled();
 });
 
-it("uses platform-aware Linux guidance for unavailable storage in each language", async () => {
+it("uses local file guidance for unavailable storage in each language", async () => {
   vi.spyOn(navigator, "userAgent", "get").mockReturnValue("Mozilla Linux");
   for (const language of ["en", "zh", "ja"] as const) {
     setStoredUiLanguage(language);
     await render({ ...props, profile: { ...profile, credentialState: "unavailable" } });
     expect(host.querySelector('[role="status"]')?.textContent).toBe(diagnosticCopy("linux").storage);
-    expect(host.querySelector('[role="status"]')?.textContent).toContain("GNOME Keyring");
+    expect(host.querySelector('[role="status"]')?.textContent).not.toMatch(/GNOME Keyring|Secret Service|钥匙串|キーチェーン/);
   }
 });
 

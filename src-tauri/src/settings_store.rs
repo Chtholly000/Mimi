@@ -1,9 +1,10 @@
-//! Non-secret preferences, service-profile metadata, and native credentials.
+//! Non-secret preferences, service-profile metadata, and local credentials.
 //!
 //! General preferences and the profile catalog are separate JSON documents.
-//! API keys never enter either document: normal/release builds use a scoped OS
-//! account. The explicit macOS dev feature can select a private read-only file.
+//! API keys live in a separate private local file. OS stores are compatibility
+//! readers for one-time upgrade import only. The dev preset file stays isolated.
 
+mod file_credentials;
 #[cfg(any(all(feature = "local-dev-credentials", target_os = "macos"), test))]
 mod local_dev_credentials;
 
@@ -303,6 +304,7 @@ impl CredentialState {
 pub enum SecretStoreError {
     Unavailable,
     ReadOnly,
+    MigrationRequired,
     #[cfg(any(all(feature = "local-dev-credentials", target_os = "macos"), test))]
     LocalDevFileUnavailable,
     #[cfg(any(target_os = "linux", test))]
@@ -316,6 +318,7 @@ impl SecretStoreError {
         match self {
             Self::Unavailable => CREDENTIAL_STORE_UNAVAILABLE,
             Self::ReadOnly => "local_dev_credentials_read_only",
+            Self::MigrationRequired => CREDENTIAL_STORE_UNAVAILABLE,
             #[cfg(any(all(feature = "local-dev-credentials", target_os = "macos"), test))]
             Self::LocalDevFileUnavailable => "local_dev_credentials_unavailable",
             #[cfg(any(target_os = "linux", test))]
@@ -349,17 +352,17 @@ fn keyring_operation_error(error: keyring_core::Error) -> SecretStoreError {
     }
 }
 
-/// Small keyed abstraction over the OS credential store. Tests provide an
-/// in-memory implementation; production uses `keyring`.
+/// Keyed credentials. Production uses a private local file; the native adapter
+/// exists only for one-time legacy import and focused compatibility tests.
 pub trait SecretStore: Send + Sync {
     fn load(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError>;
-    /// Presence only; macOS never requests password data for this operation.
+    /// Availability only; production reads the local credential document.
     fn contains(&self, service: &str, account: &str) -> Result<bool, SecretStoreError> {
         self.load(service, account).map(|value| value.is_some())
     }
     fn save(&self, service: &str, account: &str, value: &str) -> Result<(), SecretStoreError>;
-    /// Explicit Save may request the provider's native first-collection prompt.
-    /// Background migration uses `save` and must never create a collection.
+    /// Normal Save is file-backed. The native override is retained only for
+    /// legacy compatibility tests and must not be selected by production.
     fn save_from_user_action(
         &self,
         service: &str,
@@ -369,6 +372,15 @@ pub trait SecretStore: Send + Sync {
         self.save(service, account, value)
     }
     fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError>;
+    fn uses_local_file(&self) -> bool {
+        false
+    }
+    fn pending_imports(&self) -> Result<usize, SecretStoreError> {
+        Ok(0)
+    }
+    fn migrate_legacy(&self) -> Result<(), SecretStoreError> {
+        Ok(())
+    }
     fn is_read_only(&self) -> bool {
         false
     }
@@ -559,11 +571,7 @@ impl SecretStore for KeyringSecretStore {
     fn load(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError> {
         let entry = credential_entry(service, account)?;
         match entry.get_password() {
-            Ok(password) => {
-                #[cfg(target_os = "windows")]
-                enforce_local_credential_persistence(&entry, &password)?;
-                Ok(Some(password))
-            }
+            Ok(password) => Ok(Some(password)),
             Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(error) => Err(keyring_operation_error(error)),
         }
@@ -738,12 +746,32 @@ impl SettingsStore {
         } else {
             PROFILE_KEYCHAIN_SERVICE
         };
-        let secret: Box<dyn SecretStore> = Box::new(KeyringSecretStore);
+        if is_ui_test {
+            return Self::in_memory_with_scope(
+                Box::new(KeyringSecretStore),
+                true,
+                profile_keychain_service,
+                false,
+            );
+        }
+        let secret: Box<dyn SecretStore> =
+            Box::new(file_credentials::FileCredentialStore::for_app(
+                &app_config_dir,
+                profile_keychain_service,
+                !is_development,
+            ));
         #[cfg(any(all(feature = "local-dev-credentials", target_os = "macos"), test))]
         let secret =
             local_dev_credentials::select(&app_config_dir, is_ui_test, application_identifier)
                 .unwrap_or(secret);
-        let is_file_mode = secret.is_read_only() || !secret.local_dev_profile_ids().is_empty();
+        // One-time upgrade work. Each completed slot is persisted before the
+        // next native read. Steady-state windows use only the local file.
+        if secret.pending_imports().unwrap_or(0) > 0 && secret.migrate_legacy().is_err() {
+            tracing::warn!("credential import incomplete label=legacy_import_pending");
+        }
+        let is_file_mode = secret.uses_local_file()
+            || secret.is_read_only()
+            || !secret.local_dev_profile_ids().is_empty();
         Self::load_with_secret(
             app_config_dir,
             is_ui_test,
@@ -1307,7 +1335,7 @@ impl SettingsStore {
 
     /// Settings show saved-item presence; selection does not authorize secrets.
     pub fn credential_state_for_snapshot(&self, profile: &ServiceProfile) -> CredentialState {
-        if self.is_ui_test || !cfg!(target_os = "macos") {
+        if self.is_ui_test || (!self.secret.uses_local_file() && !cfg!(target_os = "macos")) {
             return self.credential_state(profile);
         }
         if let Some((speech, text)) = self.custom_credential_states_for_snapshot(profile) {
@@ -1323,7 +1351,7 @@ impl SettingsStore {
         if !profile.provider.is_custom_speech() {
             return None;
         }
-        if self.is_ui_test || !cfg!(target_os = "macos") {
+        if self.is_ui_test || (!self.secret.uses_local_file() && !cfg!(target_os = "macos")) {
             return self.custom_credential_states(profile);
         }
         let speech = self.speech_presence_for_snapshot(profile);
@@ -1416,6 +1444,8 @@ impl SettingsStore {
     pub fn credential_storage(&self) -> &'static str {
         if self.secret.is_read_only() || !self.secret.local_dev_profile_ids().is_empty() {
             "localDevFile"
+        } else if self.secret.uses_local_file() {
+            "localFile"
         } else {
             "keychain"
         }
@@ -1428,9 +1458,24 @@ impl SettingsStore {
     pub fn profile_credential_storage(&self, profile_id: &str) -> &'static str {
         if self.secret.is_read_only() || self.profile_uses_local_dev_credentials(profile_id) {
             "localDevFile"
+        } else if self.secret.uses_local_file() {
+            "localFile"
         } else {
             "keychain"
         }
+    }
+
+    #[cfg(test)]
+    fn migrate_credentials(&self) -> Result<(), String> {
+        if self.is_ui_test {
+            return Ok(());
+        }
+        let result = self
+            .secret
+            .migrate_legacy()
+            .map_err(SecretStoreError::public_error);
+        self.secret_cache.lock().unwrap().clear();
+        result
     }
 
     /// Explicit settings-window action only. Uses the existing profile-scoped

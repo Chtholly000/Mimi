@@ -48,7 +48,7 @@ Rules:
   not change the public-release certificate policy.
 - Never use ad-hoc signing for local QA or new public releases. Missing or
   changed identities fail closed. Never use `tccutil reset`, delete Keychain
-  entries, or rotate a certificate as a routine fix.
+  entries outside the verified migration, or rotate a certificate as a routine fix.
 - Branch and pull-request CI compiles macOS with `--no-bundle`; tag CI verifies
   the prepared macOS assets and publishes only after both platforms pass.
 - Keep only one live mimi copy while testing. Confirm its executable path, not
@@ -88,36 +88,25 @@ and do not claim a causal before/after fix from it.
 
 ## Know which prompt appeared
 
-For routine macOS API-key testing, the fixed dev launcher supports an explicitly
-isolated, private read-only file mode. See [local development credentials](local-dev-credentials.md)
-for setup, strict 0600 validation and returning to Keychain. This avoids only
-provider-key Keychain reads; signing-private-key and audio permissions still
-apply. Production credentials remain OS-backed. Do not weaken Keychain ACLs to
-avoid development prompts.
-
-Before a normal dev acceptance run, check whether the documented private `.env`
-exists and has mode `0600`, without printing its contents. A missing file selects
-Keychain; rebuilding the dev bundle does not recreate it. If file mode was already
-configured, investigate the existing local setup before asking for another system
-authorization. Never copy a key from an unrelated project or put it in a command,
-test report, or repository file.
+Production and ordinary development credentials use private local files on all
+desktop platforms. Legacy OS items are read only during automatic upgrade import,
+then deleted after durable write and read-back verification. Completed imports
+must never fall back to the OS store, even if the local file later goes missing.
+See [local credential storage](../plans/2026-10-04-local-credential-storage.md).
+The optional read-only dev `.env` presets remain separate; removing that file
+returns to editable local profiles. Signing-private-key and capture authorization
+are independent of provider credential storage. Never weaken native ACLs.
 
 These prompts have different causes and fixes:
 
 - **Screen & System Audio Recording:** TCC compares the bundle identifier and
   designated requirement. A changed certificate requires one new grant. A
   stable identity at a canonical path must not require repeated grants.
-- **API-key Keychain access:** the running app is reading a saved provider key.
-  macOS settings snapshots, including the selected profile, use metadata-only
-  presence checks for speech/text slots. Startup and switching a saved profile
-  must not authorize keys just to render saved-item badges. Actual listening,
-  credential reveal and explicit diagnostics still read and validate the needed
-  keys, once per cached slot.
-  Saved-item presence does not certify credential validity. Migration
-  tombstones and legacy slots are read only when the profile key is missing or
-  during an explicit save/delete/migration. Keep the same service/account and
-  update its value in place: deleting and recreating it discards accumulated
-  access rules and creates a crash window in which the secret can be lost.
+- **Legacy API-key Keychain access:** only the one-time importer reads an old
+  saved provider key. Verify a durable local copy before deleting its original
+  OS item. Checkpoint pending cleanup independently, so interrupted deletion
+  resumes without rereading the old secret. Routine startup, snapshots,
+  switching and credential edits use only the local file.
 - **Code-signing private-key access:** `/usr/bin/codesign` is using the private
   key for `mimi Local Development` while packaging the app and DMG. This is not
   API-key access. Grant persistent access only when the dialog names that exact
@@ -125,6 +114,7 @@ These prompts have different causes and fixes:
   whole keychain ACL in build scripts.
 - **Gatekeeper / Open Anyway:** the fixed self-signed GitHub package is not Apple-notarized. This is separate from capture and Keychain authorization.
 
+The historical OS-credential implementation needs the following distinction.
 The local development certificate is self-signed and has no Apple Team ID. It
 provides a stable requirement for local and newly prepared release TCC
 identities; historical ad-hoc signatures were build-specific. The file-based Keychain also applies a partition

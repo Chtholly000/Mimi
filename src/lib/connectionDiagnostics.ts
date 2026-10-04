@@ -4,11 +4,11 @@ import type { ConnectionDiagnostic } from "./ipc";
 export type DiagnosticPlatform = "macos" | "windows" | "linux";
 const copy = {
   en: {
-    localDevReadOnly: "Development presets read their provider keys from the local .env. Edit that file and restart mimi dev to change a key. Other configurations use the system credential store and remain editable.",
+    localDevReadOnly: "Development presets read their provider keys from the local .env. Edit that file and restart mimi dev to change a key. Other configurations use a private local file and remain editable.",
     localDevTranslationLocked: "This development preset uses its built-in recognition and translation service.",
-    localDevTranslationHelp: "Add a regular configuration to choose another service or independent text translation. Its credentials use the development app's system credential store; the preset keys stay in the read-only .env.",
+    localDevTranslationHelp: "Add a regular configuration to choose another service or independent text translation. Its credentials use the development app's private local file; the preset keys stay in the read-only .env.",
     localDevUnavailable: "Cannot read the local dev .env. Check its format, ownership and 0600 permissions, then restart mimi dev.",
-    storage: "Cannot read service credentials. Handle the system unlock prompt, then check again.",
+    storage: "Cannot read service credentials. Check local file access or save them again.",
     linuxStorage: "Cannot access your desktop password store. Confirm a Secret Service provider, such as GNOME Keyring, is installed and enabled in this desktop session. Unlock it or allow the system prompt, then check again.",
     serviceUnavailable: "Linux Secret Service is unavailable. Install or enable a Secret Service provider, such as GNOME Keyring, in this desktop session. Sign out and back in if required by your desktop setup, then check again.",
     accessDenied: "The system credential store is locked or access was denied. Unlock it or allow the system prompt, then check again.",
@@ -35,7 +35,7 @@ const copy = {
     reasons: {
       credentialsMissing: "Save your credentials first.",
       textTranslationNotConfigured: "Choose and save a text translation service first.",
-      credentialsUnavailable: "Unlock your system credential store.",
+      credentialsUnavailable: "Check local file access or save the credentials again.",
       credentialsServiceUnavailable: "Enable Secret Service (such as GNOME Keyring), then check again.",
       credentialsAccessDenied: "Unlock the credential store or allow access.",
       invalidConfiguration: "Check the service settings.",
@@ -46,11 +46,11 @@ const copy = {
     },
   },
   zh: {
-    localDevReadOnly: "开发预设从本机 .env 读取对应服务的密钥。修改密钥后需重新打开 mimi dev；其他配置使用系统钥匙串，可正常编辑。",
+    localDevReadOnly: "开发预设从本机 .env 读取对应服务的密钥。修改密钥后需重新打开 mimi dev；其他配置使用本机私有文件，可正常编辑。",
     localDevTranslationLocked: "此开发预设使用内置服务进行识别与翻译。",
-    localDevTranslationHelp: "添加普通配置即可选择其他服务或独立文字翻译。普通配置的凭据保存在开发版自己的系统钥匙串中，预设密钥仍由只读 .env 提供。",
+    localDevTranslationHelp: "添加普通配置即可选择其他服务或独立文字翻译。普通配置的凭据保存在开发版自己的私有文件中，预设密钥仍由只读 .env 提供。",
     localDevUnavailable: "无法读取本机开发 .env。请检查格式、文件归属及 0600 权限，然后重新打开 mimi dev。",
-    storage: "无法读取服务凭据。先处理系统解锁提示，再重新检查。",
+    storage: "无法读取服务凭据。请检查本地文件访问权限或重新保存。",
     linuxStorage: "无法访问桌面密码存储。请确认当前桌面会话已安装并启用 Secret Service 服务（例如 GNOME Keyring）。解锁密码存储或允许系统授权提示后，重新检查。",
     serviceUnavailable: "Linux Secret Service 服务不可用。请在当前桌面会话安装或启用兼容服务，例如 GNOME Keyring。若桌面配置要求，请注销并重新登录后再检查。",
     accessDenied: "系统凭据存储已锁定或访问被拒绝。解锁密码存储或允许系统授权提示后，重新检查。",
@@ -77,7 +77,7 @@ const copy = {
     reasons: {
       credentialsMissing: "请先保存凭据。",
       textTranslationNotConfigured: "请先选择并保存文字翻译服务。",
-      credentialsUnavailable: "请先解锁系统凭据存储。",
+      credentialsUnavailable: "请检查本地文件访问权限或重新保存凭据。",
       credentialsServiceUnavailable: "启用 Secret Service（如 GNOME Keyring）后重试。",
       credentialsAccessDenied: "解锁凭据存储或允许访问。",
       invalidConfiguration: "请检查服务配置。",
@@ -88,11 +88,11 @@ const copy = {
     },
   },
   ja: {
-    localDevReadOnly: "開発プリセットはローカルの .env から各サービスのキーを読み込みます。キーを変更したら mimi dev を再起動してください。他の設定はシステムの認証情報ストアを使用し、通常どおり編集できます。",
+    localDevReadOnly: "開発プリセットはローカルの .env から各サービスのキーを読み込みます。キーを変更したら mimi dev を再起動してください。他の設定は専用ローカルファイルを使用し、通常どおり編集できます。",
     localDevTranslationLocked: "この開発プリセットは組み込みサービスで認識と翻訳を行います。",
-    localDevTranslationHelp: "通常の設定を追加すると、別のサービスや独立したテキスト翻訳を選べます。認証情報は開発アプリ専用のシステムストアに保存され、プリセットのキーは読み取り専用の .env に残ります。",
+    localDevTranslationHelp: "通常の設定を追加すると、別のサービスや独立したテキスト翻訳を選べます。認証情報は開発アプリ専用のローカルファイルに保存され、プリセットのキーは読み取り専用の .env に残ります。",
     localDevUnavailable: "開発用 .env を読めません。形式、所有者、0600 権限を確認し、mimi dev を再起動してください。",
-    storage: "サービスの認証情報を読めません。システムの解除案内を確認し、もう一度お試しください。",
+    storage: "サービスの認証情報を読めません。ローカルファイルへのアクセスを確認するか、再保存してください。",
     linuxStorage: "デスクトップのパスワードストアにアクセスできません。現在のデスクトップセッションで GNOME Keyring などの Secret Service がインストールされ、有効になっていることを確認してください。ストアのロックを解除するかシステムのアクセス許可を承認して、再確認してください。",
     serviceUnavailable: "Linux Secret Service を利用できません。現在のデスクトップセッションで GNOME Keyring などの対応サービスをインストールするか有効にしてください。デスクトップの設定に応じてログアウトして再ログインし、再確認してください。",
     accessDenied: "システムの認証情報ストアがロックされているか、アクセスが拒否されました。ロックを解除するかシステムのアクセス許可を承認して、再確認してください。",
@@ -119,7 +119,7 @@ const copy = {
     reasons: {
       credentialsMissing: "認証情報を保存してください。",
       textTranslationNotConfigured: "文字翻訳サービスを選択して保存してください。",
-      credentialsUnavailable: "認証情報の保存先を解除してください。",
+      credentialsUnavailable: "ローカルファイルへのアクセスを確認するか、認証情報を再保存してください。",
       credentialsServiceUnavailable: "GNOME Keyring などの Secret Service を有効にし、再確認してください。",
       credentialsAccessDenied: "認証情報ストアのロックを解除するかアクセスを許可してください。",
       invalidConfiguration: "サービス設定を確認してください。",
@@ -138,13 +138,13 @@ export function diagnosticCopy(platform: DiagnosticPlatform = diagnosticPlatform
   const recovery = labels[`${platform}Recovery`];
   return {
     ...labels,
-    storage: platform === "linux" ? labels.linuxStorage : labels.storage,
-    reasons: { ...labels.reasons, credentialsUnavailable: recovery, credentialsAccessDenied: recovery,
+    storage: labels.storage,
+    reasons: { ...labels.reasons, credentialsAccessDenied: recovery,
       localDevCredentialsUnavailable: labels.localDevUnavailable },
   };
 }
 export function credentialUnavailableHelp(platform: DiagnosticPlatform = diagnosticPlatform()): string {
-  return platform === "linux" ? diagnosticCopy(platform).storage : I18N.settings.credentialUnavailableHelp;
+  return diagnosticCopy(platform).storage;
 }
 export function connectionDiagnosticMessage(result: ConnectionDiagnostic, platform?: DiagnosticPlatform): string {
   const labels = diagnosticCopy(platform);

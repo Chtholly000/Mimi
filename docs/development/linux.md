@@ -3,8 +3,9 @@
 Mimi's Linux packages target x86_64, built on Ubuntu 22.04. Use a desktop
 session with PulseAudio or PipeWire's PulseAudio compatibility server
 (`pipewire-pulse`) and a working default playback device. API keys use the
-desktop's Secret Service (such as GNOME Keyring); unlock its login collection
-before saving credentials. There is no file or environment-variable fallback.
+private local credential file (0700 directory, 0600 file). Secret Service is
+used only to migrate existing keys once, then the verified old items are retired.
+New installations, normal saves and subsequent starts do not require a keyring.
 
 ## Install and update
 
@@ -79,33 +80,18 @@ system output or default microphone works in the system sound settings.
 
 ### Credential recovery
 
-Mimi needs a compatible [Secret Service provider](https://specifications.freedesktop.org/secret-service/latest/)
-on the current desktop's session D-Bus. A running D-Bus session or an installed
-wallet executable alone does not provide this service.
+Current builds use the local credential file. If it cannot be read, check the
+current user's file access or save the credentials again. Do not delete a damaged
+file to trigger keyring fallback; there is no fallback after migration.
 
-- **Cannot connect to Secret Service:** use your distribution's package manager
-  to install a compatible provider, such as GNOME Keyring, and enable its
-  desktop-session integration. Follow your distribution's login setup; sign
-  out and back in if it requires a fresh session. Installing Mimi's `.deb`
-  normally installs its `gnome-keyring` dependency, but extracting the package
-  manually bypasses that step. AppImage users must provide the service too.
-- **Storage locked or access denied:** unlock the collection in your desktop's
-  password manager and handle any system authorization prompt. A dismissed
-  prompt is not a missing API key. GNOME Keyring can unlock the login collection
-  through the distribution's [login integration](https://wiki.gnome.org/Projects/GnomeKeyring/Pam).
-- **No credentials configured:** once storage is accessible, save the service's
-  credentials in Mimi. A reachable server does not establish authentication.
+Only an upgrade with old saved keys needs the existing desktop Secret Service
+for one-time import. Unlock that existing store if asked. Each verified local copy
+is checkpointed before its old OS item is deleted. A failed import leaves only
+that slot pending; it does not prevent already imported keys from working.
+Mimi never creates a new Secret Service collection for ordinary credential saves.
 
-Use **Check connection** after recovery. It retries failed credential reads
-without restarting Mimi. Failed saves and connection checks retain unsaved
-editor values; retry **Save** once the service is accessible. Save retries its
-own failed credential reads too. If the service has no default collection,
-the first Save can open the desktop keyring's normal collection-creation
-dialog. Complete that system dialog; cancelling leaves the credentials unsaved
-and allows another explicit Save. Reading settings never creates a collection.
-Mimi does not
-install or configure a keyring, change its password or permissions, or use file
-or environment-variable credential fallbacks.
+Earlier published packages still use OS storage; their historical installation
+and CI requirements remain recorded below.
 
 ## Build and verification
 

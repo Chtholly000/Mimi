@@ -1,8 +1,10 @@
-//! Read-only provider presets beside ordinary development OS credentials.
+//! Read-only provider presets beside ordinary development file credentials.
 //! Never source this file or inspect process environment variables for keys.
 
+#[cfg(test)]
+use super::KeyringSecretStore;
 use super::{
-    KeyringSecretStore, SecretStore, SecretStoreError, DEVELOPMENT_APPLICATION_IDENTIFIER,
+    SecretStore, SecretStoreError, DEVELOPMENT_APPLICATION_IDENTIFIER,
     DEVELOPMENT_PROFILE_KEYCHAIN_SERVICE, LOCAL_DEV_ALIBABA_PROFILE_ID,
     LOCAL_DEV_GEMINI_PROFILE_ID,
 };
@@ -22,10 +24,21 @@ pub(super) fn select(
     is_ui_test: bool,
     identifier: &str,
 ) -> Option<Box<dyn SecretStore>> {
-    select_with_reader(
+    if !cfg!(all(feature = "local-dev-credentials", target_os = "macos"))
+        || is_ui_test
+        || identifier != DEVELOPMENT_APPLICATION_IDENTIFIER
+    {
+        return None;
+    }
+    select_with_reader_and_store(
         cfg!(all(feature = "local-dev-credentials", target_os = "macos")),
         is_ui_test,
         identifier,
+        Box::new(super::file_credentials::FileCredentialStore::for_app(
+            directory,
+            DEVELOPMENT_PROFILE_KEYCHAIN_SERVICE,
+            false,
+        )),
         || {
             if !directory.is_absolute() {
                 // Tauri path-resolution failure must not turn this into a
@@ -37,10 +50,27 @@ pub(super) fn select(
     )
 }
 
+#[cfg(test)]
 fn select_with_reader(
     enabled: bool,
     is_ui_test: bool,
     identifier: &str,
+    read: impl FnOnce() -> Result<Option<String>, SecretStoreError>,
+) -> Option<Box<dyn SecretStore>> {
+    select_with_reader_and_store(
+        enabled,
+        is_ui_test,
+        identifier,
+        Box::new(KeyringSecretStore),
+        read,
+    )
+}
+
+fn select_with_reader_and_store(
+    enabled: bool,
+    is_ui_test: bool,
+    identifier: &str,
+    ordinary: Box<dyn SecretStore>,
     read: impl FnOnce() -> Result<Option<String>, SecretStoreError>,
 ) -> Option<Box<dyn SecretStore>> {
     // All gates precede even file metadata access. UI-only also bypasses this
@@ -62,14 +92,14 @@ fn select_with_reader(
                     .map(|keys| keys.gemini.clone())
                     .map_err(|error| *error),
                 gemini_configured: keys.as_ref().map_or(true, |keys| keys.gemini_configured),
-                os: Box::new(KeyringSecretStore),
+                os: ordinary,
             }))
         }
     }
 }
 
 struct FileSecretStore {
-    // No Debug/Serialize implementation: the value stays inside native storage.
+    // No Debug/Serialize implementation: the value stays inside the backend.
     key: Result<Option<String>, SecretStoreError>,
     gemini_key: Result<Option<String>, SecretStoreError>,
     gemini_configured: bool,
@@ -131,6 +161,16 @@ impl SecretStore for FileSecretStore {
             return Err(SecretStoreError::ReadOnly);
         }
         self.os.delete(service, account)
+    }
+
+    fn uses_local_file(&self) -> bool {
+        self.os.uses_local_file()
+    }
+    fn pending_imports(&self) -> Result<usize, SecretStoreError> {
+        self.os.pending_imports()
+    }
+    fn migrate_legacy(&self) -> Result<(), SecretStoreError> {
+        self.os.migrate_legacy()
     }
 
     fn local_dev_profile_ids(&self) -> Vec<&'static str> {
@@ -755,7 +795,7 @@ mod tests {
         let expected = if cfg!(all(feature = "local-dev-credentials", target_os = "macos")) {
             "localDevFile"
         } else {
-            "keychain"
+            "localFile"
         };
         assert_eq!(store.credential_storage(), expected);
         assert!(!store.migrate_legacy_alibaba);
@@ -767,7 +807,7 @@ mod tests {
         assert_eq!(ui_store.credential_storage(), "keychain");
         let production_store =
             super::super::SettingsStore::load(directory.clone(), false, "app.yuxino.mimi");
-        assert_eq!(production_store.credential_storage(), "keychain");
+        assert_eq!(production_store.credential_storage(), "localFile");
         let catalog = std::fs::read_to_string(directory.join("service-profiles.json")).unwrap();
         assert!(!catalog.contains("synthetic-test-only"));
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
