@@ -401,11 +401,22 @@ fn apply_establish_failure_state(
     error: String,
     is_recovering: bool,
 ) {
-    if is_recovering {
+    if is_recovering && !capture_error_requires_user_action(&error) {
         controller.begin_connecting();
     } else {
         controller.did_fail(error);
     }
+}
+
+/// These fixed application errors cannot improve through automatic reconnect.
+/// Starting again is an explicit user action after authorization or system stop.
+fn capture_error_requires_user_action(error: &str) -> bool {
+    matches!(
+        error,
+        "System audio capture permission was denied."
+            | "Microphone capture permission was denied."
+            | "System audio capture was stopped by the user."
+    )
 }
 
 fn source_switch_requires_reconnect(
@@ -3330,7 +3341,7 @@ impl SessionManager {
         attempt: u64,
         failure: SystemAudioCaptureFailure,
     ) {
-        if failure == SystemAudioCaptureFailure::ApplicationUnavailable {
+        if !failure.is_recoverable() {
             let _teardown = self.begin_teardown_operation();
             let _operation = self.begin_lifecycle_operation();
             let epoch = {
@@ -3573,6 +3584,7 @@ impl SessionManager {
         self.cleanup_generation(failed_generation).await;
 
         let mut recovered = false;
+        let mut terminal_failure = None;
         let mut recovery_epoch = recovery_generation;
         for attempt in 0..RECOVERY_ATTEMPTS {
             let delay = recovery_delay(attempt, failed_generation).max(minimum_delay);
@@ -3631,13 +3643,17 @@ impl SessionManager {
                     clear_recovery_atoms(&self.is_recovering, &self.recovery_retry_generation);
                     return;
                 }
-                Err(_) => {
+                Err(error) => {
                     let failure_epoch = recovery_generation.wrapping_add(1);
                     if self.lifecycle_sequence.load(Ordering::SeqCst) != failure_epoch {
                         clear_recovery_atoms(&self.is_recovering, &self.recovery_retry_generation);
                         return;
                     }
                     recovery_epoch = failure_epoch;
+                    if capture_error_requires_user_action(&error) {
+                        terminal_failure = Some(error);
+                        break;
+                    }
                 }
             }
         }
@@ -3652,9 +3668,14 @@ impl SessionManager {
                 clear_recovery_atoms(&self.is_recovering, &self.recovery_retry_generation);
                 return;
             }
-            self.record_recovery_if_current(RecoveryAction::RetriesExhausted, recovery_epoch);
+            if terminal_failure.is_none() {
+                self.record_recovery_if_current(RecoveryAction::RetriesExhausted, recovery_epoch);
+                pipeline_log!("session recovery exhausted");
+            }
+            // Preserve the permission/stop result instead of covering it with
+            // the transient error that originally initiated this recovery.
+            let failure_message = terminal_failure.unwrap_or(failure_message);
             self.record_diagnostic_failure(&failure_message);
-            pipeline_log!("session recovery exhausted");
             self.clear_active_settings_for_generation(recovery_generation);
             clear_recovery_atoms(&self.is_recovering, &self.recovery_retry_generation);
             self.controller.lock().unwrap().did_fail(failure_message);
@@ -6422,6 +6443,30 @@ mod lifecycle_tests {
             resumed_configuration.translation_mode,
             TranslationMode::Turbo
         );
+    }
+
+    #[test]
+    fn recovery_permission_failures_keep_the_actual_error_and_require_manual_restart() {
+        for error in [
+            "System audio capture permission was denied.",
+            "Microphone capture permission was denied.",
+            "System audio capture was stopped by the user.",
+        ] {
+            let mut controller = TranslationSessionController::default();
+            controller.begin_connecting();
+            apply_establish_failure_state(&mut controller, error.into(), true);
+            assert_eq!(controller.state.status, SessionStatus::Error(error.into()));
+            assert!(capture_error_requires_user_action(error));
+            assert!(!SessionStateEvent::from(&controller.state).is_active);
+        }
+        for error in [
+            "Audio capture stopped unexpectedly.",
+            "System audio capture could not be started.",
+            "transport_error",
+            "Audio capture setup timed out.",
+        ] {
+            assert!(!capture_error_requires_user_action(error));
+        }
     }
 
     #[test]

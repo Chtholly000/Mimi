@@ -141,7 +141,11 @@ tauri_nspanel::tauri_panel! {
             can_become_main_window: false,
             is_floating_panel: true,
             hides_on_deactivate: false,
-            becomes_key_only_if_needed: true
+            // HTML inputs live inside WKWebView, not an AppKit text field
+            // whose hit view opts into needsPanelToBecomeKey. Let an explicit
+            // click give this control panel keyboard input. NonactivatingPanel
+            // and passive ordering still leave the media application active.
+            becomes_key_only_if_needed: false
         }
     })
 }
@@ -1405,16 +1409,50 @@ fn reassert_overlay_window_on_active_space(window: &tauri::WebviewWindow) {
     configure_overlay_window_impl(window, true);
 }
 
-/// Expanding the control surface follows a click that already gives its
-/// nonactivating panel any key status it needs. Tao's macOS `set_focus` path
-/// activates the entire application, which would steal focus from the media
-/// app and can pull the user out of its full-screen Space.
+/// Only an explicit request to open controls grants keyboard input. On macOS,
+/// use AppKit's key-window operation directly: Tao's `set_focus` also activates
+/// the application and can pull the media app out of its full-screen Space.
+/// A WKWebView click alone does not reliably make a nonactivating panel key.
 fn focus_overlay_control(window: &tauri::WebviewWindow) {
     #[cfg(not(target_os = "macos"))]
     let _ = window.set_focus();
 
     #[cfg(target_os = "macos")]
-    let _ = window;
+    {
+        let current_window = window.clone();
+        let _ = window.with_webview(move |webview| {
+            use objc2_app_kit::{NSView, NSWindow};
+
+            if OverlayControlWindowManager::mode(current_window.app_handle())
+                != OverlayControlMode::Panel
+            {
+                return;
+            }
+            let Ok(pointer) = current_window.ns_window() else {
+                return;
+            };
+            let view_pointer = webview.inner();
+            if view_pointer.is_null() {
+                return;
+            }
+            // SAFETY: with_webview runs on the main thread and keeps the
+            // app-owned WKWebView/window alive for this callback. contentView
+            // is a Wry wrapper, so use the actual webview for keyboard input.
+            let panel: &NSWindow = unsafe { &*pointer.cast() };
+            let view: &NSView = unsafe { &*view_pointer.cast() };
+            if !panel.isVisible() {
+                return;
+            }
+            let responder_accepted = panel.makeFirstResponder(Some(view));
+            panel.makeKeyWindow();
+            pipeline_log!(
+                "overlay control keyboard key={} main={} responder_accepted={}",
+                panel.isKeyWindow(),
+                panel.isMainWindow(),
+                responder_accepted
+            );
+        });
+    }
 }
 
 fn configure_overlay_window_impl(window: &tauri::WebviewWindow, order_front: bool) {
@@ -1445,7 +1483,7 @@ fn configure_overlay_window_impl_macos(
     // parent restoration, and ordering happen in one dispatched transaction.
     let window_for_main = window.clone();
     let _ = window.run_on_main_thread(move || unsafe {
-        use objc2_app_kit::{NSWindow, NSWindowOrderingMode, NSWindowStyleMask};
+        use objc2_app_kit::{NSWindow, NSWindowStyleMask};
 
         let Ok(pointer) = window_for_main.ns_window() else {
             return;
@@ -1464,17 +1502,7 @@ fn configure_overlay_window_impl_macos(
             match parent_window.ns_window() {
                 Ok(parent_pointer) => {
                     let parent_ns_window: &NSWindow = &*parent_pointer.cast();
-                    let current_parent = ns_window.parentWindow();
-                    let already_attached = current_parent
-                        .as_deref()
-                        .is_some_and(|current| std::ptr::eq(current, parent_ns_window));
-                    if !already_attached {
-                        if let Some(current) = current_parent {
-                            current.removeChildWindow(ns_window);
-                        }
-                        parent_ns_window
-                            .addChildWindow_ordered(ns_window, NSWindowOrderingMode::Above);
-                    }
+                    attach_overlay_control_parent_macos(ns_window, parent_ns_window);
                 }
                 Err(_) => pipeline_log!("overlay control show failed label=parent_unavailable"),
             }
@@ -1484,6 +1512,30 @@ fn configure_overlay_window_impl_macos(
             ns_window.orderFrontRegardless();
         }
     });
+}
+
+/// Main-thread-only parent restoration shared by initial presentation and
+/// keyboard release. AppKit detaches a child when orderOut hides it.
+#[cfg(target_os = "macos")]
+fn attach_overlay_control_parent_macos(
+    window: &objc2_app_kit::NSWindow,
+    parent: &objc2_app_kit::NSWindow,
+) {
+    use objc2_app_kit::NSWindowOrderingMode;
+
+    let current_parent = window.parentWindow();
+    if current_parent
+        .as_deref()
+        .is_some_and(|current| std::ptr::eq(current, parent))
+    {
+        return;
+    }
+    if let Some(current) = current_parent {
+        current.removeChildWindow(window);
+    }
+    // SAFETY: Both are distinct app-owned windows, accessed on the main thread;
+    // the child is detached from any previous parent before attaching above.
+    unsafe { parent.addChildWindow_ordered(window, NSWindowOrderingMode::Above) };
 }
 
 #[cfg(target_os = "macos")]
@@ -2943,6 +2995,30 @@ pub fn install_active_space_observer(
 #[cfg(test)]
 mod geometry_tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn control_panel_declares_key_eligibility_without_main_window_eligibility() {
+        use objc2::{msg_send, ClassType};
+
+        // This checks declared policy, not runtime keyboard delivery. Native
+        // typing still requires the explicit makeKeyWindow path and real UI
+        // verification; class selectors do not prove a live first responder.
+        let control = RawSubtitleControlPanel::class();
+        let can_become_key: bool = unsafe { msg_send![control, canBecomeKeyWindow] };
+        let can_become_main: bool = unsafe { msg_send![control, canBecomeMainWindow] };
+        let key_only_if_needed: bool = unsafe { msg_send![control, becomesKeyOnlyIfNeeded] };
+        assert!(can_become_key);
+        assert!(!can_become_main);
+        assert!(!key_only_if_needed);
+
+        // Reading subtitles keeps the more restrictive existing key policy.
+        let subtitles = RawSubtitleOverlayPanel::class();
+        let key_only_if_needed: bool = unsafe { msg_send![subtitles, becomesKeyOnlyIfNeeded] };
+        assert!(key_only_if_needed);
+        let can_become_main: bool = unsafe { msg_send![subtitles, canBecomeMainWindow] };
+        assert!(!can_become_main);
+    }
 
     fn frame(x: f64, y: f64, w: f64, h: f64) -> OverlayFrame {
         OverlayFrame {

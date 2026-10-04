@@ -44,6 +44,7 @@ type PendingAction =
   | TraySessionAction
   | "language"
   | "display"
+  | "intermediate"
   | "alignment"
   | "blend"
   | "lock"
@@ -114,7 +115,9 @@ export function TrayPanel() {
             ? I18N.tray.quitFailed
             : name === "dock"
               ? I18N.settings.dockSaveFailed
-              : actionErrorMessage(error, I18N.settings.profileActionFailed),
+              : name === "intermediate"
+                ? I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles)
+                : actionErrorMessage(error, I18N.settings.profileActionFailed),
         );
       })
       .finally(() => {
@@ -290,6 +293,21 @@ export function TrayPanel() {
               ]} disabled={anyActionPending}
               onChange={(value) => performAction("display", () => saveSettings({ subtitleDisplayMode: value as SubtitleDisplayMode }))} />
           </span>
+        </div>
+        <span className="tray-card__divider" />
+
+        <div className="tray-setting-row tray-setting-row--intermediate">
+          <span className="tray-setting-row__icon" aria-hidden="true"><Icon name="captions-bubble" /></span>
+          <span className="tray-setting-row__copy">
+            <span>{I18N.settings.showIntermediateSubtitles} <SettingsHelp text={I18N.settings.showIntermediateSubtitlesHelp} label={I18N.settings.helpLabel} /></span>
+          </span>
+          <button type="button" role="switch"
+            className={`tray-switch${settings.showIntermediateSubtitles !== false ? " is-checked" : ""}`}
+            aria-checked={settings.showIntermediateSubtitles !== false}
+            aria-label={I18N.settings.showIntermediateSubtitles} disabled={anyActionPending}
+            onClick={() => performAction("intermediate", () => saveSettings({ showIntermediateSubtitles: settings.showIntermediateSubtitles === false }))}>
+            <span aria-hidden="true" />
+          </button>
         </div>
         <span className="tray-card__divider" />
 

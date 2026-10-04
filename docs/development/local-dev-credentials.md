@@ -15,20 +15,20 @@ Setup 提供空模板的创建步骤；已有文件不需要重新填写。
 修改 Key 后，正常退出并重新打开应用。
 
 其他配置和正式版一样，可以添加、编辑和切换，也可以选择 DeepL、DeepLX、
-ChatMock 或兼容接口作为独立文字翻译。它们使用开发版自己的系统钥匙串条目，
+ChatMock 或兼容接口作为独立文字翻译。它们使用开发版自己的私有本地凭据文件，
 不会借用 `.env` 中的密钥，也不会改动正式版凭据。
 
-把 `.env` 移走或删除，再重新打开，就切回系统钥匙串。文件存在但格式或权限错误时，
+把 `.env` 移走或删除，再重新打开，就切回可编辑的本地文件配置。文件存在但格式或权限错误时，
 默认开发配置明确报错，不会偷偷改用钥匙串；其他配置仍可正常使用。
 正式版和 `--ui-only` 模式都不会读取这个文件。
 不要把真实 Key 放进仓库、截图或日志，也不要在 shell 中 `source` 这个文件。
 
-The normal application stores provider credentials in the OS credential store.
-For local macOS development, `./scripts/dev-app.sh` enables a separate, read-only
-file-backed preset for each of Alibaba and Gemini so testing those presets does not require API-key Keychain access.
-All other configurations use the development app's profile-scoped OS credential
-store and remain editable. Their Keychain authorization follows the normal app
-path; the preset's file key is never copied or used as their fallback.
+The normal application stores provider credentials in a private local file.
+For local macOS development, `./scripts/dev-app.sh` additionally supports a
+read-only `.env` preset for Alibaba and Gemini. Other configurations use the
+development app's separate editable local credential file. Existing OS items are
+migrated once and retired after verification; the preset's key is never copied
+or used as an ordinary profile's fallback.
 This does not change the signing-private-key or system-audio permission prompts.
 
 ## Setup
@@ -66,7 +66,7 @@ The file must be a regular, non-symlink file owned by the current user, with
 exactly `0600` permissions and at most 16 KiB. A key is capped at 4096 bytes.
 An empty template selects file mode with a missing key.
 
-## Editing and returning to Keychain
+## Editing and returning to ordinary profiles
 
 Keys are read once at app startup. After changing the file, quit Mimi normally
 and reopen `/Applications/mimi-dev.app`; reopening from Finder or the Dock also
@@ -83,12 +83,12 @@ To remove or replace a preset key, edit the private file and reopen the app.
 Moving that file out of the fixed path or deleting it removes the preset on the
 next startup. Removing only `GEMINI_API_KEY` removes the Gemini preset while
 preserving Alibaba. An explicit active-profile selection survives restarts while
-its preset is present. Ordinary profile metadata and Keychain entries are preserved.
+its preset is present. Ordinary profile metadata and local credentials are preserved.
 
 If the file exists but cannot be read or fails validation, Mimi reports a local
 development file error for the preset. It does **not** silently use Keychain.
 Check its format, ownership and permissions, then reopen the app. Other profiles
-continue using their own OS credentials even when the preset file is invalid.
+continue using their own local credentials even when the preset file is invalid.
 
 ## Scope and verification
 

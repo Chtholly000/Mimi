@@ -124,16 +124,16 @@ it.each([
   expect(labels.reasons.credentialsServiceUnavailable).not.toBe(labels.reasons.credentialsAccessDenied);
 });
 
-it("gives general Linux storage errors provider setup guidance while preserving Mac unlock copy", () => {
+it("uses local file recovery for ordinary storage errors on every platform", () => {
   setStoredUiLanguage("en");
-  expect(diagnosticCopy("linux").storage).toContain("installed and enabled in this desktop session");
+  expect(diagnosticCopy("linux").storage).toContain("local file access");
   expect(credentialErrorMessage("credential_store_unavailable", "linux")).toBe(diagnosticCopy("linux").storage);
   expect(connectionDiagnosticMessage({ credential: "unavailable", service: "unavailable", reason: "credentialsUnavailable" }, "linux")).toContain(diagnosticCopy("linux").reasons.credentialsUnavailable);
-  expect(diagnosticCopy("macos").storage).toBe("Cannot read service credentials. Handle the system unlock prompt, then check again.");
+  expect(diagnosticCopy("macos").storage).toBe("Cannot read service credentials. Check local file access or save them again.");
   expect(diagnosticCopy("macos").storage).not.toContain("Secret Service");
   expect(credentialUnavailableHelp("linux")).toBe(diagnosticCopy("linux").storage);
-  expect(credentialUnavailableHelp("macos")).toBe(I18N.settings.credentialUnavailableHelp);
-  expect(credentialUnavailableHelp("windows")).toBe(I18N.settings.credentialUnavailableHelp);
+  expect(credentialUnavailableHelp("macos")).toBe(diagnosticCopy("macos").storage);
+  expect(credentialUnavailableHelp("windows")).toBe(diagnosticCopy("windows").storage);
 });
 
 it("shortens the known quota prefix without exposing trailing provider text or URLs", () => {
@@ -154,5 +154,13 @@ it.each(["en", "zh", "ja"] as const)("keeps credential recovery actionable even 
     expect(message).toContain(diagnosticCopy().reasons.credentialsMissing);
     expect(message).not.toBe(diagnosticCopy().checkSkipped);
     expect(message).not.toContain(diagnosticCopy().notTested);
+  }
+});
+
+it.each(["en", "zh", "ja"] as const)("ordinary file errors do not recommend native authorization in %s", (language) => {
+  setStoredUiLanguage(language);
+  for (const platform of ["macos", "windows", "linux"] as const) {
+    expect(credentialErrorMessage("credential_store_unavailable", platform)).not.toMatch(/Keychain|Keyring|Secret Service|Credential Manager|钥匙串|凭据管理器|キーチェーン/);
+    expect(connectionDiagnosticMessage({ credential: "unavailable", service: "unavailable", reason: "credentialsUnavailable" }, platform)).not.toMatch(/Keychain|Keyring|Secret Service|Credential Manager|钥匙串|凭据管理器|キーチェーン/);
   }
 });

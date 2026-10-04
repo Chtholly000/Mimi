@@ -10,7 +10,7 @@ export function CredentialStorageHelp({ profile, id, readOnly = false }: {
 }) {
   const text = readOnly
     ? profile.credentialState === "unavailable" ? diagnosticCopy().localDevUnavailable : diagnosticCopy().localDevReadOnly
-    : I18N.settings.credentialNote;
+    : profile.credentialStorage === "localFile" ? I18N.settings.credentialLocalFileHelp : I18N.settings.credentialNote;
   return <span className="credential-storage-help">
     <span>{I18N.settings.credentials}</span>
     <SettingsHelp id={id} text={text} label={`${I18N.settings.credentials}: ${I18N.settings.helpLabel}`} />

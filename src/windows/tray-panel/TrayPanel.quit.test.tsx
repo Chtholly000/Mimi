@@ -176,3 +176,21 @@ it.each(["connecting", "stopping"] as const)("prevents language requests while t
   expect(document.querySelector('[role="listbox"]')).toBeNull();
   expect(switchSourceLanguage).not.toHaveBeenCalled();
 });
+
+
+it("keeps the interim switch usable while running, reports failure and saves a retry", async () => {
+  const save = vi.fn(initial.saveSettings).mockRejectedValueOnce(new Error("synthetic-private-setting-error"));
+  useStore.setState({ ...initial, saveSettings: save, session: { ...initial.session, isActive: true, status: { kind: "listening" } } }, true);
+  await act(async () => root.render(<TrayPanel />));
+  const toggle = () => host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${I18N.settings.showIntermediateSubtitles}"]`)!;
+  expect(toggle().getAttribute("aria-checked")).toBe("true");
+  await act(async () => toggle().click());
+  expect(save).toHaveBeenLastCalledWith({ showIntermediateSubtitles: false });
+  expect(toggle().getAttribute("aria-checked")).toBe("true");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles));
+  expect(host.textContent).not.toContain("synthetic-private-setting-error");
+  await act(async () => toggle().click());
+  expect(toggle().getAttribute("aria-checked")).toBe("false");
+  expect(useStore.getState().session.isActive).toBe(true);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});

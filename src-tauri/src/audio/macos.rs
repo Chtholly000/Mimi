@@ -6,7 +6,10 @@
 //! closures dispatched to the main thread; completions that fire on arbitrary
 //! queues re-dispatch there before touching those objects.
 
-use crate::audio::applications::{sort_applications, ApplicationSnapshot, AudioApplication};
+use crate::audio::applications::{
+    sort_applications, ApplicationIconBudget, ApplicationSnapshot, AudioApplication,
+    MAX_APPLICATION_ICON_PNG_BYTES,
+};
 use crate::audio::macos_block_buffer;
 use crate::audio::send_pipeline::{AudioIngress, AudioIngressError};
 use crate::audio::{
@@ -31,6 +34,7 @@ use objc2_core_audio_types::{
 use objc2_foundation::{NSArray, NSObjectProtocol};
 use rubato::audioadapter_buffers::direct::SequentialSlice;
 use rubato::Resampler;
+use screen_capture_kit::error::{SCStreamErrorCode, SCStreamErrorDomain};
 use screen_capture_kit::shareable_content::{SCDisplay, SCShareableContent};
 use screen_capture_kit::stream::{
     SCContentFilter, SCStream, SCStreamConfiguration, SCStreamDelegate, SCStreamOutput,
@@ -166,11 +170,8 @@ define_class!(
             error: &objc2_foundation::NSError,
         ) {
             let state = unsafe { &*(self.ivars().state_ptr as *const AudioHandlerState) };
-            let _ = error;
             if state.generation.is_current(state.generation_token) {
-                state
-                    .failure_tx
-                    .report(SystemAudioCaptureFailure::NativeStopped);
+                state.failure_tx.report(classify_native_stop_error(error));
             }
         }
     }
@@ -384,89 +385,50 @@ impl MacSystemAudioCapture {
         }
     }
 
-    /// Enumeration is explicitly requested by the picker. ScreenCaptureKit may
-    /// request the existing Screen & System Audio Recording permission.
+    /// AppKit lists application metadata without requesting screen contents or
+    /// recording authorization. Only starting capture may access ScreenCaptureKit.
     pub async fn audio_applications(&self) -> Result<ApplicationSnapshot, SystemAudioCaptureError> {
         let (tx, rx) = oneshot::channel();
-        let callback_dispatcher = Arc::clone(&self.dispatcher);
         (self.dispatcher)(Box::new(move || {
-            let tx = Arc::new(Mutex::new(Some(tx)));
-            let callback_tx = Arc::clone(&tx);
-            let request = objc2::exception::catch(AssertUnwindSafe(|| {
-                SCShareableContent::get_shareable_content_excluding_desktop_windows(
-                    false,
-                    false,
-                    move |content, error| {
-                        let Some(content) = content else {
-                            let result = Err(error
-                                .as_ref()
-                                .map_or(SystemAudioCaptureError::ApplicationListFailed, |error| {
-                                    classify_native_start_error(error)
-                                }));
-                            if let Some(tx) = callback_tx.lock().unwrap().take() {
-                                let _ = tx.send(result);
-                            }
-                            return;
-                        };
-                        // Keep content traversal/destruction on the main thread,
-                        // just like stream startup. Only the pointer crosses queues.
-                        let ptr = MainThreadPtr(Box::into_raw(Box::new(content)) as *mut ());
-                        let tx = Arc::clone(&callback_tx);
-                        callback_dispatcher(Box::new(move || {
-                            let content = unsafe {
-                                *Box::from_raw(ptr.into_inner() as *mut Retained<SCShareableContent>)
-                            };
-                            let result = objc2::exception::catch(AssertUnwindSafe(|| {
-                                let own = own_bundle_identifier();
-                                let mut apps: Vec<_> = content
-                                    .applications()
-                                    .iter()
-                                    .filter_map(|app| {
-                                        let running = objc2_app_kit::NSRunningApplication::runningApplicationWithProcessIdentifier(
-                                            app.process_id(),
-                                        )?;
-                                        // ScreenCaptureKit also lists input methods and
-                                        // system helpers. Offer normal user applications,
-                                        // including hidden/windowless music players, without
-                                        // changing which processes an existing target captures.
-                                        if running.isTerminated()
-                                            || running.activationPolicy()
-                                                != objc2_app_kit::NSApplicationActivationPolicy::Regular
-                                        {
-                                            return None;
-                                        }
-                                        let id = app.bundle_identifier().to_string();
-                                        let name = app.application_name().to_string();
-                                        let target = SystemAudioTarget::Application {
-                                            id: id.clone(),
-                                            name: name.clone(),
-                                        };
-                                        if !target.validate() || own.as_ref() == Some(&id) {
-                                            None
-                                        } else {
-                                            Some(AudioApplication { id, name })
-                                        }
-                                    })
-                                    .collect();
-                                sort_applications(&mut apps);
-                                ApplicationSnapshot {
-                                    supported: true,
-                                    applications: apps,
-                                }
-                            }))
-                            .map_err(|_| SystemAudioCaptureError::ApplicationListFailed);
-                            if let Some(tx) = tx.lock().unwrap().take() {
-                                let _ = tx.send(result);
-                            }
-                        }));
-                    },
-                );
-            }));
-            if request.is_err() {
-                if let Some(tx) = tx.lock().unwrap().take() {
-                    let _ = tx.send(Err(SystemAudioCaptureError::ApplicationListFailed));
+            let result = objc2::exception::catch(AssertUnwindSafe(|| {
+                let own = own_bundle_identifier();
+                let mut running_apps = std::collections::HashMap::new();
+                let mut applications = objc2_app_kit::NSWorkspace::sharedWorkspace()
+                    .runningApplications()
+                    .iter()
+                    .filter_map(|app| {
+                        let application = picker_application(
+                            app.isTerminated(),
+                            app.activationPolicy()
+                                == objc2_app_kit::NSApplicationActivationPolicy::Regular,
+                            app.bundleIdentifier().map(|id| id.to_string()),
+                            app.localizedName().map(|name| name.to_string()),
+                            own.as_deref(),
+                        )?;
+                        running_apps.entry(application.id.clone()).or_insert(app);
+                        Some(application)
+                    })
+                    .collect();
+                sort_applications(&mut applications);
+                let mut icon_budget = ApplicationIconBudget::default();
+                for application in &mut applications {
+                    application.icon_data_url = running_apps
+                        .get(&application.id)
+                        .and_then(|app| {
+                            objc2::exception::catch(AssertUnwindSafe(|| app.icon()))
+                                .ok()
+                                .flatten()
+                        })
+                        .and_then(|image| picker_icon_png(&image))
+                        .and_then(|png| icon_budget.encode_png(&png));
                 }
-            }
+                ApplicationSnapshot {
+                    supported: true,
+                    applications,
+                }
+            }))
+            .map_err(|_| SystemAudioCaptureError::ApplicationListFailed);
+            let _ = tx.send(result);
         }));
         tokio::time::timeout(CAPTURE_START_TIMEOUT, rx)
             .await
@@ -959,13 +921,96 @@ fn stop_uninstalled_capture(
     });
 }
 
-const SC_STREAM_ERROR_USER_DECLINED: isize = -3801;
+fn picker_application(
+    terminated: bool,
+    regular: bool,
+    id: Option<String>,
+    name: Option<String>,
+    own: Option<&str>,
+) -> Option<AudioApplication> {
+    if terminated || !regular {
+        return None;
+    }
+    let (id, name) = (id?, name?);
+    let target = SystemAudioTarget::Application { id, name };
+    if !target.validate() || target.application_id() == own {
+        return None;
+    }
+    let SystemAudioTarget::Application { id, name } = target else {
+        unreachable!()
+    };
+    Some(AudioApplication {
+        id,
+        name,
+        icon_data_url: None,
+    })
+}
+
+/// Render an existing AppKit icon into a fixed-size bitmap. This does not read
+/// windows, enumerate screen contents, start capture or request a new permission.
+/// Runtime callers execute on the main thread. Failures leave a text-only choice.
+fn picker_icon_png(image: &objc2_app_kit::NSImage) -> Option<Vec<u8>> {
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace,
+        NSGraphicsContext,
+    };
+    use objc2_foundation::{NSDictionary, NSPoint, NSRect, NSSize};
+    const EDGE: isize = 32;
+    let previous_context = NSGraphicsContext::currentContext();
+    let result = objc2::exception::catch(AssertUnwindSafe(|| {
+        // SAFETY: Null planes let AppKit own one 32x32 RGBA buffer with an
+        // explicit 128-byte row. No caller-owned memory is retained by AppKit.
+        let bitmap = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+                NSBitmapImageRep::alloc(), std::ptr::null_mut(), EDGE, EDGE, 8, 4,
+                true, false, NSDeviceRGBColorSpace, EDGE * 4, 32,
+            )
+        }?;
+        let pixels = bitmap.bitmapData();
+        if pixels.is_null() || bitmap.bytesPerRow() != EDGE * 4 {
+            return None;
+        }
+        // SAFETY: The bitmap owns this exact RGBA allocation. Clear alpha so
+        // transparent padding never includes uninitialized bitmap bytes.
+        unsafe { std::ptr::write_bytes(pixels, 0, (EDGE * EDGE * 4) as usize) };
+        let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)?;
+        NSGraphicsContext::setCurrentContext(Some(&context));
+        image.drawInRect_fromRect_operation_fraction(
+            NSRect::new(NSPoint::ZERO, NSSize::new(EDGE as f64, EDGE as f64)),
+            NSRect::ZERO, NSCompositingOperation::Copy, 1.0,
+        );
+        // SAFETY: An empty property dictionary supplies no incorrectly typed
+        // codec options. The newly rendered representation contains no source metadata.
+        let data = unsafe {
+            bitmap.representationUsingType_properties(NSBitmapImageFileType::PNG, &NSDictionary::new())
+        }?;
+        (data.len() <= MAX_APPLICATION_ICON_PNG_BYTES).then(|| data.to_vec())
+    })).ok().flatten();
+    // Restore even after an Objective-C drawing/encoding exception. A missing
+    // app icon must not disturb the graphics context used by the next UI draw.
+    NSGraphicsContext::setCurrentContext(previous_context.as_deref());
+    result
+}
+
+fn native_stream_error_code(error: &objc2_foundation::NSError) -> Option<SCStreamErrorCode> {
+    // Numeric NSError codes are scoped to their domain. An unrelated -3801
+    // must not be presented as a recording permission failure.
+    (&*error.domain() == unsafe { SCStreamErrorDomain }).then(|| SCStreamErrorCode(error.code()))
+}
 
 fn classify_native_start_error(error: &objc2_foundation::NSError) -> SystemAudioCaptureError {
-    if error.code() == SC_STREAM_ERROR_USER_DECLINED {
-        SystemAudioCaptureError::PermissionDenied
-    } else {
-        SystemAudioCaptureError::NativeStartFailed
+    match native_stream_error_code(error) {
+        Some(SCStreamErrorCode::UserDeclined) => SystemAudioCaptureError::PermissionDenied,
+        Some(SCStreamErrorCode::UserStopped) => SystemAudioCaptureError::UserStopped,
+        _ => SystemAudioCaptureError::NativeStartFailed,
+    }
+}
+
+fn classify_native_stop_error(error: &objc2_foundation::NSError) -> SystemAudioCaptureFailure {
+    match native_stream_error_code(error) {
+        Some(SCStreamErrorCode::UserDeclined) => SystemAudioCaptureFailure::PermissionDenied,
+        Some(SCStreamErrorCode::UserStopped) => SystemAudioCaptureFailure::UserStopped,
+        _ => SystemAudioCaptureFailure::NativeStopped,
     }
 }
 
@@ -1325,6 +1370,105 @@ mod resampler_tests {
 
     fn peak(data: &[f32]) -> f32 {
         data.iter().fold(0.0f32, |acc, s| acc.max(s.abs()))
+    }
+
+    #[test]
+    fn application_picker_keeps_regular_apps_without_window_or_capture_metadata() {
+        let own = Some("app.yuxino.mimi");
+        let app = |terminated, regular, id: Option<&str>, name: Option<&str>| {
+            picker_application(
+                terminated,
+                regular,
+                id.map(str::to_owned),
+                name.map(str::to_owned),
+                own,
+            )
+        };
+        let player = app(false, true, Some("test.player"), Some("Player")).unwrap();
+        assert_eq!(player.id, "test.player");
+        assert_eq!(player.name, "Player");
+        // Windowless and hidden regular applications remain selectable; no
+        // screen/window metadata or recording grant enters this decision.
+        assert!(app(true, true, Some("test.player"), Some("Player")).is_none());
+        assert!(app(false, false, Some("test.helper"), Some("Helper")).is_none());
+        assert!(app(false, true, own, Some("Mimi")).is_none());
+        assert!(app(false, true, None, Some("Player")).is_none());
+        assert!(app(false, true, Some("test.player"), None).is_none());
+        assert!(app(false, true, Some("test.player"), Some(" ")).is_none());
+        assert!(app(false, true, Some("test.player\n"), Some("Player")).is_none());
+    }
+
+    #[test]
+    fn application_picker_icon_is_a_small_png_and_restores_the_graphics_context() {
+        use objc2_app_kit::{NSGraphicsContext, NSImage};
+        let data =
+            objc2_foundation::NSData::with_bytes(include_bytes!("../../icons/128x128@2x.png"));
+        let image = NSImage::initWithData(NSImage::alloc(), &data).unwrap();
+        let previous = NSGraphicsContext::currentContext();
+        let png = picker_icon_png(&image).unwrap();
+        assert!(png.len() <= MAX_APPLICATION_ICON_PNG_BYTES);
+        let decoded = tauri::image::Image::from_bytes(&png).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (32, 32));
+        assert!(decoded
+            .rgba()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] != 0));
+        assert_eq!(NSGraphicsContext::currentContext(), previous);
+    }
+
+    #[test]
+    fn native_permission_and_user_stop_errors_are_terminal_at_start_and_runtime() {
+        for (code, start, runtime) in [
+            (
+                SCStreamErrorCode::UserDeclined,
+                SystemAudioCaptureError::PermissionDenied,
+                SystemAudioCaptureFailure::PermissionDenied,
+            ),
+            (
+                SCStreamErrorCode::UserStopped,
+                SystemAudioCaptureError::UserStopped,
+                SystemAudioCaptureFailure::UserStopped,
+            ),
+        ] {
+            // No native stream is created: only NSError classification is tested.
+            let error = unsafe {
+                objc2_foundation::NSError::errorWithDomain_code_userInfo(
+                    SCStreamErrorDomain,
+                    code.0,
+                    None,
+                )
+            };
+            assert_eq!(classify_native_start_error(&error), start);
+            assert_eq!(classify_native_stop_error(&error), runtime);
+            assert!(!runtime.is_recoverable());
+        }
+    }
+
+    #[test]
+    fn unrelated_native_errors_do_not_claim_a_permission_denial() {
+        for (domain, code) in [
+            (
+                objc2_foundation::ns_string!("test.other"),
+                SCStreamErrorCode::UserDeclined.0,
+            ),
+            (
+                unsafe { SCStreamErrorDomain },
+                SCStreamErrorCode::InternalError.0,
+            ),
+        ] {
+            let error = unsafe {
+                objc2_foundation::NSError::errorWithDomain_code_userInfo(domain, code, None)
+            };
+            assert_eq!(
+                classify_native_start_error(&error),
+                SystemAudioCaptureError::NativeStartFailed
+            );
+            let failure = classify_native_stop_error(&error);
+            assert_eq!(failure, SystemAudioCaptureFailure::NativeStopped);
+            assert!(failure.is_recoverable());
+        }
     }
 
     #[test]

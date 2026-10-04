@@ -61,6 +61,18 @@ it("keeps decorative option icons beside unchanged labels and preserves keyboard
   expect(trigger().querySelector('.mimi-select__icon[aria-hidden="true"] img')).not.toBeNull();
 });
 
+it("uses a fallback icon only while the saved selection is absent from the options", async () => {
+  const props = { label: "Saved choice", options: translatorOptions, valueLabel: "Saved service", valueIcon: <svg data-fallback="true" />, onChange };
+  await act(() => root.render(<Select {...props} value="missing" />));
+  expect(trigger().textContent).toBe("Saved service");
+  expect(trigger().querySelector('.mimi-select__icon[aria-hidden="true"] [data-fallback]')).not.toBeNull();
+  await act(() => root.render(<Select {...props} value="deepL" />));
+  expect(trigger().querySelector('.mimi-select__icon img')).not.toBeNull();
+  expect(trigger().querySelector('[data-fallback]')).toBeNull();
+  await act(() => root.render(<Select {...props} value="deepLX" />));
+  expect(trigger().querySelector('.mimi-select__icon')).toBeNull();
+});
+
 it("filters icon-bearing options by label and value without changing searchable keyboard selection", async () => {
   await act(() => root.render(<Select label="文字翻译" value="default" options={translatorOptions}
     searchLabel="搜索翻译服务" emptyMessage="没有匹配服务" onChange={onChange} />));

@@ -103,15 +103,15 @@ jobs:
         if: runner.os == 'Linux'
         run: dbus-run-session -- ./scripts/linux-audio-smoke.sh
 
-      - name: Test Linux credential storage with isolated Secret Service
+      - name: Test legacy Linux credential compatibility with isolated Secret Service
         if: runner.os == 'Linux'
         run: ./scripts/linux-keyring-smoke.sh
 
-      - name: Test Linux credential recovery after Secret Service appears
+      - name: Test legacy Linux credential recovery after Secret Service appears
         if: runner.os == 'Linux'
         run: ./scripts/linux-keyring-recovery-smoke.sh
 
-      - name: Test first credential save with a new Linux keyring
+      - name: Test legacy credential setup with a new Linux keyring
         if: runner.os == 'Linux'
         run: ./scripts/linux-keyring-first-save-smoke.sh
 

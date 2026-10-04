@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ApplicationAudio } from "./ApplicationAudio";
 import { useStore } from "../../lib/store";
 import { mergeSettingsSnapshot } from "../../lib/settingsState";
+import { applicationIconCache } from "../../lib/applicationAudioIcons";
 import { applicationAudioCopy } from "../../lib/applicationAudio";
 import { setStoredUiLanguage } from "../../lib/i18n";
 import type { SessionStateEvent, SystemAudioTarget } from "../../lib/types";
@@ -23,6 +24,7 @@ beforeEach(() => {
   vi.stubGlobal("navigator", { userAgent: "Macintosh" });
   Element.prototype.scrollIntoView = vi.fn();
   setStoredUiLanguage("en");
+  applicationIconCache.clear();
   vi.mocked(invoke).mockReset(); vi.mocked(invoke).mockResolvedValue({ supported: true, applications });
   save.mockReset();
   switchTarget.mockReset(); switchTarget.mockImplementation(async (target: SystemAudioTarget) => {
@@ -55,7 +57,7 @@ it.each(["en", "zh", "ja"] as const)("offers one picker and lists only after use
   expect(invoke).toHaveBeenCalledExactlyOnceWith("audio_applications");
   expect(switchTarget).not.toHaveBeenCalled();
   expect([...document.querySelectorAll('[role="option"]')].map(node => node.textContent)).toEqual([applicationAudioCopy().all, "Player", "Chat"]);
-  expect(document.querySelector('[role="option"] .mimi-select__icon')).toBeNull();
+  expect(document.querySelectorAll('[role="option"] .mimi-select__icon[aria-hidden="true"] svg')).toHaveLength(3);
   await choose("Player");
   expect(switchTarget).toHaveBeenCalledExactlyOnceWith({ kind: "application", ...applications[0] });
   expect(save).not.toHaveBeenCalled();
@@ -71,10 +73,53 @@ it("keeps the popup open while applications load and never offers a placeholder 
   expect(host.querySelector('.application-audio-picker__feedback')).toBeNull();
   expect(refresh().getAttribute("aria-busy")).toBe("true");
   expect([...document.querySelectorAll('[role="option"]')].map(node => node.textContent)).toEqual([applicationAudioCopy().all]);
+  const input = document.querySelector<HTMLInputElement>('.mimi-select__search')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "play");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
   await act(async () => resolve({ supported: true, applications }));
   expect(trigger().getAttribute("aria-expanded")).toBe("true");
+  expect(document.activeElement).toBe(input);
+  expect(input.value).toBe("play");
+  expect([...document.querySelectorAll('[role="option"]')].map(node => node.textContent)).toEqual(["Player"]);
   await choose("Player");
   expect(trigger().textContent).toContain("Player");
+});
+
+it("shows local application icons in the list and selection without saving icons in the audio target", async () => {
+  const iconDataUrl = "data:image/png;base64,c3ludGhldGljLWFwcC1pY29u";
+  vi.mocked(invoke).mockResolvedValue({ supported: true, applications: [
+    { ...applications[0], iconDataUrl }, { ...applications[1], iconDataUrl: null },
+  ] });
+  await render(); await open();
+  const rows = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(rows[0].querySelector('.mimi-select__icon svg')).not.toBeNull();
+  expect(rows[1].querySelector('.mimi-select__icon[aria-hidden="true"] img')?.getAttribute("src")).toBe(iconDataUrl);
+  expect(rows[1].querySelector('img')?.getAttribute("alt")).toBe("");
+  expect(rows[2].querySelector('.mimi-select__icon svg')).not.toBeNull();
+  await choose("Player");
+  expect(trigger().querySelector('img')?.getAttribute("src")).toBe(iconDataUrl);
+  expect(switchTarget).toHaveBeenCalledExactlyOnceWith({ kind: "application", ...applications[0] });
+  expect(useStore.getState().settings.systemAudioTarget).toEqual({ kind: "application", ...applications[0] });
+});
+
+it("uses neutral fallback icons for unreadable images and never loads remote application images", async () => {
+  vi.mocked(invoke).mockResolvedValue({ supported: true, applications: [
+    { ...applications[0], iconDataUrl: "data:image/png;base64,invalid" },
+    { ...applications[1], iconDataUrl: "https://example.invalid/app-icon.png" },
+  ] });
+  await render(); await open();
+  const rows = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(rows[2].querySelector('img')).toBeNull();
+  expect(rows[2].querySelector('.mimi-select__icon svg')).not.toBeNull();
+  await act(async () => rows[1].querySelector('img')!.dispatchEvent(new Event("error")));
+  expect(rows[1].querySelector('img')).toBeNull();
+  expect(rows[1].querySelector('.mimi-select__icon svg')).not.toBeNull();
+  await choose("Player");
+  await act(async () => trigger().querySelector('img')!.dispatchEvent(new Event("error")));
+  expect(trigger().querySelector('.mimi-select__icon svg')).not.toBeNull();
+  expect(trigger().textContent).toBe("Player");
 });
 
 it("searches applications and returns to all audio through the same picker", async () => {
@@ -100,6 +145,7 @@ it("shows an unavailable saved app without making it selectable or changing it s
   useStore.setState({ settings: { ...useStore.getState().settings, systemAudioTarget: { kind: "application", id: "gone", name: "Old player" } } });
   await render();
   expect(trigger().textContent).toContain("Old player");
+  expect(trigger().querySelector('.mimi-select__icon svg')).not.toBeNull();
   await act(async () => refresh().click());
   expect(trigger().textContent).toContain("Old player · Unavailable");
   expect(host.querySelector('[role="alert"]')?.textContent).toBe(applicationAudioCopy().unavailable);
@@ -130,7 +176,7 @@ it("does not mark a new selection from another window missing using this window'
   expect(trigger().textContent).toContain("New player");
   expect(trigger().textContent).not.toContain(applicationAudioCopy().missing);
   expect(host.querySelector('[role="alert"]')).toBeNull();
-  expect(invoke).toHaveBeenCalledOnce();
+  expect(invoke).toHaveBeenCalledTimes(2); // New selections restore their icon silently.
   await act(async () => refresh().click());
   expect(host.querySelector('[role="alert"]')?.textContent).toBe(applicationAudioCopy().unavailable);
 });

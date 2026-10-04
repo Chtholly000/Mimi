@@ -494,3 +494,69 @@ it("applies background opacity to expanded and collapsed cards and restores it a
   await act(() => useStore.setState(state => ({ settings: { ...state.settings, subtitleBlendsWithBackground: false } })));
   expect(backgrounds()).toContain("rgba(0, 0, 0, 0.35)");
 });
+
+
+it.each(modes)("removes completed and raw previews immediately in %s and does not resurrect timer work", async displayMode => {
+  const pair = { source: "Replaceable source.", translation: "会替换的预览。", utteranceId: "draft-1" };
+  const draft: SubtitleSnapshot = { ...empty,
+    source: { text: pair.source, isFinal: false, utteranceId: pair.utteranceId },
+    translation: { text: pair.translation, isFinal: false, utteranceId: pair.utteranceId },
+    displayPair: pair, displayPairFinal: false, previewPair: pair, history: [confirmed] };
+  await mount(draft, displayMode);
+  expect(visibleLanes().join()).toContain(displayMode === "original" ? pair.source : pair.translation);
+  const historyBefore = useStore.getState().session.subtitles.history;
+  await act(() => useStore.setState(state => ({ settings: { ...state.settings, showIntermediateSubtitles: false } })));
+  expect(visibleLanes().join()).not.toContain(pair.source);
+  expect(visibleLanes().join()).not.toContain(pair.translation);
+  await act(() => vi.advanceTimersByTime(2_000));
+  expect(visibleLanes().join()).not.toContain(pair.translation);
+  expect(useStore.getState().session.subtitles.history).toBe(historyBefore);
+  await act(() => useStore.setState(state => ({ settings: { ...state.settings, showIntermediateSubtitles: true } })));
+  expect(visibleLanes().join()).toContain(displayMode === "original" ? pair.source : pair.translation);
+});
+
+it.each(["alibabaCloud", "googleGeminiLive", "openAIRealtime", ...customProviders] as const)("shows confirmations immediately with previews off for %s, including Stop tails", async provider => {
+  await mount({ ...empty, source: { text: "Unconfirmed original.", isFinal: false },
+    translation: { text: "未确认译文。", isFinal: false } }, "bilingual", {
+    showIntermediateSubtitles: false,
+    profiles: [{ id: "route", name: "Synthetic", provider, credentialState: "present" }], activeProfileId: "route" });
+  expect(visibleLanes()).toEqual([]);
+  await publish({ ...empty, source: { text: confirmed.source, isFinal: true },
+    translation: { text: confirmed.translation, isFinal: true }, history: [confirmed] }, {
+    status: { kind: "idle" }, isActive: false, isTranslationPending: false });
+  expect(visibleLanes()).toEqual([confirmed.source, confirmed.translation]);
+});
+
+it("preserves two identical confirmations, a delayed final and a newer preview owner while off", async () => {
+  const repeated = { ...confirmed, createdAt: 11 };
+  const preview = { source: "Newer draft.", translation: "较新的预览。", utteranceId: "newer" };
+  await mount({ ...empty, displayPair: preview, displayPairFinal: false, previewPair: preview,
+    source: { text: preview.source, isFinal: false }, history: [confirmed] }, "bilingual", { showIntermediateSubtitles: false });
+  await publish({ ...useStore.getState().session.subtitles, history: [confirmed, repeated] }, { isPaused: true });
+  expect(visibleLanes()).toEqual([confirmed.source, confirmed.translation, repeated.source, repeated.translation]);
+  const ids = [...host.querySelectorAll("[data-utterance-id]")].map(node => node.getAttribute("data-utterance-id"));
+  expect(new Set(ids).size).toBe(ids.length);
+  await publish({ ...empty, history: [confirmed, repeated] }, { status: { kind: "connecting" } });
+  expect(visibleLanes()).toEqual([confirmed.source, confirmed.translation, repeated.source, repeated.translation]);
+});
+
+it.each(modes)("preserves a confirmed display pair without history in %s mode", async displayMode => {
+  const pair = { source: confirmed.source, translation: confirmed.translation, utteranceId: "final" };
+  await mount({ ...empty, source: { text: pair.source, isFinal: true, utteranceId: "final" },
+    translation: { text: pair.translation, isFinal: true, utteranceId: "final" }, displayPair: pair, displayPairFinal: true },
+    displayMode, { showIntermediateSubtitles: false });
+  expect(visibleLanes()).toEqual(displayMode === "original" ? [pair.source]
+    : displayMode === "translation" ? [pair.translation] : [pair.source, pair.translation]);
+});
+
+it("shows same-language confirmations once and permits a final original while translation is pending", async () => {
+  await mount({ ...empty, source: { text: "Final recognition.", isFinal: true } }, "bilingual", { showIntermediateSubtitles: false });
+  expect(visibleLanes()).toEqual(["Final recognition."]);
+  await mount({ ...empty, source: { text: "同语言确认。", isFinal: true },
+    translation: { text: "同语言草稿", isFinal: false } }, "bilingual", {
+    sourceLanguage: "zh", targetLanguage: "zh", showIntermediateSubtitles: false });
+  expect(visibleLanes()).toEqual(["同语言确认。"]);
+  await publish(useStore.getState().session.subtitles, { detectedLanguage: "zh" });
+  await mode("translation");
+  expect(visibleLanes()).toEqual(["同语言确认。"]);
+});

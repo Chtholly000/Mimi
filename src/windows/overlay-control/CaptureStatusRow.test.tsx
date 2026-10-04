@@ -173,6 +173,32 @@ it.each([false, true])("selects a real application from the floating panel while
   expect(mocks.switchAudioInput).not.toHaveBeenCalled();
 });
 
+it.each(["en", "zh", "ja"] as const)("searches applications by text in the floating panel in %s", async language => {
+  setStoredUiLanguage(language);
+  vi.stubGlobal("navigator", { userAgent: "Macintosh" });
+  mocks.invoke.mockImplementation(async command => command === "audio_applications"
+    ? { supported: true, applications: [
+      { id: "example.player", name: "Player", iconDataUrl: "data:image/png;base64,c3ludGhldGlj" },
+      { id: "example.chat", name: "Chat" },
+    ] } : system);
+  await mount();
+  const target = row("system").querySelector<HTMLButtonElement>('button[role="combobox"]')!;
+  await act(async () => target.click());
+  const input = document.querySelector<HTMLInputElement>('.mimi-select__search')!;
+  expect(input.getAttribute("aria-label")).toBe(applicationAudioCopy().search);
+  expect(document.activeElement).toBe(input);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "play");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect([...document.querySelectorAll('[role="option"]')].map(node => node.textContent)).toEqual(["Player"]);
+  expect(document.querySelector('[role="option"] .mimi-select__icon img')).not.toBeNull();
+  await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+  expect(mocks.switchSystemAudioTarget).toHaveBeenCalledExactlyOnceWith({ kind: "application", id: "example.player", name: "Player" });
+  expect(target.textContent).toBe("Player");
+  expect(target.querySelector('.mimi-select__icon img')).not.toBeNull();
+});
+
 it("locks the input switches while an application change is pending and maps known target failures", async () => {
   vi.stubGlobal("navigator", { userAgent: "Macintosh" });
   Element.prototype.scrollIntoView = vi.fn();

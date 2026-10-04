@@ -7,6 +7,51 @@ use super::SystemAudioCaptureError;
 pub struct AudioApplication {
     pub id: String,
     pub name: String,
+    /// Transient local presentation only; never persist icons with capture targets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_data_url: Option<String>,
+}
+
+#[cfg(any(target_os = "macos", test))]
+pub(super) const MAX_APPLICATION_ICON_PNG_BYTES: usize = 8 * 1024;
+#[cfg(any(target_os = "macos", test))]
+const MAX_APPLICATION_ICON_SNAPSHOT_BYTES: usize = 1024 * 1024;
+
+/// A fresh budget for one already sorted/bounded application snapshot. There is
+/// no persistent icon cache; the frontend replaces its previous snapshot.
+#[cfg(any(target_os = "macos", test))]
+pub(super) struct ApplicationIconBudget {
+    remaining_bytes: usize,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl Default for ApplicationIconBudget {
+    fn default() -> Self {
+        Self {
+            remaining_bytes: MAX_APPLICATION_ICON_SNAPSHOT_BYTES,
+        }
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl ApplicationIconBudget {
+    pub fn encode_png(&mut self, png: &[u8]) -> Option<String> {
+        use base64::Engine as _;
+        const PREFIX: &str = "data:image/png;base64,";
+        if png.len() > MAX_APPLICATION_ICON_PNG_BYTES || !png.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return None;
+        }
+        let encoded_len = PREFIX.len() + png.len().div_ceil(3) * 4;
+        if encoded_len > self.remaining_bytes {
+            return None;
+        }
+        let data_url = format!(
+            "{PREFIX}{}",
+            base64::engine::general_purpose::STANDARD.encode(png)
+        );
+        self.remaining_bytes -= data_url.len();
+        Some(data_url)
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -67,7 +112,11 @@ pub fn windows_applications() -> Result<ApplicationSnapshot, SystemAudioCaptureE
         if let Ok(process) = Process::open(session.pid) {
             if let Ok((id, name)) = process.identity() {
                 if !applications.iter().any(|app| app.id == id) {
-                    applications.push(AudioApplication { id, name });
+                    applications.push(AudioApplication {
+                        id,
+                        name,
+                        icon_data_url: None,
+                    });
                 }
             }
         }
@@ -102,7 +151,11 @@ unsafe extern "system" fn enumerate_window(
         if let Ok((id, name)) = process.identity() {
             let applications = unsafe { &mut *(data.0 as *mut Vec<AudioApplication>) };
             if !applications.iter().any(|app| app.id == id) && applications.len() < 512 {
-                applications.push(AudioApplication { id, name });
+                applications.push(AudioApplication {
+                    id,
+                    name,
+                    icon_data_url: None,
+                });
             }
         }
     }
@@ -199,11 +252,71 @@ impl Drop for Process {
 mod tests {
     use super::*;
     #[test]
+    fn application_icons_are_optional_camel_case_presentation_metadata() {
+        let mut app = AudioApplication {
+            id: "test.player".into(),
+            name: "Player".into(),
+            icon_data_url: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&app).unwrap(),
+            serde_json::json!({
+                "id": "test.player", "name": "Player"
+            })
+        );
+        app.icon_data_url = Some("data:image/png;base64,test".into());
+        let value = serde_json::to_value(&app).unwrap();
+        assert_eq!(value["iconDataUrl"], "data:image/png;base64,test");
+        assert!(value.get("icon_data_url").is_none());
+    }
+
+    #[test]
+    fn application_icon_encoding_rejects_invalid_or_oversized_png_without_spending_budget() {
+        use base64::Engine as _;
+        let mut budget = ApplicationIconBudget::default();
+        let initial = budget.remaining_bytes;
+        assert!(budget.encode_png(b"").is_none());
+        assert!(budget.encode_png(b"<svg></svg>").is_none());
+        let mut oversized = vec![0; MAX_APPLICATION_ICON_PNG_BYTES + 1];
+        oversized[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        assert!(budget.encode_png(&oversized).is_none());
+        assert_eq!(budget.remaining_bytes, initial);
+        let png = include_bytes!("../../icons/32x32.png");
+        let url = budget.encode_png(png).unwrap();
+        let encoded = url.strip_prefix("data:image/png;base64,").unwrap();
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap(),
+            png
+        );
+        assert_eq!(budget.remaining_bytes, initial - url.len());
+    }
+
+    #[test]
+    fn application_icon_snapshot_has_a_total_budget_and_allows_smaller_icons_after_a_skip() {
+        let mut png = vec![0; MAX_APPLICATION_ICON_PNG_BYTES];
+        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        let mut budget = ApplicationIconBudget::default();
+        let mut total = 0;
+        while let Some(url) = budget.encode_png(&png) {
+            total += url.len();
+        }
+        assert!(total <= MAX_APPLICATION_ICON_SNAPSHOT_BYTES);
+        assert!(total + 4 * png.len().div_ceil(3) > MAX_APPLICATION_ICON_SNAPSHOT_BYTES);
+        let remaining = budget.remaining_bytes;
+        assert!(budget.encode_png(&png).is_none());
+        assert_eq!(budget.remaining_bytes, remaining);
+        assert!(budget.encode_png(b"\x89PNG\r\n\x1a\n").is_some());
+    }
+
+    #[test]
     fn picker_sorting_is_deterministic_and_bounded() {
         let mut apps: Vec<_> = (0..600)
             .map(|i| AudioApplication {
                 id: format!("app.{i}"),
                 name: format!("App {i:03}"),
+                icon_data_url: None,
             })
             .collect();
         apps.reverse();

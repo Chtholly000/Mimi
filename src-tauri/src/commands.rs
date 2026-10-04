@@ -64,9 +64,9 @@ pub struct ServiceProfilePayload {
 
 impl ServiceProfilePayload {
     fn from_profile(store: &SettingsStore, profile: ServiceProfile) -> Self {
-        let states = store.custom_credential_states(&profile);
+        let states = store.custom_credential_states_for_snapshot(&profile);
         let credential_state = states.map_or_else(
-            || store.credential_state(&profile),
+            || store.credential_state_for_snapshot(&profile),
             |(speech, text)| speech.combined(text),
         );
         let text_translation = profile.text_translation();
@@ -150,8 +150,8 @@ pub struct SettingsSnapshotPayload {
     pub microphone_subtitle_color: SubtitleColor,
     pub subtitle_alignment: SubtitleAlignment,
     pub subtitle_display_mode: SubtitleDisplayMode,
+    pub show_intermediate_subtitles: bool,
     pub show_subtitle_dividers: bool,
-    pub keep_subtitle_text_opaque: bool,
     /// `None` follows the operating system's reduce-motion setting.
     pub pulse_animation: Option<bool>,
     pub pulse_style: PulseStyle,
@@ -474,6 +474,19 @@ mod tests {
     }
 
     #[test]
+    fn intermediate_subtitle_toggle_is_allowed_during_an_active_session() {
+        for enabled in [false, true] {
+            let draft: SettingsDraft =
+                serde_json::from_value(serde_json::json!({"showIntermediateSubtitles": enabled}))
+                    .unwrap();
+            assert_eq!(draft.show_intermediate_subtitles, Some(enabled));
+            assert!(ensure_settings_draft_allowed(&draft, true).is_ok());
+            assert!(ensure_settings_draft_window_allowed("settings", &draft).is_ok());
+            assert!(ensure_settings_draft_window_allowed("tray-panel", &draft).is_ok());
+        }
+    }
+
+    #[test]
     fn dock_access_does_not_widen_settings_only_preferences() {
         for field in [
             serde_json::json!({"retainSessionHistory": false}),
@@ -520,8 +533,8 @@ mod tests {
             microphone_subtitle_color: SubtitleColor::Yellow,
             subtitle_alignment: SubtitleAlignment::Center,
             subtitle_display_mode: SubtitleDisplayMode::Translation,
+            show_intermediate_subtitles: true,
             show_subtitle_dividers: false,
-            keep_subtitle_text_opaque: false,
             pulse_animation: None,
             pulse_style: PulseStyle::Ribbon,
             subtitle_animation: None,
@@ -555,8 +568,8 @@ mod tests {
         assert_eq!(json["subtitleBackgroundOpacity"], 80);
         assert_eq!(json["subtitleColor"], "white");
         assert_eq!(json["subtitleDisplayMode"], "translation");
+        assert_eq!(json["showIntermediateSubtitles"], true);
         assert_eq!(json["showSubtitleDividers"], false);
-        assert_eq!(json["keepSubtitleTextOpaque"], false);
         assert_eq!(json["microphoneSubtitleColor"], "yellow");
         assert_eq!(json["subtitleBlendsWithBackground"], false);
         assert!(json.get("apiKey").is_none());
@@ -827,8 +840,8 @@ impl SettingsSnapshotPayload {
                     microphone_subtitle_color: prefs.microphone_subtitle_color,
                     subtitle_alignment: prefs.subtitle_alignment,
                     subtitle_display_mode: prefs.subtitle_display_mode,
+                    show_intermediate_subtitles: prefs.show_intermediate_subtitles,
                     show_subtitle_dividers: prefs.show_subtitle_dividers,
-                    keep_subtitle_text_opaque: prefs.keep_subtitle_text_opaque,
 
                     pulse_animation: prefs.pulse_animation,
                     pulse_style: prefs.pulse_style,
@@ -876,8 +889,8 @@ impl SettingsSnapshotPayload {
             microphone_subtitle_color: prefs.microphone_subtitle_color,
             subtitle_alignment: prefs.subtitle_alignment,
             subtitle_display_mode: prefs.subtitle_display_mode,
+            show_intermediate_subtitles: prefs.show_intermediate_subtitles,
             show_subtitle_dividers: prefs.show_subtitle_dividers,
-            keep_subtitle_text_opaque: prefs.keep_subtitle_text_opaque,
 
             pulse_animation: prefs.pulse_animation,
             pulse_style: prefs.pulse_style,
@@ -910,8 +923,8 @@ pub struct SettingsDraft {
     pub microphone_subtitle_color: Option<SubtitleColor>,
     pub subtitle_alignment: Option<SubtitleAlignment>,
     pub subtitle_display_mode: Option<SubtitleDisplayMode>,
+    pub show_intermediate_subtitles: Option<bool>,
     pub show_subtitle_dividers: Option<bool>,
-    pub keep_subtitle_text_opaque: Option<bool>,
     pub pulse_animation: Option<bool>,
     pub pulse_style: Option<PulseStyle>,
     pub subtitle_animation: Option<bool>,
@@ -1098,8 +1111,8 @@ fn apply_settings_draft_guarded(
         || draft.microphone_subtitle_color.is_some()
         || draft.subtitle_alignment.is_some()
         || draft.subtitle_display_mode.is_some()
+        || draft.show_intermediate_subtitles.is_some()
         || draft.show_subtitle_dividers.is_some()
-        || draft.keep_subtitle_text_opaque.is_some()
         || draft.pulse_animation.is_some()
         || draft.pulse_style.is_some()
         || draft.subtitle_animation.is_some()
@@ -1169,8 +1182,8 @@ fn apply_settings_draft_guarded(
             if let Some(mode) = draft.subtitle_display_mode {
                 prefs.subtitle_display_mode = mode;
             }
-            if let Some(enabled) = draft.keep_subtitle_text_opaque {
-                prefs.keep_subtitle_text_opaque = enabled;
+            if let Some(enabled) = draft.show_intermediate_subtitles {
+                prefs.show_intermediate_subtitles = enabled;
             }
             if let Some(enabled) = draft.show_subtitle_dividers {
                 prefs.show_subtitle_dividers = enabled;
@@ -1983,6 +1996,7 @@ pub async fn audio_applications(
             applications: vec![crate::audio::applications::AudioApplication {
                 id: "test.player".into(),
                 name: "Test Player".into(),
+                icon_data_url: None,
             }],
         });
     }

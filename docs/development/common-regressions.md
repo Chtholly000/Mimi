@@ -7,8 +7,8 @@ prompts. The visible app name and version are not enough to establish identity.
 
 | Use | Canonical app | Bundle identifier | Signing identity |
 | --- | --- | --- | --- |
-| Pre-push development and UI checks | `/Applications/mimi-dev.app` | `app.yuxino.mimi.dev` | `mimi Local Development` |
-| Local release-shaped bundle | `src-tauri/target/release/bundle/macos/mimi.app` | `app.yuxino.mimi` | `mimi Local Development` |
+| Pre-push development and UI checks | `/Applications/mimi-dev.app` | `app.yuxino.mimi.dev` | Dev-specific local pin, otherwise `mimi Local Development` |
+| Local release-shaped bundle | `src-tauri/target/release/bundle/macos/mimi.app` | `app.yuxino.mimi` | Formal-specific local pin, otherwise `mimi Local Development` |
 | New release pipeline | `/Applications/mimi.app` | `app.yuxino.mimi` | Certificate pinned in `scripts/macos-release-identity.txt` |
 | Historical releases through v1.4.1 | `/Applications/mimi.app` | `app.yuxino.mimi` | Ad-hoc (build-specific) |
 
@@ -39,9 +39,22 @@ Rules:
   `./scripts/verify-macos-install-identity.sh NEW_APP /Applications/mimi.app`.
   A mismatch fails closed. `MIMI_ALLOW_IDENTITY_CHANGE=1` is reserved for a
   deliberate, one-time certificate migration whose extra prompts are expected.
+- After an explicitly approved local signing migration, keep the public
+  certificate fingerprint in `local-codesign-identity.txt` under that app's own
+  config directory: `app.yuxino.mimi` for formal packaging and
+  `app.yuxino.mimi.dev` for development. `dev-app.sh` selects the development
+  scope; it must never inherit a formal app's pin. The optional
+  `MIMI_LOCAL_CODESIGN_IDENTITY_FILE` and `MIMI_DEV_CODESIGN_IDENTITY_FILE`
+  overrides also apply only to their respective scope. `MIMI_CODESIGN_IDENTITY`
+  explicitly overrides either scope. An absent pin uses the unique stable
+  self-signed identity; an invalid, unavailable or ambiguous pin fails closed.
+  Complete designated-requirement checks still reject an unintended replacement.
+  Never use `MIMI_ALLOW_IDENTITY_CHANGE=1` just to make a routine build pass.
+  These files contain no private key or API credential and do not change the
+  public-release certificate policy.
 - Never use ad-hoc signing for local QA or new public releases. Missing or
   changed identities fail closed. Never use `tccutil reset`, delete Keychain
-  entries, or rotate a certificate as a routine fix.
+  entries outside the verified migration, or rotate a certificate as a routine fix.
 - Branch and pull-request CI compiles macOS with `--no-bundle`; tag CI verifies
   the prepared macOS assets and publishes only after both platforms pass.
 - Keep only one live mimi copy while testing. Confirm its executable path, not
@@ -81,31 +94,28 @@ and do not claim a causal before/after fix from it.
 
 ## Know which prompt appeared
 
-For routine macOS API-key testing, the fixed dev launcher supports an explicitly
-isolated, private read-only file mode. See [local development credentials](local-dev-credentials.md)
-for setup, strict 0600 validation and returning to Keychain. This avoids only
-provider-key Keychain reads; signing-private-key and audio permissions still
-apply. Production credentials remain OS-backed. Do not weaken Keychain ACLs to
-avoid development prompts.
-
-Before a normal dev acceptance run, check whether the documented private `.env`
-exists and has mode `0600`, without printing its contents. A missing file selects
-Keychain; rebuilding the dev bundle does not recreate it. If file mode was already
-configured, investigate the existing local setup before asking for another system
-authorization. Never copy a key from an unrelated project or put it in a command,
-test report, or repository file.
+Production and ordinary development credentials use private local files on all
+desktop platforms. Legacy OS items are read only during automatic upgrade import,
+then deleted after durable write and read-back verification. Completed imports
+must never fall back to the OS store, even if the local file later goes missing.
+See [local credential storage](../plans/2026-10-04-local-credential-storage.md).
+The optional read-only dev `.env` presets remain separate; removing that file
+returns to editable local profiles. Signing-private-key and capture authorization
+are independent of provider credential storage. Never weaken native ACLs.
 
 These prompts have different causes and fixes:
 
 - **Screen & System Audio Recording:** TCC compares the bundle identifier and
   designated requirement. A changed certificate requires one new grant. A
   stable identity at a canonical path must not require repeated grants.
-- **API-key Keychain access:** the running app is reading a saved provider key.
-  A normal startup reads the profile key once and caches the result. Migration
-  tombstones and legacy slots are read only when the profile key is missing or
-  during an explicit save/delete/migration. Keep the same service/account and
-  update its value in place: deleting and recreating it discards accumulated
-  access rules and creates a crash window in which the secret can be lost.
+- **Legacy API-key Keychain access:** only the one-time importer reads an old
+  saved provider key. Verify a durable local copy before deleting its original
+  OS item. Checkpoint pending cleanup independently, so interrupted deletion
+  resumes without rereading the old secret. Routine startup, snapshots,
+  switching and credential edits use only the local file. On Windows, reading
+  an old Enterprise credential must not rewrite it as Local. Native migration
+  tests must verify the local file copy, retirement of the old item, and no
+  recreated native item after restarting or saving an edited key.
 - **Code-signing private-key access:** `/usr/bin/codesign` is using the private
   key for `mimi Local Development` while packaging the app and DMG. This is not
   API-key access. Grant persistent access only when the dialog names that exact
@@ -113,13 +123,16 @@ These prompts have different causes and fixes:
   whole keychain ACL in build scripts.
 - **Gatekeeper / Open Anyway:** the fixed self-signed GitHub package is not Apple-notarized. This is separate from capture and Keychain authorization.
 
+The historical OS-credential implementation needs the following distinction.
 The local development certificate is self-signed and has no Apple Team ID. It
 provides a stable requirement for local and newly prepared release TCC
 identities; historical ad-hoc signatures were build-specific. The file-based Keychain also applies a partition
 check that can fall back to the build's CDHash. Therefore:
 
-- eliminating the duplicate migration-item read reduces a normal startup to
-  one API-key authorization after an identity migration;
+- avoid secret reads in all macOS settings snapshots, not only unselected
+  profiles: the earlier inactive-only fix still prompted when users switched
+  keys. Test repeated selection of every saved profile and zero secret reads;
+  actual credential use must still validate and authorize required slots;
 - do not promise that a rebuilt self-signed local binary will never ask for
   Keychain access again;
 - do not solve this by deleting/recreating a credential, using an allow-all
@@ -214,6 +227,17 @@ page must include a review of other instances of the same pattern.
 - Searchable popups must scroll their result list directly. `scrollIntoView`
   can scroll a clipped ancestor in WebKit and hide rows below the search field;
   pointer hover must not move the list. Check a long list and keyboard search.
+  DOM focus does not prove a macOS floating NSPanel is key: explicit clicks must
+  give the actual WKWebView first-responder status and make the control panel
+  key, never main or proactively activating. Wry contentView is a wrapper:
+  `canBecomeKey` and `makeKeyWindow` alone do not prove keyboard delivery.
+  Use `with_webview` on the main thread, only for an explicit expanded panel.
+  Automation may activate the app before typing and hide the real failure.
+  Verify a human click from another app into search, then repeat after restart
+  and after removing any temporary diagnostics. `isKeyWindow` alone only
+  describes application-local key status, not system keyboard delivery.
+  Collapsing it must release key status. Before release, type English and Chinese
+  searches in the signed native panel and confirm media playback continues.
 - Language menus in settings, the subtitle controls and the tray use the full
   `sourceLanguagesForSettings` route catalog and the shared `LanguageSelect`.
   Keep the same choices, order and localized names; use search/scrolling for a
@@ -288,11 +312,12 @@ samples and [the run ledger](integration-runs.md) for this check's exact scope.
 - A frontend settings deadline cannot cancel a native Keychain authorization
   wait. Keep real-provider acceptance pending until OS authorization finishes;
   never use credential-free UI fixtures as proof that provider audio works.
-  The initial settings snapshot checks credential status for the whole profile
-  catalog. Selecting the private dev preset does not isolate ordinary profiles'
-  Keychain reads; the dev file store handles only its explicit preset account.
-  A sampled `FileSecretStore -> Keyring -> SecKeychainFindGenericPassword` wait
-  identifies this boundary. Record it separately, quit normally, and keep UI-only
+  In versions before the local-file migration, the initial settings snapshot
+  checked credential status for the whole profile catalog. Selecting the private
+  dev preset did not isolate ordinary profiles' Keychain reads. A sampled
+  `FileSecretStore -> Keyring -> SecKeychainFindGenericPassword` wait identified
+  that historical boundary; current snapshots must stay on the local-file path.
+  Record an unfinished upgrade import separately, quit normally, and keep UI-only
   or offline replay results distinct from live provider acceptance. Repeated
   frontend Retry cannot cancel an unfinished native authorization read.
 

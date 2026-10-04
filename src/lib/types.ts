@@ -36,6 +36,8 @@ interface SubtitleHistoryItem {
 
 export interface SourceSubtitleSnapshot {
   displayPair?: SubtitleSnapshot["previewPair"];
+  /** Reducer confirmation, independent of preview completion. Missing means unconfirmed. */
+  displayPairFinal?: boolean;
   audioSource: AudioSource;
   source: SubtitleLineSnapshot;
   translation: SubtitleLineSnapshot;
@@ -51,6 +53,8 @@ export interface SourceSubtitleSnapshot {
 export interface SubtitleSnapshot {
   /** One bounded complete current pair, independent from saved history. */
   displayPair?: SubtitleSnapshot["previewPair"];
+  /** Reducer confirmation, independent of preview completion. Missing means unconfirmed. */
+  displayPairFinal?: boolean;
   /** Independent source streams; top-level history remains chronological. */
   tracks?: SourceSubtitleSnapshot[];
   /** One replaceable completed preview; never confirmed history. */
@@ -97,8 +101,8 @@ export interface SessionStateEvent {
 // ---------------------------------------------------------------------------
 
 export interface SettingsSnapshot {
-  /** Availability metadata only; local file credentials are dev-only and never exposed. */
-  credentialStorage?: "keychain" | "localDevFile";
+  /** Availability metadata only; credential bytes are never in snapshots. */
+  credentialStorage?: "keychain" | "localDevFile" | "localFile";
   /** Service profiles never contain credential material, only availability. */
   profiles: ServiceProfile[];
   activeProfileId: string;
@@ -115,8 +119,9 @@ export interface SettingsSnapshot {
   microphoneSubtitleColor?: SubtitleColor;
   subtitleAlignment: SubtitleAlignment;
   subtitleDisplayMode: SubtitleDisplayMode;
+  /** Missing legacy settings preserve immediate previews. */
+  showIntermediateSubtitles?: boolean;
   showSubtitleDividers: boolean;
-  keepSubtitleTextOpaque?: boolean;
   /** `null` follows the system reduce-motion setting. */
   pulseAnimation: boolean | null;
   pulseStyle: PulseStyle;
@@ -164,8 +169,8 @@ export interface SettingsDraft {
   microphoneSubtitleColor?: SubtitleColor;
   subtitleAlignment?: SubtitleAlignment;
   subtitleDisplayMode?: SubtitleDisplayMode;
+  showIntermediateSubtitles?: boolean;
   showSubtitleDividers?: boolean;
-  keepSubtitleTextOpaque?: boolean;
   pulseAnimation?: boolean;
   pulseStyle?: PulseStyle;
   subtitleAnimation?: boolean;
@@ -231,8 +236,8 @@ export interface ServiceProfile {
   name: string;
   provider: ServiceProvider;
   credentialState: CredentialState;
-  /** Only built-in macOS development presets read the private local file. */
-  credentialStorage?: "keychain" | "localDevFile";
+  /** Storage kind only; credential values remain in the backend. */
+  credentialStorage?: "keychain" | "localDevFile" | "localFile";
   /** Custom speech profiles expose each independent store's availability, never its values. */
   speechCredentialState?: CredentialState;
   textCredentialState?: CredentialState;

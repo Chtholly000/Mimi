@@ -1,10 +1,10 @@
 //! Outside-click dismissal for nonactivating panels, which need not become
 //! key and therefore cannot reliably produce a focus-lost event.
-use super::{OverlayControlMode, OverlayControlWindowManager};
+use super::{attach_overlay_control_parent_macos, OverlayControlMode, OverlayControlWindowManager};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2_app_kit::{NSEvent, NSEventMask};
+use objc2_app_kit::{NSEvent, NSEventMask, NSWindow};
 use std::{cell::RefCell, ptr::NonNull};
 use tauri::{AppHandle, Manager};
 
@@ -26,11 +26,43 @@ pub fn sync(app: &AppHandle) {
     let dispatcher = app.clone();
     let _ = dispatcher.run_on_main_thread(move || {
         MONITORS.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            if OverlayControlWindowManager::mode(&app) != OverlayControlMode::Panel {
-                *slot = None;
+            let mode = OverlayControlWindowManager::mode(&app);
+            if mode != OverlayControlMode::Panel {
+                // Release monitor storage before native ordering callbacks.
+                let monitors = slot.borrow_mut().take();
+                drop(monitors);
+                // Escape or a second capsule click can collapse the panel
+                // without clicking another app. Release its temporary key
+                // status so keyboard events do not stay in the passive island.
+                // Read the current mode inside this main-thread transaction:
+                // a queued dismissal must not affect a newly reopened panel.
+                if let Some(pointer) = app
+                    .get_webview_window("overlay-control")
+                    .and_then(|window| window.ns_window().ok())
+                {
+                    let window: &NSWindow = unsafe { &*pointer.cast() };
+                    release_passive_keyboard(
+                        mode,
+                        window.isKeyWindow(),
+                        || window.orderOut(None),
+                        || {
+                            // orderOut transfers key status through AppKit's
+                            // window ordering and detaches the native parent.
+                            // Restore only the passive island, never Hidden.
+                            if let Some(parent) = app
+                                .get_webview_window("overlay")
+                                .and_then(|window| window.ns_window().ok())
+                            {
+                                let parent: &NSWindow = unsafe { &*parent.cast() };
+                                attach_overlay_control_parent_macos(window, parent);
+                                window.orderFrontRegardless();
+                            }
+                        },
+                    );
+                }
                 return;
             }
+            let mut slot = slot.borrow_mut();
             if slot.is_some() {
                 return;
             }
@@ -77,4 +109,47 @@ pub fn sync(app: &AppHandle) {
             *slot = Some(Monitors(tokens));
         });
     });
+}
+
+/// Use ordering, not the resignKeyWindow notification hook, to transfer key
+/// status. The restored island stays nonactivating and is never made key.
+fn release_passive_keyboard(
+    mode: OverlayControlMode,
+    is_key: bool,
+    order_out: impl FnOnce(),
+    restore_island: impl FnOnce(),
+) {
+    if !is_key || mode == OverlayControlMode::Panel {
+        return;
+    }
+    order_out();
+    if mode == OverlayControlMode::Island {
+        restore_island();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_key_island_is_restored_after_ordering_out() {
+        for (mode, is_key, expected) in [
+            (OverlayControlMode::Island, true, vec!["out", "restore"]),
+            (OverlayControlMode::Hidden, true, vec!["out"]),
+            (OverlayControlMode::Panel, true, vec![]),
+            (OverlayControlMode::Island, false, vec![]),
+            (OverlayControlMode::Hidden, false, vec![]),
+            (OverlayControlMode::Panel, false, vec![]),
+        ] {
+            let calls = RefCell::new(Vec::new());
+            release_passive_keyboard(
+                mode,
+                is_key,
+                || calls.borrow_mut().push("out"),
+                || calls.borrow_mut().push("restore"),
+            );
+            assert_eq!(calls.into_inner(), expected, "mode={mode:?} key={is_key}");
+        }
+    }
 }

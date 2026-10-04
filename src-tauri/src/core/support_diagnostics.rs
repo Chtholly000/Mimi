@@ -91,6 +91,14 @@ impl SafeFailure {
                 "backlog",
                 "PROVIDER_EVENT_BACKLOG_OVERFLOW",
             )),
+            "System audio capture permission was denied." | "capture.permission_denied" => Some((
+                "capture_setup",
+                "permission",
+                "SYSTEM_AUDIO_PERMISSION_DENIED",
+            )),
+            "System audio capture was stopped by the user." | "capture.user_stopped" => {
+                Some(("capture", "user_stopped", "CAPTURE_USER_STOPPED"))
+            }
             "Microphone capture permission was denied." => Some((
                 "capture_setup",
                 "permission",
@@ -436,6 +444,30 @@ pub fn render(facts: DiagnosticFacts) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recording_permission_and_user_stop_have_distinct_content_free_diagnostics() {
+        for message in [
+            "System audio capture permission was denied.",
+            "capture.permission_denied",
+        ] {
+            let failure = SafeFailure::from_error(message);
+            assert_eq!(failure.category, "permission");
+            assert_eq!(failure.code, "SYSTEM_AUDIO_PERMISSION_DENIED");
+        }
+        for message in [
+            "System audio capture was stopped by the user.",
+            "capture.user_stopped",
+        ] {
+            let failure = SafeFailure::from_error(message);
+            assert_eq!(failure.category, "user_stopped");
+            assert_eq!(failure.code, "CAPTURE_USER_STOPPED");
+        }
+        assert_eq!(
+            SafeFailure::from_error("private native error text").code,
+            "OTHER"
+        );
+    }
 
     #[test]
     fn microphone_diagnostics_use_fixed_labels_without_device_names() {

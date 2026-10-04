@@ -68,7 +68,7 @@ update both implementations and their platform-specific tests in the same change
 | Subtitle background | Adjustable card opacity (80% default); history does not fade with age | Existing native overlay background settings and history styling |
 | Audio capture | System audio only in the current release; microphone selection temporarily unavailable (implementation retained). OS-specific desktop capture; selected-app audio on macOS and Windows build 20348+, Linux retains output-monitor capture | Android playback-capture consent and foreground service; no selected-app picker |
 | Proxy preferences | Per-profile independent recognition/text routes; integrated realtime uses one route | Platform network defaults; no per-stage proxy controls |
-| Secret storage | OS keychain | Android Keystore-backed encrypted preferences |
+| Secret storage | Private local credential file; one-time OS-store migration | Android Keystore-backed encrypted preferences |
 | Local HTTP | Existing loopback endpoint validation | Explicit per-config opt-in and Android network allowlist; includes emulator host |
 | History/recording | Optional bounded local session files and selected-input recordings | Existing optional bounded subtitle history; no desktop recording/export parity claimed |
 | Development evidence | Exact dev app only; opt-in sent audio, subtitle snapshots, causal traces, saved-case playback and bounded evidence workspaces | No matching debugger or sent-audio recording claimed |
@@ -97,4 +97,6 @@ are not unified by the shared-core extraction.
   on both sides when changing scheduling. Desktop-only draft/reconnect machinery must not
   be copied into a final-only Android flow without a product need.
 
-Desktop subtitle controls additionally support keeping text opaque while backgrounds remain transparent and system subtitle color. The microphone color control is temporarily hidden with microphone input. These are desktop presentation preferences; Android does not currently expose matching controls.
+Desktop subtitle controls support system subtitle color and independent background transparency. The microphone color control is temporarily hidden with microphone input. These are desktop presentation preferences; Android does not currently expose matching controls.
+
+Desktop offers a default-on **Show interim subtitles** preference, including live session changes. With it off, only final lines and confirmed pairs appear; bounded Stop-tail fallback still follows the existing desktop final lane. This affects presentation, not provider requests or accuracy. Android currently has no matching switch. Shared snapshots expose `displayPairFinal` on both platforms, and Rust/JNI fixtures distinguish a completed preview from an accepted final even without retained presentation history.

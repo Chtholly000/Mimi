@@ -285,6 +285,13 @@ export function SettingsView() {
                           onChange={(value) => void savePreference({ subtitleDisplayMode: value as SubtitleDisplayMode }, I18N.settings.subtitleDisplay)}
                         />
                       </SettingsRow>
+                      <SettingsRow label={I18N.settings.showIntermediateSubtitles} description={I18N.settings.showIntermediateSubtitlesHelp}>
+                        <Switch
+                          checked={settings.showIntermediateSubtitles !== false}
+                          aria-label={I18N.settings.showIntermediateSubtitles}
+                          onChange={(showIntermediateSubtitles) => void savePreference({ showIntermediateSubtitles }, I18N.settings.showIntermediateSubtitles)}
+                        />
+                      </SettingsRow>
                       <SettingsRow label={I18N.settings.pulseStyle}>
                         <SettingsSelect
                           label={I18N.settings.pulseStyle}

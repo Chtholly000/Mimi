@@ -56,6 +56,9 @@ class SharedSubtitleContractTest {
                 response = SharedSubtitleCore.exchange(JSONObject().put("state", response.getString("state")).put("operation", operation))
                 assertTrue("${case.getString("id")} step $stepIndex",
                     step.getJSONObject("expected").similar(projection(response.getJSONObject("snapshot"))))
+                if (step.has("displayPairFinal")) {
+                    assertEquals(step.getBoolean("displayPairFinal"), response.getJSONObject("snapshot").getBoolean("displayPairFinal"))
+                }
                 checked += 1
             }
         }
