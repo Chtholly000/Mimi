@@ -83,6 +83,17 @@ it("keeps Apple hidden after a failed check and exposes a sanitized retry", asyn
   expect(host.querySelector('.provider-option[data-provider="appleSpeech"]')).not.toBeNull();
 });
 
+it("keeps a saved Apple profile editable but unusable on an unsupported device", async () => {
+  await render({ ...settings, targetLanguage: "original", profiles: [profile, {
+    ...appleProfile, credentialState: "present", speechCredentialState: "present",
+  }] });
+  await act(async () => host.querySelectorAll<HTMLButtonElement>(".service-row__edit")[1].click());
+  expect(host.querySelector(".service-detail__name input")).not.toBeNull();
+  expect(host.textContent).toContain(I18N.settings.appleSpeechUnavailable);
+  expect(host.querySelector(".service-detail__actions")?.textContent).not.toContain(I18N.settings.useProfile);
+  expect(actions.selectProfile).not.toHaveBeenCalled();
+});
+
 it.each(["zh", "en", "ja"] as const)("shows local Apple resources and independent stage controls without speech credentials in %s", async language => {
   setStoredUiLanguage(language);
   vi.mocked(getAppleSpeechSupport).mockResolvedValue(appleSupport);

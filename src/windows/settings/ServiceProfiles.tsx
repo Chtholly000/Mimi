@@ -86,7 +86,9 @@ export function ServiceProfiles({
   const initializationError = useStore((state) => state.initializationError) ?? null;
   const initialize = useStore((state) => state.init);
   const apple = useAppleSpeechSupport(visible);
-  const canUseProfile = (profile: ServiceProfile) => credentialStateForTarget(profile, settings.targetLanguage) === "present" || (profile.provider === "appleSpeech" && apple.support?.available === true);
+  const canUseProfile = (profile: ServiceProfile) => profile.provider === "appleSpeech"
+    ? apple.support?.available === true
+    : credentialStateForTarget(profile, settings.targetLanguage) === "present";
 
   const activeProfile =
     settings.profiles.find((profile) => profile.id === settings.activeProfileId) ??
