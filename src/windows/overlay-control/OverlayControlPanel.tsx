@@ -31,6 +31,7 @@ type PendingAction =
   | "source"
   | "translation"
   | "intermediate"
+  | "dividers"
   | "timestamps"
   | "immersive"
   | "lock"
@@ -51,6 +52,7 @@ interface OverlayControlPanelProps {
   onSwitchSourceLanguage: (language: SourceLanguage) => Promise<void>;
   onSetSkipTranslation: (enabled: boolean) => Promise<void>;
   onSetIntermediateSubtitles: (enabled: boolean) => Promise<void>;
+  onSetSubtitleDividers: (enabled: boolean) => Promise<void>;
   onSetSubtitleTimestamps: (enabled: boolean) => Promise<void>;
   onSetSubtitleDisplayMode: (mode: SubtitleDisplayMode) => Promise<void>;
   onSetImmersiveMode: (enabled: boolean) => Promise<void>;
@@ -73,6 +75,7 @@ export function OverlayControlPanel({
   onSwitchSourceLanguage,
   onSetSkipTranslation,
   onSetIntermediateSubtitles,
+  onSetSubtitleDividers,
   onSetSubtitleTimestamps,
   onSetSubtitleDisplayMode,
   onSetImmersiveMode,
@@ -87,6 +90,7 @@ export function OverlayControlPanel({
   const immersiveRef = useRef<HTMLButtonElement>(null);
   const lockRef = useRef<HTMLButtonElement>(null);
   const intermediateHelpId = useId();
+  const dividersHelpId = useId();
   const timestampsHelpId = useId();
   const actionInFlight = useRef(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
@@ -240,6 +244,25 @@ export function OverlayControlPanel({
             className={`overlay-control-setting overlay-control-setting--toggle${settings.showIntermediateSubtitles !== false ? " is-on" : ""}`}
             disabled={pendingAction !== null}
             onClick={() => performAction("intermediate", () => onSetIntermediateSubtitles(settings.showIntermediateSubtitles === false), false)}
+          >
+            <span className="overlay-control-switch" aria-hidden="true"><span /></span>
+          </button>
+        </div>
+
+        <div className="overlay-control-setting-row">
+          <span className="overlay-control-setting__icon" aria-hidden="true"><Icon name="captions-bubble" /></span>
+          <span className="overlay-control-setting__copy">
+            <strong>{I18N.settings.subtitleDividers}</strong>
+            <SettingsHelp id={dividersHelpId} text={I18N.settings.subtitleDividersHelp} label={I18N.settings.helpLabel} />
+          </span>
+          <button type="button" role="switch"
+            aria-checked={settings.showSubtitleDividers}
+            aria-label={I18N.settings.subtitleDividers}
+            aria-describedby={dividersHelpId}
+            className={`overlay-control-setting overlay-control-setting--toggle${settings.showSubtitleDividers ? " is-on" : ""}`}
+            disabled={pendingAction !== null}
+            onClick={() => performAction("dividers", () => onSetSubtitleDividers(!settings.showSubtitleDividers), false,
+              I18N.settings.settingSaveFailed(I18N.settings.subtitleDividers))}
           >
             <span className="overlay-control-switch" aria-hidden="true"><span /></span>
           </button>

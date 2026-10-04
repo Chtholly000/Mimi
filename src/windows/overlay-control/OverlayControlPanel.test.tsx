@@ -32,6 +32,7 @@ beforeEach(() => {
     onTogglePaused: vi.fn().mockResolvedValue(undefined),
     onSetSkipTranslation: vi.fn().mockResolvedValue(undefined),
     onSetIntermediateSubtitles: vi.fn().mockResolvedValue(undefined),
+    onSetSubtitleDividers: vi.fn().mockResolvedValue(undefined),
     onSetSubtitleTimestamps: vi.fn().mockResolvedValue(undefined),
     onSetSubtitleDisplayMode: vi.fn().mockResolvedValue(undefined), onSetImmersiveMode: vi.fn().mockResolvedValue(undefined),
     onSetOverlayLocked: vi.fn().mockResolvedValue(undefined), onShowSettings: vi.fn().mockResolvedValue(undefined),
@@ -69,7 +70,7 @@ it.each(["zh", "en", "ja"] as const)("keeps %s language, display and application
   expect(host.querySelectorAll('[role="combobox"]')).toHaveLength(3);
   expect(host.querySelectorAll('.application-audio-picker')).toHaveLength(1);
   expect(host.querySelector('fieldset, .overlay-control-options, .overlay-control-group')).toBeNull();
-  expect(host.querySelectorAll('[role="switch"]')).toHaveLength(5);
+  expect(host.querySelectorAll('[role="switch"]')).toHaveLength(6);
   expect(host.querySelector('.overlay-control-setting small')).toBeNull();
   expect(picker(I18N.overlay.sourceLanguage)).toBe(document.activeElement);
   expect(props.onSwitchSourceLanguage).not.toHaveBeenCalled();

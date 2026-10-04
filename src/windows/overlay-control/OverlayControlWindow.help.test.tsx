@@ -2,16 +2,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vitest";
 import { applicationAudioCopy } from "../../lib/applicationAudio";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import type { SettingsSnapshot, TargetLanguage } from "../../lib/types";
 import type { OverlayControlMode } from "../../lib/ipc";
-import { useStore } from "../../lib/store";
+import { disposeStoreSnapshotStreams, useStore } from "../../lib/store";
+import { Timeline } from "../overlay/Timeline";
 import { OverlayControlWindow } from "./OverlayControlWindow";
 
 const native = vi.hoisted(() => ({
   onMode: undefined as ((mode: OverlayControlMode) => void) | undefined,
+  onSettings: undefined as ((settings: SettingsSnapshot) => void) | undefined,
   hide: vi.fn(async () => {}),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
@@ -20,10 +23,123 @@ vi.mock("../../lib/ipc", async original => ({
   overlayControlGetState: async () => "panel",
   overlayControlSetIslandWidth: async () => {}, overlayControlSetPanelHeight: async () => {},
   overlayPopoverHide: native.hide,
+  listenSettingsChanged: async (callback: (settings: SettingsSnapshot) => void) => {
+    native.onSettings = callback; return () => { native.onSettings = undefined; };
+  },
+  listenSessionState: async () => () => {},
   listenOverlayControlMode: async (callback: (mode: OverlayControlMode) => void) => {
     native.onMode = callback; return () => { native.onMode = undefined; };
   },
 }));
+
+it.each(["zh", "en", "ja"] as const)("shares sentence dividers through native settings saves and broadcasts in %s", async language => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  disposeStoreSnapshotStreams();
+  const initial = useStore.getState();
+  let savedSettings: SettingsSnapshot = { ...initial.settings, uiLanguage: language,
+    showSubtitleDividers: false, showSubtitleTimestamps: true, subtitleBlendsWithBackground: false };
+  const session = { ...initial.session, status: { kind: "listening" as const }, isActive: true };
+  let rejectSave!: (reason: Error) => void;
+  const save = vi.fn(async (draft: Partial<SettingsSnapshot>) => {
+    savedSettings = { ...savedSettings, ...draft };
+    native.onSettings!(savedSettings);
+    return savedSettings;
+  }).mockImplementationOnce(() => new Promise<SettingsSnapshot>((_resolve, reject) => { rejectSave = reject; }));
+  vi.mocked(invoke).mockImplementation(async (command, args) => {
+    if (command === "settings_get") return savedSettings;
+    if (command === "session_get_state") return session;
+    if (command === "settings_save") return save((args as { draft: Partial<SettingsSnapshot> }).draft);
+    return null;
+  });
+  useStore.setState({ ...initial, initialized: false }, true);
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host);
+  const subtitleMarkup = () => {
+    const settings = useStore.getState().settings;
+    return renderToStaticMarkup(<Timeline
+      blocks={[
+        { id: "first", createdAt: 1, presentation: "history", source: "First fixture", translation: null },
+        { id: "second", createdAt: 2, presentation: "history", source: "Second fixture", translation: null },
+      ]}
+      fontSize={18} alignment="center" color="white" displayMode="original"
+      showSubtitleDividers={settings.showSubtitleDividers}
+      blendsWithBackground={settings.subtitleBlendsWithBackground}
+    />);
+  };
+  try {
+    await act(async () => { await useStore.getState().init(); root.render(<OverlayControlWindow />); });
+    expect(useStore.getState().initializationStatus).toBe("ready");
+    const toggle = () => host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${I18N.settings.subtitleDividers}"]`)!;
+    const expectEnabled = (enabled: boolean) => {
+      expect(toggle().getAttribute("aria-checked")).toBe(String(enabled));
+      expect(toggle().classList.contains("is-on")).toBe(enabled);
+      expect(useStore.getState().settings.showSubtitleDividers).toBe(enabled);
+    };
+    const help = toggle().closest('.overlay-control-setting-row')!.querySelector<HTMLButtonElement>('.settings-help-control__button')!;
+    expectEnabled(false);
+    expect(subtitleMarkup()).not.toContain("subtitle-separator");
+    expect([...host.querySelectorAll('.overlay-control-setting-row strong')].map(label => label.textContent)).toEqual([
+      I18N.settings.showIntermediateSubtitles, I18N.settings.subtitleDividers, I18N.settings.subtitleTimestamps,
+    ]);
+    expect(help.closest('button[role="switch"]')).toBeNull();
+    expect(document.getElementById(toggle().getAttribute("aria-describedby")!)?.textContent).toBe(I18N.settings.subtitleDividersHelp);
+    await act(async () => help.focus());
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(I18N.settings.subtitleDividersHelp);
+    expect(save).not.toHaveBeenCalled();
+    await act(async () => help.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+    expect(native.hide).not.toHaveBeenCalled();
+
+    await act(async () => { toggle().click(); toggle().click(); });
+    expect(save).toHaveBeenCalledExactlyOnceWith({ showSubtitleDividers: true });
+    expect(toggle().disabled).toBe(true);
+    // Shared preference saves preview immediately, then roll back on rejection.
+    expectEnabled(true);
+    await act(async () => rejectSave(new Error("synthetic-private-divider-save-error")));
+    expectEnabled(false);
+    expect(toggle().disabled).toBe(false);
+    expect(host.querySelector('.overlay-control-alert[role="alert"]')?.textContent).toBe(I18N.settings.settingSaveFailed(I18N.settings.subtitleDividers));
+    expect(host.textContent).not.toContain("synthetic-private-divider-save-error");
+    await act(async () => toggle().click());
+    expectEnabled(true);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(host.querySelector('.overlay-control-alert')).toBeNull();
+    expect(native.hide).not.toHaveBeenCalled();
+    expect(useStore.getState().session).toBe(session);
+    expect(useStore.getState().settings.showSubtitleTimestamps).toBe(true);
+    expect(subtitleMarkup()).toContain("subtitle-separator");
+
+    // The same settings-changed stream carries changes made in the settings window.
+    for (const enabled of [false, true]) {
+      await act(async () => {
+        savedSettings = { ...savedSettings, showSubtitleDividers: enabled };
+        native.onSettings!(savedSettings);
+      });
+      expectEnabled(enabled);
+      expect(subtitleMarkup().includes("subtitle-separator")).toBe(enabled);
+    }
+    expect(save).toHaveBeenCalledTimes(2);
+    await act(async () => native.onMode!("island"));
+    await act(async () => native.onMode!("panel"));
+    expectEnabled(true);
+
+    for (const immersive of [true, false]) {
+      await act(async () => host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${I18N.overlay.immersiveMode}"]`)!.click());
+      expect(save).toHaveBeenLastCalledWith({ subtitleBlendsWithBackground: immersive });
+      expectEnabled(true);
+      expect(subtitleMarkup().includes("subtitle-separator")).toBe(!immersive);
+    }
+    expect(useStore.getState().session).toBe(session);
+  } finally {
+    await act(async () => root.unmount()); host.remove(); disposeStoreSnapshotStreams();
+    useStore.setState(initial, true); setStoredUiLanguage("system"); native.hide.mockClear();
+    vi.mocked(invoke).mockImplementation(async () => null); vi.unstubAllGlobals();
+  }
+});
 
 it("closes focused source help before Escape dismisses the actual control panel", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
