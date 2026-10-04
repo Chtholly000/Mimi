@@ -45,6 +45,22 @@
 
 [使用与常见问题](docs/usage.zh-CN.md) · [Android](android/README.md) · [反馈问题](https://github.com/yuxino/mimi/issues) · [贡献指南](CONTRIBUTING.md)
 
+### 试试 Index-Translate
+
+B 站的 [Index-Translate](https://github.com/bilibili/Index-Translate#inference) 目前提供免费的公开翻译 API（截至 2026 年 10 月 5 日）。可以接到 Mimi 里试试，对比一下和常用服务的字幕翻译效果。
+
+在「**设置 → 语音与翻译**」中打开「**Alibaba Cloud**」配置，将「**文字翻译**」的服务切换为「**OpenAI 兼容接口**」，按[官方示例](https://github.com/bilibili/Index-Translate/blob/main/inference/llm/call_api.py#L40-L41)填写：
+
+| 字段 | 填写内容 |
+| --- | --- |
+| 服务地址 | `https://index-translate.bilibili.com/v1` |
+| 模型名称 | `Index-Translate-35B-A3B` |
+| API Key | 留空，公开接口目前不需要认证。 |
+
+保存后，点击「文字翻译」旁的连接检查。如果这个地址之前保存过 Key，选择「移除翻译密钥」后再保存。
+
+Index-Translate 只负责文字翻译，仍需配置阿里云语音识别凭证，识别服务可能产生费用。免费接口的后续可用性以上游为准。
+
 ## 常见问题
 
 **macOS 已开启录音权限，仍反复要求授权？** 先退出 Mimi，在「系统设置 → 隐私与安全性 → 录屏与系统录音」中，仅删除并重新添加对应应用：正式版为 `/Applications/mimi.app`，开发版为 `/Applications/mimi-dev.app`，开启权限后重新打开同一个应用。详见[权限恢复步骤](docs/usage.zh-CN.md#macos-更新后重复授权)。

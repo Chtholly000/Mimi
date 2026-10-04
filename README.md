@@ -45,6 +45,22 @@ Bring your own provider credentials. Audio is sent to your configured speech ser
 
 [Setup & help](docs/usage.md) · [Android](android/README.md) · [Report a bug](https://github.com/yuxino/mimi/issues) · [Contributing](CONTRIBUTING.md)
 
+### Try Index-Translate
+
+Bilibili's [Index-Translate](https://github.com/bilibili/Index-Translate#inference) currently offers a free public translation API (as of October 5, 2026). You can try it in Mimi and compare the subtitle translations with your usual service.
+
+In **Settings → Speech & Translation**, open an **Alibaba Cloud** configuration and select **OpenAI-compatible API** under **Text translation**. Use the values from the [official example](https://github.com/bilibili/Index-Translate/blob/main/inference/llm/call_api.py#L40-L41):
+
+| Field | Value |
+| --- | --- |
+| Service address | `https://index-translate.bilibili.com/v1` |
+| Model name | `Index-Translate-35B-A3B` |
+| API Key | Leave empty; the public API currently requires no authentication. |
+
+Save, then run the connection check beside **Text translation**. If this address already has a saved key, remove it with **Remove translation key** and save again.
+
+Index-Translate handles text translation only: keep your Alibaba Cloud speech-recognition credentials configured; recognition may still incur charges. Free API availability is subject to the upstream service.
+
 ## FAQ
 
 **macOS keeps asking for recording permission even though it is enabled?** Quit Mimi, then remove and re-add only its entry in System Settings → Privacy & Security → Screen & System Audio Recording. Use `/Applications/mimi.app` for the release app or `/Applications/mimi-dev.app` for development, enable it, and reopen the same app. See [permission recovery](docs/usage.md#macos-permissions-after-an-update).
