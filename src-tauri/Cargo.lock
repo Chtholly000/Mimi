@@ -2778,6 +2778,7 @@ dependencies = [
  "rubato",
  "rustls",
  "screen-capture-kit",
+ "security-framework",
  "secret-service",
  "serde",
  "serde_json",

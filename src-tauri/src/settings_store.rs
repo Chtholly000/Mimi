@@ -355,6 +355,10 @@ fn keyring_operation_error(error: keyring_core::Error) -> SecretStoreError {
 /// in-memory implementation; production uses `keyring`.
 pub trait SecretStore: Send + Sync {
     fn load(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError>;
+    /// Presence only; macOS never requests password data for this operation.
+    fn contains(&self, service: &str, account: &str) -> Result<bool, SecretStoreError> {
+        self.load(service, account).map(|value| value.is_some())
+    }
     fn save(&self, service: &str, account: &str, value: &str) -> Result<(), SecretStoreError>;
     /// Explicit Save may request the provider's native first-collection prompt.
     /// Background migration uses `save` and must never create a collection.
@@ -532,6 +536,28 @@ fn enforce_local_credential_persistence(
 }
 
 impl SecretStore for KeyringSecretStore {
+    #[cfg(target_os = "macos")]
+    fn contains(&self, service: &str, account: &str) -> Result<bool, SecretStoreError> {
+        use security_framework::item::{ItemClass, ItemSearchOptions};
+        use security_framework::os::macos::keychain::{SecKeychain, SecPreferencesDomain};
+        let keychain = SecKeychain::default_for_domain(SecPreferencesDomain::User)
+            .map_err(|_| SecretStoreError::Unavailable)?;
+        // Same User keychain and exact account as keyring's legacy backend.
+        // Return attributes only; never password bytes or altered access rules.
+        match ItemSearchOptions::new()
+            .keychains(&[keychain])
+            .class(ItemClass::generic_password())
+            .service(service)
+            .account(account)
+            .load_attributes(true)
+            .search()
+        {
+            Ok(items) => Ok(!items.is_empty()),
+            Err(error) if error.code() == -25300 => Ok(false),
+            Err(_) => Err(SecretStoreError::Unavailable),
+        }
+    }
+
     fn load(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError> {
         let entry = credential_entry(service, account)?;
         match entry.get_password() {
@@ -1277,6 +1303,90 @@ impl SettingsStore {
         match self.credentials_for_profile(profile) {
             Ok(Some(_)) => CredentialState::Present,
             Ok(None) => CredentialState::Missing,
+            Err(_) => CredentialState::Unavailable,
+        }
+    }
+
+    /// Unselected profiles show saved-item presence without authorizing secrets.
+    pub fn credential_state_for_snapshot(
+        &self,
+        profile: &ServiceProfile,
+        active: bool,
+    ) -> CredentialState {
+        if active || self.is_ui_test || !cfg!(target_os = "macos") {
+            return self.credential_state(profile);
+        }
+        if let Some((speech, text)) = self.custom_credential_states_for_snapshot(profile, false) {
+            return speech.combined(text);
+        }
+        self.inactive_speech_credential_state(profile)
+    }
+
+    pub fn custom_credential_states_for_snapshot(
+        &self,
+        profile: &ServiceProfile,
+        active: bool,
+    ) -> Option<(CredentialState, CredentialState)> {
+        if !profile.provider.is_custom_speech() {
+            return None;
+        }
+        if active || self.is_ui_test || !cfg!(target_os = "macos") {
+            return self.custom_credential_states(profile);
+        }
+        let speech = self.inactive_speech_credential_state(profile);
+        let text = if profile.text_translation() == TextTranslation::FollowService {
+            CredentialState::Present
+        } else if self.secret.is_read_only() {
+            CredentialState::Missing
+        } else {
+            Self::presence_state(self.secret_present(&Self::destination_account(profile)))
+        };
+        Some((speech, text))
+    }
+
+    fn inactive_speech_credential_state(&self, profile: &ServiceProfile) -> CredentialState {
+        let presence = (|| {
+            if self.secret_present(&credential_account(profile))? {
+                return Ok(true);
+            }
+            // Discovery is metadata-only; actual legacy migration stays on use.
+            if is_default_alibaba(profile)
+                && self.migrate_legacy_alibaba
+                && !self.secret_present(LEGACY_MIGRATION_TOMBSTONE_ACCOUNT)?
+            {
+                for service in [
+                    LEGACY_KEYCHAIN_SERVICE_V3,
+                    LEGACY_KEYCHAIN_SERVICE_V2,
+                    LEGACY_KEYCHAIN_SERVICE,
+                ] {
+                    if self.secret.contains(service, LEGACY_KEYCHAIN_ACCOUNT)? {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        })();
+        Self::presence_state(presence)
+    }
+
+    fn secret_present(&self, account: &str) -> Result<bool, SecretStoreError> {
+        let cached = self
+            .secret_cache
+            .lock()
+            .unwrap()
+            .get(&cache_key(self.profile_keychain_service, account))
+            .cloned();
+        match cached {
+            Some(Ok(Some(value))) if value.trim().is_empty() => Err(SecretStoreError::Unavailable),
+            Some(result) => result.map(|value| value.is_some()),
+            None => self.secret.contains(self.profile_keychain_service, account),
+        }
+    }
+
+    fn presence_state(presence: Result<bool, SecretStoreError>) -> CredentialState {
+        match presence {
+            Ok(true) => CredentialState::Present,
+            Ok(false) => CredentialState::Missing,
             Err(_) => CredentialState::Unavailable,
         }
     }
@@ -3773,6 +3883,18 @@ mod tests {
     }
 
     impl SecretStore for FakeSecretStore {
+        fn contains(&self, service: &str, account: &str) -> Result<bool, SecretStoreError> {
+            let state = self.state.lock().unwrap();
+            let key = cache_key(service, account);
+            if let Some(error) = state.failures.get(&key) {
+                return Err(*error);
+            }
+            if state.unavailable.contains(&key) {
+                return Err(SecretStoreError::Unavailable);
+            }
+            Ok(state.values.contains_key(&key))
+        }
+
         fn load(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError> {
             let key = cache_key(service, account);
             let mut state = self.state.lock().unwrap();
@@ -3823,6 +3945,177 @@ mod tests {
             model: model.into(),
             api_key: key.into(),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn settings_snapshot_reads_only_the_selected_provider_key() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let active = ServiceProfile::alibaba_default();
+        let second = openai_profile(&store, "Second provider");
+        let third = store
+            .create_profile(ProviderKind::GoogleGeminiLive, "Third provider")
+            .unwrap();
+        for profile in [&active, &second, &third] {
+            fake.put(
+                PROFILE_KEYCHAIN_SERVICE,
+                &credential_account(profile),
+                "synthetic-profile-key",
+            );
+        }
+        for _ in 0..2 {
+            let snapshot =
+                crate::commands::SettingsSnapshotPayload::try_from_store(&store).unwrap();
+            assert!(snapshot
+                .profiles
+                .iter()
+                .all(|p| p.credential_state == CredentialState::Present));
+        }
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&active)),
+            1
+        );
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&second)),
+            0
+        );
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&third)),
+            0
+        );
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, LEGACY_MIGRATION_TOMBSTONE_ACCOUNT),
+            0
+        );
+        store.select_profile(&second.id).unwrap();
+        crate::commands::SettingsSnapshotPayload::try_from_store(&store).unwrap();
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&second)),
+            1
+        );
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&active)),
+            1
+        );
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&third)),
+            0
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn inactive_custom_pipeline_does_not_authorize_either_credential_slot() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::CustomDashScopeASR, "Separate pipeline")
+            .unwrap();
+        store
+            .save_credentials(
+                &profile.id,
+                &custom_speech_request(
+                    "wss://speech.example/realtime",
+                    "synthetic-model",
+                    "synthetic-speech",
+                ),
+            )
+            .unwrap();
+        store
+            .save_credentials(
+                &profile.id,
+                &openai_compatible_request(
+                    "",
+                    "https://text.example/v1",
+                    "synthetic-text",
+                    "synthetic-model",
+                ),
+            )
+            .unwrap();
+        store.secret_cache.lock().unwrap().clear();
+        fake.state.lock().unwrap().loads.clear();
+        let snapshot = crate::commands::SettingsSnapshotPayload::try_from_store(&store).unwrap();
+        let inactive = snapshot
+            .profiles
+            .iter()
+            .find(|p| p.id == profile.id)
+            .unwrap();
+        assert_eq!(
+            inactive.speech_credential_state,
+            Some(CredentialState::Present)
+        );
+        assert_eq!(
+            inactive.text_credential_state,
+            Some(CredentialState::Present)
+        );
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile)),
+            0
+        );
+        assert_eq!(
+            fake.load_count(
+                PROFILE_KEYCHAIN_SERVICE,
+                &SettingsStore::destination_account(&profile)
+            ),
+            0
+        );
+        store.select_profile(&profile.id).unwrap();
+        crate::commands::SettingsSnapshotPayload::try_from_store(&store).unwrap();
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile)),
+            1
+        );
+        assert_eq!(
+            fake.load_count(
+                PROFILE_KEYCHAIN_SERVICE,
+                &SettingsStore::destination_account(&profile)
+            ),
+            1
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn inactive_presence_respects_legacy_tombstone_and_cached_access_failure() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = ServiceProfile::alibaba_default();
+        fake.put(
+            LEGACY_KEYCHAIN_SERVICE_V3,
+            LEGACY_KEYCHAIN_ACCOUNT,
+            "synthetic-legacy",
+        );
+        assert_eq!(
+            store.credential_state_for_snapshot(&profile, false),
+            CredentialState::Present
+        );
+        assert!(fake.state.lock().unwrap().loads.is_empty());
+        fake.put(
+            PROFILE_KEYCHAIN_SERVICE,
+            LEGACY_MIGRATION_TOMBSTONE_ACCOUNT,
+            LEGACY_MIGRATION_TOMBSTONE_VALUE,
+        );
+        assert_eq!(
+            store.credential_state_for_snapshot(&profile, false),
+            CredentialState::Missing
+        );
+        assert!(fake.state.lock().unwrap().loads.is_empty());
+        let other = openai_profile(&store, "Access failure");
+        let account = credential_account(&other);
+        fake.put(PROFILE_KEYCHAIN_SERVICE, &account, "synthetic-key");
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &account);
+        assert_eq!(store.credential_state(&other), CredentialState::Unavailable);
+        fake.state
+            .lock()
+            .unwrap()
+            .unavailable
+            .remove(&cache_key(PROFILE_KEYCHAIN_SERVICE, &account));
+        assert_eq!(
+            store.credential_state_for_snapshot(&other, false),
+            CredentialState::Unavailable
+        );
+        assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, &account), 1);
     }
 
     #[test]
@@ -4230,6 +4523,7 @@ mod tests {
         assert_eq!(fake.value(PROFILE_KEYCHAIN_SERVICE, &account), before);
         store.secret_cache.lock().unwrap().clear();
         fake.state.lock().unwrap().loads.clear();
+        store.select_profile(&profile.id).unwrap();
         let snapshot = crate::commands::SettingsSnapshotPayload::from_store(&store);
         let payload = snapshot
             .profiles

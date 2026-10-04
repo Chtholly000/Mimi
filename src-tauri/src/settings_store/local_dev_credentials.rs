@@ -83,6 +83,18 @@ fn preset_account(account: &str) -> bool {
 }
 
 impl SecretStore for FileSecretStore {
+    fn contains(&self, service: &str, account: &str) -> Result<bool, SecretStoreError> {
+        if service != DEVELOPMENT_PROFILE_KEYCHAIN_SERVICE
+            || !account.starts_with("provider-profile:")
+        {
+            return Ok(false);
+        }
+        if preset_account(account) {
+            return self.load(service, account).map(|value| value.is_some());
+        }
+        self.os.contains(service, account)
+    }
+
     fn load(&self, service: &str, account: &str) -> Result<Option<String>, SecretStoreError> {
         if service != DEVELOPMENT_PROFILE_KEYCHAIN_SERVICE
             || !account.starts_with("provider-profile:")

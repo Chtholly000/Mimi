@@ -101,7 +101,10 @@ These prompts have different causes and fixes:
   designated requirement. A changed certificate requires one new grant. A
   stable identity at a canonical path must not require repeated grants.
 - **API-key Keychain access:** the running app is reading a saved provider key.
-  A normal startup reads the profile key once and caches the result. Migration
+  A normal startup reads the active profile key once and caches the result.
+  Unselected macOS profiles use metadata-only presence checks, including both
+  custom speech/text slots, so listing profiles does not authorize each key.
+  Saved-item presence does not certify credential validity. Migration
   tombstones and legacy slots are read only when the profile key is missing or
   during an explicit save/delete/migration. Keep the same service/account and
   update its value in place: deleting and recreating it discards accumulated
