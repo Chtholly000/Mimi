@@ -75,4 +75,5 @@ These are exploratory and do not change the accepted product contract.
 
 - [Local recognition and translation](../research/2026-09-27-local-models.md) —
   issue #40 feasibility, runtime candidates, integration boundaries and proposed
-  benchmark gates; no model performance results or implementation yet.
+  benchmark gates, updated for existing local text translation and a limited
+  hybrid Index trial; Mimi-managed local ASR/MT remains unimplemented.
