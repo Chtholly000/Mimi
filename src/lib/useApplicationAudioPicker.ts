@@ -45,9 +45,11 @@ export function useApplicationAudioPicker(disabled = false) {
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     if (!isTauri || !/Mac/i.test(navigator.userAgent) || !ready || !targetKey) return;
-    // A list just requested here already covers this choice. A newly mounted
-    // panel has no list: show its cached icon immediately and revalidate it.
-    if (snapshot && (snapshot.targetKey === targetKey || snapshot.value.applications.some(app => app.id === targetKey))) return;
+    // An older list only covers this choice while its icon is still cached.
+    // A failed lookup can clear icons before another window selects it again.
+    // Cache updates are not dependencies: missing icons never start a retry loop.
+    if (snapshot && applicationIconCache.read().has(targetKey)
+      && (snapshot.targetKey === targetKey || snapshot.value.applications.some(app => app.id === targetKey))) return;
     let active = true;
     const restoreIcon = () => { if (active) setIcons(applicationIconCache.read()); };
     void readSnapshot().then(restoreIcon, restoreIcon);

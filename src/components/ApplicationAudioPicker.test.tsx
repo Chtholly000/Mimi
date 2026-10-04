@@ -78,6 +78,36 @@ it("restores an application chosen in another window without selecting it again"
   expect(switchTarget).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
 });
 
+it("restores an old listed application's icon after another window's new target lookup fails", async () => {
+  await mount();
+  await act(async () => trigger().click());
+  expect([...document.querySelectorAll('[role="option"]')].map(node => node.textContent))
+    .toEqual([applicationAudioCopy().all, player.name, chat.name]);
+  expect(invoke).toHaveBeenCalledTimes(2);
+  vi.mocked(invoke).mockRejectedValueOnce(new Error("synthetic-private-error"));
+  await act(async () => useStore.setState(state => ({ settings: { ...state.settings,
+    systemAudioTarget: { kind: "application", id: "example.new-player", name: "New player" },
+  } })));
+  expect(icon()).toBeUndefined();
+  expect(applicationIconCache.read().size).toBe(0);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(invoke).toHaveBeenCalledTimes(3); // A background failure does not retry.
+
+  await act(async () => useStore.setState(state => ({ settings: { ...state.settings,
+    systemAudioTarget: { kind: "application", id: player.id, name: player.name },
+  } })));
+  expect(icon()).toBe(player.iconDataUrl);
+  expect(trigger().textContent).toBe(player.name);
+  expect(invoke).toHaveBeenCalledTimes(4);
+  await mount();
+  expect(invoke).toHaveBeenCalledTimes(4); // Restoring the icon does not trigger another read.
+  expect(vi.mocked(invoke).mock.calls.every(([command]) => command === "audio_applications")).toBe(true);
+  expect([...document.querySelectorAll('[role="option"]')].map(node => node.textContent))
+    .toEqual([applicationAudioCopy().all, player.name, chat.name]);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(switchTarget).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
+});
+
 it("drops a stale icon silently when the saved application exits", async () => {
   await mount(); await mount(false);
   vi.mocked(invoke).mockResolvedValueOnce({ supported: true, applications: [] });
