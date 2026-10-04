@@ -6,6 +6,23 @@
 
 ## 2026-10-05：Apple Speech 原生渠道试验
 
+- 后续同步 `a0ac37f` 后，完整检查在 `45ecbf3` 通过：桌面 Rust 1110 passed／
+  2 ignored，前端 110 文件／1465 项，共享核心/JNI、fmt/clippy/lint/build
+  通过。`79814cc` 再补旧 Apple 配置在不支持设备上不可启用的 UI 回归，
+  ServiceProfiles 85 项、typecheck/lint 通过。草稿 PR #153，禁止自动合并。
+- 三个识别候选共用的 24 句英文合成连续流（Samantha/Daniel，96.263375 s；
+  SHA256 `11a7bcc363b22afec54de9bcb26bddc84608d58ba505e44b5ccd6168d3ff5a24`），
+  Apple 静态 ABI 实时送流得到 362 个事件／26 个 final，无迟到回调。
+  原样字面 WER 为 22/239（9.21%），仅忽略标点/大小写，未折叠数字书写；
+  错误中包含数字格式差异，也有实质近音词错误。首结果在送音后 1081.1 ms，
+  建立耗时 211.8 ms，EOF 收尾 43.6 ms，总 96521.0 ms。
+- 同批 24 句逐句运行得到 20/239 字面词错误，其中一条漏掉否定；连续上下文
+  下该否定正确。因此分句方式影响结果，不把单句与连续流混作同一指标。
+  JFK 公开真人样本（11 s；SHA256
+  `59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e`）
+  得到 0/22 字面词错误，送音后首结果 1089.0 ms。该著名录音可能在训练集，
+  不当作留出集或噪声/口音泛化证据；尚无 30 分钟持续会话验收。
+  C 消费进程 RSS 不包括系统识别进程，不能拿它与模型完整 RSS 横向比较。
 - 基线 `51820ad`，`feat/apple-speech-recognition`（验证时 dirty）。M5、16 GB、
   macOS 26.3.1(a)，Xcode 26.6 / macOS 26.5 SDK。静态 Swift + C ABI
   集成 `SpeechAnalyzer`；每来源独立有界输入和结果，无识别密钥及外部 worker。
