@@ -26,6 +26,12 @@ struct Clip {
     pcm_path: PathBuf,
     target: TargetLanguage,
     expected_speech: bool,
+    #[serde(default = "default_tail_silence_ms")]
+    tail_silence_ms: u64,
+}
+
+fn default_tail_silence_ms() -> u64 {
+    2_000
 }
 
 #[derive(Default)]
@@ -33,16 +39,52 @@ struct Evidence {
     finals: Vec<Value>,
     errors: Vec<String>,
     first_translation_ms: Option<u128>,
+    first_lexical_source_draft_ms: Option<u128>,
+    source_draft_events: u64,
+    source_lexical_draft_events: u64,
+    translation_draft_events: u64,
+    translation_lexical_draft_events: u64,
     last_final_ms: Option<u128>,
+    last_source_draft: Option<Value>,
+    last_translation_draft: Option<Value>,
     characters: usize,
 }
 
 impl Evidence {
     fn observe(&mut self, event: LiveTranslateServerEvent, started: Instant) {
         match event {
-            LiveTranslateServerEvent::TranslationDraft(ref text) if !text.is_empty() => {
-                self.first_translation_ms
-                    .get_or_insert(started.elapsed().as_millis());
+            LiveTranslateServerEvent::SourceDraft {
+                ref text,
+                ref language,
+            }
+            | LiveTranslateServerEvent::SourceUtteranceDraft {
+                ref text,
+                ref language,
+                ..
+            } => {
+                self.last_source_draft =
+                    Some(json!({"text":text.chars().take(4096).collect::<String>(),
+                    "language":language,"truncated":text.chars().count() > 4096,
+                    "elapsedMs":started.elapsed().as_millis()}));
+                self.source_draft_events += 1;
+                if text.chars().any(char::is_alphanumeric) {
+                    self.source_lexical_draft_events += 1;
+                    self.first_lexical_source_draft_ms
+                        .get_or_insert(started.elapsed().as_millis());
+                }
+            }
+            LiveTranslateServerEvent::TranslationDraft(ref text) => {
+                self.last_translation_draft = Some(
+                    json!({"text":text.chars().take(4096).collect::<String>(),
+                    "truncated":text.chars().count() > 4096,"elapsedMs":started.elapsed().as_millis()}),
+                );
+                self.translation_draft_events += 1;
+                self.translation_lexical_draft_events +=
+                    u64::from(text.chars().any(char::is_alphanumeric));
+                if !text.is_empty() {
+                    self.first_translation_ms
+                        .get_or_insert(started.elapsed().as_millis());
+                }
             }
             LiveTranslateServerEvent::SubtitleFinalPair {
                 source,
@@ -101,8 +143,11 @@ async fn manual_gemini_translation_audio() {
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
         );
         assert!(clip.pcm_path.is_absolute());
+        assert!(clip.tail_silence_ms <= 2_000 && clip.tail_silence_ms % 100 == 0);
+        // Explicit probes remain bounded to three minutes of PCM. Longer
+        // fixtures must still respect the production transcript safety limit.
         let pcm = std::fs::read(&clip.pcm_path).unwrap();
-        assert!(!pcm.is_empty() && pcm.len() <= 60 * 32_000 && pcm.len() % 2 == 0);
+        assert!(!pcm.is_empty() && pcm.len() <= 180 * 32_000 && pcm.len() % 2 == 0);
         let (sender, mut receiver) = provider_event_channel();
         let client = GeminiLiveClient::new(&key, clip.target, sender).unwrap();
         let setup_started = Instant::now();
@@ -137,18 +182,37 @@ async fn manual_gemini_translation_audio() {
             client.send_audio(frame).await.unwrap();
         }
         let sent_ms = started.elapsed().as_millis();
-        // Let VAD finish the utterance before the existing bounded close path.
-        for _ in 0..20 {
+        // The default retains the existing 2s VAD tail; zero explicitly probes
+        // Stop immediately after the clip, without changing the close deadline.
+        for _ in 0..clip.tail_silence_ms / 100 {
             client
                 .send_audio(&vec![0; GeminiLiveEndpoint::AUDIO_FRAME_BYTE_COUNT])
                 .await
                 .unwrap();
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        let finish_started_ms = started.elapsed().as_millis();
         client.finish(Duration::from_secs(12)).await;
+        let finish_duration_ms = started.elapsed().as_millis() - finish_started_ms;
         let _ = stop_tx.send(());
         let evidence = reader.await.unwrap();
+        let final_events_before_finish = evidence
+            .finals
+            .iter()
+            .filter(|event| {
+                event["elapsedMs"]
+                    .as_u64()
+                    .is_some_and(|ms| u128::from(ms) < finish_started_ms)
+            })
+            .count();
         let summary = json!({"label":clip.label,"setupMs":setup_ms,"audioMs":pcm.len() / 32,
+            "firstLexicalSourceDraftMs":evidence.first_lexical_source_draft_ms,
+            "sourceDraftEvents":evidence.source_draft_events,
+            "sourceLexicalDraftEvents":evidence.source_lexical_draft_events,
+            "translationDraftEvents":evidence.translation_draft_events,
+            "translationLexicalDraftEvents":evidence.translation_lexical_draft_events,
+            "tailSilenceMs":clip.tail_silence_ms,"finishStartedMs":finish_started_ms,
+            "finishDurationMs":finish_duration_ms,"finalEventsBeforeFinish":final_events_before_finish,
             "sendFinishedMs":sent_ms,"firstTranslationMs":evidence.first_translation_ms,
             "lastFinalMs":evidence.last_final_ms,"finalCount":evidence.finals.len(),"errors":evidence.errors});
         let path = manifest
@@ -162,9 +226,11 @@ async fn manual_gemini_translation_audio() {
             .unwrap();
         output
             .write_all(
-                serde_json::to_string_pretty(&json!({"summary":summary,"finals":evidence.finals}))
-                    .unwrap()
-                    .as_bytes(),
+                serde_json::to_string_pretty(&json!({"summary":summary,"finals":evidence.finals,
+                    "lastSourceDraft":evidence.last_source_draft,
+                    "lastTranslationDraft":evidence.last_translation_draft}))
+                .unwrap()
+                .as_bytes(),
             )
             .unwrap();
         println!("{summary}");
@@ -178,4 +244,56 @@ async fn manual_gemini_translation_audio() {
             "unexpected final presence"
         );
     }
+}
+
+#[test]
+fn evidence_distinguishes_lexical_drafts_from_confirmations() {
+    let mut evidence = Evidence::default();
+    let started = Instant::now();
+    for text in ["", " ... ", "Synthetic draft"] {
+        evidence.observe(
+            LiveTranslateServerEvent::SourceDraft {
+                text: text.into(),
+                language: None,
+            },
+            started,
+        );
+    }
+    for text in ["", " ... ", "合成预览"] {
+        evidence.observe(
+            LiveTranslateServerEvent::TranslationDraft(text.into()),
+            started,
+        );
+    }
+    assert_eq!(evidence.source_draft_events, 3);
+    assert_eq!(evidence.source_lexical_draft_events, 1);
+    assert_eq!(evidence.translation_draft_events, 3);
+    assert_eq!(evidence.translation_lexical_draft_events, 1);
+    assert!(evidence.first_lexical_source_draft_ms.is_some());
+    assert!(
+        evidence.finals.is_empty(),
+        "zero finals does not imply zero drafts"
+    );
+    evidence.observe(
+        LiveTranslateServerEvent::SubtitleFinalPair {
+            source: "Synthetic confirmation".into(),
+            language: None,
+            translation: "合成确认".into(),
+        },
+        started,
+    );
+    assert_eq!(evidence.finals.len(), 1);
+    assert_eq!(evidence.source_lexical_draft_events, 1);
+}
+
+#[test]
+fn legacy_audio_clip_defaults_to_two_seconds_of_tail_silence() {
+    let value = json!({"label":"synthetic", "pcm_path":"/private/tmp/synthetic.pcm",
+        "target":"zh", "expected_speech":true});
+    let legacy: Clip = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(legacy.tail_silence_ms, 2_000);
+    let mut value = value;
+    value["tail_silence_ms"] = json!(0);
+    let immediate: Clip = serde_json::from_value(value).unwrap();
+    assert_eq!(immediate.tail_silence_ms, 0);
 }
