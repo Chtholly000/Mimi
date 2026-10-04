@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
+import { invoke } from "@tauri-apps/api/core";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
+import { applicationAudioCopy } from "../../lib/applicationAudio";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import type { SettingsSnapshot, TargetLanguage } from "../../lib/types";
 import type { OverlayControlMode } from "../../lib/ipc";
@@ -128,5 +130,40 @@ it.each(["zh", "en", "ja"] as const)("shares the early subtitle preference and c
   } finally {
     await act(async () => root.unmount()); host.remove();
     useStore.setState(initial, true); setStoredUiLanguage("system"); native.hide.mockClear(); vi.unstubAllGlobals();
+  }
+});
+
+
+it("lets IME Escape cancel composition without dismissing application search or the floating panel", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("navigator", { userAgent: "Macintosh" });
+  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  vi.mocked(invoke).mockImplementation(async command => command === "audio_applications" ? { supported: true, applications: [] } : null);
+  const initial = useStore.getState();
+  useStore.setState({ initializationStatus: "ready", settings: { ...initial.settings, systemAudioTarget: { kind: "system" } } });
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => root.render(<OverlayControlWindow />));
+    const trigger = host.querySelector<HTMLButtonElement>(`button[aria-label="${applicationAudioCopy().title}"]`)!;
+    await act(async () => trigger.click());
+    const input = document.querySelector<HTMLInputElement>('.mimi-select__search')!;
+    expect(document.activeElement).toBe(input);
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", isComposing: true, bubbles: true, cancelable: true })));
+    expect(document.querySelector('.mimi-select__search')).toBe(input);
+    expect(host.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(native.hide).not.toHaveBeenCalled();
+    await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(document.querySelector('.mimi-select__search')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(native.hide).not.toHaveBeenCalled();
+    await act(async () => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })));
+    expect(native.hide).toHaveBeenCalledOnce();
+  } finally {
+    await act(async () => root.unmount()); host.remove();
+    useStore.setState(initial, true); native.hide.mockClear(); vi.mocked(invoke).mockImplementation(async () => null); vi.unstubAllGlobals();
   }
 });

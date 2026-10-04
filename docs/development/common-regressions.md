@@ -112,7 +112,10 @@ These prompts have different causes and fixes:
   saved provider key. Verify a durable local copy before deleting its original
   OS item. Checkpoint pending cleanup independently, so interrupted deletion
   resumes without rereading the old secret. Routine startup, snapshots,
-  switching and credential edits use only the local file.
+  switching and credential edits use only the local file. On Windows, reading
+  an old Enterprise credential must not rewrite it as Local. Native migration
+  tests must verify the local file copy, retirement of the old item, and no
+  recreated native item after restarting or saving an edited key.
 - **Code-signing private-key access:** `/usr/bin/codesign` is using the private
   key for `mimi Local Development` while packaging the app and DMG. This is not
   API-key access. Grant persistent access only when the dialog names that exact
@@ -225,7 +228,14 @@ page must include a review of other instances of the same pattern.
   can scroll a clipped ancestor in WebKit and hide rows below the search field;
   pointer hover must not move the list. Check a long list and keyboard search.
   DOM focus does not prove a macOS floating NSPanel is key: explicit clicks must
-  allow the control panel to become key, never main or proactively activating.
+  give the actual WKWebView first-responder status and make the control panel
+  key, never main or proactively activating. Wry contentView is a wrapper:
+  `canBecomeKey` and `makeKeyWindow` alone do not prove keyboard delivery.
+  Use `with_webview` on the main thread, only for an explicit expanded panel.
+  Automation may activate the app before typing and hide the real failure.
+  Verify a human click from another app into search, then repeat after restart
+  and after removing any temporary diagnostics. `isKeyWindow` alone only
+  describes application-local key status, not system keyboard delivery.
   Collapsing it must release key status. Before release, type English and Chinese
   searches in the signed native panel and confirm media playback continues.
 - Language menus in settings, the subtitle controls and the tray use the full
@@ -302,11 +312,12 @@ samples and [the run ledger](integration-runs.md) for this check's exact scope.
 - A frontend settings deadline cannot cancel a native Keychain authorization
   wait. Keep real-provider acceptance pending until OS authorization finishes;
   never use credential-free UI fixtures as proof that provider audio works.
-  The initial settings snapshot checks credential status for the whole profile
-  catalog. Selecting the private dev preset does not isolate ordinary profiles'
-  Keychain reads; the dev file store handles only its explicit preset account.
-  A sampled `FileSecretStore -> Keyring -> SecKeychainFindGenericPassword` wait
-  identifies this boundary. Record it separately, quit normally, and keep UI-only
+  In versions before the local-file migration, the initial settings snapshot
+  checked credential status for the whole profile catalog. Selecting the private
+  dev preset did not isolate ordinary profiles' Keychain reads. A sampled
+  `FileSecretStore -> Keyring -> SecKeychainFindGenericPassword` wait identified
+  that historical boundary; current snapshots must stay on the local-file path.
+  Record an unfinished upgrade import separately, quit normally, and keep UI-only
   or offline replay results distinct from live provider acceptance. Repeated
   frontend Retry cannot cancel an unfinished native authorization read.
 

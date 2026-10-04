@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ApplicationAudio } from "./ApplicationAudio";
 import { useStore } from "../../lib/store";
 import { mergeSettingsSnapshot } from "../../lib/settingsState";
+import { applicationIconCache } from "../../lib/applicationAudioIcons";
 import { applicationAudioCopy } from "../../lib/applicationAudio";
 import { setStoredUiLanguage } from "../../lib/i18n";
 import type { SessionStateEvent, SystemAudioTarget } from "../../lib/types";
@@ -23,6 +24,7 @@ beforeEach(() => {
   vi.stubGlobal("navigator", { userAgent: "Macintosh" });
   Element.prototype.scrollIntoView = vi.fn();
   setStoredUiLanguage("en");
+  applicationIconCache.clear();
   vi.mocked(invoke).mockReset(); vi.mocked(invoke).mockResolvedValue({ supported: true, applications });
   save.mockReset();
   switchTarget.mockReset(); switchTarget.mockImplementation(async (target: SystemAudioTarget) => {
@@ -174,7 +176,7 @@ it("does not mark a new selection from another window missing using this window'
   expect(trigger().textContent).toContain("New player");
   expect(trigger().textContent).not.toContain(applicationAudioCopy().missing);
   expect(host.querySelector('[role="alert"]')).toBeNull();
-  expect(invoke).toHaveBeenCalledOnce();
+  expect(invoke).toHaveBeenCalledTimes(2); // New selections restore their icon silently.
   await act(async () => refresh().click());
   expect(host.querySelector('[role="alert"]')?.textContent).toBe(applicationAudioCopy().unavailable);
 });

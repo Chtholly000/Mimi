@@ -1409,7 +1409,12 @@ mod resampler_tests {
         assert!(png.len() <= MAX_APPLICATION_ICON_PNG_BYTES);
         let decoded = tauri::image::Image::from_bytes(&png).unwrap();
         assert_eq!((decoded.width(), decoded.height()), (32, 32));
-        assert!(decoded.rgba().chunks_exact(4).any(|pixel| pixel[3] != 0));
+        assert!(decoded
+            .rgba()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel[3] != 0));
         assert_eq!(NSGraphicsContext::currentContext(), previous);
     }
 

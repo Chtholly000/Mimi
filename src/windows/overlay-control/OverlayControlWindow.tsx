@@ -109,7 +109,7 @@ export function OverlayControlWindow() {
   useEffect(() => {
     if (mode !== "panel") return;
     const dismissOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.isComposing) return;
       event.preventDefault();
       dismiss();
     };

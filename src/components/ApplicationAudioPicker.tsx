@@ -31,7 +31,7 @@ export function ApplicationAudioPicker({ disabled = false, onBusyChange, onActio
   return <span className="application-audio-picker" aria-busy={picker.pending || picker.loading}
     title={!picker.supported ? picker.text.unsupported : undefined}>
     <span className="application-audio-picker__controls">
-      <Select label={picker.text.title} value={picker.selected} valueLabel={picker.valueLabel} valueIcon={<Icon name="app-window" />}
+      <Select label={picker.text.title} value={picker.selected} valueLabel={picker.valueLabel} valueIcon={<ApplicationIcon dataUrl={picker.selectedIconDataUrl} />}
         searchLabel={picker.text.search} emptyMessage={picker.text.noMatch} options={options}
         disabled={picker.locked || (!picker.supported && picker.selected === "")}
         onOpen={() => { void picker.refresh(onActionStart?.()); }} onChange={id => { void picker.choose(id, onActionStart?.()); }} />

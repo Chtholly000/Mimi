@@ -3822,7 +3822,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_credential_manager_migrates_enterprise_to_local_without_changing_secret() {
+    fn windows_credential_manager_imports_enterprise_into_file_then_retires_native_item() {
         struct Cleanup {
             service: String,
             account: String,
@@ -3839,7 +3839,24 @@ mod tests {
         assert!(keyring::Entry::store_status().is_ok());
         let unique = uuid::Uuid::new_v4().simple().to_string();
         let service = format!("app.yuxino.mimi.test.{unique}");
-        let account = format!("credential-local-migration-{unique}");
+        let profile = ServiceProfile::new(
+            format!("credential-file-migration-{unique}"),
+            "Credential migration test",
+            ProviderKind::OpenAIRealtime,
+        )
+        .unwrap();
+        let account = credential_account(&profile);
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = ProfileCatalog {
+            schema_version: PROFILE_CATALOG_SCHEMA_VERSION,
+            active_profile_id: profile.id.clone(),
+            profiles: vec![profile],
+        };
+        std::fs::write(
+            directory.path().join(PROFILE_CATALOG_FILE),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
         let _cleanup = Cleanup {
             service: service.clone(),
             account: account.clone(),
@@ -3856,9 +3873,48 @@ mod tests {
             Some("migration-secret".to_string())
         );
 
+        // Legacy reads must not rewrite the native item or its persistence.
         let observed = keyring_core::Entry::new(&service, &account).unwrap();
         assert_eq!(observed.get_password().unwrap(), "migration-secret");
-        assert_eq!(observed.get_attributes().unwrap()["persistence"], "Local");
+        assert_eq!(
+            observed.get_attributes().unwrap()["persistence"],
+            "Enterprise"
+        );
+
+        let store =
+            file_credentials::FileCredentialStore::for_app(directory.path(), &service, false);
+        assert_eq!(store.pending_imports().unwrap(), 1);
+        store.migrate_legacy().unwrap();
+        assert_eq!(store.pending_imports().unwrap(), 0);
+        let saved: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.path().join("credentials/credentials.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["entries"][&service][&account], "migration-secret");
+        assert!(matches!(
+            observed.get_password(),
+            Err(keyring_core::Error::NoEntry)
+        ));
+        drop(store);
+
+        let restarted =
+            file_credentials::FileCredentialStore::for_app(directory.path(), &service, false);
+        restarted.migrate_legacy().unwrap();
+        assert_eq!(
+            restarted.load(&service, &account).unwrap().as_deref(),
+            Some("migration-secret")
+        );
+        restarted
+            .save(&service, &account, "updated-secret")
+            .unwrap();
+        assert_eq!(
+            restarted.load(&service, &account).unwrap().as_deref(),
+            Some("updated-secret")
+        );
+        assert!(matches!(
+            observed.get_password(),
+            Err(keyring_core::Error::NoEntry)
+        ));
     }
 
     #[derive(Default)]

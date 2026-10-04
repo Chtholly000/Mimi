@@ -1409,16 +1409,50 @@ fn reassert_overlay_window_on_active_space(window: &tauri::WebviewWindow) {
     configure_overlay_window_impl(window, true);
 }
 
-/// Expanding the control surface follows a click that already gives its
-/// nonactivating panel any key status it needs. Tao's macOS `set_focus` path
-/// activates the entire application, which would steal focus from the media
-/// app and can pull the user out of its full-screen Space.
+/// Only an explicit request to open controls grants keyboard input. On macOS,
+/// use AppKit's key-window operation directly: Tao's `set_focus` also activates
+/// the application and can pull the media app out of its full-screen Space.
+/// A WKWebView click alone does not reliably make a nonactivating panel key.
 fn focus_overlay_control(window: &tauri::WebviewWindow) {
     #[cfg(not(target_os = "macos"))]
     let _ = window.set_focus();
 
     #[cfg(target_os = "macos")]
-    let _ = window;
+    {
+        let current_window = window.clone();
+        let _ = window.with_webview(move |webview| {
+            use objc2_app_kit::{NSView, NSWindow};
+
+            if OverlayControlWindowManager::mode(current_window.app_handle())
+                != OverlayControlMode::Panel
+            {
+                return;
+            }
+            let Ok(pointer) = current_window.ns_window() else {
+                return;
+            };
+            let view_pointer = webview.inner();
+            if view_pointer.is_null() {
+                return;
+            }
+            // SAFETY: with_webview runs on the main thread and keeps the
+            // app-owned WKWebView/window alive for this callback. contentView
+            // is a Wry wrapper, so use the actual webview for keyboard input.
+            let panel: &NSWindow = unsafe { &*pointer.cast() };
+            let view: &NSView = unsafe { &*view_pointer.cast() };
+            if !panel.isVisible() {
+                return;
+            }
+            let responder_accepted = panel.makeFirstResponder(Some(view));
+            panel.makeKeyWindow();
+            pipeline_log!(
+                "overlay control keyboard key={} main={} responder_accepted={}",
+                panel.isKeyWindow(),
+                panel.isMainWindow(),
+                responder_accepted
+            );
+        });
+    }
 }
 
 fn configure_overlay_window_impl(window: &tauri::WebviewWindow, order_front: bool) {
@@ -2964,12 +2998,12 @@ mod geometry_tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn control_panel_accepts_clicked_web_inputs_without_becoming_main() {
+    fn control_panel_declares_key_eligibility_without_main_window_eligibility() {
         use objc2::{msg_send, ClassType};
 
-        // Query the actual Objective-C class overrides without allocating,
-        // showing or activating a native window. WKWebView text fields must
-        // not depend on a native NSTextField hit-test opt-in to receive keys.
+        // This checks declared policy, not runtime keyboard delivery. Native
+        // typing still requires the explicit makeKeyWindow path and real UI
+        // verification; class selectors do not prove a live first responder.
         let control = RawSubtitleControlPanel::class();
         let can_become_key: bool = unsafe { msg_send![control, canBecomeKeyWindow] };
         let can_become_main: bool = unsafe { msg_send![control, canBecomeMainWindow] };

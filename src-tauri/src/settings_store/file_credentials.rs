@@ -831,6 +831,60 @@ mod tests {
         }
     }
     #[test]
+    fn import_persists_the_verified_copy_before_deleting_the_native_item() {
+        struct CheckedLegacy {
+            inner: Legacy,
+            path: PathBuf,
+        }
+        impl SecretStore for CheckedLegacy {
+            fn load(
+                &self,
+                service: &str,
+                account: &str,
+            ) -> Result<Option<String>, SecretStoreError> {
+                self.inner.load(service, account)
+            }
+            fn save(&self, _: &str, _: &str, _: &str) -> Result<(), SecretStoreError> {
+                panic!("native write is forbidden")
+            }
+            fn delete(&self, service: &str, account: &str) -> Result<(), SecretStoreError> {
+                let persisted: Document =
+                    serde_json::from_slice(&fs::read(&self.path).unwrap()).unwrap();
+                assert_eq!(
+                    persisted.entries[service][account],
+                    self.inner.load(service, account).unwrap()
+                );
+                assert!(persisted.pending_import.is_empty());
+                assert!(persisted
+                    .pending_cleanup
+                    .iter()
+                    .any(|slot| { slot.service == service && slot.account == account }));
+                self.inner.delete(service, account)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let legacy = Legacy::default();
+        legacy_value(&legacy, "key", "public-placeholder");
+        let store = FileCredentialStore::new(
+            directory.path(),
+            "test.service",
+            vec![slot("key")],
+            Box::new(CheckedLegacy {
+                inner: legacy.clone(),
+                path: directory.path().join("credentials/credentials.json"),
+            }),
+        );
+        store.migrate_legacy().unwrap();
+        assert_eq!(legacy.0.lock().unwrap().deletes, 1);
+        assert!(legacy.0.lock().unwrap().values.is_empty());
+        assert_eq!(
+            store.load("test.service", "key").unwrap().as_deref(),
+            Some("public-placeholder")
+        );
+        assert_eq!(store.pending_imports().unwrap(), 0);
+    }
+
+    #[test]
     fn failed_durable_write_does_not_mark_import_complete() {
         let directory = tempfile::tempdir().unwrap();
         let legacy = Legacy::default();
