@@ -354,7 +354,12 @@ export function OverlayWindow() {
         className="relative h-full w-full overflow-hidden"
         style={{
           borderRadius: 16,
-          background: hasSessionError ? "rgba(16,16,16,0.96)" : subtitleBackgroundColor(settings.subtitleBackgroundOpacity),
+          // Ordinary mode keeps the same canvas through errors and retries.
+          // The error feedback owns its contrast; only a saved immersive mode
+          // needs a temporary opaque canvas while recovery is interactive.
+          background: hasSessionError && settings.subtitleBlendsWithBackground
+            ? "rgba(16,16,16,0.96)"
+            : subtitleBackgroundColor(settings.subtitleBackgroundOpacity),
           border: `${borderWidth}px solid ${borderColor}`,
         }}
         onMouseEnter={() => setIsHovering(true)}
