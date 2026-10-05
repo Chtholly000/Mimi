@@ -74,5 +74,11 @@ Literal WER was respectively 1/30, 13/239, and 0/22. Default-endpoint simultaneo
 dual-source replay finished within 96/184 ms of EOF. The 320 ms candidate did not
 improve the short sample's first-final boundary, so the default stays 480 ms.
 See [measured boundaries and limitations](../../tools/parakeet/README.md#measured-on-2026-10-05).
-Native capture/overlay plus text-translation acceptance remains separate; this
-service was stopped after testing and did not change the running development app.
+Native routing was subsequently checked with bridge `6f880be` and Mimi dev
+`301cfb3`: the recognition check took 51 ms, and the public short sample passed
+through system capture, Parakeet and Index to a final English/Chinese pair in
+native app diagnostics. History/recording and microphone capture were off.
+The service was stopped afterwards. The eight-second cut still yielded a
+fragment; full-sample correctness and complete subtitle-overlay visual
+acceptance remain unverified. Exact binary provenance and scope are recorded in
+the README and integration ledger.

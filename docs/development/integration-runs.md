@@ -11,11 +11,21 @@
   这条实际请求。桥接现接受一个 `user` / `input_text` 上下文（UTF-8 上限
   4,096 字节），校验后丢弃，Parakeet 不以它偏置解码；畸形及过大输入仍失败。
   23 项回归通过，所有 loopback 请求和基准程序改用当前 Rust 的上下文、
-  heartbeat 与 punctuation 形状。真实原生结果继续由同输入复验确认。
+  heartbeat 与 punctuation 形状。
+- 修复 `6f880be` 后，Mimi 识别连接检查 51 ms 成功；复用 dev `301cfb3`
+  （Custom ASR 路径与 main 相同），live executable SHA256 为
+  `58554a67033a6ff8fb497202ed8560d156c0dcd5e78967f8af03cbecc7738c4e`。
+  system-only EN→ZH、历史/录音关闭；公开 9.518 s 样本经 afplay→SCK→
+  Parakeet→Index，原生诊断收到尾段英语及中文译文 final pair。连接检查和
+  捕获两条会话正常，bridge 仅记录解码字节数/计时，无 `session_error`；随后
+  已停止服务。51 ms 是连接检查时间，不是首字幕延迟。
+  尾段来自 8 s 硬切后的片段，不据此声称全样本正确或重复词问题已解决。
+  overlay 控制面板状态正常；完整字幕浮窗视觉未捕获，不计完整视觉验收。
 - 基于 `a0ac37f` 的独立 `feat/local-parakeet-asr`；基线识别源码 `05a2423`。
   `24fb76f` 增加显式静音阈值候选，候选/双路实跑时该补丁尚未提交；之后
-  仅补日志文件权限及基准时间元数据，不改变识别路径。未启动/替换 dev，
-  未采音、改用户配置或启用翻译。Python/模型与转录取证保存在 Git 外私有目录。
+  仅补日志文件权限及基准时间元数据，不改变识别路径。该独立 WS 基线阶段
+  未启动/替换 dev、未采音或启用翻译；之后的原生联调范围单列于上方。
+  Python/模型与转录取证保存在 Git 外私有目录。
 - M5/16 GiB、macOS 26.3.1(a)、Python 3.12、MLX 0.32.3；模型 revision
   `ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15`，2.51 GB 权重。首次观测加载及
   静音预热 7.992 s，worker RSS 峰值 822 MB；RSS 不代表全部 Metal/统一内存。
@@ -39,7 +49,7 @@
 - 样本 SHA256：短样本 `bc9ff054aa985fc5ef2ae27e911c7fd25575b78cbf2f3ac09a4f0b67687ead7b`；
   24 句 `11a7bcc363b22afec54de9bcb26bddc84608d58ba505e44b5ccd6168d3ff5a24`；
   JFK `59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e`。
-  下一项是签名 Mimi 真实音源→识别→独立翻译→原生浮窗及暂停/清空验收；
+  下一项是完整原生字幕浮窗视觉、暂停/清空及更广泛的切分质量验收；
   更慢/并发设备仍可能超出 Mimi 1 s final 宽限，不以桥内部 20 s 期限保证可见尾句。
 
 ## 2026-10-05：连续改名、字体方向键与服务身份

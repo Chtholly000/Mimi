@@ -153,7 +153,30 @@ trial still reached its first final at 8.155 s, with WER 1/30; it does not justi
 changing the default. The endpoint option and its focused regression are in
 `24fb76f`. A slow or contended machine can exceed Mimi's one-second final grace;
 the bridge's longer internal failure deadline is not a promise that Mimi waits
-for it. Keep model concurrency and native acceptance as explicit follow-up checks.
+for it. Wider concurrent-model testing remains necessary.
+
+### Native Mimi routing check on 2026-10-05
+
+After the context-shape compatibility fix in `6f880be`, Mimi's recognition
+connection check succeeded in 51 ms. This measures connection setup, not subtitle
+latency. Native QA then played the same public 9.518-second sample with `afplay`:
+system audio → ScreenCaptureKit → Parakeet → Index translation, English to
+Chinese. Microphone capture, subtitle history and audio recording were disabled.
+
+The run used Mimi dev `301cfb3`, whose Custom ASR route is unchanged from main;
+the live executable SHA-256 was
+`58554a67033a6ff8fb497202ed8560d156c0dcd5e78967f8af03cbecc7738c4e`.
+The final English fragment and its Chinese translation reached the app's native
+diagnostics. Both the connection-check session and capture session completed
+normally; content-free bridge logs contained decode metadata and no
+`session_error`. The service was stopped after the run.
+
+The observed last pair came from the fragment after the eight-second cut; this
+does not establish correct recognition of the whole sample or resolve the
+boundary repetition measured above. The overlay control panel showed a normal
+session state, but the complete subtitle overlay was not visually captured.
+Full subtitle-rendering acceptance, wider speech quality and pause/clear
+behavior remain open checks.
 
 ## Source and attribution
 
