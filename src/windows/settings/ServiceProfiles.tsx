@@ -471,6 +471,8 @@ export function ServiceProfiles({
         <ProviderPicker
           apple={apple}
           disabled={mutationsDisabled}
+          cancelDisabled={pendingAction !== null}
+          requiresStop={requiresStop}
           feedback={feedback}
           onChoose={(provider) => void handleCreate(provider)}
           onCancel={() => setShowsProviderPicker(false)}
@@ -1017,12 +1019,16 @@ function credentialFieldCopy(field: CredentialFieldName, provider: ServiceProvid
 function ProviderPicker({
   apple,
   disabled,
+  cancelDisabled,
+  requiresStop,
   feedback,
   onChoose,
   onCancel,
 }: {
   apple: ReturnType<typeof useAppleSpeechSupport>;
   disabled: boolean;
+  cancelDisabled: boolean;
+  requiresStop: boolean;
   feedback: Feedback | null;
   onChoose: (provider: ServiceProvider) => void;
   onCancel: () => void;
@@ -1035,8 +1041,9 @@ function ProviderPicker({
           <strong>{I18N.settings.chooseProvider}</strong>
           <SettingsHelp text={I18N.settings.chooseProviderDescription} label={I18N.settings.helpLabel} />
         </span>
-        <button type="button" className="settings-link" disabled={disabled} onClick={onCancel}>{I18N.settings.cancel}</button>
+        <button type="button" className="settings-link" disabled={cancelDisabled} onClick={onCancel}>{I18N.settings.cancel}</button>
       </div>
+      {!selectedProvider && requiresStop && <InlineFeedback tone="info">{I18N.settings.profileCreateRequiresStop}</InlineFeedback>}
       {!selectedProvider && feedback && <InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback>}
       {apple.failed && <InlineFeedback tone="error">{I18N.settings.appleSpeechLoadFailed} <button type="button" className="settings-link" disabled={disabled || apple.loading} onClick={() => void apple.refresh()}>{I18N.settings.retryLoadingSettings}</button></InlineFeedback>}
       <div className="provider-picker__options">
@@ -1051,11 +1058,12 @@ function ProviderPicker({
           </div>
         ))}
       </div>
-      {selectedProvider && <SettingsConfirmation message={I18N.settings.confirmAddProfile} disabled={disabled} variant="default" confirmLabel={I18N.settings.confirmAddProfile} confirmIcon="plus" onCancel={() => { if (!disabled) setSelectedProvider(null); }} onConfirm={() => onChoose(selectedProvider)}>
+      {selectedProvider && <SettingsConfirmation message={I18N.settings.confirmAddProfile} disabled={disabled} variant="default" confirmLabel={I18N.settings.confirmAddProfile} confirmIcon="plus" onCancel={() => { if (!cancelDisabled) setSelectedProvider(null); }} onConfirm={() => onChoose(selectedProvider)}>
         <div className="provider-picker__preview">
           <ProviderIcon provider={selectedProvider} />
           <div className="provider-picker__name-help"><h3>{providerDisplayName(selectedProvider)}</h3><SettingsHelp text={providerDescription(selectedProvider)} label={I18N.settings.helpLabel} /></div>
         </div>
+        {requiresStop && <InlineFeedback tone="info">{I18N.settings.profileCreateRequiresStop}</InlineFeedback>}
         {feedback && <InlineFeedback tone={feedback.tone}>{feedback.message}</InlineFeedback>}
       </SettingsConfirmation>}
     </div>

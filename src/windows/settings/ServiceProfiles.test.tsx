@@ -341,6 +341,73 @@ it.each(["zh", "en", "ja"] as const)("previews a provider and leaves settings un
   expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
 });
 
+it.each([
+  ["active", true, false, "listening"],
+  ["paused", false, true, "listening"],
+  ["connecting", false, false, "connecting"],
+  ["stopping", false, false, "stopping"],
+] as const)("keeps provider-picker cancellation available when the session becomes %s", async (_state, active, paused, status) => {
+  await render();
+  await click(I18N.settings.addProfile);
+  await act(async () => root.render(<><ServiceProfiles settings={settings} sessionIsActive={active} sessionIsPaused={paused} sessionStatusKind={status} /><SettingsToastRegion /></>));
+  const picker = host.querySelector(".provider-picker")!;
+  for (const button of picker.querySelectorAll<HTMLButtonElement>(".provider-option")) {
+    expect(button.disabled).toBe(true);
+    await act(async () => button.click());
+  }
+  const hint = picker.querySelector('.settings-feedback[data-tone="info"]')!;
+  expect(hint.textContent).toBe(I18N.settings.profileCreateRequiresStop);
+  expect(hint.closest('[role="tooltip"], [aria-hidden="true"]')).toBeNull();
+  const cancel = picker.querySelector<HTMLButtonElement>(".provider-picker__heading button.settings-link")!;
+  expect(cancel.disabled).toBe(false);
+  await act(async () => cancel.click());
+  expect(host.querySelector(".provider-picker")).toBeNull();
+  expect(host.querySelectorAll(".service-row")).toHaveLength(1);
+  expect(host.querySelector<HTMLButtonElement>(".services-toolbar button.settings-button")?.disabled).toBe(true);
+  expect(actions.createProfile).not.toHaveBeenCalled();
+  expect(actions.selectProfile).not.toHaveBeenCalled();
+});
+
+it("allows cancelling a provider preview after the session starts while keeping creation blocked", async () => {
+  await render();
+  await click(I18N.settings.addProfile);
+  await previewProvider("alibabaCloud");
+  await act(async () => root.render(<><ServiceProfiles settings={settings} sessionIsActive sessionStatusKind="listening" /><SettingsToastRegion /></>));
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.querySelector('.settings-feedback[data-tone="info"]')?.textContent).toBe(I18N.settings.profileCreateRequiresStop);
+  const confirm = dialog.querySelector<HTMLButtonElement>(".settings-confirmation__confirm")!;
+  expect(confirm.disabled).toBe(true);
+  await act(async () => confirm.click());
+  expect(actions.createProfile).not.toHaveBeenCalled();
+  await click(I18N.settings.cancel);
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(host.querySelector(".provider-picker")).not.toBeNull();
+  await click(I18N.settings.cancel);
+  expect(host.querySelector(".provider-picker")).toBeNull();
+});
+
+it("keeps provider-picker and preview cancellation blocked only while creation is pending", async () => {
+  let reject!: (error: unknown) => void;
+  actions.createProfile.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+  await render();
+  await click(I18N.settings.addProfile);
+  await previewProvider("alibabaCloud");
+  await click(I18N.settings.confirmAddProfile);
+  expect(host.querySelector<HTMLButtonElement>(".provider-picker__heading button.settings-link")?.disabled).toBe(true);
+  expect(document.querySelector('.settings-feedback[data-tone="info"]')).toBeNull();
+  await click(I18N.settings.cancel);
+  expect(document.querySelector(".provider-picker__preview")).not.toBeNull();
+  await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  expect(document.querySelector(".provider-picker__preview")).not.toBeNull();
+  expect(actions.createProfile).toHaveBeenCalledOnce();
+  await act(async () => reject("synthetic-failed-create"));
+  await click(I18N.settings.cancel);
+  expect(document.querySelector(".provider-picker__preview")).toBeNull();
+  expect(host.querySelector<HTMLButtonElement>(".provider-picker__heading button.settings-link")?.disabled).toBe(false);
+  await click(I18N.settings.cancel);
+  expect(host.querySelector(".provider-picker")).toBeNull();
+});
+
 it("creates the selected provider only after confirmation and opens the created profile", async () => {
   const provider = "customDashScopeASR" as const;
   const created: ServiceProfile = { id: "created-synthetic", provider, name: providerDisplayName(provider), credentialState: "missing" };

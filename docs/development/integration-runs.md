@@ -955,3 +955,61 @@
   session idle. Playback and content-free tracing were stopped. The formal
   application was not replaced. The sample and sanitized diagnostics remain
   in a private local regression directory; credentials remain in app storage.
+
+### 2026-10-05 — Volcano activation and retained four-window regression
+
+- The user completed account setup, activated simultaneous interpretation 2.0
+  as a formal service and entered the key in Mimi. The console initially showed
+  1,000,000 / 1,000,000 tokens remaining and expiry `-`; this does not mean the
+  allowance never expires. The agent did not perform those account/key actions.
+  See the [provider matrix](provider-regression-matrix.md) for API and billing
+  boundaries, including automatic postpaid charging after free resources run out.
+- Clean signed canonical build `5b29d05e` produced `en` → `zh` subtitles during
+  YouTube DevDay playback. Private trace counters for private events, replay
+  snapshots and content bytes were all zero; no media URL, subtitle content,
+  account identifier or credential is included here.
+- Trace-relative timestamps, not app uptime: pause at 123.991 s completed at
+  124.071 s (80 ms). Resume at 143.024 s reached listening at 143.502 s (478 ms);
+  generation 5's first
+  confirmed pair arrived at 145.165 s. The retained interval contains 15 final
+  pairs and no error events.
+- Across 88 snapshots numbered 123–210, all four windows agreed on receipt and
+  application, and the overlay rendered every snapshot. Application delay was
+  a median 53 ms and maximum 106 ms. These snapshot propagation and recovery
+  timings do not measure end-to-end subtitle latency.
+- The trace recorded 5,059 events, retained 2,048 and evicted 3,011. Analysis is
+  limited to trace-relative 119.122–180.540 s; `traceDropped`, `frontendDropped`
+  and `staleFrontendRejected` were zero, and `unflushedWindows` was empty. The
+  3,011 evictions reflect bounded retention; this is not a full-session trace.
+- Normal quit from the running state was confirmed with `isRunning: false`,
+  followed by reopening the canonical app. The active Volcano profile,
+  `en` → `zh` selection and saved credentials persisted; microphone capture
+  remained off. A real connection check succeeded in 375 ms.
+- After restart, YouTube playback produced four confirmed pairs. A subsequent
+  new session replayed the saved 15.091-second synthetic English sample in
+  QuickTime; the native overlay showed six source/translation groups through
+  the final sentence, with RTT 47 ms. This verifies configuration retention and
+  subtitle output after cold launch/new start; it does not establish sustained
+  stability. These timings do not measure end-to-end subtitle latency.
+- During later silence after audio completion, the UI showed temporary
+  translation failure with reconnect guidance. Support-journal timestamps:
+  `listening` 193,880 ms → reconnect 254,481 ms → `listening` 254,956 ms →
+  `OTHER` error 258,640 ms (3.684 s after reconnection completed). Manual start
+  266,856 ms → `listening` 267,292 ms → `OTHER` error 272,668 ms (5.376 s later).
+  No trace was active for these events; private events and recording remained
+  off. The cause remains unknown. Sustained stability did not pass, and no
+  silence timeout or root-cause fix is established.
+- The subsequent `support_diagnostics.rs` patch only adds safe numeric provider
+  status and fixed-label classification. It awaits native revalidation and
+  does not change provider behavior, protocol or automatic recovery.
+
+- Follow-up signed build from `6aa143dc` plus the diagnostic/UI patch: silent
+  listening lasted at least 166.585 s (app uptime 157,710–324,295 ms), with
+  recent PCM, no recent sound, no text events and no failure in the support
+  report. A later fixed-audio replay was interrupted when a concurrent task
+  installed UI-test mode at the canonical dev path, so that replay is excluded.
+  The earlier post-audio failure remains unresolved.
+- Automated follow-up: `scripts/check.sh` passed with 1,172 Rust tests / 2 ignored,
+  72 shared-core tests and JNI checks, and 1,730 frontend tests. After the
+  provider-picker Cancel/navigation fix, the complete frontend suite passed
+  1,736 tests across 119 files; lint, typecheck and production build also passed.
