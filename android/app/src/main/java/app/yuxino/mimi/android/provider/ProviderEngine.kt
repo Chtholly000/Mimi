@@ -77,6 +77,14 @@ fun normalizeWebSocketUrl(url: String): String {
     }
 }
 
+internal const val CREDENTIAL_AUTHENTICATION_FAILED = "credential_authentication_failed"
+
+/** Only an explicit HTTP authentication rejection changes the transport failure category. */
+internal fun websocketFailureCode(status: Int?): String = when (status) {
+    401, 403 -> CREDENTIAL_AUTHENTICATION_FAILED
+    else -> "transport_error"
+}
+
 /** Keep provider-controlled diagnostics bounded and free of arbitrary messages. */
 internal fun sanitizeErrorCode(code: String?): String =
     code?.takeIf { it.length in 1..64 && it.all { c -> c.isLetterOrDigit() || c == '_' || c == '-' } }

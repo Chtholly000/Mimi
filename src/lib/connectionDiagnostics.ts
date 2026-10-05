@@ -225,6 +225,130 @@ const openAICompatibleErrors = {
     rejected: "外部翻訳サービスがリクエストを拒否しました。API Key、モデル名、サービス URL を確認してください。",
   },
 };
+// These are exact, content-free labels emitted by the built-in clients. Keep
+// provider response bodies and native transport details outside this allowlist.
+const builtinServiceErrors = {
+  unreachable: new Set([
+    "The live translation transport failed.",
+    "The live translation session is not connected.",
+    "The live translation connection closed.",
+    "The OpenAI Realtime Translation connection failed.",
+    "The OpenAI Realtime Translation session is not connected.",
+    "The Gemini Live Translation connection failed.",
+    "The Gemini Live Translation session is not connected.",
+    "The Azure OpenAI Realtime Translation connection failed.",
+    "The Azure OpenAI Realtime Translation session is not connected.",
+    "The xAI Grok Voice connection failed.",
+    "The xAI Grok Voice session is not connected.",
+    "The Tencent Cloud realtime translation connection failed.",
+    "The Tencent Cloud realtime translation session is not connected.",
+    "The Baidu realtime translation connection failed.",
+    "The Baidu realtime translation session is not connected.",
+    "The Volcano Engine connection failed.",
+    "The Volcano Engine transport failed.",
+    "The Volcano Engine translation session is not connected.",
+  ]),
+  timeout: new Set([
+    "The live translation connection could not be established in time.",
+    "The live translation connection stopped responding.",
+    "The live translation session setup timed out.",
+    "The OpenAI Realtime Translation connection stopped responding.",
+    "OpenAI Realtime Translation did not confirm the session configuration in time.",
+    "The Gemini Live Translation connection stopped responding.",
+    "Gemini Live Translation did not confirm the session configuration in time.",
+    "The Azure OpenAI Realtime Translation connection stopped responding.",
+    "Azure OpenAI Realtime Translation did not confirm the session configuration in time.",
+    "The xAI Grok Voice connection stopped responding.",
+    "xAI Grok Voice did not confirm the session configuration in time.",
+    "xAI Grok Voice did not finish the final turn in time.",
+    "The Tencent Cloud realtime translation connection stopped responding.",
+    "Tencent Cloud realtime translation did not confirm the session in time.",
+    "The Baidu realtime translation connection stopped responding.",
+    "Baidu realtime translation did not confirm the session in time.",
+    "The Volcano Engine connection stopped responding.",
+    "The Volcano Engine connection could not be established in time.",
+    "Volcano Engine did not confirm the session configuration in time.",
+  ]),
+  rejected: new Set([
+    "The live translation session setup was rejected.",
+    "OpenAI Realtime Translation rejected the session configuration.",
+    "OpenAI Realtime Translation rejected the session.",
+    "Gemini Live Translation rejected the session configuration.",
+    "Gemini Live Translation rejected the session.",
+    "Azure OpenAI Realtime Translation rejected the session configuration.",
+    "Azure OpenAI Realtime Translation rejected the session.",
+    "xAI Grok Voice rejected the session configuration.",
+    "xAI Grok Voice rejected the session.",
+    "Tencent Cloud realtime translation rejected the session configuration.",
+    "Tencent Cloud realtime translation rejected the session.",
+    "Baidu realtime translation rejected the session configuration.",
+    "Baidu realtime translation rejected the session.",
+    "Volcano Engine rejected the session configuration.",
+    "Volcano Engine rejected the translation session.",
+  ]),
+  missing: new Set([
+    "Add an Alibaba Cloud Model Studio API key in Settings.",
+    "Add an OpenAI API key in Settings.",
+    "Add a Google Gemini API key in Settings.",
+    "Add an Azure OpenAI API key in Settings.",
+    "Add an xAI API key in Settings.",
+    "Add a Tencent Cloud AppID, SecretID, and SecretKey in Settings.",
+    "Add a Baidu Cloud AppID and AppKey in Settings.",
+    "Add a Volcano Engine API key in Settings.",
+  ]),
+  invalidConfiguration: new Set([
+    "Enter a valid Azure OpenAI resource endpoint in Settings.",
+    "Enter Azure OpenAI translation and transcription deployment names in Settings.",
+    "The Azure OpenAI endpoint must be an official HTTPS resource endpoint.",
+    "The Azure OpenAI deployment name is invalid.",
+  ]),
+  unsupportedLanguage: new Set([
+    "OpenAI Realtime Translation requires a translated output language.",
+    "Gemini Live Translation requires a translated output language.",
+    "Azure OpenAI Realtime Translation requires a translated output language.",
+    "xAI Grok Voice requires a translated output language.",
+    "Tencent Cloud realtime translation requires a translated output language.",
+    "Baidu realtime translation requires an explicit supported source language.",
+    "Baidu realtime translation requires a translated output language.",
+    "Volcano Engine requires an explicit Chinese, English, or Japanese source language.",
+    "Volcano Engine requires a Chinese, English, or Japanese translation language.",
+  ]),
+  interrupted: new Set([
+    "The live translation service returned invalid data.",
+    "OpenAI Realtime Translation returned an invalid response.",
+    "Gemini Live Translation returned an invalid response.",
+    "Azure OpenAI Realtime Translation returned an invalid response.",
+    "xAI Grok Voice returned an invalid response.",
+    "xAI Grok Voice did not complete the current turn.",
+    "Tencent Cloud realtime translation returned an invalid response.",
+    "Tencent Cloud realtime translation ended the session unexpectedly.",
+    "Baidu realtime translation returned an invalid response.",
+    "Baidu realtime translation ended the session unexpectedly.",
+    "Volcano Engine returned an invalid response.",
+    "Volcano Engine ended the translation session unexpectedly.",
+  ]),
+};
+
+function builtinServiceErrorMessage(error: string): string | null {
+  const labels = diagnosticCopy();
+  if (builtinServiceErrors.unreachable.has(error)) return labels.unreachable;
+  if (builtinServiceErrors.timeout.has(error)) return labels.timeout;
+  if (builtinServiceErrors.missing.has(error)) return labels.missing;
+  if (builtinServiceErrors.invalidConfiguration.has(error)) return labels.reasons.invalidConfiguration;
+  if (builtinServiceErrors.unsupportedLanguage.has(error)) return I18N.settings.languageSwitchUnsupported;
+  if (builtinServiceErrors.interrupted.has(error)) return labels.translationTemporary;
+  const rejected = `${labels.reasons.serviceRejected} ${labels.reasons.invalidConfiguration}`;
+  if (builtinServiceErrors.rejected.has(error)) return rejected;
+  // Baidu's setup error contains only an i64 code. Accept the complete canonical
+  // Rust representation, never a provider body, URL, or trailing newline.
+  const baiduCode = /^Baidu realtime translation rejected the session configuration \(code (0|-?[1-9]\d{0,18})\)\.$/.exec(error);
+  if (baiduCode?.[0] === error) {
+    const code = BigInt(baiduCode[1]);
+    if (code >= -9223372036854775808n && code <= 9223372036854775807n) return `${rejected} (${baiduCode[1]})`;
+  }
+  return null;
+}
+
 /** Match only sanitized backend labels; never interpolate arbitrary native errors. */
 export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlatform): string | null {
   if (typeof error !== "string") return null;
@@ -282,8 +406,8 @@ export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlat
   // Match exactly: native transport details or provider bodies are never safe copy.
   if (["The speech recognition transport failed.", "The speech recognition session is not connected.", "The speech recognition connection closed."].includes(error)) return diagnosticCopy().speechUnreachable;
   if (["The speech recognition connection could not be established in time.", "The speech recognition connection stopped responding."].includes(error)) return diagnosticCopy().speechTimeout;
-  if (["The live translation transport failed.", "The OpenAI Realtime Translation connection failed."].includes(error)) return diagnosticCopy().unreachable;
-  if (["The live translation connection could not be established in time.", "The live translation connection stopped responding.", "The OpenAI Realtime Translation connection stopped responding."].includes(error)) return diagnosticCopy().timeout;
+  const builtinMessage = builtinServiceErrorMessage(error);
+  if (builtinMessage) return builtinMessage;
   if (error === "credential_authentication_failed") return diagnosticCopy().auth;
   if (/^Add the connection credentials for .+ in Settings\.$/.test(error)) return diagnosticCopy().missing;
   if (/^(The saved credentials could not be read\.|The saved credentials do not match the selected service\.|One or more credential fields are invalid\.)$/.test(error)) return diagnosticCopy().invalid;
@@ -303,7 +427,10 @@ export function sessionErrorSettingsTarget(error: unknown): SettingsNavigationTa
   if (label === "apple_speech_assets_missing" || label === "apple_speech_preparing" || label === "apple_speech_prepare_failed") {
     return "appleSpeechResources";
   }
-  return typeof label === "string" && audio3ErrorRequiresConfiguration(label) ? "service" : null;
+  if (typeof label !== "string") return null;
+  if (label === "credential_authentication_failed" || builtinServiceErrors.missing.has(label) ||
+    builtinServiceErrors.invalidConfiguration.has(label) || builtinServiceErrors.unsupportedLanguage.has(label)) return "service";
+  return audio3ErrorRequiresConfiguration(label) ? "service" : null;
 }
 
 /** Keep language failures actionable without exposing arbitrary IPC/provider text. */

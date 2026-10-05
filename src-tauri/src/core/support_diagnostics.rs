@@ -86,6 +86,12 @@ impl SafeFailure {
                 Some(("subtitles", "size_limit", "SUBTITLE_TEXT_TOO_LARGE"))
             }
             "transport_error" => Some(("websocket_connection", "transport", "TRANSPORT_ERROR")),
+            "baidu_unexpected_session_end"
+            | "Baidu realtime translation ended the session unexpectedly." => Some((
+                "websocket_connection",
+                "service_error",
+                "BAIDU_UNEXPECTED_SESSION_END",
+            )),
             "provider_event_backlog_overflow" => Some((
                 "provider_events",
                 "backlog",
@@ -204,7 +210,8 @@ impl SafeFailure {
             | "translation_backlog_overflow"
             | "provider_event_backlog_overflow"
             | "subtitle_text_too_large"
-            | "transport_error" => Self::from_error(code),
+            | "transport_error"
+            | "baidu_unexpected_session_end" => Self::from_error(code),
             _ => Self::from_error(message),
         }
     }
@@ -717,6 +724,44 @@ mod tests {
             SafeFailure::from_provider_error(marker, marker).code,
             "OTHER"
         );
+    }
+
+    #[test]
+    fn baidu_unexpected_end_preserves_only_the_exact_safe_label() {
+        let label = "baidu_unexpected_session_end";
+        let message = "Baidu realtime translation ended the session unexpectedly.";
+        let marker = "private-provider-detail";
+        let failure = SafeFailure::from_provider_error(label, marker);
+        assert_eq!(failure.phase, "websocket_connection");
+        assert_eq!(failure.category, "service_error");
+        assert_eq!(failure.code, "BAIDU_UNEXPECTED_SESSION_END");
+        assert_eq!(SafeFailure::from_error(label), failure);
+        assert_eq!(SafeFailure::from_error(message), failure);
+        assert_eq!(
+            SafeFailure::from_provider_error("unknown", message),
+            failure
+        );
+        for unknown in [format!("{label}:{marker}"), format!("{message} {marker}")] {
+            assert_eq!(SafeFailure::from_error(&unknown).code, "OTHER");
+            assert_eq!(
+                SafeFailure::from_provider_error(&unknown, marker).code,
+                "OTHER"
+            );
+        }
+        let mut journal = DiagnosticJournal::default();
+        journal.record(
+            DiagnosticEvent::Failure {
+                classification: failure,
+            },
+            20,
+        );
+        let report = render(DiagnosticFacts {
+            last_error: Some((failure, 0)),
+            journal: journal.snapshot(),
+            ..Default::default()
+        });
+        assert!(report.contains("BAIDU_UNEXPECTED_SESSION_END"));
+        assert!(!report.contains(marker));
     }
 
     #[test]

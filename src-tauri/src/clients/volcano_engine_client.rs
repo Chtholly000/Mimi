@@ -40,6 +40,8 @@ const UNEXPECTED_SESSION_FINISHED_ERROR: &str =
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum VolcanoEngineClientError {
+    #[error("credential_authentication_failed")]
+    AuthenticationFailed,
     #[error("Add a Volcano Engine API key in Settings.")]
     MissingAPIKey,
     #[error("Volcano Engine requires an explicit Chinese, English, or Japanese source language.")]
@@ -428,7 +430,13 @@ impl VolcanoEngineClient {
         )
         .await
         .map_err(|_| VolcanoEngineClientError::ConnectionTimedOut)?
-        .map_err(|_| VolcanoEngineClientError::TransportFailure)?;
+        .map_err(|error| {
+            if super::connection_diagnostics::authentication_rejected(&error) {
+                VolcanoEngineClientError::AuthenticationFailed
+            } else {
+                VolcanoEngineClientError::TransportFailure
+            }
+        })?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);
@@ -991,6 +999,42 @@ fn emit_if_current(context: &ReceiveContext, event: LiveTranslateServerEvent) ->
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn handshake_authentication_rejections_preserve_transport_failures() {
+        for (status, expected_auth_label) in
+            crate::clients::connection_diagnostics::handshake_failure_cases()
+        {
+            let (endpoint, server) =
+                crate::clients::connection_diagnostics::rejected_websocket_endpoint(status).await;
+            let (events, _receiver) = provider_event_channel();
+            let mut client = VolcanoEngineClient::with_endpoint(
+                "test-key-not-real",
+                SourceLanguage::English,
+                TargetLanguage::Japanese,
+                events,
+                endpoint,
+            )
+            .unwrap();
+            client.network = super::super::provider_network::ProviderNetwork::resolve(
+                &crate::core::network_proxy::ProxyConfig {
+                    mode: crate::core::network_proxy::ProxyMode::Direct,
+                    url: None,
+                },
+            )
+            .unwrap();
+            let error = client.connect().await.unwrap_err();
+            server.await.unwrap();
+            if let Some(expected_label) = expected_auth_label {
+                assert_eq!(error, VolcanoEngineClientError::AuthenticationFailed);
+                assert_eq!(error.to_string(), expected_label);
+            } else {
+                assert_eq!(error, VolcanoEngineClientError::TransportFailure);
+            }
+            assert!(!error.to_string().contains("private-handshake-body"));
+            assert!(!client.inner.ready.load(Ordering::SeqCst));
+        }
+    }
+
     #[tokio::test]
     async fn clear_removes_pending_text_but_tombstones_its_real_interval() {
         let (sender, mut receiver) = provider_event_channel();

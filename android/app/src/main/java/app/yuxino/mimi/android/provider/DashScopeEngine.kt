@@ -85,7 +85,7 @@ class DashScopeEngine(
                 if (finishGate.complete()) return
                 Log.w(TAG, "WebSocket transport failure (HTTP ${response?.code ?: 0})")
                 listener.onError(
-                    "transport_error",
+                    websocketFailureCode(response?.code),
                     "连接失败，请检查网络和服务配置。",
                 )
                 sessionReady.set(false)

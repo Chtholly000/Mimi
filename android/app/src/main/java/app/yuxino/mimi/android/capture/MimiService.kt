@@ -359,8 +359,8 @@ class MimiService : Service() {
                     if (!independentTranslation) { SubtitleBus.onTranslationFinal(text); scheduleAutoHide() }
                 }
                 override fun onError(code: String, message: String) = dispatch {
-                    // Provider error bodies can echo user content or credentials.
-                    Toast.makeText(this@MimiService, R.string.capture_failed, Toast.LENGTH_LONG).show()
+                    // Resolve only fixed local labels; provider bodies can echo private content.
+                    Toast.makeText(this@MimiService, providerErrorMessageResource(code), Toast.LENGTH_LONG).show()
                     stopEverything()
                 }
                 override fun onClosed() = dispatch { if (!finishingSession) stopEverything() }

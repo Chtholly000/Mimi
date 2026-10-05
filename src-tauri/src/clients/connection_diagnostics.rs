@@ -599,7 +599,13 @@ fn connection_reason(error: &ConnectError) -> ConnectionCheckReason {
     match error {
         ConnectError::MT(error) => qwen_reason(error),
         ConnectError::OpenAI(OpenAI::AuthenticationFailed)
-        | ConnectError::Live(Live::AuthenticationFailed) => {
+        | ConnectError::Live(Live::AuthenticationFailed)
+        | ConnectError::Gemini(Gemini::AuthenticationFailed)
+        | ConnectError::AzureOpenAI(Azure::AuthenticationFailed)
+        | ConnectError::TencentCloud(Tencent::AuthenticationFailed)
+        | ConnectError::BaiduTranslate(Baidu::AuthenticationFailed)
+        | ConnectError::VolcanoEngine(Volcano::AuthenticationFailed)
+        | ConnectError::Xai(Xai::AuthenticationFailed) => {
             ConnectionCheckReason::AuthenticationRejected
         }
         ConnectError::Live(
@@ -639,8 +645,81 @@ pub fn authentication_rejected(error: &tokio_tungstenite::tungstenite::Error) ->
         if matches!(response.status().as_u16(), 401 | 403))
 }
 
+/// Authentication labels shared with Android, without changing either wire protocol.
+#[cfg(test)]
+pub(crate) fn handshake_failure_cases() -> Vec<(Option<u16>, Option<String>)> {
+    let contract: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../shared/translation-contracts.json"
+    )))
+    .unwrap();
+    assert_eq!(contract["schemaVersion"], 1);
+    let cases = contract["websocketHandshakeFailures"].as_array().unwrap();
+    assert!(!cases.is_empty());
+    cases
+        .iter()
+        .map(|case| {
+            (
+                case["httpStatus"]
+                    .as_u64()
+                    .map(|status| u16::try_from(status).unwrap()),
+                case["expected"].as_str().map(str::to_owned),
+            )
+        })
+        .collect()
+}
+
+/// Local handshake fixture used by each real provider connect path. None closes
+/// the socket without an HTTP response; no endpoint or credential leaves loopback.
+#[cfg(test)]
+pub(crate) async fn rejected_websocket_endpoint(
+    status: Option<u16>,
+) -> (url::Url, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let mut buffer = [0; 1024];
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert!(count > 0);
+            request.extend_from_slice(&buffer[..count]);
+            assert!(request.len() <= 8192);
+        }
+        if let Some(status) = status {
+            let body = "private-handshake-body";
+            let response = format!(
+                "HTTP/1.1 {status} Rejected\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len(),
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    (
+        url::Url::parse(&format!("ws://{address}/realtime")).unwrap(),
+        server,
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn provider_handshake_authentication_is_an_actionable_diagnostic() {
+        for error in [
+            ConnectError::Gemini(crate::clients::gemini_live_client::GeminiLiveClientError::AuthenticationFailed),
+            ConnectError::AzureOpenAI(crate::clients::azure_openai_realtime_client::AzureOpenAIRealtimeClientError::AuthenticationFailed),
+            ConnectError::Xai(crate::clients::xai_realtime_client::XAIRealtimeClientError::AuthenticationFailed),
+            ConnectError::TencentCloud(crate::clients::tencent_cloud_client::TencentCloudClientError::AuthenticationFailed),
+            ConnectError::BaiduTranslate(crate::clients::baidu_translate_client::BaiduTranslateClientError::AuthenticationFailed),
+            ConnectError::VolcanoEngine(crate::clients::volcano_engine_client::VolcanoEngineClientError::AuthenticationFailed),
+        ] {
+            assert_eq!(connection_reason(&error), ConnectionCheckReason::AuthenticationRejected);
+            assert_eq!(error.to_string(), "credential_authentication_failed");
+        }
+    }
+
     #[test]
     fn apple_probe_reports_resource_recovery_without_network_or_credential_advice() {
         for (label, expected) in [
