@@ -727,3 +727,29 @@
   Browser fixtures are not native acceptance. No audio capture, credentials,
   provider requests, transcript retention or recording were initiated by this run;
   installed applications were not replaced. Windows/Linux UI was not revalidated.
+
+### 2026-10-05 — Standalone local English ASR, no translation
+
+- Scope correction: evaluate speech recognition independently; Index or another
+  MT service is not a prerequisite. Research base `d5ca149` plus benchmark tools;
+  Qwen/FunASR candidate branches start from `a0ac37f`. All remain separate draft
+  PRs, with no merge to main, app launch, capture or production-setting changes.
+- M5 / 16 GiB: reused 24 synthetic English clips and added a reproducible public
+  LibriSpeech subset, 20 clean + 20 other distinct speakers, 290.79 seconds.
+  Fixed source/model hashes; complete 40/40 coverage independently checked.
+  Raw media/transcripts stay in private local evidence, outside Git.
+- Human normalized word edits out of 752: Qwen3-ASR-1.7B 9, Parakeet 13,
+  Qwen3-ASR-0.6B 15, Fun-ASR-Nano 15, SenseVoiceSmall 36. Literal scoring,
+  runtime/thread settings and timing boundaries are in the
+  [comparison](../research/2026-10-05-standalone-local-asr.md).
+- Qwen paced 96-second PCM experiments completed with first text at 2.355/2.913 s;
+  1.7B's synchronous feed stalled as long as 1.089 s. File throughput and a final
+  zero-edit synthetic transcript are not capture/overlay or low-latency acceptance.
+  Qwen and FunASR emitted text on digital silence. Fixed 30-second cuts changed
+  Parakeet/Nano results, so long-file segmentation is not pooled with clip quality.
+- An initial overlapping Qwen run was excluded and both offline models rerun
+  serially with an exclusive lock. Review strengthened subprocess cancellation
+  and exact-corpus scoring; these tooling fixes do not rewrite observed outputs.
+- Next unresolved check: VAD with quiet real speech, bounded live PCM buffering,
+  real dialogue with music, and sustained selected-input sessions for the chosen
+  candidate. No MPS conclusion follows from the FunASR CPU measurements.

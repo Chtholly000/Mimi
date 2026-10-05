@@ -1,8 +1,8 @@
 # Local recognition and translation: issue #40 research
 
-Status: proposal for a Mimi-managed local service, not an accepted design or
-implemented feature. User-managed local text translation already works through
-an existing adapter; that is not fully local speech translation.
+Status: proposal plus measured local experiments, not a shipped Mimi-managed
+local service. Independent ASR, MT and limited native integration evidence are
+recorded separately; all experimental PRs remain draft and unmerged.
 Reviewed: 2026-10-05. Scope: Mimi desktop; Android needs separate resource and
 lifecycle validation. Refs [#40](https://github.com/yuxino/mimi/issues/40).
 
@@ -22,21 +22,26 @@ Ordinary users should not need Python, Docker, a terminal, Ollama, or an API key
 Ship only after measuring continuous selected-input audio, not after successful
 file transcription or a text connection check.
 
-Compare streaming Paraformer through sherpa-onnx and Vosk as lightweight ASR
-baselines, then Qwen3-ASR-0.6B and specific FunASR native models as challengers.
-Choose language pairs explicitly; not every candidate supports Japanese. Test
-Qwen3-ASR-1.7B only where resources permit. For MT, retain Qwen2.5-7B-Instruct and
-Qwen3-4B-Instruct-2507 as reproducible general-purpose baselines, and compare
-translation-specific Index models and Apple Translation on eligible Macs.
-Use the same subtitle corpus and declare each runtime, prompt and quantization;
-do not choose a default from parameter count or upstream throughput graphs.
+The latest round tests local ASR on its own, without requiring Index or any
+translation model. On the same 40 public English audiobook utterances, normalized
+WER was Qwen3-ASR-1.7B 1.20%, Parakeet 1.73%, Qwen3-ASR-0.6B 1.99%, Fun-ASR-Nano
+1.99%, and SenseVoiceSmall 4.79%. These small-set results are not population
+accuracy estimates. Parakeet was fastest on the tested Mac; Qwen 1.7B is the
+strongest next quality candidate on this set, with 0.6B as a smaller option.
+See the [standalone ASR report](2026-10-05-standalone-local-asr.md) for literal
+scores, paired input hashes, complete coverage, runtime differences, silence
+hallucinations and continuous-input limits.
 
-A limited Index-Translate-2B trial now proves the existing hybrid integration,
-not acceptable general quality or real-time performance. English-to-Chinese
-usage exposed terminology/name errors; the measured evidence and remaining
-checks are below. No local ASR, Echo, or Apple Translation benchmark has run.
-This PR changes only research documentation and its index: no model artifacts,
-dependencies, runtime, settings, capture, or network behavior.
+Earlier Apple, Parakeet and Whisper trials exercised local recognition and a
+short native capture-to-translation path. Hy-MT2 and TranslateGemma did not
+establish a translation-quality improvement over the existing Index baseline.
+Those are separate questions from whether FunASR or Qwen can recognize speech
+locally. Echo and Apple Translation remain untested.
+
+This PR contains research documentation and standalone benchmark tools. It does
+not add a production model manager, install weights automatically, change product
+capture/settings, or merge any candidate into main. Ordinary-user installation,
+sustained capture and platform acceptance remain separate work.
 
 ## What the discussion asks for
 
@@ -90,7 +95,7 @@ Mimi packaging, language quality, or acceptable latency on a specific device.
 | --- | --- | --- |
 | Streaming Paraformer + sherpa-onnx | Documented online Chinese/English and Chinese/Cantonese/English models, including int8 variants [1]. Native lightweight baseline. | Not a Japanese/Korean solution. Verify model-specific license, endpointing, quantization quality and native builds. |
 | Vosk | Offline streaming API and small models, including the 40 MB Apache-2.0 English `vosk-model-small-en-us-0.15` [12]. Add the candidate requested in the PR discussion. | Small downloads do not establish recognition quality for game names, noise or accents. Upstream memory guidance is not a Mimi measurement. |
-| Qwen3-ASR-0.6B / 1.7B | Official multilingual family; official Python streaming still requires vLLM and excludes batch inference and timestamps [2]. Native Transformers exports also exist. | File inference support is not a desktop continuous-audio transport. Measure partial stability, silence behavior and simultaneous MT. |
+| Qwen3-ASR-0.6B / 1.7B | Official multilingual family; official Python streaming still requires vLLM and excludes batch inference and timestamps [2]. Native Transformers exports also exist. | File inference support is not a desktop continuous-audio transport. MLX also ran both sizes on this Mac; see the standalone report. Measure live callback isolation and finalization before integration. |
 | sherpa-onnx Qwen3-ASR / Fun-ASR-Nano | Qwen3-ASR-0.6B int8 conversion and a VAD simulated-streaming example now exist; Nano also has an int8 offline path [13]. | Qwen's example uses an offline recognizer behind VAD. Segmented decoding is not native incremental ASR; conversion quality and finalization latency need measurement. |
 | antirez/qwen-asr | Community C implementation for both Qwen sizes, PCM stdin and chunked streaming with rollback; CPU Accelerate/OpenBLAS and CUDA/ROCm paths [3]. | No MPS backend is documented. Default chunks are 2 seconds; stable tokens are not sentence-final events. Test native packaging and model fidelity independently. |
 | FunASR native SenseVoice / Paraformer / Nano | Official native llama.cpp/GGUF paths complement the online SDK [7]. SenseVoiceSmall covers Chinese, Cantonese, English, Japanese and Korean; base Nano covers Chinese/English/Japanese, while MLT-Nano is a separate multilingual model. | Current native CLI transcribes files; its HTTP wrapper launches a subprocess per request. VAD/window-based SRT is not Mimi's continuous partial/final contract. It needs a persistent adapter and model-specific tests. |
@@ -295,10 +300,10 @@ included here.
   acceptance of a Mimi-managed worker lifecycle. Echo preparation stopped before
   dependency installation, weight download or inference.
 
-The experiment establishes only that existing MT configuration can connect to
-this local server and render a hybrid result. Local recognition, offline audio
-privacy, a 30-minute run, controlled latency percentiles, independent quality
-scores and other platforms are **not run**. The proposed gates below remain
+This initial experiment established only that existing MT configuration could
+connect to the local server and render a hybrid result. Later local recognition
+measurements are in the standalone report above. A 30-minute run, controlled
+end-to-end latency percentiles and other platforms remain **not run**. The proposed gates below remain
 unapproved targets, not results achieved by this trial.
 
 ## Reproducible experiment and decision gates
@@ -343,7 +348,7 @@ smallest combination that passes both quality and latency.
 
 | Target | Required evidence | Current result |
 | --- | --- | --- |
-| macOS Apple Silicon | 8 GB and 16+ GB separately; signed dev app, selected-input capture and managed worker lifecycle | M5/16 GB hybrid cloud ASR + local MT short trial only; fully local and sustained tests not run |
+| macOS Apple Silicon | 8 GB and 16+ GB separately; signed dev app, selected-input capture and managed worker lifecycle | M5/16 GiB standalone ASR comparison plus limited native local-ASR/local-MT diagnostic pairing in separate draft PRs; sustained and packaged acceptance not run |
 | Windows x64 | CPU baseline, optional GPU, actual desktop loopback and package boundary | Not run |
 | Linux x64 | CPU baseline and actual PulseAudio/PipeWire-Pulse monitor session | Not run |
 | macOS Intel / Windows ARM64 | Native build, packaging and long-session acceptance | Not run |
