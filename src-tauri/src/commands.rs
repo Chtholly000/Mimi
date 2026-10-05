@@ -129,18 +129,37 @@ pub struct LanguageCapabilitiesPayload {
     pub target_language: TargetLanguage,
     pub source_languages: Vec<SourceLanguage>,
     pub target_languages: Vec<TargetLanguage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apple_speech_support_revision: Option<u64>,
 }
 
 impl LanguageCapabilitiesPayload {
     fn from_profile(profile: &ServiceProfile, target: TargetLanguage) -> Self {
+        let support = (profile.provider == ProviderKind::AppleSpeech)
+            .then(crate::apple_speech_support::cached_with_revision);
+        Self::from_profile_with_apple_support(
+            profile,
+            target,
+            support
+                .as_ref()
+                .map(|(support, revision)| (support, *revision)),
+        )
+    }
+
+    fn from_profile_with_apple_support(
+        profile: &ServiceProfile,
+        target: TargetLanguage,
+        support: Option<(&crate::apple_speech_support::AppleSpeechSupport, u64)>,
+    ) -> Self {
         let mut capabilities = profile.capabilities(target);
         if profile.provider == ProviderKind::AppleSpeech {
-            let support = crate::apple_speech_support::cached();
+            // Recognition pickers offer only sources that can start now. The
+            // resource editor keeps the complete supported/downloadable list.
+            // Profile capabilities already enforce the text route intersection.
             capabilities.source_languages.retain(|source| {
-                support
-                    .languages
-                    .iter()
-                    .any(|language| language.source_language == *source)
+                support.is_some_and(|(support, _)| {
+                    crate::apple_speech_support::validate_source(support, *source, true).is_ok()
+                })
             });
         }
         Self {
@@ -150,6 +169,8 @@ impl LanguageCapabilitiesPayload {
             target_language: target,
             source_languages: capabilities.source_languages,
             target_languages: capabilities.target_languages,
+            apple_speech_support_revision: (profile.provider == ProviderKind::AppleSpeech)
+                .then(|| support.map_or(0, |(_, revision)| revision)),
         }
     }
 }
@@ -281,6 +302,129 @@ mod tests {
         assert!(serde_json::to_value(unknown).unwrap()["customSpeechSourceLanguages"].is_null());
     }
 
+    fn apple_language_support() -> crate::apple_speech_support::AppleSpeechSupport {
+        use crate::apple_speech_support::{AppleSpeechLanguage, AppleSpeechSupport};
+        AppleSpeechSupport {
+            available: true,
+            languages: vec![
+                AppleSpeechLanguage {
+                    source_language: SourceLanguage::English,
+                    locale: "en-US".into(),
+                    installed: true,
+                },
+                AppleSpeechLanguage {
+                    source_language: SourceLanguage::Japanese,
+                    locale: "ja-JP".into(),
+                    installed: false,
+                },
+                AppleSpeechLanguage {
+                    source_language: SourceLanguage::French,
+                    locale: "fr-FR".into(),
+                    installed: false,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn apple_language_snapshot_only_offers_ready_sources_on_available_devices() {
+        let profile = ServiceProfile::new("apple", "Apple", ProviderKind::AppleSpeech).unwrap();
+        let mut support = apple_language_support();
+        let payload = LanguageCapabilitiesPayload::from_profile_with_apple_support(
+            &profile,
+            TargetLanguage::Original,
+            Some((&support, 1)),
+        );
+        let json = serde_json::to_value(payload).unwrap();
+        assert_eq!(json["profileId"], "apple");
+        assert_eq!(json["appleSpeechSupportRevision"], 1);
+        assert_eq!(json["sourceLanguages"], serde_json::json!(["en"]));
+        assert_eq!(support, apple_language_support());
+
+        support.available = false;
+        for support in [Some((&support, 1)), None] {
+            let payload = LanguageCapabilitiesPayload::from_profile_with_apple_support(
+                &profile,
+                TargetLanguage::Original,
+                support,
+            );
+            assert!(payload.source_languages.is_empty());
+        }
+    }
+
+    #[test]
+    fn apple_language_snapshot_keeps_ready_sources_within_the_text_route() {
+        let mut profile = ServiceProfile::new("apple", "Apple", ProviderKind::AppleSpeech).unwrap();
+        let mut support = apple_language_support();
+        support.languages[2].installed = true;
+        for route in [TextTranslation::DeepL, TextTranslation::DeepLX] {
+            profile.text_translation = Some(route);
+            let translated = LanguageCapabilitiesPayload::from_profile_with_apple_support(
+                &profile,
+                TargetLanguage::English,
+                Some((&support, 1)),
+            );
+            assert_eq!(translated.source_languages, vec![SourceLanguage::English]);
+            let original = LanguageCapabilitiesPayload::from_profile_with_apple_support(
+                &profile,
+                TargetLanguage::Original,
+                Some((&support, 1)),
+            );
+            assert_eq!(
+                original.source_languages,
+                vec![SourceLanguage::English, SourceLanguage::French]
+            );
+        }
+        profile.text_translation = Some(TextTranslation::OpenAICompatible);
+        let translated = LanguageCapabilitiesPayload::from_profile_with_apple_support(
+            &profile,
+            TargetLanguage::English,
+            Some((&support, 1)),
+        );
+        assert_eq!(
+            translated.source_languages,
+            vec![SourceLanguage::English, SourceLanguage::French]
+        );
+    }
+
+    #[test]
+    fn apple_language_snapshot_adds_a_prepared_source_without_hiding_downloadable_resources() {
+        let profile = ServiceProfile::new("apple", "Apple", ProviderKind::AppleSpeech).unwrap();
+        let mut support = apple_language_support();
+        let before = LanguageCapabilitiesPayload::from_profile_with_apple_support(
+            &profile,
+            TargetLanguage::Original,
+            Some((&support, 1)),
+        );
+        assert_eq!(before.source_languages, vec![SourceLanguage::English]);
+        support.languages[1].installed = true;
+        let after = LanguageCapabilitiesPayload::from_profile_with_apple_support(
+            &profile,
+            TargetLanguage::Original,
+            Some((&support, 1)),
+        );
+        assert_eq!(
+            after.source_languages,
+            vec![SourceLanguage::English, SourceLanguage::Japanese]
+        );
+        // The resource preparation response still includes the unprepared
+        // French locale; no fallback language is inserted into the picker.
+        let resources = serde_json::to_value(&support).unwrap();
+        assert_eq!(resources["languages"].as_array().unwrap().len(), 3);
+        assert_eq!(resources["languages"][2]["sourceLanguage"], "fr");
+        assert_eq!(resources["languages"][2]["installed"], false);
+        support
+            .languages
+            .iter_mut()
+            .for_each(|language| language.installed = false);
+        let empty = LanguageCapabilitiesPayload::from_profile_with_apple_support(
+            &profile,
+            TargetLanguage::Original,
+            Some((&support, 1)),
+        );
+        assert!(empty.source_languages.is_empty());
+    }
+
     #[test]
     fn language_capability_snapshot_is_stamped_and_tracks_the_atomic_profile_route() {
         let store = SettingsStore::in_memory(Box::new(PartiallyUnavailableSecretStore), false);
@@ -295,6 +439,7 @@ mod tests {
         assert_eq!(caps["profileId"], value["activeProfileId"]);
         assert_eq!(caps["targetLanguage"], value["targetLanguage"]);
         assert_eq!(caps["provider"], "alibabaCloud");
+        assert!(caps.get("appleSpeechSupportRevision").is_none());
         assert_eq!(caps["textTranslation"], "followService");
         assert_eq!(caps["sourceLanguages"].as_array().unwrap().len(), 25);
         assert_eq!(caps["targetLanguages"].as_array().unwrap().len(), 32);
@@ -1313,13 +1458,15 @@ async fn apply_settings_draft(
         let profile = state.settings.active_profile()?;
         if profile.provider == ProviderKind::AppleSpeech {
             let prefs = state.settings.preferences();
-            let support = crate::apple_speech_support::refresh().await?;
-            crate::apple_speech_support::validate_profile_source(
-                &support,
+            crate::apple_speech_support::validate_refreshed_profile_source(
+                crate::apple_speech_support::refresh().await,
                 &profile,
                 draft.source_language.unwrap_or(prefs.source_language),
                 draft.target_language.unwrap_or(prefs.target_language),
                 false,
+                || {
+                    let _ = emit_settings_snapshot(app, &state.settings);
+                },
             )?;
         }
     }
@@ -1651,7 +1798,11 @@ pub async fn profile_create(
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
-    ensure_apple_provider_available(provider).await?;
+    ensure_apple_provider_available(provider)
+        .await
+        .inspect_err(|_| {
+            let _ = emit_settings_snapshot(&app, &state.settings);
+        })?;
     state.settings.create_profile(provider, &name)?;
     emit_settings_snapshot(&app, &state.settings)
 }

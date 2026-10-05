@@ -1869,6 +1869,12 @@ impl SessionManager {
                 .connect_and_listen(configuration.clone(), generation)
                 .await;
             if let Err(error) = result {
+                // Apple setup refreshes the resource cache before starting.
+                // Publish even rejected or superseded starts so every picker
+                // drops resources that disappeared since its last snapshot.
+                if configuration.provider == ProviderKind::AppleSpeech {
+                    self.publish_settings();
+                }
                 pipeline_log!("session establish failed label=provider_or_capture_setup");
                 // Claim failure before cleanup can await. Otherwise a provider
                 // pump can claim recovery during teardown and then be aborted
@@ -2571,10 +2577,16 @@ impl SessionManager {
             if self.is_ui_test() {
                 return Err("apple_speech_ui_test_unavailable".into());
             }
-            let support = crate::apple_speech_support::refresh().await?;
-            if !support.available {
-                return Err("apple_speech_unavailable".into());
-            }
+            let support = crate::apple_speech_support::refresh()
+                .await
+                .and_then(|support| {
+                    if support.available {
+                        Ok(support)
+                    } else {
+                        Err("apple_speech_unavailable".into())
+                    }
+                })
+                .inspect_err(|_| self.publish_settings())?;
             if !self.is_lifecycle_request_current(switch_epoch) {
                 return Err("profile_switch_superseded".into());
             }
@@ -2590,13 +2602,14 @@ impl SessionManager {
         } else {
             None
         };
-        if let (Some(support), Some(configuration)) = (&apple_support, &proposed) {
-            crate::apple_speech_support::validate_profile_source(
-                support,
+        if let (Some(support), Some(configuration)) = (apple_support, &proposed) {
+            crate::apple_speech_support::validate_refreshed_profile_source(
+                Ok(support),
                 profile,
                 configuration.source_language,
                 configuration.target_language,
                 true,
+                || self.publish_settings(),
             )?;
         }
         if live {
@@ -2686,14 +2699,15 @@ impl SessionManager {
         if provider == ProviderKind::AppleSpeech {
             // Validate once while holding the lifecycle guard. Refusals must
             // reach IPC instead of looking like a successful language change.
-            let support = crate::apple_speech_support::refresh().await?;
+            let support = crate::apple_speech_support::refresh().await;
             let installed_required = self.has_active_session() || self.is_paused();
-            crate::apple_speech_support::validate_profile_source(
-                &support,
+            crate::apple_speech_support::validate_refreshed_profile_source(
+                support,
                 &profile,
                 language,
                 prefs.target_language,
                 installed_required,
+                || self.publish_settings(),
             )?;
             if !self.is_lifecycle_request_current(switch_epoch) {
                 return Err("source_switch_superseded".into());
@@ -2811,13 +2825,13 @@ impl SessionManager {
             return Ok(());
         }
         if profile.provider == ProviderKind::AppleSpeech {
-            let support = crate::apple_speech_support::refresh().await?;
-            crate::apple_speech_support::validate_profile_source(
-                &support,
+            crate::apple_speech_support::validate_refreshed_profile_source(
+                crate::apple_speech_support::refresh().await,
                 &profile,
                 prefs.source_language,
                 target,
                 self.has_active_session() || self.is_paused(),
+                || self.publish_settings(),
             )?;
             if !self.is_lifecycle_request_current(switch_epoch) {
                 return Err("language_switch_superseded".into());

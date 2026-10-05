@@ -234,7 +234,7 @@ export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlat
   if (error === "apple_speech_unavailable" || error === "apple_speech_ui_test_unavailable") return I18N.settings.appleSpeechUnavailable;
   if (error === "apple_speech_status_failed") return I18N.settings.appleSpeechLoadFailed;
   if (error === "apple_speech_prepare_failed") return I18N.settings.appleSpeechPrepareFailed;
-  if (error === "apple_speech_preparing") return I18N.settings.appleSpeechPreparing;
+  if (error === "apple_speech_preparing") return I18N.settings.appleSpeechPreparationInProgress;
   if (["apple_speech_setup_timeout", "apple_speech_start_failed", "apple_speech_recognition_failed", "apple_speech_audio_failed", "apple_speech_not_connected", "apple_speech_result_backlog", "apple_speech_invalid_result", "apple_speech_finalize_timeout"].includes(error)) return I18N.settings.appleSpeechRecognitionFailed;
   if (error === "custom_speech_endpoint_invalid") return I18N.settings.customSpeechEndpointInvalid;
   if (error === "custom_speech_model_invalid") return I18N.settings.customSpeechModelInvalid;

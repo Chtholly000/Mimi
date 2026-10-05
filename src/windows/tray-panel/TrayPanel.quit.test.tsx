@@ -129,6 +129,38 @@ async function filter(query: string) {
   });
 }
 
+it.each(["zh", "en", "ja"] as const)("keeps an unready Apple selection readable and offers the sole ready recovery choice in the %s tray", async locale => {
+  setStoredUiLanguage(locale);
+  const switchSourceLanguage = vi.fn().mockResolvedValue(undefined);
+  const capabilities = { profileId: "apple", provider: "appleSpeech", textTranslation: "followService", targetLanguage: "original", targetLanguages: ["original"] } as const;
+  const settings = languageSettings({ sourceLanguage: "fr", targetLanguage: "original", activeProfileId: "apple",
+    profiles: [{ id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "missing" }],
+    languageCapabilities: { ...capabilities, sourceLanguages: [] } });
+  useStore.setState({ ...initial, settings, switchSourceLanguage }, true);
+  await act(async () => root.render(<TrayPanel />));
+  expect(sourcePicker().textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+  expect(sourcePicker().disabled).toBe(true);
+  await act(async () => sourcePicker().click());
+  expect(document.querySelector('[role="option"]')).toBeNull();
+  expect(switchSourceLanguage).not.toHaveBeenCalled();
+
+  const readySettings = { ...settings, languageCapabilities: { ...capabilities, sourceLanguages: ["en"] as const } };
+  await act(async () => useStore.setState({ settings: readySettings }));
+  expect(sourcePicker().textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+  expect(sourcePicker().disabled).toBe(false);
+  expect(switchSourceLanguage).not.toHaveBeenCalled();
+  await act(async () => sourcePicker().click());
+  const choices = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(choices.map(choice => choice.textContent)).toEqual([SOURCE_LANGUAGE_DISPLAY_NAMES.en]);
+  expect(choices[0].getAttribute("aria-selected")).toBe("false");
+  await act(async () => choices[0].click());
+  expect(switchSourceLanguage).toHaveBeenCalledExactlyOnceWith("en");
+
+  await act(async () => useStore.setState({ settings: { ...readySettings, sourceLanguage: "en" } }));
+  expect(sourcePicker().textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.en);
+  expect(sourcePicker().disabled).toBe(true);
+});
+
 it.each(["zh", "en", "ja"] as const)("searches French in the %s tray and calls the real source action with its wire key", async locale => {
   setStoredUiLanguage(locale);
   const switchSourceLanguage = vi.fn().mockResolvedValue(undefined);

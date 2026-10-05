@@ -246,6 +246,7 @@ export function OverlayControlPanel({
             <LanguageSelect
               label={I18N.overlay.sourceLanguage}
               value={settings.sourceLanguage}
+              valueLabel={speechLanguageGuidance(settings).optionLabel(settings.sourceLanguage)}
               options={model.sourceOptions.map((language) => ({
                 value: language,
                 label: speechLanguageGuidance(settings).optionLabel(language),

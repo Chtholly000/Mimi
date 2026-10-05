@@ -6,6 +6,7 @@ import { Select } from "./Select";
 export function LanguageSelect(props: {
   label: string;
   value: string;
+  valueLabel?: string;
   options: readonly { value: string; label: string }[];
   disabled?: boolean;
   onChange: (value: string) => void;

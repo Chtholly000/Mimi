@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AUDIO3_RECOGNITION_LANGUAGE_CODES, type SettingsSnapshot } from "../../lib/types";
+import { AUDIO3_RECOGNITION_LANGUAGE_CODES, type SettingsSnapshot, type SourceLanguage } from "../../lib/types";
 import { sourceLanguagesForSettings } from "../../lib/providerCapabilities";
 import { overlayControlPanelModel } from "./overlayControlModel";
 
@@ -43,6 +43,20 @@ const BASE_SETTINGS: SettingsSnapshot = {
 };
 
 describe("overlay control panel model", () => {
+  it.each([
+    { ready: [], current: "fr", expected: [] },
+    { ready: ["en"], current: "en", expected: [] },
+    { ready: ["en"], current: "fr", expected: ["en"] },
+    { ready: ["en", "ja"], current: "fr", expected: ["en", "ja"] },
+  ] satisfies { ready: SourceLanguage[]; current: SourceLanguage; expected: SourceLanguage[] }[])("keeps only ready Apple options and permits recovery from $current to $ready", ({ ready, current, expected }) => {
+    const settings: SettingsSnapshot = { ...BASE_SETTINGS, sourceLanguage: current, targetLanguage: "original", activeProfileId: "apple",
+      profiles: [{ id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "present" }],
+      languageCapabilities: { profileId: "apple", provider: "appleSpeech", textTranslation: "followService", targetLanguage: "original",
+        sourceLanguages: ready, targetLanguages: ["original"] } };
+    expect(overlayControlPanelModel(settings).sourceOptions).toEqual(expected);
+    expect(settings.sourceLanguage).toBe(current);
+  });
+
   it("shows Alibaba recognition choices without a redundant mode picker", () => {
     const model = overlayControlPanelModel(BASE_SETTINGS);
     expect(model.sourceOptions).toHaveLength(25);
