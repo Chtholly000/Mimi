@@ -54,8 +54,12 @@ async def run(args, output):
             await ws.send(json.dumps({"header": {"action": "run-task", "task_id": task_id,
                                                 "streaming": "duplex"}, "payload": {
                 "task_group": "audio", "task": "asr", "function": "recognition", "model": MODEL,
-                "parameters": {"format": "pcm", "sample_rate": 16000, "language_hints": ["en"]},
-                "input": {}}}))
+                "parameters": {"format": "pcm", "sample_rate": 16000, "language_hints": ["en"],
+                               "semantic_punctuation_enabled": True, "heartbeat": True},
+                # Match the current Mimi Rust client's default context shape.
+                "input": {"context": [{"role": "user", "content": [{"type": "input_text", "text":
+                    "Natural English audiovisual dialogue, including interjections, hesitations, breaths, gasps, moans, cries, laughter, and other vocalizations."
+                }]}]}}}))
             ready = json.loads(await asyncio.wait_for(ws.recv(), 10))
             if ready.get("header") != {"event": "task-started", "task_id": task_id}:
                 raise ValueError("setup_failed")

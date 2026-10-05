@@ -60,7 +60,10 @@ queue pressure is reported as failure rather than dropping audio silently.
 
 The model detects its language automatically. The selected source is validated
 against its supported set, but is not a forced-decoding language instruction.
-Context prompts are unsupported and rejected.
+Mimi's current client always includes an audiovisual-dialogue context hint.
+The bridge accepts its single `user` / `input_text` shape (up to 4,096 UTF-8
+bytes), then discards it: Parakeet does not use context prompts to bias decoding.
+An empty input remains valid; malformed or oversized context is rejected.
 
 ## Languages and limits
 

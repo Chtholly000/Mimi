@@ -40,6 +40,11 @@ The protocol accepts 16 kHz mono PCM16LE, with a 32 KiB maximum frame, 64,000-by
 per-session input queue, 8-second segment, 240 ms preroll, 480 ms silence final
 boundary and 800 ms draft cadence. A full queue fails explicitly. Fixed bounds
 also apply to JSON and result text. No finalized transcript collection exists.
+Accept the optional single `user` / `input_text` context object emitted by Mimi's
+current Rust client, bounded to 4,096 UTF-8 bytes. Discard this compatibility
+hint rather than claiming Parakeet applies it to recognition. Regression
+requests include the actual Rust client's context, heartbeat and punctuation
+parameters; empty-input-only fixtures missed a real native setup rejection.
 An explicit `--silence-ms` option permits 240/320 ms comparison without changing
 the default. Queued final inference takes priority over queued drafts, and a
 source skips stale previews while newer PCM or EOF is waiting. Neither rule
@@ -62,7 +67,7 @@ Report model loading, process RSS, first nonempty draft, final/EOF latency, and
 normalized WER. Synthetic samples verify this narrow input and bridge boundary;
 they do not establish general ASR accuracy or native Mimi overlay acceptance.
 
-Completed: 22 deterministic/loopback tests, pinned setup and repeated startup,
+Completed: 23 deterministic/loopback tests, pinned setup and repeated startup,
 actual model replay of the 9.518-second synthetic English sample, the shared
 96.263-second continuous 24-sentence sample, and the 11-second JFK sample.
 Literal WER was respectively 1/30, 13/239, and 0/22. Default-endpoint simultaneous

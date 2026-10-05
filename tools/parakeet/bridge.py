@@ -21,6 +21,7 @@ from segmentation import LANGUAGES, MODEL, Segmenter
 from auth import read_token
 
 MAX_QUEUE_BYTES = 64_000
+MAX_CONTEXT_BYTES = 4096
 LOG = None
 
 
@@ -34,6 +35,27 @@ def diagnostic(event, **fields):
         LOG.info(value)
     else:
         print(value, flush=True)
+
+
+def valid_input(value):
+    """Accept Mimi's optional text hint shape without passing it to the model."""
+    if value == {}:
+        return True
+    if not isinstance(value, dict) or set(value) != {"context"}:
+        return False
+    context = value["context"]
+    if not isinstance(context, list) or len(context) != 1:
+        return False
+    message = context[0]
+    if not isinstance(message, dict) or set(message) != {"role", "content"} or message["role"] != "user":
+        return False
+    content = message["content"]
+    if not isinstance(content, list) or len(content) != 1:
+        return False
+    item = content[0]
+    return (isinstance(item, dict) and set(item) == {"type", "text"}
+            and item["type"] == "input_text" and isinstance(item["text"], str)
+            and len(item["text"].encode("utf-8")) <= MAX_CONTEXT_BYTES)
 
 
 def validate_start(raw):
@@ -50,7 +72,7 @@ def validate_start(raw):
                  and params["format"] == "pcm" and params["sample_rate"] == 16_000
                  and isinstance(hints, list) and len(hints) <= 1
                  and all(isinstance(hint, str) and hint in LANGUAGES for hint in hints)
-                 and payload.get("input", {}) == {})
+                 and valid_input(payload.get("input", {})))
         if valid:
             return task_id
     except (ValueError, KeyError, TypeError):
@@ -267,6 +289,7 @@ class Bridge:
                 if isinstance(candidate, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", candidate):
                     task_id = candidate
             task_id = validate_start(raw)
+            raw = None  # Context hints are accepted for compatibility, then discarded.
             if getattr(self.worker, "failed", False):
                 raise BridgeError("worker_unavailable")
             await Session(websocket, self.worker, task_id, self.silence_ms).run()

@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bridge import Bridge, BridgeError, Worker, check_request, validate_start
+from bridge import Bridge, BridgeError, MAX_CONTEXT_BYTES, Worker, check_request, validate_start
 from auth import ensure_token, read_token
 import control
 from segmentation import FRAME_BYTES, LANGUAGES, MAX_SEGMENT_BYTES, MODEL, Segmenter
@@ -28,10 +28,15 @@ def connect(url, **kwargs):
 
 
 def run_task(task="fixture", language="en"):
+    # Actual Audio3ASRRequestEncoder::run_task_for_model shape. The current
+    # Audio3ASRClient always includes Audio3ASRContext::audiovisual_dialogue.
     return {"header": {"action": "run-task", "task_id": task, "streaming": "duplex"},
             "payload": {"task_group": "audio", "task": "asr", "function": "recognition",
                         "model": MODEL, "parameters": {"format": "pcm", "sample_rate": 16000,
-                        "language_hints": [language]}, "input": {}}}
+                        "semantic_punctuation_enabled": True, "heartbeat": True,
+                        "language_hints": [language]}, "input": {"context": [{"role": "user", "content": [{
+                            "type": "input_text", "text": "Natural English audiovisual dialogue, including interjections, hesitations, breaths, gasps, moans, cries, laughter, and other vocalizations."
+                        }]}]}}}
 
 
 class SegmentTests(unittest.TestCase):
@@ -121,7 +126,7 @@ class SegmentTests(unittest.TestCase):
         self.assertTrue(tail[0].final)
         self.assertEqual(len(tail[0].pcm), 5 * FRAME_BYTES)
 
-    def test_rejects_unsupported_hint_model_and_context(self):
+    def test_rejects_unsupported_language_model_and_malformed_context(self):
         self.assertEqual(validate_start(json.dumps(run_task())), "fixture")
         for field, value in [("model", "other"), ("input", {"context": ["unsupported"]})]:
             request = run_task()
@@ -130,6 +135,24 @@ class SegmentTests(unittest.TestCase):
                 validate_start(json.dumps(request))
         with self.assertRaises(BridgeError):
             validate_start(json.dumps(run_task(language="zh")))
+
+    def test_accepts_current_mimi_context_or_empty_input_with_strict_bounds(self):
+        request = run_task()
+        self.assertEqual(validate_start(json.dumps(request)), "fixture")
+        request["payload"]["input"] = {}
+        self.assertEqual(validate_start(json.dumps(request)), "fixture")
+        request = run_task()
+        item = request["payload"]["input"]["context"][0]["content"][0]
+        item["text"] = "x" * MAX_CONTEXT_BYTES
+        self.assertEqual(validate_start(json.dumps(request)), "fixture")
+        for invalid in ("x" * (MAX_CONTEXT_BYTES + 1), "界" * (MAX_CONTEXT_BYTES // 3 + 1), 123):
+            item["text"] = invalid
+            with self.assertRaises(BridgeError):
+                validate_start(json.dumps(request))
+        for invalid in ([{}, {}], [{"role": "assistant", "content": []}], ["hint"], None):
+            request["payload"]["input"] = {"context": invalid}
+            with self.assertRaises(BridgeError):
+                validate_start(json.dumps(request))
 
 
 class FakeWorker:

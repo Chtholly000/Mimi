@@ -6,6 +6,12 @@
 
 ## 2026-10-05：Parakeet 独立本地识别桥
 
+- `000921b` 后的真实 Mimi 连接检查发现 `invalid_setup`：Rust 客户端总会发送
+  `Audio3ASRContext::audiovisual_dialogue`，此前独立基准只发空 `input`，未覆盖
+  这条实际请求。桥接现接受一个 `user` / `input_text` 上下文（UTF-8 上限
+  4,096 字节），校验后丢弃，Parakeet 不以它偏置解码；畸形及过大输入仍失败。
+  23 项回归通过，所有 loopback 请求和基准程序改用当前 Rust 的上下文、
+  heartbeat 与 punctuation 形状。真实原生结果继续由同输入复验确认。
 - 基于 `a0ac37f` 的独立 `feat/local-parakeet-asr`；基线识别源码 `05a2423`。
   `24fb76f` 增加显式静音阈值候选，候选/双路实跑时该补丁尚未提交；之后
   仅补日志文件权限及基准时间元数据，不改变识别路径。未启动/替换 dev，
