@@ -31,7 +31,7 @@
 | Endpoint | `ws://127.0.0.1:18082/asr` |
 | Model | `whisper-large-v3-turbo-q5_0` |
 | API Key | 安装目录 `bridge-token` 文件的随机本地令牌 |
-| 识别语言 | 本轮优先 English；支持 Mimi 已有的显式语言和自动识别 |
+| 识别语言 | 本轮选择 English；兼容现有选择器的中文/日文/韩文/自动，尚未实测这些语种 |
 
 令牌仅存于权限 0600 的私有文件，不在启动参数、环境或日志中。可自行用
 `pbcopy < ~/.local/share/mimi-local-models/whisper/bridge-token` 复制到 Mimi

@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import resource
 import secrets
+import subprocess
 import time
 import wave
 
@@ -16,6 +17,21 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from bridge import Bridge, MODEL, Worker
+
+
+def provenance(root):
+    repo = Path(__file__).resolve().parents[2]
+    try:
+        revision = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                           text=True, stderr=subprocess.DEVNULL).strip()
+        dirty = bool(subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"],
+                                             text=True, stderr=subprocess.DEVNULL).strip())
+    except (OSError, subprocess.CalledProcessError):
+        revision, dirty = None, None
+    return {"revision": revision, "dirty": dirty,
+            "worker_sha256": hashlib.sha256((root / "mimi-whisper-worker").read_bytes()).hexdigest(),
+            "bridge_sha256": hashlib.sha256(Path(__file__).with_name("bridge.py").read_bytes()).hexdigest(),
+            "installed_bridge_matches": Path(__file__).with_name("bridge.py").read_bytes() == (root / "bridge.py").read_bytes()}
 
 
 def words(text):
@@ -101,6 +117,7 @@ async def main(args):
     rss = []
     sampler = None
     results = []
+    failure = None
     try:
         await worker.start()
         async def sample():
@@ -118,30 +135,41 @@ async def main(args):
                          max_size=131072, max_queue=4, compression=None) as server:
             url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/asr"
             for wav, reference in args.case:
-                result = await replay(url, token, Path(wav), Path(reference))
+                try:
+                    result = await replay(url, token, Path(wav), Path(reference))
+                except Exception as error:
+                    failure = {"sample": Path(wav).name, "error_type": type(error).__name__}
+                    break
                 results.append(result)
                 print(json.dumps({key: value for key, value in result.items()
                                   if key not in ("events", "recognized", "reference")}), flush=True)
-            if args.dual:
+            if args.dual and failure is None:
                 wav, reference = map(Path, args.case[0])
+                second_wav, second_reference = map(Path, args.case[min(1, len(args.case) - 1)])
                 simultaneous = await asyncio.gather(
                     replay(url, token, wav, reference, task_id="system"),
-                    replay(url, token, wav, reference, task_id="microphone"))
+                    replay(url, token, second_wav, second_reference, task_id="microphone"), return_exceptions=True)
                 for index, result in enumerate(simultaneous):
+                    if isinstance(result, BaseException):
+                        failure = {"mode": "dual", "source": index, "error_type": type(result).__name__}
+                        continue
                     result["mode"] = "two simultaneous synthetic sources"
                     result["source"] = index
-                results.extend(simultaneous)
+                    results.append(result)
+    except Exception as error:
+        failure = {"phase": "setup_or_transport", "error_type": type(error).__name__}
     finally:
         if sampler:
             sampler.cancel()
             await asyncio.gather(sampler, return_exceptions=True)
         await worker.close()
-    output = {"model": MODEL, "load_ms": worker.load_ms,
+    output = {"model": MODEL, "load_ms": worker.load_ms, "provenance": provenance(args.root),
               "peak_worker_rss_mib_sampled": max(rss, default=0) / 1024,
               "child_maxrss_mib_macos": resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1048576,
               "metric": "lowercase ASCII alphanumeric words; punctuation separates; numeric spelling unchanged",
               "timing": "1x real-time 20 ms PCM replay; first result measured from first PCM; flush after finish-task",
               "scope": "direct loopback bridge, no Mimi capture/overlay; explicit public-fixture output",
+              "failure": failure,
               "results": results}
     os.umask(0o077)
     args.output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -149,6 +177,8 @@ async def main(args):
         json.dump(output, stream, indent=2)
         stream.write("\n")
     print(json.dumps({key: value for key, value in output.items() if key != "results"}))
+    if failure:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
@@ -156,5 +186,5 @@ if __name__ == "__main__":
     parser.add_argument("--root", type=Path, default=Path.home() / ".local/share/mimi-local-models/whisper")
     parser.add_argument("--case", nargs=2, action="append", required=True, metavar=("WAV", "REFERENCE"))
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--dual", action="store_true", help="Replay first fixture twice simultaneously; no capture")
+    parser.add_argument("--dual", action="store_true", help="Replay first two fixtures simultaneously; no capture")
     asyncio.run(main(parser.parse_args()))

@@ -4,13 +4,16 @@ import json
 from pathlib import Path
 import struct
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 from websockets.exceptions import InvalidStatus
 
 from bridge import Bridge, Failure, FRAME, MAX_SEGMENT, MODEL, Segmenter, Session, Worker, load_token
+import status
 
 TOKEN = "synthetic-test-token-not-a-real-credential"
 VOICE = struct.pack("<h", 1000) * 320
@@ -204,6 +207,22 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("secret", result)
             self.assertEqual(json.loads(result)["header"]["event"], "task-failed")
 
+    async def test_empty_final_cannot_leave_a_published_preview(self):
+        calls = 0
+        async def infer(_pcm, _language):
+            nonlocal calls
+            calls += 1
+            return "Preview" if calls == 1 else ""
+        self.worker.infer = infer
+        async with self.connect() as ws:
+            await ws.send(start())
+            await ws.recv()
+            await ws.send(VOICE * 100)
+            draft = json.loads(await ws.recv())["payload"]["output"]["sentence"]
+            self.assertFalse(draft["sentence_end"])
+            await ws.send(finish())
+            self.assertEqual(json.loads(await ws.recv())["header"]["event"], "task-failed")
+
 
 class WorkerTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_subprocess_idle_exit_is_detected_and_close_reaps(self):
@@ -252,6 +271,47 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await worker.infer(VOICE, "ja"), "2")
         self.assertFalse(worker.failed.is_set())
         self.assertFalse(worker.pending)
+
+
+class ControlIdentityTests(unittest.TestCase):
+    def command(self, args):
+        if args[0] == "/bin/launchctl":
+            value = (f"path = {status.ROOT / 'service.plist'}\nprogram = {status.ARGS[0]}\n"
+                     + "arguments = {\n" + "\n".join(status.ARGS) + "\n}\npid = 123\n")
+        elif args[0] == "/usr/sbin/lsof":
+            value = "p123\nn127.0.0.1:18082\n"
+        elif "-axo" in args:
+            value = f"123 {status.ROOT / 'mimi-whisper-worker'} {status.ROOT / 'ggml-large-v3-turbo-q5_0.bin'}\n"
+        else:
+            value = " ".join(status.ARGS)
+        return SimpleNamespace(returncode=0, stdout=value)
+
+    def test_exact_job_process_listener_and_worker_match(self):
+        with patch("status.run", self.command):
+            self.assertEqual(status.identity(), (True, 123))
+            self.assertTrue(status.listening(123))
+
+    def test_wrong_job_and_reused_pid_are_not_accepted(self):
+        for kind in ("/bin/launchctl", "/bin/ps"):
+            def command(args):
+                result = self.command(args)
+                if args[0] == kind:
+                    result.stdout = result.stdout.replace("bridge.py", "other.py")
+                return result
+            with patch("status.run", command), self.assertRaises(RuntimeError):
+                status.identity()
+
+    def test_wildcard_extra_listener_or_missing_worker_are_not_ready(self):
+        for output, command_name in [("p123\nn*:18082\n", "/usr/sbin/lsof"),
+                                     ("p123\nn127.0.0.1:18082\nn127.0.0.1:9999\n", "/usr/sbin/lsof"),
+                                     ("", "/bin/ps")]:
+            def command(args):
+                result = self.command(args)
+                if args[0] == command_name:
+                    result.stdout = output
+                return result
+            with patch("status.run", command):
+                self.assertFalse(status.listening(123))
 
 
 if __name__ == "__main__":

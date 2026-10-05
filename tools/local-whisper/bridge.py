@@ -24,7 +24,9 @@ MAX_FRAME = 128 * 1024
 MAX_TEXT = 65536
 FRAME = 640  # 20 ms, 16 kHz, mono signed little-endian PCM16.
 MAX_SEGMENT = 256000  # 8 seconds; includes bounded preroll/trailing silence.
-LANGUAGES = {"en", "zh", "ja", "ko", "fr", "de", "es", "pt", "ru", "auto"}
+# Match Mimi's existing Custom DashScope selector; do not claim every Whisper
+# language is exposed by the application's current provider catalog.
+LANGUAGES = {"en", "zh", "ja", "ko", "auto"}
 LOGGER = logging.getLogger("mimi.local.whisper")
 LOGGER.addHandler(logging.NullHandler())
 LOGGER.propagate = False
