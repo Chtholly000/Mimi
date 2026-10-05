@@ -26,6 +26,11 @@ pub enum OpenAIRealtimeProtocolError {
     InvalidEndpoint,
 }
 
+/// Dedicated realtime translation outputs; do not borrow ordinary transcription languages.
+pub const TRANSLATION_LANGUAGE_CODES: &[&str] = &[
+    "en", "zh", "es", "pt", "fr", "ja", "ru", "de", "ko", "hi", "id", "vi", "it",
+];
+
 pub struct OpenAIRealtimeEndpoint;
 
 impl OpenAIRealtimeEndpoint {
@@ -57,10 +62,7 @@ impl OpenAIRealtimeRequestEncoder {
         target_language: TargetLanguage,
         event_id: Option<&str>,
     ) -> Result<Value, OpenAIRealtimeProtocolError> {
-        if !matches!(
-            target_language,
-            TargetLanguage::SimplifiedChinese | TargetLanguage::English | TargetLanguage::Japanese
-        ) {
+        if !TRANSLATION_LANGUAGE_CODES.contains(&target_language.raw_value()) {
             return Err(OpenAIRealtimeProtocolError::InvalidTargetLanguage);
         }
         let mut value = json!({
@@ -257,14 +259,10 @@ mod tests {
 
     #[test]
     fn expanded_app_targets_do_not_expand_this_wire_contract() {
-        for target in TargetLanguage::ALL.into_iter().filter(|target| {
-            !matches!(
-                target,
-                TargetLanguage::SimplifiedChinese
-                    | TargetLanguage::English
-                    | TargetLanguage::Japanese
-            )
-        }) {
+        for target in TargetLanguage::ALL
+            .into_iter()
+            .filter(|target| !TRANSLATION_LANGUAGE_CODES.contains(&target.raw_value()))
+        {
             assert_eq!(
                 OpenAIRealtimeRequestEncoder::session_update(target, None).unwrap_err(),
                 OpenAIRealtimeProtocolError::InvalidTargetLanguage

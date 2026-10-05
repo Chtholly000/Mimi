@@ -351,11 +351,17 @@ pub struct XAIRealtimeClient {
     inner: Arc<Inner>,
     endpoint: url::Url,
     api_key: String,
+    source_hint: crate::core::models::SourceLanguage,
     target_language: TargetLanguage,
     events: ProviderEventSender,
 }
 
 impl XAIRealtimeClient {
+    pub fn with_source_language(mut self, source: crate::core::models::SourceLanguage) -> Self {
+        self.source_hint = source;
+        self
+    }
+
     pub fn content_revision(&self) -> u64 {
         self.events.content_revision()
     }
@@ -418,6 +424,7 @@ impl XAIRealtimeClient {
             }),
             endpoint,
             api_key: api_key.to_string(),
+            source_hint: crate::core::models::SourceLanguage::Automatic,
             target_language,
             events,
         })
@@ -481,9 +488,12 @@ impl XAIRealtimeClient {
         }));
         *self.inner.receive_task.lock().await = Some(task);
 
-        let update =
-            XAIRealtimeRequestEncoder::session_update(self.target_language, Some(&setup_event_id))
-                .map_err(|_| XAIRealtimeClientError::InvalidTargetLanguage)?;
+        let update = XAIRealtimeRequestEncoder::session_update(
+            self.source_hint,
+            self.target_language,
+            Some(&setup_event_id),
+        )
+        .map_err(|_| XAIRealtimeClientError::InvalidTargetLanguage)?;
         let complete_setup = async {
             self.send_text(update.to_string()).await?;
             loop {
@@ -1217,6 +1227,31 @@ mod tests {
                 true,
             )
             .is_empty());
+    }
+
+    #[tokio::test]
+    async fn configured_source_hint_reaches_the_actual_websocket_setup() {
+        let (client, _) = test_client(|mut socket| {
+            Box::pin(async move {
+                let update: Value =
+                    serde_json::from_str(socket.next().await.unwrap().unwrap().to_text().unwrap())
+                        .unwrap();
+                assert_eq!(
+                    update["session"]["audio"]["input"]["transcription"]["language_hint"],
+                    "fr"
+                );
+                socket.send(setup_ack()).await.unwrap();
+                while let Some(Ok(message)) = socket.next().await {
+                    if message.is_close() {
+                        break;
+                    }
+                }
+            })
+        })
+        .await;
+        let client = client.with_source_language(crate::core::models::SourceLanguage::French);
+        client.connect().await.unwrap();
+        client.disconnect().await;
     }
 
     #[test]

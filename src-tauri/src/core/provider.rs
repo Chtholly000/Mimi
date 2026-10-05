@@ -48,7 +48,7 @@ impl ProviderKind {
         target: TargetLanguage,
     ) -> ProviderCapabilities {
         if self.is_custom_speech() {
-            custom_speech_capabilities(self, route)
+            custom_speech_capabilities(self, route, target)
         } else if self == Self::AlibabaCloud {
             alibaba_capabilities(route, target)
         } else {
@@ -94,9 +94,30 @@ impl ProviderKind {
                 TextTranslation::FollowService,
                 TargetLanguage::SimplifiedChinese,
             ),
-            Self::OpenAIRealtime | Self::AzureOpenAIRealtime | Self::XAIRealtime => {
+            Self::OpenAIRealtime => {
+                let mut capabilities =
+                    realtime_capabilities(vec![SourceLanguage::Automatic], 24_000);
+                capabilities.target_languages = TargetLanguage::ALL
+                    .into_iter()
+                    .filter(|target| {
+                        crate::core::protocols::openai_realtime::TRANSLATION_LANGUAGE_CODES
+                            .contains(&target.raw_value())
+                    })
+                    .collect();
+                capabilities
+            }
+            Self::AzureOpenAIRealtime => {
                 realtime_capabilities(vec![SourceLanguage::Automatic], 24_000)
             }
+            Self::XAIRealtime => realtime_capabilities(
+                SourceLanguage::ALL
+                    .into_iter()
+                    .filter(|source| {
+                        crate::core::protocols::xai_realtime::source_language_hint(*source).is_ok()
+                    })
+                    .collect(),
+                24_000,
+            ),
             Self::DeepLX => realtime_capabilities(
                 vec![
                     SourceLanguage::Automatic,
@@ -108,7 +129,15 @@ impl ProviderKind {
                 16_000,
             ),
             Self::GoogleGeminiLive => {
-                realtime_capabilities(vec![SourceLanguage::Automatic], 16_000)
+                let mut capabilities =
+                    realtime_capabilities(vec![SourceLanguage::Automatic], 16_000);
+                capabilities.target_languages = TargetLanguage::ALL
+                    .into_iter()
+                    .filter(|target| {
+                        crate::core::protocols::gemini_live::target_language_code(*target).is_ok()
+                    })
+                    .collect();
+                capabilities
             }
             Self::VolcanoEngine => realtime_capabilities(
                 vec![
@@ -127,9 +156,11 @@ impl ProviderKind {
                 ],
                 16_000,
             ),
-            Self::CustomDashScopeASR | Self::CustomOpenAIASR => {
-                custom_speech_capabilities(self, TextTranslation::FollowService)
-            }
+            Self::CustomDashScopeASR | Self::CustomOpenAIASR => custom_speech_capabilities(
+                self,
+                TextTranslation::FollowService,
+                TargetLanguage::Original,
+            ),
         }
     }
 
@@ -156,6 +187,7 @@ impl ProviderKind {
 fn custom_speech_capabilities(
     provider: ProviderKind,
     route: TextTranslation,
+    target: TargetLanguage,
 ) -> ProviderCapabilities {
     let mut target_languages = vec![TargetLanguage::Original];
     if route != TextTranslation::FollowService {
@@ -166,13 +198,21 @@ fn custom_speech_capabilities(
         ]);
     }
     ProviderCapabilities {
-        source_languages: vec![
-            SourceLanguage::Automatic,
-            SourceLanguage::Chinese,
-            SourceLanguage::English,
-            SourceLanguage::Japanese,
-            SourceLanguage::Korean,
-        ],
+        // These are configurable protocol codes, not a claim that an arbitrary model supports them.
+        source_languages: if target == TargetLanguage::Original
+            || route == TextTranslation::FollowService
+        {
+            SourceLanguage::ALL.to_vec()
+        } else {
+            // Independent text encoders currently accept these explicit sources.
+            vec![
+                SourceLanguage::Automatic,
+                SourceLanguage::Chinese,
+                SourceLanguage::English,
+                SourceLanguage::Japanese,
+                SourceLanguage::Korean,
+            ]
+        },
         target_languages,
         translation_modes: vec![TranslationMode::Turbo],
         input_sample_rate_hz: if provider == ProviderKind::CustomOpenAIASR {
@@ -531,7 +571,7 @@ impl ServiceProfile {
 
     pub fn capabilities(&self, target: TargetLanguage) -> ProviderCapabilities {
         if self.provider.is_custom_speech() {
-            custom_speech_capabilities(self.provider, self.text_translation())
+            custom_speech_capabilities(self.provider, self.text_translation(), target)
         } else if self.effective_provider() == ProviderKind::AlibabaCloud {
             alibaba_capabilities(self.text_translation(), target)
         } else {
@@ -674,10 +714,7 @@ mod tests {
             3
         );
         for provider in [
-            ProviderKind::OpenAIRealtime,
             ProviderKind::AzureOpenAIRealtime,
-            ProviderKind::GoogleGeminiLive,
-            ProviderKind::XAIRealtime,
             ProviderKind::VolcanoEngine,
             ProviderKind::TencentCloud,
             ProviderKind::BaiduTranslate,
@@ -867,7 +904,7 @@ mod tests {
                 translation_mode: TranslationMode::Turbo,
             });
             assert_eq!(normalized.target_language, TargetLanguage::Original);
-            assert_eq!(normalized.source_language, SourceLanguage::Automatic);
+            assert_eq!(normalized.source_language, SourceLanguage::French);
         }
     }
 
@@ -881,14 +918,11 @@ mod tests {
 
         let openai = ProviderKind::OpenAIRealtime.capabilities();
         assert_eq!(openai.source_languages, vec![SourceLanguage::Automatic]);
-        assert_eq!(
-            openai.target_languages,
-            vec![
-                TargetLanguage::SimplifiedChinese,
-                TargetLanguage::English,
-                TargetLanguage::Japanese
-            ]
-        );
+        assert_eq!(openai.target_languages.len(), 13);
+        assert!(openai.target_languages.contains(&TargetLanguage::French));
+        assert!(!openai
+            .target_languages
+            .contains(&TargetLanguage::TraditionalChinese));
         assert_eq!(openai.translation_modes, vec![TranslationMode::Turbo]);
         assert_eq!(openai.input_sample_rate_hz, 24_000);
 
@@ -901,7 +935,14 @@ mod tests {
             ProviderKind::XAIRealtime,
         ] {
             let capabilities = provider.capabilities();
-            assert_eq!(capabilities.target_languages.len(), 3);
+            assert_eq!(
+                capabilities.target_languages.len(),
+                if provider == ProviderKind::GoogleGeminiLive {
+                    30
+                } else {
+                    3
+                }
+            );
             assert_eq!(capabilities.translation_modes, vec![TranslationMode::Turbo]);
         }
         assert_eq!(

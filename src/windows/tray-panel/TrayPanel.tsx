@@ -1,3 +1,4 @@
+import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { SettingsHelp } from "../settings/SettingsHelp";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
@@ -18,7 +19,6 @@ import {
   useStore,
 } from "../../lib/store";
 import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
   TARGET_LANGUAGE_DISPLAY_NAMES,
   targetLanguageTranslatesAudio,
   type SettingsSnapshot,
@@ -268,17 +268,18 @@ export function TrayPanel() {
             <Icon name="languages" />
           </span>
           <span className="tray-setting-row__copy">
-            <span>{I18N.tray.sourceLanguage} <SettingsHelp text={I18N.settings.recognitionLanguageHelp} label={I18N.settings.helpLabel} /></span>
+            <span>{I18N.tray.sourceLanguage} <SettingsHelp text={speechLanguageGuidance(settings).help} label={I18N.settings.helpLabel} /></span>
             <small>{translationSummary(settings)}</small>
           </span>
           <span className="tray-select-wrap">
             <LanguageSelect label={I18N.tray.sourceLanguage} value={settings.sourceLanguage}
               disabled={sourcePickerDisabled}
-              options={sourceLanguages.map((language) => ({ value: language, label: SOURCE_LANGUAGE_DISPLAY_NAMES[language] }))}
+              options={sourceLanguages.map((language) => ({ value: language, label: speechLanguageGuidance(settings).optionLabel(language) }))}
               onChange={(value) => performAction("language", () => switchSourceLanguage(value as SourceLanguage))} />
           </span>
         </div>
 
+        {speechLanguageGuidance(settings).notice && <div className="recognition-language-notice">{speechLanguageGuidance(settings).notice}</div>}
         <span className="tray-card__divider" />
 
         <div className="tray-setting-row tray-setting-row--display" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>

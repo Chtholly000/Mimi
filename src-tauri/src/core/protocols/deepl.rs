@@ -59,6 +59,35 @@ pub fn endpoint(api_key: &str) -> Result<&'static str, DeepLError> {
     })
 }
 
+fn source_code(source: SourceLanguage) -> Result<Option<&'static str>, DeepLError> {
+    match source {
+        SourceLanguage::Automatic => Ok(None),
+        SourceLanguage::Chinese => Ok(Some("ZH")),
+        SourceLanguage::English => Ok(Some("EN")),
+        SourceLanguage::Japanese => Ok(Some("JA")),
+        SourceLanguage::Korean => Ok(Some("KO")),
+        _ => Err(DeepLError::Response),
+    }
+}
+
+/// A detected language only refines automatic mode when this adapter can encode
+/// it. Otherwise preserve service-side detection; explicit choices still validate.
+pub fn request_with_detected_source(
+    text: &str,
+    source: SourceLanguage,
+    detected_source: Option<SourceLanguage>,
+    target: TargetLanguage,
+) -> Result<Value, DeepLError> {
+    let source = if source == SourceLanguage::Automatic {
+        detected_source
+            .filter(|language| source_code(*language).is_ok())
+            .unwrap_or(source)
+    } else {
+        source
+    };
+    request(text, source, target)
+}
+
 pub fn request(
     text: &str,
     source: SourceLanguage,
@@ -75,14 +104,7 @@ pub fn request(
         _ => return Err(DeepLError::Response),
     };
     let mut body = json!({ "text": [text], "target_lang": target });
-    let source = match source {
-        SourceLanguage::Automatic => None,
-        SourceLanguage::Chinese => Some("ZH"),
-        SourceLanguage::English => Some("EN"),
-        SourceLanguage::Japanese => Some("JA"),
-        SourceLanguage::Korean => Some("KO"),
-        _ => return Err(DeepLError::Response),
-    };
+    let source = source_code(source)?;
     if let Some(source) = source {
         body["source_lang"] = json!(source);
     }

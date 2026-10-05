@@ -307,3 +307,11 @@ it("retains the saved subtitle preference after failure, blocks duplicate saves 
   expect(host.querySelector('[role="alert"]')).toBeNull();
   expect(props.onDismiss).not.toHaveBeenCalled();
 });
+
+it("keeps custom service-default semantics and scope visible in overlay controls", async () => {
+  configure({ targetLanguage: "original", sourceLanguage: "auto", profiles: [{ ...props.settings.profiles[0], provider: "customDashScopeASR" }] });
+  await mount();
+  expect(picker(I18N.overlay.sourceLanguage).textContent).toContain(I18N.settings.recognitionServiceDefault);
+  expect(host.querySelector('.recognition-language-notice')?.textContent).toBe(I18N.settings.recognitionCustomNotice);
+  expect(host.textContent).toContain(I18N.settings.recognitionDashScopeParameter);
+});

@@ -286,6 +286,11 @@ mod tests {
             assert_eq!(configuration.validated().unwrap().text_credentials, None);
             assert!(!format!("{configuration:?}").contains("synthetic-speech"));
             configuration.source_language = SourceLanguage::French;
+            assert!(configuration.validated().is_ok());
+            configuration.target_language = TargetLanguage::English;
+            configuration.text_credentials = Some(TextTranslationCredentials::DeepL {
+                api_key: "synthetic-mt-key".into(),
+            });
             assert_eq!(
                 configuration.validated(),
                 Err(LiveTranslationConfigurationError::UnsupportedSourceLanguage)

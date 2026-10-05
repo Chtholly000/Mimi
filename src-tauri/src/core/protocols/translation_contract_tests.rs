@@ -15,6 +15,7 @@ fn contract() -> Value {
     assert_eq!(value["schemaVersion"], 1);
     for name in [
         "requests",
+        "detectedSourceRequests",
         "endpoints",
         "responses",
         "models",
@@ -56,6 +57,31 @@ fn shared_request_contracts() {
             }
             _ => panic!("unknown provider in {id}"),
         };
+        if case["expected"].is_null() {
+            assert!(actual.is_err(), "{id}");
+        } else {
+            assert_eq!(actual.unwrap(), case["expected"], "{id}");
+        }
+    }
+}
+
+#[test]
+fn shared_detected_source_request_contracts() {
+    let fixtures = contract();
+    for case in fixtures["detectedSourceRequests"].as_array().unwrap() {
+        let id = case["id"].as_str().unwrap();
+        let text = case["text"].as_str().unwrap();
+        let source: SourceLanguage = serde_json::from_value(case["source"].clone()).unwrap();
+        let detected = SourceLanguage::from_detected(case["reported"].as_str());
+        let target: TargetLanguage = serde_json::from_value(case["target"].clone()).unwrap();
+        let actual =
+            match case["provider"].as_str().unwrap() {
+                "deepL" => deepl::request_with_detected_source(text, source, detected, target)
+                    .map_err(|_| ()),
+                "deepLX" => deeplx::request_with_detected_source(text, source, detected, target)
+                    .map_err(|_| ()),
+                _ => panic!("unknown detected-source provider in {id}"),
+            };
         if case["expected"].is_null() {
             assert!(actual.is_err(), "{id}");
         } else {
@@ -199,6 +225,45 @@ fn shared_live_setup_contracts() {
         assert_eq!(
             GeminiLiveRequestEncoder::setup(target).unwrap(),
             case["expected"],
+            "{}",
+            case["id"]
+        );
+    }
+}
+
+#[test]
+fn shared_speech_language_setups_and_catalogs() {
+    use super::{
+        openai_realtime::OpenAIRealtimeRequestEncoder, xai_realtime::XAIRealtimeRequestEncoder,
+    };
+    use crate::core::provider::ProviderKind;
+    for case in contract()["speechLanguageSetups"].as_array().unwrap() {
+        let target = serde_json::from_value(case["target"].clone()).unwrap();
+        let source = serde_json::from_value(case["source"].clone()).unwrap();
+        let actual = match case["provider"].as_str().unwrap() {
+            "openAIRealtime" => OpenAIRealtimeRequestEncoder::session_update(target, None).map(|value| serde_json::json!({"targetCode": value["session"]["audio"]["output"]["language"]})).map_err(|_| ()),
+            "googleGeminiLive" => GeminiLiveRequestEncoder::setup(target).map(|value| serde_json::json!({"targetCode": value["setup"]["generationConfig"]["translationConfig"]["targetLanguageCode"]})).map_err(|_| ()),
+            "xAIRealtime" => XAIRealtimeRequestEncoder::session_update(source, target, None).map(|value| serde_json::json!({"sourceHint": value["session"]["audio"]["input"]["transcription"]["language_hint"]})).map_err(|_| ()),
+            _ => panic!("unknown provider"),
+        };
+        if case["expected"].is_null() {
+            assert!(actual.is_err(), "{}", case["id"]);
+        } else {
+            assert_eq!(actual.unwrap(), case["expected"], "{}", case["id"]);
+        }
+    }
+    for case in contract()["speechLanguageCatalogs"].as_array().unwrap() {
+        let provider: ProviderKind = serde_json::from_value(case["provider"].clone()).unwrap();
+        let capabilities = provider.capabilities();
+        assert_eq!(
+            serde_json::to_value(capabilities.source_languages).unwrap(),
+            case["expected"]["sourceLanguages"],
+            "{}",
+            case["id"]
+        );
+        assert_eq!(
+            serde_json::to_value(capabilities.target_languages).unwrap(),
+            case["expected"]["targetLanguages"],
             "{}",
             case["id"]
         );

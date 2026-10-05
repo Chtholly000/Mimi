@@ -1,9 +1,12 @@
+import contract from "../../shared/translation-contracts.json";
 import audio3 from "../../src-tauri/src/core/protocols/audio3.rs?raw";
 import qwenMt from "../../src-tauri/src/core/protocols/qwen_mt.rs?raw";
 import { describe, expect, it } from "vitest";
 import { AUDIO3_RECOGNITION_LANGUAGE_CODES, QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES, type SettingsSnapshot } from "./types";
 import {
   SERVICE_PROVIDERS,
+  capabilitiesForProvider,
+  OPENAI_TRANSLATION_TARGETS,
   effectiveProviderForProfile,
   textTranslationForProfile,
   activeServiceProfile,
@@ -84,7 +87,7 @@ describe("provider capabilities", () => {
 
     expect(activeServiceProfile(settings)?.provider).toBe("openAIRealtime");
     expect(sourceLanguagesForSettings(settings)).toEqual(["auto"]);
-    expect(targetLanguagesForSettings(settings)).toEqual(["zh", "en", "ja"]);
+    expect(targetLanguagesForSettings(settings)).toEqual(OPENAI_TRANSLATION_TARGETS);
     expect(translationModesForSettings(settings)).toEqual(["turbo"]);
     expect(effectiveTranslationModeForSettings(settings)).toBe("turbo");
   });
@@ -97,7 +100,7 @@ describe("provider capabilities", () => {
         activeProfileId: "openai",
         sourceLanguage: "auto",
       }),
-    ).toEqual(["zh", "en", "ja"]);
+    ).toEqual(OPENAI_TRANSLATION_TARGETS);
   });
 
   it.each([
@@ -355,4 +358,18 @@ it("keeps the selectable language catalogs aligned with the Rust realtime models
   const table = qwenMt.match(/pub const QWEN_MT_LITE_LANGUAGE_CODES:[\s\S]*?=\s*&\[([\s\S]*?)\];/)?.[1];
   expect(table).toBeDefined();
   expect(Array.from(table!.matchAll(/"([a-z_]+)"/g), match => match[1])).toEqual(QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES);
+});
+
+it("uses the same official language catalogs as the Rust and Android encoders", () => {
+  for (const entry of contract.speechLanguageCatalogs) {
+    const provider = SERVICE_PROVIDERS.find(provider => provider === entry.provider)!;
+    const capabilities = capabilitiesForProvider(provider);
+    expect(capabilities.sourceLanguages, entry.id).toEqual(entry.expected.sourceLanguages);
+    expect(capabilities.targetLanguages, entry.id).toEqual(entry.expected.targetLanguages);
+  }
+});
+it.each(["customDashScopeASR", "customOpenAIASR"] as const)("exposes protocol codes for %s without bypassing the independent text encoder", provider => {
+  const profile = { id: "custom", name: "Custom", provider, credentialState: "present", textTranslation: "deepL" } as const;
+  expect(capabilitiesForProfile(profile, "original").sourceLanguages).toEqual(["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES]);
+  expect(capabilitiesForProfile(profile, "zh").sourceLanguages).not.toContain("fr");
 });

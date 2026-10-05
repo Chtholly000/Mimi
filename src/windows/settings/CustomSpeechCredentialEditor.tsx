@@ -51,7 +51,7 @@ export function CustomSpeechCredentialEditor(props: ComponentProps<typeof Alibab
   const noteId = `${inputId}-storage-note`;
   const helpId = `${speechId}-requirements`;
   const openAI = profile.provider === "customOpenAIASR";
-  const requirements = [openAI ? I18N.settings.customSpeechRequirementsOpenAI : I18N.settings.customSpeechRequirementsDashScope, I18N.settings.customSpeechLanguages].join("\n");
+  const requirements = [I18N.settings.customSpeechSetupSteps, openAI ? I18N.settings.customSpeechRequirementsOpenAI : I18N.settings.customSpeechRequirementsDashScope, I18N.settings.customSpeechLanguages].join("\n");
   const discard = () => { setDraft(emptyCredentialDraft()); setChangedFields({}); setSpeechEpoch(current => current + 1); setEditing(false); setInvalid(null); };
   useEffect(() => {
     const ref = invalid === "endpoint" ? endpointRef : invalid === "model" ? modelRef : null;
@@ -90,13 +90,13 @@ export function CustomSpeechCredentialEditor(props: ComponentProps<typeof Alibab
         {editorState.error && <InlineFeedback tone="error">{editorState.error}<button type="button" className="settings-link" disabled={disabled} onClick={() => setSpeechEpoch(current => current + 1)}>{I18N.settings.retryLoadingSettings}</button></InlineFeedback>}
         <div className="credential-form__fields">
           <label className="settings-field" htmlFor={`${speechId}-endpoint`}>
-            <span>{I18N.settings.customSpeechEndpoint}</span>
-            <ConfigInput expandable ref={endpointRef} id={`${speechId}-endpoint`} type="text" autoComplete="off" spellCheck={false} disabled={disabled} required value={endpoint} placeholder={I18N.settings.serviceAddressPlaceholder} aria-describedby={invalid === "endpoint" ? `${speechId}-endpoint-error ${helpId}` : helpId} aria-invalid={invalid === "endpoint" || undefined} onValueChange={endpoint => { setChangedFields(current => ({ ...current, endpoint: true })); setDraft(current => ({ ...current, endpoint })); if (invalid === "endpoint" && customSpeechEndpointIsValid(endpoint)) setInvalid(null); }} />
+            <span className="service-stage__field-label">{I18N.settings.customSpeechEndpoint}<SettingsHelp text={I18N.settings.customSpeechEndpointHelp} label={I18N.settings.helpLabel} /></span>
+            <ConfigInput expandable ref={endpointRef} id={`${speechId}-endpoint`} type="text" autoComplete="off" spellCheck={false} disabled={disabled} required value={endpoint} placeholder={openAI ? "wss://api.openai.com/v1/realtime" : "wss://dashscope.aliyuncs.com/api-ws/v1/inference"} aria-describedby={invalid === "endpoint" ? `${speechId}-endpoint-error ${helpId}` : helpId} aria-invalid={invalid === "endpoint" || undefined} onValueChange={endpoint => { setChangedFields(current => ({ ...current, endpoint: true })); setDraft(current => ({ ...current, endpoint })); if (invalid === "endpoint" && customSpeechEndpointIsValid(endpoint)) setInvalid(null); }} />
             {invalid === "endpoint" && <span id={`${speechId}-endpoint-error`} role="alert" className="credential-unavailable">{I18N.settings.customSpeechEndpointInvalid}</span>}
           </label>
           <label className="settings-field" htmlFor={`${speechId}-model`}>
-            <span>{I18N.settings.customSpeechModel}</span>
-            <ConfigInput expandable ref={modelRef} id={`${speechId}-model`} type="text" autoComplete="off" spellCheck={false} disabled={disabled} required value={model} placeholder={I18N.settings.modelNamePlaceholder} aria-describedby={invalid === "model" ? `${speechId}-model-error ${helpId}` : helpId} aria-invalid={invalid === "model" || undefined} onValueChange={model => { setChangedFields(current => ({ ...current, model: true })); setDraft(current => ({ ...current, model })); if (invalid === "model" && openAICompatibleModelIsValid(model)) setInvalid(null); }} />
+            <span className="service-stage__field-label">{I18N.settings.customSpeechModel}<SettingsHelp text={I18N.settings.customSpeechModelHelp} label={I18N.settings.helpLabel} /></span>
+            <ConfigInput expandable ref={modelRef} id={`${speechId}-model`} type="text" autoComplete="off" spellCheck={false} disabled={disabled} required value={model} placeholder={openAI ? "gpt-4o-mini-transcribe" : "qwen-audio-3.0-asr-flash-streaming"} aria-describedby={invalid === "model" ? `${speechId}-model-error ${helpId}` : helpId} aria-invalid={invalid === "model" || undefined} onValueChange={model => { setChangedFields(current => ({ ...current, model: true })); setDraft(current => ({ ...current, model })); if (invalid === "model" && openAICompatibleModelIsValid(model)) setInvalid(null); }} />
             {invalid === "model" && <span id={`${speechId}-model-error`} role="alert" className="credential-unavailable">{I18N.settings.customSpeechModelInvalid}</span>}
           </label>
           <div className="settings-field">

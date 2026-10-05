@@ -18,10 +18,15 @@ type LanguageSettings = Pick<SettingsSnapshot, "profiles" | "activeProfileId"> &
   Partial<Pick<SettingsSnapshot, "targetLanguage" | "languageCapabilities">>;
 
 const LITE_LANGUAGE_CODES = new Set<string>(QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES);
+// Protocol values Mimi can encode. This is not any custom endpoint's model catalog.
+const CUSTOM_CONFIGURABLE_SOURCES: readonly SourceLanguage[] = ["auto", "zh", "en", "ja", "ko", "vi", "th", "id", "ms", "tl", "hi", "ar", "fr", "de", "es", "pt", "ru", "it", "nl", "sv", "da", "fi", "no", "el", "pl", "cs", "hu", "ro", "bg", "hr", "sk"];
 const ALIBABA_RECOGNITION_SOURCES: readonly SourceLanguage[] = ["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES];
 const ALIBABA_TRANSLATION_SOURCES: readonly SourceLanguage[] = [
   "auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES.filter((code) => LITE_LANGUAGE_CODES.has(code)),
 ];
+export const OPENAI_TRANSLATION_TARGETS: readonly TargetLanguage[] = ["zh", "en", "ja", "ko", "ru", "es", "fr", "pt", "de", "it", "vi", "id", "hi"];
+export const GEMINI_TRANSLATION_TARGETS: readonly TargetLanguage[] = ["zh", "en", "ja", "zh_tw", "ko", "ru", "es", "fr", "de", "it", "th", "vi", "id", "ms", "ar", "hi", "he", "ur", "bn", "pl", "nl", "tr", "km", "cs", "sv", "hu", "da", "fi", "tl", "fa"];
+export const XAI_RECOGNITION_SOURCES: readonly SourceLanguage[] = ["auto", "zh", "en", "ja", "ko", "vi", "id", "hi", "fr", "de", "ru", "it"];
 const ALIBABA_TARGETS: readonly TargetLanguage[] = ["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES];
 const LEGACY_ALIBABA_CAPABILITIES: ProviderCapabilities = {
   sourceLanguages: LEGACY_SOURCE_LANGUAGE_CASES,
@@ -47,8 +52,8 @@ export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
 const PROVIDER_CAPABILITIES: Readonly<
   Record<ServiceProvider, ProviderCapabilities>
 > = {
-  customDashScopeASR: { sourceLanguages: ["auto", "zh", "en", "ja", "ko"], targetLanguages: ["original"], translationModes: ["turbo"] },
-  customOpenAIASR: { sourceLanguages: ["auto", "zh", "en", "ja", "ko"], targetLanguages: ["original"], translationModes: ["turbo"] },
+  customDashScopeASR: { sourceLanguages: CUSTOM_CONFIGURABLE_SOURCES, targetLanguages: ["original"], translationModes: ["turbo"] },
+  customOpenAIASR: { sourceLanguages: CUSTOM_CONFIGURABLE_SOURCES, targetLanguages: ["original"], translationModes: ["turbo"] },
   deepLX: { sourceLanguages: LEGACY_SOURCE_LANGUAGE_CASES, targetLanguages: ["zh", "en", "ja"], translationModes: ["turbo"] },
   alibabaCloud: {
     sourceLanguages: ALIBABA_TRANSLATION_SOURCES,
@@ -57,12 +62,12 @@ const PROVIDER_CAPABILITIES: Readonly<
   },
   openAIRealtime: {
     sourceLanguages: ["auto"],
-    targetLanguages: ["zh", "en", "ja"],
+    targetLanguages: OPENAI_TRANSLATION_TARGETS,
     translationModes: ["turbo"],
   },
   googleGeminiLive: {
     sourceLanguages: ["auto"],
-    targetLanguages: ["zh", "en", "ja"],
+    targetLanguages: GEMINI_TRANSLATION_TARGETS,
     translationModes: ["turbo"],
   },
   azureOpenAIRealtime: {
@@ -86,7 +91,7 @@ const PROVIDER_CAPABILITIES: Readonly<
     translationModes: ["turbo"],
   },
   xAIRealtime: {
-    sourceLanguages: ["auto"],
+    sourceLanguages: XAI_RECOGNITION_SOURCES,
     targetLanguages: ["zh", "en", "ja"],
     translationModes: ["turbo"],
   },
@@ -136,7 +141,8 @@ export function capabilitiesForProfile(
   if (isCustomSpeechProvider(profile.provider)) {
     const capabilities = capabilitiesForProvider(profile.provider);
     return textTranslationForProfile(profile) === "followService" ? capabilities
-      : { ...capabilities, targetLanguages: ["original", "zh", "en", "ja"] };
+      : { ...capabilities, sourceLanguages: targetLanguage === "original" ? capabilities.sourceLanguages : LEGACY_SOURCE_LANGUAGE_CASES,
+        targetLanguages: ["original", "zh", "en", "ja"] };
   }
   if (profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") {
     return capabilitiesForProvider(profile.provider);

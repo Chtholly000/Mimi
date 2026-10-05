@@ -194,3 +194,13 @@ it("keeps the interim switch usable while running, reports failure and saves a r
   expect(useStore.getState().session.isActive).toBe(true);
   expect(host.querySelector('[role="alert"]')).toBeNull();
 });
+
+it("shows custom service default and unknown support beside the tray picker", async () => {
+  const settings = languageSettings({ targetLanguage: "original", sourceLanguage: "auto" });
+  settings.profiles = [{ ...settings.profiles[0], provider: "customOpenAIASR" }];
+  useStore.setState({ ...initial, settings }, true);
+  await act(async () => root.render(<TrayPanel />));
+  expect(host.querySelector('.tray-setting-row--language [role="combobox"]')?.textContent).toContain(I18N.settings.recognitionServiceDefault);
+  expect(host.querySelector('.recognition-language-notice')?.textContent).toBe(I18N.settings.recognitionCustomNotice);
+  expect(host.textContent).toContain(I18N.settings.recognitionOpenAIParameter);
+});

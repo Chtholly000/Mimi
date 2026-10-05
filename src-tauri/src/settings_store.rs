@@ -4217,7 +4217,7 @@ mod tests {
         let before = store.preferences();
         assert!(store
             .save_preferences_for_active_profile(
-                |prefs| prefs.target_language = TargetLanguage::French
+                |prefs| prefs.target_language = TargetLanguage::TraditionalChinese
             )
             .is_err());
         assert_eq!(store.preferences(), before);

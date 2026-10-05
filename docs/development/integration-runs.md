@@ -830,3 +830,24 @@
   loaded real profiles. The formal app was quit with explicit user permission
   and its installed bundle was not replaced. Temporary editor drafts were
   cancelled/restored before releasing the development app to other work.
+
+
+### 2026-10-05 — Speech language setup and official parameter alignment
+
+- Source: `feat/speech-language-guidance`, isolated from the model experiments and
+  service-error-feedback branches; base `a0ac37f`.
+- Scope: xAI optional input hint; OpenAI 13 and Gemini 30 represented output
+  languages; explicit custom ASR protocol codes with unknown model support;
+  DeepL/DeepLX automatic reported-source fallback; shared Android language labels;
+  localized Settings/tray/overlay help and transient normalization feedback.
+- Evidence: canonical `./scripts/check.sh` passed: 1,092 Rust tests (2 ignored),
+  112 frontend files / 1,461 tests, shared-core/JNI checks, strict clippy, lint,
+  typecheck and production build. The shared language catalog/setup fixtures
+  exercise desktop encoders, and a local WebSocket fixture verifies the xAI hint
+  reaches the transport. DeepL/DeepLX use local HTTP fixtures; no provider key or
+  private audio was used.
+- Limits: Android JVM/lint/APK checks run in CI, not locally in this pass. Signed
+  native UI and cloud-account acceptance are distinct and not claimed by these
+  automated checks. No dev app was installed/restarted by this branch. Broader
+  Azure, Tencent, Baidu, Volcano and regional-code gaps remain listed in the
+  [official audit matrix](../speech-language-setup.md#official-api-audit--2026-10-05).

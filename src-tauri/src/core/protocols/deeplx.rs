@@ -69,19 +69,41 @@ pub fn endpoint(value: &str) -> Result<url::Url, DeepLXError> {
     Ok(url)
 }
 
+fn source_code(source: SourceLanguage) -> Result<&'static str, DeepLXError> {
+    match source {
+        SourceLanguage::Automatic => Ok("auto"),
+        SourceLanguage::Chinese => Ok("ZH"),
+        SourceLanguage::English => Ok("EN"),
+        SourceLanguage::Japanese => Ok("JA"),
+        SourceLanguage::Korean => Ok("KO"),
+        _ => Err(DeepLXError::Response),
+    }
+}
+
+/// A detected language only refines automatic mode when this adapter can encode
+/// it. Otherwise preserve service-side detection; explicit choices still validate.
+pub fn request_with_detected_source(
+    text: &str,
+    source: SourceLanguage,
+    detected_source: Option<SourceLanguage>,
+    target: TargetLanguage,
+) -> Result<Value, DeepLXError> {
+    let source = if source == SourceLanguage::Automatic {
+        detected_source
+            .filter(|language| source_code(*language).is_ok())
+            .unwrap_or(source)
+    } else {
+        source
+    };
+    request(text, source, target)
+}
+
 pub fn request(
     text: &str,
     source: SourceLanguage,
     target: TargetLanguage,
 ) -> Result<Value, DeepLXError> {
-    let source = match source {
-        SourceLanguage::Automatic => "auto",
-        SourceLanguage::Chinese => "ZH",
-        SourceLanguage::English => "EN",
-        SourceLanguage::Japanese => "JA",
-        SourceLanguage::Korean => "KO",
-        _ => return Err(DeepLXError::Response),
-    };
+    let source = source_code(source)?;
     let target = match target {
         TargetLanguage::SimplifiedChinese => "ZH",
         TargetLanguage::English => "EN",

@@ -1,3 +1,4 @@
+import { useLanguageNormalizationToast } from "../settings/useLanguageNormalizationToast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import {
@@ -43,6 +44,7 @@ export function OverlayControlWindow() {
     selectHasRecognizingSourceDraft,
   );
   const settings = useStore((state) => state.settings);
+  const trackLanguageChange = useLanguageNormalizationToast(settings);
   const switchSourceLanguage = useStore((state) => state.switchSourceLanguage);
   const switchTargetLanguage = useStore((state) => state.switchTargetLanguage);
   const saveSettings = useStore((state) => state.saveSettings);
@@ -59,7 +61,11 @@ export function OverlayControlWindow() {
     const targets = targetLanguagesForSettings(settings);
     const previous = translationTarget.current.profileId === settings.activeProfileId ? translationTarget.current.language : "original";
     const target = enabled ? "original" : previous !== "original" && targets.includes(previous) ? previous : targets.find(language => language !== "original");
-    if (target) await switchTargetLanguage(target);
+    if (target) {
+      const finishLanguageChange = trackLanguageChange(target);
+      try { await switchTargetLanguage(target); finishLanguageChange(true); }
+      catch (error) { finishLanguageChange(false); throw error; }
+    }
   };
 
   const toggle = useCallback(() => {

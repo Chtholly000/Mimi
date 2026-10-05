@@ -1,16 +1,19 @@
+import { activeServiceProfile, isCustomSpeechProvider } from "../../lib/providerCapabilities";
 import { effectiveUiLanguage } from "../../lib/i18n";
 import { sourceLanguageDisplayName, targetLanguageDisplayName, type SettingsSnapshot } from "../../lib/types";
 
 const labels = {
-  en: { auto: "Auto", zh: "Chinese", en: "English", ja: "Japanese", ko: "Korean", original: "Original", error: "Error", idle: "Idle", paused: "Paused", translating: "Translating", connecting: "Connecting", stopping: "Stopping" },
-  zh: { auto: "自动", zh: "中文", en: "英语", ja: "日语", ko: "韩语", original: "原文", error: "错误", idle: "待机", paused: "暂停", translating: "翻译中", connecting: "连接中", stopping: "停止中" },
-  ja: { auto: "自動", zh: "中国語", en: "英語", ja: "日本語", ko: "韓国語", original: "原文", error: "エラー", idle: "待機", paused: "一時停止", translating: "翻訳中", connecting: "接続中", stopping: "終了中" },
+  en: { auto: "Auto", serviceDefault: "Service default", zh: "Chinese", en: "English", ja: "Japanese", ko: "Korean", original: "Original", error: "Error", idle: "Idle", paused: "Paused", translating: "Translating", connecting: "Connecting", stopping: "Stopping" },
+  zh: { auto: "自动", serviceDefault: "服务默认", zh: "中文", en: "英语", ja: "日语", ko: "韩语", original: "原文", error: "错误", idle: "待机", paused: "暂停", translating: "翻译中", connecting: "连接中", stopping: "停止中" },
+  ja: { auto: "自動", serviceDefault: "サービス既定", zh: "中国語", en: "英語", ja: "日本語", ko: "韓国語", original: "原文", error: "エラー", idle: "待機", paused: "一時停止", translating: "翻訳中", connecting: "接続中", stopping: "終了中" },
 };
 
-export function capsuleLabels(settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage">, phase: "error" | "idle" | "paused" | "translating" | "connecting" | "stopping" | null, language = effectiveUiLanguage()) {
+export function capsuleLabels(settings: Pick<SettingsSnapshot, "sourceLanguage" | "targetLanguage"> & Partial<Pick<SettingsSnapshot, "profiles" | "activeProfileId">>, phase: "error" | "idle" | "paused" | "translating" | "connecting" | "stopping" | null, language = effectiveUiLanguage()) {
   const text = labels[language];
   return {
-    source: settings.sourceLanguage in text
+    source: settings.sourceLanguage === "auto" && settings.profiles && settings.activeProfileId &&
+      isCustomSpeechProvider(activeServiceProfile({ profiles: settings.profiles, activeProfileId: settings.activeProfileId })?.provider ?? "alibabaCloud")
+      ? text.serviceDefault : settings.sourceLanguage in text
       ? text[settings.sourceLanguage as keyof typeof text]
       : sourceLanguageDisplayName(settings.sourceLanguage, language),
     target: settings.targetLanguage in text

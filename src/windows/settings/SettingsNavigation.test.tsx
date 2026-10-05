@@ -94,10 +94,16 @@ it.each(["openAIRealtime", "volcanoEngine", "tencentCloud", "baiduTranslate"] as
   expect(host.querySelector("#translation-languages")).toBeNull();
   await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
   const groups = [...host.querySelectorAll(".service-detail #translation-languages [role=group]")];
-  expect(groups.map(group => [...group.querySelectorAll("button span")].map(node => node.textContent))).toEqual([
+  expect([...groups[0].querySelectorAll("button span")].map(node => node.textContent)).toEqual(
     sourceLanguagesForSettings(settings).map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]),
-    targetLanguagesForSettings(settings).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]),
-  ]);
+  );
+  const targets = targetLanguagesForSettings(settings).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]);
+  if (targets.length > 6) {
+    await act(async () => host.querySelector<HTMLButtonElement>(`#translation-languages [role="combobox"][aria-label="${I18N.settings.translateTo}"]`)!.click());
+    expect([...document.querySelectorAll('[role="option"]')].map(option => option.textContent)).toEqual(targets);
+  } else {
+    expect([...groups[1].querySelectorAll("button span")].map(node => node.textContent)).toEqual(targets);
+  }
   expect(saveSettings).not.toHaveBeenCalled();
 });
 
@@ -105,13 +111,14 @@ it("saves language choices and blocks them for active and paused subtitle sessio
   useStore.setState({ settings: { ...useStore.getState().settings, profiles: useStore.getState().settings.profiles.map(profile => ({ ...profile, provider: "openAIRealtime" })) } });
   await mount(); await select("service");
   await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
-  const target = [...host.querySelectorAll<HTMLButtonElement>("#translation-languages [role=group]")[1].querySelectorAll("button")].find(button => button.textContent === TARGET_LANGUAGE_DISPLAY_NAMES.ja)!;
+  const target = host.querySelector<HTMLButtonElement>(`#translation-languages [role="combobox"][aria-label="${I18N.settings.translateTo}"]`)!;
   await act(async () => { target.focus(); target.click(); });
+  await act(async () => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent === TARGET_LANGUAGE_DISPLAY_NAMES.ja)!.click());
   expect(saveSettings).toHaveBeenCalledExactlyOnceWith({ targetLanguage: "ja" });
   expect(document.activeElement).toBe(target);
   for (const state of [{ isActive: true, isPaused: false }, { isActive: false, isPaused: true }]) {
     await act(() => useStore.setState({ session: { ...initial.session, status: { kind: "listening" }, ...state } }));
-    expect([...host.querySelectorAll<HTMLButtonElement>("#translation-languages [role=group] button")].every(button => button.disabled)).toBe(true);
+    expect([...host.querySelectorAll<HTMLButtonElement>("#translation-languages [role=group] button, #translation-languages [role=combobox]")].every(button => button.disabled)).toBe(true);
     expect(host.querySelector("#translation-languages")?.textContent).toContain(I18N.settings.languageChangeRequiresStop);
   }
 });

@@ -125,7 +125,9 @@ impl TranslationClient {
                     configuration.target_language,
                     events,
                 )
-                .map(Self::XaiRealtime)
+                .map(|client| {
+                    Self::XaiRealtime(client.with_source_language(configuration.source_language))
+                })
                 .map_err(TranslationClientError::Xai);
             }
             ProviderKind::VolcanoEngine => {

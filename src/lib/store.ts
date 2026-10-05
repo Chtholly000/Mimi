@@ -475,7 +475,12 @@ export const useStore = create<StoreState>()((set, get) => ({
           throw new Error(label);
         }
       }
-      set({ settings: mergeSettingsSnapshot(previous, draft) });
+      const settings = mergeSettingsSnapshot(previous, draft);
+      if (draft.targetLanguage !== undefined) {
+        const sources = sourceLanguagesForSettings(settings);
+        if (!sources.includes(settings.sourceLanguage)) settings.sourceLanguage = sources[0] ?? settings.sourceLanguage;
+      }
+      set({ settings });
       return;
     }
     await settingsSaveCoordinator.save(previous, draft, settingsSave, (settings) =>

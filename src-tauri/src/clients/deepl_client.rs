@@ -61,7 +61,7 @@ impl DeepLClient {
         text: &str,
         source: Option<SourceLanguage>,
     ) -> Result<String, DeepLError> {
-        let body = deepl::request(text, source.unwrap_or(self.source), self.target)?;
+        let body = deepl::request_with_detected_source(text, self.source, source, self.target)?;
         tokio::time::timeout(self.timeout, async {
             crate::development_content::request(
                 crate::development_content::RequestProtocol::DeepL,
@@ -176,7 +176,12 @@ mod tests {
 
     #[tokio::test]
     async fn uses_deepl_auth_and_single_text_with_optional_detected_source() {
-        for source in [None, Some(SourceLanguage::English)] {
+        for source in [
+            None,
+            Some(SourceLanguage::English),
+            Some(SourceLanguage::French),
+            Some(SourceLanguage::German),
+        ] {
             let (client, server) = fixture(
                 200,
                 r#"{"translations":[{"detected_source_language":"EN","text":"合成テキスト"}]}"#,
@@ -192,7 +197,7 @@ mod tests {
             assert!(request.contains("authorization: DeepL-Auth-Key synthetic:fx"));
             assert!(!request.contains("Bearer"));
             let mut expected = serde_json::json!({"text":["synthetic"],"target_lang":"JA"});
-            if source.is_some() {
+            if source == Some(SourceLanguage::English) {
                 expected["source_lang"] = serde_json::json!("EN");
             }
             let body: serde_json::Value =

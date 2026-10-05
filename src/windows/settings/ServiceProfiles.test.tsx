@@ -488,10 +488,16 @@ it.each(["openAIRealtime", "volcanoEngine", "tencentCloud", "baiduTranslate"] as
   await render(snapshot);
   await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
   const groups = [...host.querySelectorAll("#translation-languages [role=group]")];
-  expect(groups.map(group => [...group.querySelectorAll("button span")].map(node => node.textContent))).toEqual([
+  expect([...groups[0].querySelectorAll("button span")].map(node => node.textContent)).toEqual(
     sourceLanguagesForSettings(snapshot).map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]),
-    targetLanguagesForSettings(snapshot).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]),
-  ]);
+  );
+  const targets = targetLanguagesForSettings(snapshot).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]);
+  if (targets.length > 6) {
+    await act(async () => host.querySelector<HTMLButtonElement>(`#translation-languages [role="combobox"][aria-label="${I18N.settings.translateTo}"]`)!.click());
+    expect([...document.querySelectorAll('[role="option"]')].map(option => option.textContent)).toEqual(targets);
+  } else {
+    expect([...groups[1].querySelectorAll("button span")].map(node => node.textContent)).toEqual(targets);
+  }
   expect(host.querySelector(".service-language-more")).toBeNull();
   expect(testProfileConnection).not.toHaveBeenCalled();
   expect(profileRevealCredential).not.toHaveBeenCalled();

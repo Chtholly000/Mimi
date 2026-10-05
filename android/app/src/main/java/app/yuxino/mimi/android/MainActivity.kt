@@ -186,13 +186,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun languageLabel(code: String): String = getString(when (code) {
-        "zh" -> R.string.lang_zh
-        "en" -> R.string.lang_en
-        "ja" -> R.string.lang_ja
-        "ko" -> R.string.lang_ko
-        else -> R.string.lang_auto
-    })
+    private fun languageLabel(code: String): String = languageDisplayName(this, code)
 
     private fun showLanguages(source: Boolean) {
         if (!source && SettingsStore.originalTextOnly(this)) return

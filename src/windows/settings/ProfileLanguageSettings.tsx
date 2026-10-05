@@ -1,11 +1,13 @@
+import { useLanguageNormalizationToast } from "./useLanguageNormalizationToast";
 import { useEffect, useRef, useState } from "react";
 import { Switch } from "../../components/Switch";
 import { Icon } from "../../components/Icon";
 import { LanguageSelect } from "../../components/LanguageSelect";
+import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { I18N } from "../../lib/i18n";
 import { sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import { useStore } from "../../lib/store";
-import { SOURCE_LANGUAGE_DISPLAY_NAMES, TARGET_LANGUAGE_DISPLAY_NAMES, type SettingsDraft, type SettingsSnapshot } from "../../lib/types";
+import { TARGET_LANGUAGE_DISPLAY_NAMES, type SettingsDraft, type SettingsSnapshot } from "../../lib/types";
 import { SettingsHelp } from "./SettingsHelp";
 import { SettingsRow } from "./SettingsPrimitives";
 import { useSettingsToast } from "./useSettingsToast";
@@ -15,9 +17,11 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
   const saveSettings = useStore(state => state.saveSettings);
   const [busy, setBusy] = useState(false);
   const { beginToast } = useSettingsToast();
+  const trackLanguageChange = useLanguageNormalizationToast(settings);
   const inFlight = useRef(false);
   const mounted = useRef(false);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const guidance = speechLanguageGuidance(settings);
   const sources = sourceLanguagesForSettings(settings);
   const targets = targetLanguagesForSettings(settings);
   const skipped = settings.targetLanguage === "original";
@@ -28,10 +32,13 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
     inFlight.current = true;
     setBusy(true);
     const notify = beginToast();
+    const finishLanguageChange = trackLanguageChange(draft.targetLanguage, notify);
     try {
       await saveSettings(draft);
       if (mounted.current) notify(I18N.settings.languageSaved);
+      finishLanguageChange(true);
     } catch {
+      finishLanguageChange(false);
       if (mounted.current) notify(I18N.settings.languageSaveFailed, true);
     } finally {
       inFlight.current = false;
@@ -40,9 +47,9 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
   };
   return <section id="translation-languages" className="profile-language-settings" aria-labelledby="translation-languages-title" aria-busy={busy}>
     <header className="profile-language-settings__heading"><h3 id="translation-languages-title">{I18N.settings.subtitleLanguages}</h3>{requiresStop && <SettingsHelp text={I18N.settings.languageChangeRequiresStop} label={I18N.settings.helpLabel} icon="lock" />}</header>
-    <SettingsRow label={I18N.settings.sourceLanguage} description={I18N.settings.recognitionLanguageHelp} align="start">
+    <SettingsRow label={I18N.settings.sourceLanguage} description={guidance.help} feedback={guidance.notice && <span className="recognition-language-notice">{guidance.notice}</span>} align="start">
       <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} disabled={disabled || busy || sources.length === 1}
-        options={sources.map(value => ({ value, label: SOURCE_LANGUAGE_DISPLAY_NAMES[value] }))}
+        options={sources.map(value => ({ value, label: guidance.optionLabel(value) }))}
         onChange={value => { const sourceLanguage = sources.find(language => language === value); if (sourceLanguage) void save({ sourceLanguage }); }} />
     </SettingsRow>
     {targets.includes("original") && <SettingsRow label={I18N.settings.skipTranslation} description={I18N.settings.skipTranslationHelp}>

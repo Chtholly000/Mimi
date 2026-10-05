@@ -1,3 +1,5 @@
+import { SettingsToastRegion } from "../settings/SettingsToast";
+import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { SettingsHelp } from "../settings/SettingsHelp";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
@@ -13,7 +15,6 @@ import {
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import type { SubtitleDisplayMode } from "../../lib/types";
 import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
   type OverlayActivityPhaseKind,
   type SettingsSnapshot,
   type SourceLanguage,
@@ -165,6 +166,7 @@ export function OverlayControlPanel({
       aria-label={I18N.overlay.controlPanel}
       aria-busy={pendingAction !== null}
     >
+      <SettingsToastRegion />
       <div ref={contentRef} className="overlay-control-panel__content">
         <LanguageStatusCapsule
           phase={phase}
@@ -201,13 +203,13 @@ export function OverlayControlPanel({
 
         {model.sourceOptions.length > 0 && (
           <div ref={sourceControlRef} className="overlay-control-picker">
-            <span>{I18N.overlay.sourceLanguage} <SettingsHelp text={I18N.settings.recognitionLanguageHelp} label={I18N.settings.helpLabel} /></span>
+            <span>{I18N.overlay.sourceLanguage} <SettingsHelp text={speechLanguageGuidance(settings).help} label={I18N.settings.helpLabel} /></span>
             <LanguageSelect
               label={I18N.overlay.sourceLanguage}
               value={settings.sourceLanguage}
               options={model.sourceOptions.map((language) => ({
                 value: language,
-                label: SOURCE_LANGUAGE_DISPLAY_NAMES[language],
+                label: speechLanguageGuidance(settings).optionLabel(language),
               }))}
               disabled={!canChangeSessionSettings}
               onChange={(value) => performAction("source", () => onSwitchSourceLanguage(value as SourceLanguage))}
@@ -215,6 +217,7 @@ export function OverlayControlPanel({
           </div>
         )}
 
+        {speechLanguageGuidance(settings).notice && <div className="recognition-language-notice">{speechLanguageGuidance(settings).notice}</div>}
         <div className="overlay-control-divider" />
 
         {model.canSkipTranslation && <button
