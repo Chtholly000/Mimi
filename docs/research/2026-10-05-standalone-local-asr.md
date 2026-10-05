@@ -153,3 +153,9 @@ Tool verification: 13 focused regressions cover exact corpus membership/splits,
 failed results, input identity, fixed combined-fixture hashes, independent load/clip
 timeouts and cancellation/descendant cleanup. The final tooling hardening did not
 change model decoding or rewrite the measured evidence.
+
+The research branch was synchronized with main `a0ac37f`; its application trees
+are identical to that revision. Canonical `./scripts/check.sh` passed after the
+sync (Rust 1,088 passed / 2 ignored, frontend 1,444 tests, shared-core/JNI, strict
+checks and production build). Python tooling checks are separate from hardware
+quality evidence. No development or installed app was launched by this round.
