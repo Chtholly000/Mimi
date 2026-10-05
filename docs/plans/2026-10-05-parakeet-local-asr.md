@@ -47,8 +47,9 @@ requests include the actual Rust client's context, heartbeat and punctuation
 parameters; empty-input-only fixtures missed a real native setup rejection.
 An explicit `--silence-ms` option permits 240/320 ms comparison without changing
 the default. Queued final inference takes priority over queued drafts, and a
-source skips stale previews while newer PCM or EOF is waiting. Neither rule
-drops audio or final work. In-flight inference cannot be preempted safely.
+source keeps only its latest waiting preview. An in-flight preview superseded
+by its final cannot publish. Neither rule drops audio or final work. In-flight
+inference cannot be preempted safely.
 
 The model worker is a separate process. Runtime uses the downloaded local path
 with offline mode enabled. Setup alone downloads pinned assets. Cancellation
@@ -82,3 +83,54 @@ The service was stopped afterwards. The eight-second cut still yielded a
 fragment; full-sample correctness and complete subtitle-overlay visual
 acceptance remain unverified. Exact binary provenance and scope are recorded in
 the README and integration ledger.
+
+
+## Recovery from contended inference and empty finals
+
+The 2026-10-05 content-free service log exposed four `empty_final` session
+failures and one `audio_queue_full` before additional unsupported-language
+attempts. The queue failure followed decodes of 1,112.8–1,984.3 ms. The former
+pipeline awaited each decode while its two-second input queue kept filling.
+These observations identify failure boundaries, not transcript correctness.
+
+Split each session into bounded receiving, segmentation and inference tasks.
+Keep the 64,000-byte / 101-packet input bounds. Keep up to two pending final
+snapshots (512,000 PCM bytes), one replaceable preview (256,000 bytes), one
+active inference (256,000 bytes), and the existing bounded segmenter. IPC and
+WebSocket buffers remain separately bounded. Final snapshots preserve all
+segment PCM and FIFO order; final work outranks waiting previews. Old preview
+results cannot publish after that sentence's final has been queued. A full
+final backlog fails explicitly instead of dropping final audio or hiding a
+worker that cannot sustain the input. Cancellation tears down all session tasks;
+EOF preserves the existing 20-second drain deadline.
+
+An empty final must never become a session error or promote an unconfirmed
+draft. Mimi's existing decoder ignores empty finals, and a repeated empty begin
+for the same ID does not retract a preview. Therefore, only when a final is
+empty after a published draft, send that empty final and reserve the next ID
+with an empty begin. This crosses the existing preview boundary, cancels its
+pending translation, and creates no history. The next actual sentence reuses
+that ID; EOF creates no fabricated final for a merely reserved boundary.
+Existing finalized translations are not changed. This compatibility adaptation
+requires no shared subtitle-policy change.
+
+Valid setup with unsupported language hints has its own fixed wire error code,
+`UNSUPPORTED_LANGUAGE`, and sanitized label `unsupported_language`. Other
+malformed setup stays `CLIENT_ERROR` / `invalid_setup`; no new languages are
+claimed. Regression tests cover empty-final retraction, consecutive boundaries,
+EOF, slow decoding with more than two seconds of arriving PCM, fixed overload
+bounds, obsolete previews, and the setup error distinction. Native reproduction
+under concurrent Index load remains a separate acceptance check.
+
+Targeted verification of this repair: all 31 synthetic/loopback tests pass.
+The empty-final and slow-decoder regression cases also ran against the prior
+bridge implementation in a temporary directory and failed with the same
+`empty_final` and `audio_queue_full` labels observed in the service log. No live
+service or model was started or stopped by these checks. This is regression
+evidence, not a new native speech-quality or concurrent-model acceptance run.
+
+The repository canonical check also passed for `9dbea99` plus this repair:
+desktop Rust 1088 passed / 2 ignored; frontend 110 files / 1444 tests; shared
+core and actual JNI, strict Clippy, lint, typecheck and production build passed.
+Existing Cargo output was reused. This does not change the outstanding native
+long-session and concurrent-Index verification limits.

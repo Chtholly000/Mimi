@@ -87,12 +87,29 @@ The upstream streaming implementation is intentionally not used unchanged: its
 default right context delays commitment by about 20.48 seconds and retains an
 ever-growing list of finalized tokens.
 
-Each source has a 64,000-byte PCM queue, plus bounded WebSocket buffers and one
-eight-second segment. Drafts replace the full current sentence; final sentences
-are not retained by the bridge. EOF drains queued audio before the final and
-task-finished events. Closing a socket cancels it; an already running inference
-may finish internally, but its result cannot reach another source. A stalled
-worker fails requests and must be restarted explicitly.
+Each source has a 64,000-byte PCM queue (also capped at 101 packets), plus bounded
+WebSocket buffers. Segmentation drains that queue independently of inference.
+There are at most two waiting final segments, one replaceable preview, one
+active inference and one segment being assembled; each segment is capped at
+eight seconds. Finals run in order before waiting previews. A preview that is
+superseded by its final while decoding is not published. Sustained overload
+still reports `final_queue_full`; raw input bursts report `audio_queue_full`.
+Neither path drops audio or silently expands memory to keep a session running.
+
+Drafts replace the full current sentence; final text is not retained by the
+bridge. If a final decode is empty after a visible draft, the bridge emits the
+empty final and an empty begin for the next sentence ID. Mimi ignores empty
+finals, so that next boundary retracts the unconfirmed preview and its pending
+translation. The next real sentence reuses the reserved ID. This does not
+promote the draft, create confirmed text, or alter an earlier confirmed final.
+An empty final without a preceding draft needs no extra begin.
+
+EOF drains queued audio and pending finals before `task-finished`. Closing a
+socket cancels all three stages; an already running inference may finish
+internally, but its result cannot reach another source. A stalled worker fails
+requests and must be restarted explicitly. A valid setup that selects an
+unsupported language returns `UNSUPPORTED_LANGUAGE` / `unsupported_language`;
+malformed setup retains `CLIENT_ERROR` / `invalid_setup`.
 
 ## Reproducible checks
 

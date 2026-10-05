@@ -9,10 +9,11 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bridge import Bridge, BridgeError, MAX_CONTEXT_BYTES, Worker, check_request, validate_start
+from bridge import (Bridge, BridgeError, MAX_CONTEXT_BYTES, MAX_PENDING_FINALS, MAX_QUEUE_BYTES,
+                    Session, Worker, check_request, validate_start)
 from auth import ensure_token, read_token
 import control
-from segmentation import FRAME_BYTES, LANGUAGES, MAX_SEGMENT_BYTES, MODEL, Segmenter
+from segmentation import FRAME_BYTES, LANGUAGES, MAX_SEGMENT_BYTES, MODEL, Segment, Segmenter
 from websockets.asyncio.client import connect as raw_connect
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -272,18 +273,195 @@ class WebSocketTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(all(event["header"]["task_id"] == "next" for event in events))
                 self.assertEqual(events[-1]["payload"]["output"]["sentence"]["sentence_id"], 1)
 
-    async def test_full_pcm_queue_reports_failure_instead_of_dropping_audio(self):
-        async with endpoint(FakeWorker(delay=0.2)) as (url, _):
+    async def test_empty_finals_retract_previews_and_reuse_next_real_sentence_id(self):
+        class EmptyFinalWorker(FakeWorker):
+            async def decode(self, pcm, *, final=False):
+                return "" if final else "synthetic unconfirmed draft"
+        async with endpoint(EmptyFinalWorker()) as (url, _):
             async with connect(url) as ws:
                 await ws.send(json.dumps(run_task()))
                 await receive(ws)
-                for _ in range(5):
-                    await ws.send(VOICE * 50)
+                begins, finals = [], []
+                for sentence_id in (1, 2):
+                    await ws.send(VOICE * 40)
+                    while True:
+                        event = await receive(ws)
+                        self.assertEqual(event["header"]["event"], "result-generated")
+                        sentence = event["payload"]["output"]["sentence"]
+                        if sentence["sentence_begin"]:
+                            begins.append(sentence["sentence_id"])
+                        if sentence["text"]:
+                            self.assertEqual(sentence["sentence_id"], sentence_id)
+                            self.assertFalse(sentence["sentence_end"])
+                            break
+                    await ws.send(SILENCE * 24)
+                    final = (await receive(ws))["payload"]["output"]["sentence"]
+                    self.assertEqual((final["sentence_id"], final["text"], final["sentence_end"]),
+                                     (sentence_id, "", True))
+                    finals.append(final)
+                    next_begin = (await receive(ws))["payload"]["output"]["sentence"]
+                    self.assertTrue(next_begin["sentence_begin"])
+                    self.assertFalse(next_begin["sentence_end"])
+                    self.assertEqual(next_begin["text"], "")
+                    self.assertEqual(next_begin["sentence_id"], sentence_id + 1)
+                    begins.append(next_begin["sentence_id"])
+                # The reserved empty boundary creates neither audio nor a final.
+                self.assertEqual(await finish(ws, "fixture"), [])
+                self.assertEqual(begins, [1, 2, 3])
+                self.assertTrue(all(final["text"] == "" for final in finals))
+
+    async def test_empty_eof_final_retracts_draft_before_finished(self):
+        class EmptyFinalWorker(FakeWorker):
+            async def decode(self, pcm, *, final=False):
+                return "" if final else "synthetic unconfirmed draft"
+        async with endpoint(EmptyFinalWorker()) as (url, _):
+            async with connect(url) as ws:
+                await ws.send(json.dumps(run_task()))
+                await receive(ws)
+                await ws.send(VOICE * 40)
+                self.assertTrue((await receive(ws))["payload"]["output"]["sentence"]["sentence_begin"])
+                self.assertEqual((await receive(ws))["payload"]["output"]["sentence"]["text"],
+                                 "synthetic unconfirmed draft")
+                events = await finish(ws, "fixture")
+                sentences = [event["payload"]["output"]["sentence"] for event in events]
+                self.assertEqual([(s["sentence_id"], s["sentence_begin"], s["sentence_end"], s["text"])
+                                  for s in sentences], [(1, False, True, ""), (2, True, False, "")])
+
+    async def test_empty_eof_final_without_preview_never_reserves_extra_boundary(self):
+        class EmptyWorker(FakeWorker):
+            async def decode(self, pcm, *, final=False):
+                return ""
+        async with endpoint(EmptyWorker()) as (url, _):
+            async with connect(url) as ws:
+                await ws.send(json.dumps(run_task()))
+                await receive(ws)
+                await ws.send(VOICE * 5)
+                events = await finish(ws, "fixture")
+                sentences = [event["payload"]["output"]["sentence"] for event in events]
+                self.assertEqual(len(sentences), 2)
+                self.assertTrue(sentences[0]["sentence_begin"])
+                self.assertTrue(sentences[1]["sentence_end"])
+                self.assertEqual({sentence["sentence_id"] for sentence in sentences}, {1})
+                self.assertTrue(all(sentence["text"] == "" for sentence in sentences))
+
+    async def test_segmentation_keeps_draining_during_slow_decode_without_losing_pcm(self):
+        class HeldWorker(FakeWorker):
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+                self.finals = []
+            async def decode(self, pcm, *, final=False):
+                if not self.started.is_set():
+                    self.started.set()
+                    await self.release.wait()
+                if final:
+                    self.finals.append(pcm)
+                return "synthetic confirmed" if final else "synthetic preview"
+        worker = HeldWorker()
+        async with endpoint(worker) as (url, _):
+            async with connect(url) as ws:
+                await ws.send(json.dumps(run_task()))
+                await receive(ws)
+                await ws.send(VOICE * 40)
+                await asyncio.wait_for(worker.started.wait(), 1)
+                # More than two seconds of PCM arrives during one decode. The
+                # segmentation stage must still consume all of it, even though
+                # no model result can yet complete.
+                for _ in range(7):
+                    await ws.send(VOICE * 20)
+                    await asyncio.sleep(0.005)
+                worker.release.set()
+                events = await finish(ws, "fixture")
+                self.assertFalse(any(event["header"]["event"] == "task-failed" for event in events))
+                self.assertEqual(b"".join(worker.finals), VOICE * 180)
+
+    async def test_final_backlog_fails_at_fixed_bound_and_never_discards_a_final(self):
+        session = Session(None, FakeWorker(), "fixture")
+        for sentence_id in range(1, MAX_PENDING_FINALS + 1):
+            session.enqueue(Segment(sentence_id, VOICE, 0, 20, final=True))
+        with self.assertRaisesRegex(BridgeError, "final_queue_full"):
+            session.enqueue(Segment(MAX_PENDING_FINALS + 1, VOICE, 0, 20, final=True))
+        self.assertEqual([segment.sentence_id for segment in session.pending_finals],
+                         list(range(1, MAX_PENDING_FINALS + 1)))
+        self.assertEqual(len(session.pending_finals), MAX_PENDING_FINALS)
+
+    async def test_persistent_slow_inference_reports_bounded_final_backlog(self):
+        class StalledWorker(FakeWorker):
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.cancelled = asyncio.Event()
+            async def decode(self, pcm, *, final=False):
+                self.started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    self.cancelled.set()
+        worker = StalledWorker()
+        async with endpoint(worker) as (url, bridge):
+            async with connect(url) as ws:
+                await ws.send(json.dumps(run_task()))
+                await receive(ws)
+                await ws.send(VOICE * 40)
+                await asyncio.wait_for(worker.started.wait(), 1)
+                # Three complete eight-second segments cannot all wait behind
+                # a stalled decode. Yield between chunks to isolate the final
+                # backlog bound from the raw burst/packet limit.
+                for offset in range(40, 1200, 20):
+                    await ws.send(VOICE * min(20, 1200 - offset))
+                    await asyncio.sleep(0.001)
                 while True:
-                    value = await receive(ws)
-                    if value["header"]["event"] == "task-failed":
-                        self.assertEqual(value["header"]["error_message"], "audio_queue_full")
+                    event = await receive(ws)
+                    if event["header"]["event"] == "task-failed":
+                        self.assertEqual(event["header"]["error_message"], "final_queue_full")
                         break
+                await asyncio.wait_for(worker.cancelled.wait(), 1)
+            self.assertEqual(bridge.active, 0)
+
+    async def test_final_overtakes_obsolete_preview_but_preserves_original_pcm(self):
+        class HeldWorker(FakeWorker):
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+                self.calls = []
+            async def decode(self, pcm, *, final=False):
+                self.calls.append((pcm, final))
+                if not final:
+                    self.started.set()
+                    await self.release.wait()
+                return "synthetic final" if final else "obsolete preview"
+        worker = HeldWorker()
+        session = Session(None, worker, "fixture")
+        events = []
+        async def event(name, sentence=None):
+            events.append((name, sentence))
+        session.event = event
+        session.enqueue(Segment(1, VOICE, 0, 20, final=False))
+        inference = asyncio.create_task(session.infer())
+        await worker.started.wait()
+        session.enqueue(Segment(1, VOICE * 2, 0, 40, final=False))
+        session.enqueue(Segment(1, VOICE * 3, 0, 60, final=True))
+        session.enqueue(Segment(2, VOICE * 4, 60, 140, final=True))
+        session.input_finished = True
+        worker.release.set()
+        await asyncio.wait_for(inference, 1)
+        self.assertEqual(worker.calls, [(VOICE, False), (VOICE * 3, True), (VOICE * 4, True)])
+        self.assertEqual([sentence["sentence_id"] for _, sentence in events
+                          if sentence and sentence["sentence_end"]], [1, 2])
+        self.assertFalse(any(sentence and sentence["text"] == "obsolete preview" for _, sentence in events))
+        self.assertEqual(events[-1], ("task-finished", None))
+
+    async def test_full_pcm_queue_reports_failure_instead_of_dropping_audio(self):
+        class BurstSocket:
+            def __aiter__(self):
+                return self.messages()
+            async def messages(self):
+                for _ in range(101):
+                    yield VOICE
+        session = Session(BurstSocket(), FakeWorker(), "fixture")
+        with self.assertRaisesRegex(BridgeError, "audio_queue_full"):
+            await session.read()
+        self.assertEqual(session.queued_bytes, MAX_QUEUE_BYTES)
+        self.assertEqual(session.queue.qsize(), 100)
 
     async def test_third_source_is_rejected(self):
         async with endpoint(FakeWorker()) as (url, _):
@@ -359,6 +537,20 @@ class WebSocketTests(unittest.IsolatedAsyncioTestCase):
                 event = await receive(ws)
                 self.assertEqual(event["header"]["task_id"], "language-test")
                 self.assertEqual(event["header"]["event"], "task-failed")
+                self.assertEqual(event["header"]["error_code"], "UNSUPPORTED_LANGUAGE")
+                self.assertEqual(event["header"]["error_message"], "unsupported_language")
+
+    async def test_malformed_language_hints_remain_invalid_setup(self):
+        async with endpoint(FakeWorker()) as (url, _):
+            for hints in (["ja", "en"], [1], "ja"):
+                async with connect(url) as ws:
+                    request = run_task()
+                    request["payload"]["parameters"]["language_hints"] = hints
+                    await ws.send(json.dumps(request))
+                    event = await receive(ws)
+                    self.assertEqual(event["header"]["event"], "task-failed")
+                    self.assertEqual(event["header"]["error_code"], "CLIENT_ERROR")
+                    self.assertEqual(event["header"]["error_message"], "invalid_setup")
 
     async def test_connection_check_does_not_pass_after_worker_failure(self):
         worker = FakeWorker()

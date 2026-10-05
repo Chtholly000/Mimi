@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import base64
 from contextlib import suppress
+from collections import deque
 import json
 import hmac
 import itertools
@@ -21,6 +22,7 @@ from segmentation import LANGUAGES, MODEL, Segmenter
 from auth import read_token
 
 MAX_QUEUE_BYTES = 64_000
+MAX_PENDING_FINALS = 2
 MAX_CONTEXT_BYTES = 4096
 LOG = None
 
@@ -71,9 +73,11 @@ def validate_start(raw):
                  and payload["function"] == "recognition" and payload["model"] == MODEL
                  and params["format"] == "pcm" and params["sample_rate"] == 16_000
                  and isinstance(hints, list) and len(hints) <= 1
-                 and all(isinstance(hint, str) and hint in LANGUAGES for hint in hints)
+                 and all(isinstance(hint, str) for hint in hints)
                  and valid_input(payload.get("input", {})))
         if valid:
+            if any(hint not in LANGUAGES for hint in hints):
+                raise BridgeError("unsupported_language")
             return task_id
     except (ValueError, KeyError, TypeError):
         pass
@@ -184,6 +188,12 @@ class Session:
         self.silence_ms = silence_ms
         self.segmenter = Segmenter(silence_ms)
         self.last_draft = ""
+        self.pending_finals = deque()
+        self.preview = None
+        self.inference_ready = asyncio.Event()
+        self.input_finished = False
+        self.last_enqueued_final_id = 0
+        self.emitted_sentence_id = 0
 
     async def event(self, name, sentence=None):
         value = {"header": {"event": name, "task_id": self.task_id}}
@@ -213,57 +223,120 @@ class Session:
                 return True
         return False  # socket close is cancellation, not successful EOF
 
+    def enqueue(self, segment):
+        if segment.final:
+            if len(self.pending_finals) >= MAX_PENDING_FINALS:
+                raise BridgeError("final_queue_full")
+            self.pending_finals.append(segment)
+            self.last_enqueued_final_id = segment.sentence_id
+            self.preview = None
+        else:
+            # Only previews are replaceable. Every final retains the complete
+            # original segment, independently of skipped preview snapshots.
+            self.preview = segment
+        self.inference_ready.set()
+
     async def process(self):
+        # Segmentation must keep draining input while model inference runs.
+        # Otherwise a two-second decode fills the entire PCM queue by itself.
         while True:
             pcm = await self.queue.get()
             if pcm is None:
                 for segment in self.segmenter.finish():
-                    await self.result(segment)
-                await self.event("task-finished")
+                    self.enqueue(segment)
+                self.input_finished = True
+                self.inference_ready.set()
                 return
             self.queued_bytes -= len(pcm)
             for segment in self.segmenter.feed(pcm):
-                await self.result(segment)
+                self.enqueue(segment)
+            pcm = None
+
+    async def infer(self):
+        while True:
+            await self.inference_ready.wait()
+            if self.pending_finals:
+                segment = self.pending_finals.popleft()
+            elif self.preview is not None:
+                segment, self.preview = self.preview, None
+            elif self.input_finished:
+                await self.event("task-finished")
+                return
+            else:
+                self.inference_ready.clear()
+                continue
+            await self.result(segment)
+            segment = None
+
+    async def begin(self, sentence_id, at_ms):
+        if sentence_id == self.emitted_sentence_id:
+            return
+        self.emitted_sentence_id = sentence_id
+        self.last_draft = ""
+        await self.event("result-generated", {
+            "text": "", "sentence_id": sentence_id,
+            "sentence_begin": True, "sentence_end": False,
+            "begin_time": at_ms, "end_time": at_ms, "heartbeat": False,
+        })
 
     async def result(self, segment):
-        # When newer audio/EOF is already queued, catch up to it instead of
-        # paying for an obsolete preview. Finals are never skipped.
-        if not segment.begin and not segment.final and not self.queue.empty():
+        await self.begin(segment.sentence_id, segment.start_ms)
+        if segment.begin:
             return
-        text = "" if segment.begin else await self.worker.decode(segment.pcm, final=segment.final)
-        if not segment.begin:
-            if segment.final and not text and self.last_draft:
-                raise BridgeError("empty_final")
-            if not segment.final and (not text or text == self.last_draft):
+        text = await self.worker.decode(segment.pcm, final=segment.final)
+        if not segment.final:
+            # Audio may have reached this final or a newer sentence while a
+            # non-preemptible preview decode was running. Do not publish it late.
+            if segment.sentence_id <= self.last_enqueued_final_id:
                 return
-            self.last_draft = "" if segment.final else text
+            if not text or text == self.last_draft:
+                return
+        retract_preview = segment.final and not text and bool(self.last_draft)
+        self.last_draft = "" if segment.final else text
         await self.event("result-generated", {
             "text": text, "sentence_id": segment.sentence_id,
-            "sentence_begin": segment.begin, "sentence_end": segment.final,
+            "sentence_begin": False, "sentence_end": segment.final,
             "begin_time": segment.start_ms, "end_time": segment.end_ms,
             "heartbeat": False,
         })
+        if retract_preview:
+            # Mimi ignores empty finals. Advance its existing empty-begin
+            # boundary to retract only this unconfirmed preview; the next real
+            # segment reuses this ID. Never promote a draft into a final.
+            diagnostic("empty_final_retracted")
+            await self.begin(segment.sentence_id + 1, segment.end_ms)
 
     async def run(self):
         await self.event("task-started")
         reader = asyncio.create_task(self.read())
         processor = asyncio.create_task(self.process())
+        inference = asyncio.create_task(self.infer())
+        tasks = (reader, processor, inference)
         try:
-            finished, _ = await asyncio.wait([reader, processor], return_when=asyncio.FIRST_COMPLETED)
-            if reader in finished:
-                if reader.result():
-                    await asyncio.wait_for(processor, 20)
-            else:
-                await processor
+            pending = set(tasks)
+            while pending:
+                finished, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                for task in finished:
+                    result = task.result()  # A failure in any stage cancels all stages.
+                    if task is reader and not result:
+                        return
+                if inference in finished:
+                    return
+                if reader in finished:
+                    # EOF has been read; bound draining and final delivery too.
+                    await asyncio.wait_for(asyncio.gather(*pending), 20)
+                    return
         finally:
-            for task in (reader, processor):
+            for task in tasks:
                 task.cancel()
-            await asyncio.gather(reader, processor, return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
             while not self.queue.empty():
                 self.queue.get_nowait()
             self.queued_bytes = 0
             self.segmenter = Segmenter(self.silence_ms)
             self.last_draft = ""
+            self.pending_finals.clear()
+            self.preview = None
 
 
 class Bridge:
@@ -297,10 +370,11 @@ class Bridge:
             pass
         except Exception as error:
             code = str(error) if isinstance(error, BridgeError) else "session_failed"
+            wire_code = "UNSUPPORTED_LANGUAGE" if code == "unsupported_language" else "CLIENT_ERROR"
             with suppress(ConnectionClosed, TimeoutError):
                 await asyncio.wait_for(websocket.send(json.dumps({"header": {
                     "event": "task-failed", "task_id": task_id,
-                    "error_code": "CLIENT_ERROR", "error_message": code}})), 1)
+                    "error_code": wire_code, "error_message": code}})), 1)
             diagnostic("session_error", code=code)
         finally:
             self.active -= 1

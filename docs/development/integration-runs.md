@@ -4,6 +4,29 @@
 实测范围和未解决项；条目是历史证据，后续任务仍须核对当前源码与设备。
 不写密钥、音频、字幕正文或个人目录，不把临时日志当作已持久归档的案例。
 
+## 2026-10-05：Parakeet 会话误停与不支持语种分类
+
+- 用户报告 Parakeet→Index 反复错误暂停。首次内容无关日志快照包含 4 次
+  `empty_final` 和 1 次 `audio_queue_full`；队列失败前解码为
+  1,112.8 / 1,364.4 / 1,481.2 / 1,984.3 ms。随后日语配置导致的
+  `invalid_setup` 是独立的不支持语种问题，不计入以上运行时失败。
+- 基于 `9dbea99` 加本次修复（验证时 dirty）。接收与分段不再等待模型推理；
+  输入仍限 64,000 字节 / 101 包，最多保留两个待 final、一个最新 preview
+  和一个在途推理，单段仍限 8 s。final 保序优先，持续过慢仍有界失败。
+  有已发 draft 但 final 为空时，用下一 ID 的空 begin 撤回未确认预览；
+  不把 draft 确认为 final，下一真实句沿用该 ID。合法但不支持的语言提示
+  返回固定 `UNSUPPORTED_LANGUAGE`，畸形 setup 仍为 `CLIENT_ERROR`。
+- 31 项模型无关/loopback 回归通过，覆盖连续空 final、EOF、下一句 ID、
+  慢推理下超过两秒 PCM 的无丢失接收、持续过载上限及错误分类。两项关键
+  新用例另对旧版桥接运行，分别复现原 `empty_final` / `audio_queue_full`。
+  `./scripts/check.sh` 通过：桌面 Rust 1088 passed / 2 ignored，前端
+  110 files / 1444 tests，shared core 与实际 JNI、严格 Clippy、lint、
+  typecheck 和 production build 均通过。复用了现有 Cargo 缓存。
+- 本轮修复验证未启停 live 服务、模型或 dev；未采音或读取字幕正文。
+  修复后的真实长会话、Index 并发负载及原生显示尚未复验，历史成功样本
+  不能升级为本补丁验收。用户本轮选择日语；Parakeet 不支持日语，日语链路
+  由支持该语种的识别器另行验证。此 PR 继续保持 draft，未合并。
+
 ## 2026-10-05：Parakeet 独立本地识别桥
 
 - `000921b` 后的真实 Mimi 连接检查发现 `invalid_setup`：Rust 客户端总会发送
