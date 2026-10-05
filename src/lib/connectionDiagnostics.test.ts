@@ -164,3 +164,23 @@ it.each(["en", "zh", "ja"] as const)("ordinary file errors do not recommend nati
     expect(connectionDiagnosticMessage({ credential: "unavailable", service: "unavailable", reason: "credentialsUnavailable" }, platform)).not.toMatch(/Keychain|Keyring|Secret Service|Credential Manager|钥匙串|凭据管理器|キーチェーン/);
   }
 });
+
+it.each(["en", "zh", "ja"] as const)("explains fixed Audio3 connection failures without exposing transport details in %s", language => {
+  setStoredUiLanguage(language);
+  const unreachable = [
+    "The speech recognition transport failed.",
+    "The speech recognition session is not connected.",
+    "The speech recognition connection closed.",
+  ];
+  const timeouts = [
+    "The speech recognition connection could not be established in time.",
+    "The speech recognition connection stopped responding.",
+  ];
+  for (const error of unreachable) expect(credentialErrorMessage(error)).toBe(diagnosticCopy().speechUnreachable);
+  for (const error of timeouts) expect(credentialErrorMessage(error)).toBe(diagnosticCopy().speechTimeout);
+  expect(diagnosticCopy().speechUnreachable).not.toBe(diagnosticCopy().unreachable);
+  for (const error of [...unreachable, ...timeouts]) {
+    expect(credentialErrorMessage(`${error} ws://synthetic-private-endpoint`)).toBeNull();
+  }
+  expect(credentialErrorMessage("IO error: connection refused at synthetic-private-endpoint")).toBeNull();
+});

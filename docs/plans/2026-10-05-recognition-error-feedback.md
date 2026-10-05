@@ -11,6 +11,10 @@ retry. This left a configuration failure looking like a transient connection fau
   localized explanation. Never render provider error bodies. Connection checks
   expose the typed `unsupportedLanguage` reason; content-free diagnostics retain
   the configuration category and allowlisted code.
+- Map Audio3's exact fixed transport/timeout labels to localized speech-connection
+  guidance, including checking that a local service is started. These labels survive
+  the recognition/translation adapter unchanged; unknown native errors remain hidden.
+  Preserve retry without claiming a specific TCP, TLS or proxy cause.
 - Treat fixed authentication/unsupported-language and setup request errors as
   requiring user action, including during an existing reconnect loop. Runtime
   generic CLIENT_ERROR remains retryable because it may represent queue overload.
@@ -40,7 +44,11 @@ Android currently uses the separate DashScope realtime `session.update` adapter,
 not Audio3 `run-task`/`task-failed`; no shared subtitle or text-translation contract
 changes. Tests cover safe code decoding, loopback setup rejection, recovery policy,
 three-language feedback across sibling surfaces, and temporary native geometry.
-The canonical repository check passed: 1095 desktop Rust tests (2 ignored),
-1474 frontend tests, shared-core/JNI crate checks, strict lint and production build. Signed native acceptance is a separate
-step: verify normal/content/collapsed/immersive/locked errors and restored geometry,
-including Open speech settings and a temporary network failure's retry action.
+The initial canonical repository check passed: 1095 desktop Rust tests (2 ignored),
+1474 frontend tests, shared-core/JNI crate checks, strict lint and production build.
+The follow-up transport-label mapping passed 75 focused frontend tests, typecheck
+and lint. Signed macOS acceptance confirmed unsupported-language feedback, settings
+navigation, idle recovery and preserved geometry in the local QA combination. The
+transport-label fix still needs native replay; pre-existing collapsed/immersive/content
+states remain unverified natively. See the integration run ledger for exact revisions
+and evidence boundaries.

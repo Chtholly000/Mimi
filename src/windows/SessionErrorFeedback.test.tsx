@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { audio3ErrorMessage } from "../lib/audio3Errors";
+import { diagnosticCopy } from "../lib/connectionDiagnostics";
 import { I18N, setStoredUiLanguage } from "../lib/i18n";
 import { useStore } from "../lib/store";
 import { OverlayWindow } from "./overlay/OverlayWindow";
@@ -152,4 +153,25 @@ it.each(["overlay", "control", "tray", "settings", "compact-settings"] as const)
   await mount(surface);
   expect(feedback().querySelector("p")?.textContent).toBe(I18N.settings.sessionError);
   expect(host.textContent).not.toMatch(/provider-private-text|synthetic-key/);
+});
+
+it.each(["zh", "en", "ja"] as const)("shows an Audio3 startup transport cause and usable retry across surfaces in %s", async language => {
+  setStoredUiLanguage(language);
+  const error = "The speech recognition transport failed.";
+  useStore.setState(state => ({ session: { ...state.session, status: { kind: "error", message: error } } }));
+  for (const surface of surfaces) {
+    await act(async () => root.render(null));
+    start.mockClear();
+    await mount(surface);
+    expect(feedback().querySelector("p")?.textContent).toBe(diagnosticCopy().speechUnreachable);
+    expect(feedback().closest('[aria-hidden="true"], [role="tooltip"]')).toBeNull();
+    expect(host.textContent).not.toContain(error);
+    expect(feedback().textContent).not.toContain(I18N.settings.sessionError);
+    expect(configure().textContent).toBe(I18N.settings.openSpeechSettings);
+    const retry = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === I18N.settings.sessionRetry)!;
+    expect(retry).toBeDefined();
+    await act(async () => retry.click());
+    expect(start).toHaveBeenCalledOnce();
+    expect(showSettings).not.toHaveBeenCalled();
+  }
 });
