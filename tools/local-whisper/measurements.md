@@ -4,6 +4,9 @@ These are direct WebSocket fixture measurements on an Apple M5 / 16 GB Mac,
 macOS 26.3.1(a). They do not measure microphone/system capture, Mimi's overlay,
 translation quality, other languages, background music or sustained two-source use.
 No model weights, recorded audio, credentials or raw recognition results are in Git.
+This is an experimental adapter, not the recommended replacement for Parakeet in
+the current English → Index trial: a later independent-final translation check
+found a meaning-changing negation error caused by the shorter segmentation.
 
 ## Fixed configuration and inputs
 
@@ -52,6 +55,28 @@ repeated-word difference was observed. This does not make the reported WER zero
 and does not establish general accuracy. The 24 inputs became 36 confirmed
 segments: shorter pauses improve this short-sentence case but fragment some
 sentences, which may affect the independently selected translation model.
+
+The subsequent offline chain check confirmed that risk. Each final was sent
+separately to the existing Index 2B Q4_K_M service (llama.cpp b11146 / `7fe450e19`,
+alias `index-translate-2b`), using Mimi's existing generic prompt, English →
+Simplified Chinese, temperature 0, max_tokens 256 and seed 42, without context,
+joining or corrections. On fixture `en-06`, Whisper finals 8/9 split the timer
+instruction from its corrective negation, arriving 1.224 s apart. Index translated
+the second fragment as a less-than comparison, changing the intended exclusion
+of the other number. The complete reference and the Apple/Parakeet complete-
+sentence inputs preserved that correction in this run. Thus the formatting-only
+ASR WER does **not** imply correct translated subtitles. This configuration remains
+experimental for that use; no parameter or text-specific repair was added after
+observing the failure.
+
+All 110 chain requests (26 Apple + 24 Parakeet + 36 Whisper + 24 reference)
+returned nonempty HTTP 200 / stop responses. This was an unblinded qualitative
+review of saved public-fixture finals, not a percentage accuracy score or native
+acceptance; draft scheduling and overlay behavior were not replayed. Evidence
+JSON SHA-256 is `895a932b4958b0e4b96930da5ca611c8d7fcd8b3112d791b21ffa03440557c7c`;
+the source Whisper benchmark SHA-256 is
+`3ee938dbcdcfad4771fab8c9e11e26ecea1609b6f6ceea292e2053624243cfef`.
+Full text remains outside Git in the task's local evidence archive.
 
 Warm model load was 286.5 ms; sampled native-worker peak RSS was 752.2 MiB (0.5 s
 sampling). The simultaneous-EOF run loaded in 199.0 ms and reached 760.1 MiB.
