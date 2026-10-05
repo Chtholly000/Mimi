@@ -8,7 +8,7 @@ import {
 } from "./store";
 
 describe("local preview store", () => {
-  it("keeps profile names, translation aliases and proxies independent across repeated metadata patches", async () => {
+  it("keeps profile names, recognition and translation aliases, and proxies independent across repeated metadata patches", async () => {
     const original = useStore.getState();
     const profile = original.settings.profiles[0];
     const proxy = { mode: "direct" as const, url: null };
@@ -17,11 +17,17 @@ describe("local preview store", () => {
       await useStore.getState().updateProfile(profile.id, undefined, {
         textTranslationName: { route: "openAICompatible", name: "  翻译 & 字幕 + [本地] 🐱  " },
       });
+      await useStore.getState().updateProfile(profile.id, undefined, { speechRecognitionName: "  Whisper · 本地  " });
       await useStore.getState().updateProfile(profile.id, "B 站 2");
       await useStore.getState().updateProfile(profile.id, undefined, { textNetworkProxy: proxy });
       expect(useStore.getState().settings.profiles[0]).toMatchObject({
+        name: "B 站 2", speechRecognitionName: "Whisper · 本地", textTranslationNames: { openAICompatible: "翻译 & 字幕 + [本地] 🐱" }, textNetworkProxy: proxy,
+      });
+      await useStore.getState().updateProfile(profile.id, undefined, { speechRecognitionName: "  " });
+      expect(useStore.getState().settings.profiles[0]).toMatchObject({
         name: "B 站 2", textTranslationNames: { openAICompatible: "翻译 & 字幕 + [本地] 🐱" }, textNetworkProxy: proxy,
       });
+      expect(useStore.getState().settings.profiles[0].speechRecognitionName).toBeUndefined();
       await useStore.getState().updateProfile(profile.id, undefined, {
         textTranslationName: { route: "openAICompatible", name: "  " },
       });

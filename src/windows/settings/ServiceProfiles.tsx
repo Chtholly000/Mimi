@@ -44,6 +44,7 @@ import { SavedCredentialInput } from "./SavedCredentialInput";
 import { useCredentialEditorState } from "./useCredentialEditorState";
 import { SettingsInitializationStatus } from "./SettingsInitializationStatus";
 import { textTranslationDisplayName } from "../../lib/textTranslationName";
+import { speechRecognitionDisplayName } from "../../lib/speechRecognitionName";
 import { NetworkProxySettings } from "./NetworkProxySettings";
 import { ProfileLanguageSettings } from "./ProfileLanguageSettings";
 import { AutoSaveNameField } from "./AutoSaveNameField";
@@ -465,6 +466,7 @@ export function ServiceProfiles({
               visible={visible && pendingConfirmation === null}
               feedback={feedback}
               onSaveTranslationName={(route, name) => handleSaveTranslationName(selectedProfile, route, name)}
+              onSaveRecognitionName={(name: string) => updateProfile(selectedProfile.id, undefined, { speechRecognitionName: name })}
               onSave={(replacement) => handleSaveCredential(selectedProfile.id, replacement)}
               onRequestDelete={() => requestCredentialDelete(selectedProfile.id)}
               onConfirmDelete={() => confirmCredentialDelete(selectedProfile.id)}
@@ -560,7 +562,7 @@ export function ServiceProfiles({
                       void handleSelect(profile.id);
                     else openEditor(profile.id);
                   }}
-                  aria-label={`${profile.name}, ${credentialStateText(credentialStateForTarget(profile, settings.targetLanguage))}${textTranslationForProfile(profile) !== "followService" ? `, ${I18N.settings.textTranslationLabel}: ${textTranslationDisplayName(profile)}` : ""}: ${credentialStateForTarget(profile, settings.targetLanguage) === "present" && profile.id !== settings.activeProfileId ? I18N.settings.useProfile : I18N.settings.editProfile}`}
+                  aria-label={`${profile.name}${isCustomSpeechProvider(profile.provider) && profile.speechRecognitionName?.trim() ? `, ${I18N.settings.speechRecognition}: ${speechRecognitionDisplayName(profile)}` : ""}, ${credentialStateText(credentialStateForTarget(profile, settings.targetLanguage))}${textTranslationForProfile(profile) !== "followService" ? `, ${I18N.settings.textTranslationLabel}: ${textTranslationDisplayName(profile)}` : ""}: ${credentialStateForTarget(profile, settings.targetLanguage) === "present" && profile.id !== settings.activeProfileId ? I18N.settings.useProfile : I18N.settings.editProfile}`}
                 >
                   <ProviderIcon provider={profile.provider === "deepLX" ? "alibabaCloud" : profile.provider} />
                   <span className="service-row__copy">
@@ -874,8 +876,8 @@ function profileDescription(profile: ServiceProfile): string {
 }
 
 function profileSecondaryLabel(profile: ServiceProfile): string | null {
-  if (textTranslationForProfile(profile) !== "followService") return `${I18N.settings.speechRecognition} · ${profileProviderName(profile)}`;
-  const provider = profileProviderName(profile);
+  if (textTranslationForProfile(profile) !== "followService") return `${I18N.settings.speechRecognition} · ${speechRecognitionDisplayName(profile)}`;
+  const provider = speechRecognitionDisplayName(profile);
   return profileTitle(profile).trim().toLowerCase() === provider.toLowerCase() ? null : provider;
 }
 

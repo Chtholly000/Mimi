@@ -340,6 +340,15 @@ artifacts, and signing material.
 
 ## Configuration input and development-mode acceptance
 
+- Before replacing the canonical development app, identify the source revision
+  and any unpublished provider support in the running build. A stable signature
+  does not make an older provider catalog parser compatible. A main-based build
+  without the local Apple Speech trial rejected that trial's saved catalog and
+  showed unavailable fallback profiles. The catalog stayed protected by the
+  write-blocked path; recover with the compatible source instead of recreating
+  configurations. Preserve the existing signed bundle until ordinary startup
+  verifies the expected configurations, and use an isolated combined preview
+  when testing an unrelated change alongside an unpublished provider trial.
 - A long placeholder cannot be selected or edited. Load saved nonsecret fields
   into their real input value and use concise empty-field hints. Check the full
   value and actual editing, not just absence of page overflow. Persistent text

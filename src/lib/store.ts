@@ -531,14 +531,15 @@ export const useStore = create<StoreState>()((set, get) => ({
       ...current,
       profiles: current.profiles.map((profile) =>
         profile.id === profileId ? (() => {
-          const { textTranslationName, ...proxies } = options ?? {};
+          const { textTranslationName, speechRecognitionName, ...proxies } = options ?? {};
           const textTranslationNames = { ...profile.textTranslationNames };
           if (textTranslationName) {
             const value = textTranslationName.name.trim();
             if (value) textTranslationNames[textTranslationName.route] = value;
             else delete textTranslationNames[textTranslationName.route];
           }
-          return { ...profile, ...(name === undefined ? {} : { name: name.trim() }), ...proxies, textTranslationNames };
+          return { ...profile, ...(name === undefined ? {} : { name: name.trim() }), ...proxies, textTranslationNames,
+            ...(speechRecognitionName === undefined ? {} : { speechRecognitionName: speechRecognitionName.trim() || undefined }) };
         })() : profile,
       ),
     };
