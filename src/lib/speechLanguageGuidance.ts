@@ -22,7 +22,7 @@ export function speechLanguageGuidance(settings: LanguageSettings) {
   return {
     help: [meaning, parameter, !custom && provider !== "appleSpeech" && choices.length > 0 ? I18N.settings.recognitionAvailableHelp(choices.join(" / ")) : ""].filter(Boolean).join("\n"),
     notice: custom ? profile?.customSpeechSourceLanguages == null ? I18N.settings.recognitionCustomNotice : I18N.settings.recognitionDeclaredNotice : null,
-    catalogHelp: I18N.settings.languageConfigurationHelp(providerDisplayName(provider), settings.targetLanguage === "original" ? I18N.settings.skipTranslation : profile ? textTranslationDisplayName(profile) : providerDisplayName(provider)),
+    catalogHelp: provider === "appleSpeech" ? I18N.settings.appleSpeechLanguageHelp : I18N.settings.languageConfigurationHelp(providerDisplayName(provider), settings.targetLanguage === "original" ? I18N.settings.skipTranslation : profile ? textTranslationDisplayName(profile) : providerDisplayName(provider)),
     optionLabel: (source: SourceLanguage) => custom && source === "auto" ? I18N.settings.recognitionServiceDefault : SOURCE_LANGUAGE_DISPLAY_NAMES[source],
   };
 }
