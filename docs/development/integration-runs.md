@@ -1000,16 +1000,43 @@
   off. The cause remains unknown. Sustained stability did not pass, and no
   silence timeout or root-cause fix is established.
 - The subsequent `support_diagnostics.rs` patch only adds safe numeric provider
-  status and fixed-label classification. It awaits native revalidation and
-  does not change provider behavior, protocol or automatic recovery.
+  status and fixed-label classification. The clean follow-up below ran the patch
+  natively without triggering its numeric failure path. Provider behavior,
+  protocol and automatic recovery are unchanged.
 
-- Follow-up signed build from `6aa143dc` plus the diagnostic/UI patch: silent
-  listening lasted at least 166.585 s (app uptime 157,710–324,295 ms), with
-  recent PCM, no recent sound, no text events and no failure in the support
-  report. A later fixed-audio replay was interrupted when a concurrent task
-  installed UI-test mode at the canonical dev path, so that replay is excluded.
-  The earlier post-audio failure remains unresolved.
+- Earlier signed `6aa143dc` plus diagnostic/UI patch: silent listening lasted
+  166.585 s without a recorded failure. A later audio replay was interrupted by
+  another task installing UI-test mode at the canonical path and is excluded.
 - Automated follow-up: `scripts/check.sh` passed with 1,172 Rust tests / 2 ignored,
   72 shared-core tests and JNI checks, and 1,730 frontend tests. After the
   provider-picker Cancel/navigation fix, the complete frontend suite passed
   1,736 tests across 119 files; lint, typecheck and production build also passed.
+
+### 2026-10-05 — Clean Volcano audio and sustained-silence follow-up
+
+- Signed canonical build from clean `82514e5d`, system audio on and microphone
+  off. The configured route was **`ja` → `zh`**, but the existing 15.091-second
+  synthetic sample was **English**. This run verifies transport/lifecycle and
+  output counts, not English language support or recognition/translation accuracy.
+- Support diagnostics remained `listening` from app uptime 138,481 to
+  346,969 ms (208.488 s), with six confirmed pairs and no error. The trace's
+  final pair was at 163,298 ms and last audible batch at 163,068 ms. Silent PCM
+  sends continued from 165,062 through 365,062 ms: at least 200 s, with 101
+  send-statistic observations at -96 dBFS and a maximum observation gap of
+  2,013 ms (not audio packet spacing). No provider error, recovery or
+  reconnection was recorded in this run.
+- Trace IDs 1–1,331 were contiguous, with no eviction, drops, cap hits or write
+  failures, and `unflushedWindows` was empty at stop. All 64 published snapshots
+  (IDs 1–64) reported successful delivery and reached `wireReceived`/`storeApplied`
+  in each of four windows. Source, translation, history and track counts had
+  zero mismatches; `overlayCommitted` covered all 64. Content, private-event and
+  replay counters were all zero.
+- Service-picker guidance and Cancel return were verified natively during an
+  active session. The diagnostic patch also ran natively, but the old `OTHER`
+  failure did not recur. Its cause remains unresolved; the safe numeric error
+  path still has automated coverage only. This is not evidence of a root-cause
+  fix or a general silence timeout rule. See the
+  [provider matrix](provider-regression-matrix.md) for earlier evidence and limits.
+- After integrating main's Tencent fixes, final `scripts/check.sh` at `5b689c78`
+  passed: Rust 1,177 / 2 ignored, shared core 72 plus JNI checks, frontend 1,743
+  across 120 files, formatting, Clippy, lint, typecheck, production build and diff.

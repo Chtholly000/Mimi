@@ -28,8 +28,8 @@ text translator retains its own eligibility and billing.
 Unless a row states otherwise, the native observations below used the signed
 canonical `/Applications/mimi-dev.app`, build **`d58f4bad`**, which does **not**
 contain this audit's authentication/error-mapping patches. The comparable input
-was a fixed 15.091-second synthetic English sample. Volcano used a separate
-playback source and has bounded multiwindow trace evidence below. These results
+was a fixed 15.091-second synthetic English sample. Volcano's playback sources
+and multiwindow trace coverage are recorded separately below. These results
 do not establish complete-session or full lifecycle coverage for every provider.
 
 | Service / route | Available setup evidence | Current audit status |
@@ -42,7 +42,7 @@ do not establish complete-session or full lifecycle coverage for every provider.
 | Whisper + Index text translation | Existing configured route; ASR check 67 ms, MT check 851 ms on `d58f4bad`. | The 15.091-second sample's final ASR and MT both reached the last sentence. Local ASR was observed to be slow, but end-to-end latency was not measured. Pause/resume was not exercised; this is not a latency or full lifecycle pass. |
 | Parakeet | On build `fbf3c06c`, the 16 ms availability check returned unavailable. | Capture was not started. This is an unavailable preflight result, not successful recognition or a native session pass. |
 | HyMT / TranslateGemma independent text translation | On build `fbf3c06c`, connection checks returned unavailable: HyMT 6 ms, TranslateGemma 0 ms. | Capture was not started. These are unavailable preflight results, not successful translation or native session passes. |
-| Volcano Engine | The user completed account setup and activated simultaneous interpretation 2.0 as a formal service, then entered the key in Mimi. The observed initial allowance was 1,000,000 / 1,000,000 tokens; expiry displayed `-`. The agent did not create the account, activate the service or enter the key. | On clean `5b29d05e`, `en` → `zh` output, pause/resume and four-window consistency were verified within the retained trace interval below. Cold launch retained working credentials and a new session completed the synthetic sample, but later silence led to reconnection and repeated `OTHER` errors. Sustained stability is not accepted; the cause remains unknown. The added safe diagnostic classification awaits native revalidation. |
+| Volcano Engine | The user completed account setup and activated simultaneous interpretation 2.0 as a formal service, then entered the key in Mimi. The observed initial allowance was 1,000,000 / 1,000,000 tokens; expiry displayed `-`. The agent did not create the account, activate the service or enter the key. | Clean `5b29d05e` verified output, pause/resume and bounded four-window consistency, then encountered unexplained `OTHER` errors after later silence. Clean `82514e5d` produced six pairs and sent at least 200 s of silent PCM without provider errors or reconnection; all 64 snapshots agreed across four windows. Its `ja` → `zh` setting with an English sample limits this result to transport/lifecycle and output counts. The earlier fault did not recur, so its cause remains unresolved and the numeric failure classification still has automated coverage only. |
 | OpenAI / Azure OpenAI / Tencent Cloud / xAI | No confirmed free allowance for Mimi's exact API; Azure's general trial remains distinct from model eligibility. | No native test this round. |
 
 ### Clean `6ac14bde` follow-up
@@ -136,16 +136,47 @@ start at 266,856 ms reached `listening` at 267,292 ms and failed with `OTHER` at
 private events and recording remained off. The cause is unknown, so this run
 does not pass sustained-session stability or establish a silence timeout rule.
 The subsequent `support_diagnostics.rs` patch adds safe numeric provider status
-and fixed-label classification only. Its native revalidation remains incomplete;
-provider behavior, protocol and automatic recovery are unchanged.
+and fixed-label classification only. The clean native follow-up below ran the
+patch, but did not trigger its numeric failure path. Provider behavior, protocol
+and automatic recovery are unchanged.
 
-On a signed follow-up build from `6aa143dc` plus this uncommitted diagnostic/UI
-patch, a silent session reached listening at app uptime 157,710 ms and remained
-listening at 324,295 ms (166.585 s), with recent PCM, no recent sound, no text
-events and no recorded failure. The subsequent fixed-audio replay was interrupted
-by another development task replacing the canonical app with UI-test mode; it
-is excluded from provider results. This does not disprove the earlier failure
-or establish successful post-audio silence recovery.
+An earlier signed `6aa143dc` build plus the diagnostic/UI patch remained silently
+listening for 166.585 s. Its later audio replay was interrupted by another task
+replacing the canonical app with UI-test mode and is excluded from provider results.
+
+### Clean `82514e5d` Volcano audio and sustained-silence follow-up
+
+The signed canonical native build used system audio with microphone capture off.
+The configured route was **`ja` → `zh`**, while playback used the existing
+15.091-second **English** synthetic sample. This mismatch limits the evidence
+to transport, lifecycle and output counts; it is not an English language or
+recognition/translation accuracy pass.
+
+Support diagnostics showed `listening` from app uptime 138,481 ms through
+346,969 ms (**208.488 s**), with six confirmed pairs and no error. In the trace,
+the last audible batch was at 163,068 ms and the final pair at 163,298 ms.
+Silent PCM sends span 165,062–365,062 ms: at least **200 s**, with 101 send-statistic
+observations at -96 dBFS and a maximum observation gap of 2,013 ms. This interval
+describes statistics, not audio packet spacing. No provider error, recovery or
+reconnection was recorded in this run.
+
+All 1,331 trace event IDs were contiguous, with no eviction, drops, cap hits or
+write failures; stopping the trace left `unflushedWindows` empty. All 64 published
+snapshots (IDs 1–64) reported successful delivery and had `wireReceived` and
+`storeApplied` in each of the four windows. Source, translation, history and
+track counts had zero mismatches; `overlayCommitted` covered all 64 snapshots.
+Content, private-event and replay counters were all zero. The service picker's
+guidance and Cancel return were also exercised natively during an active session.
+
+The diagnostic patch ran natively, but the earlier `OTHER` failure did not recur.
+Its cause is still unresolved, and this observation does not establish a fix or
+a general silence timeout rule. The safe numeric classification's actual failure
+path remains covered by automated tests only.
+
+After integrating main's Tencent fixes, the final `scripts/check.sh` at
+`5b689c78` passed: Rust 1,177 / 2 ignored, 72 shared-core tests plus JNI checks,
+and 1,743 frontend tests across 120 files; formatting, Clippy, lint, typecheck,
+production build and diff checks all passed.
 
 Keep account identifiers, keys, provider bodies, recognized/translated text and
 private media out of this matrix. Add only observed revisions, route/language
