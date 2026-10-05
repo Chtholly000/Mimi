@@ -16,6 +16,10 @@ ARGS = [str(ROOT / "venv/bin/python3"), "-u", str(ROOT / "bridge.py"),
         "--token-file", str(ROOT / "bridge-token"), "--port", "18082"]
 
 
+class Starting(RuntimeError):
+    """launchd has verified this job but has not exec'd its program yet."""
+
+
 def run(args):
     return subprocess.run(args, capture_output=True, text=True, timeout=5, check=False)
 
@@ -38,6 +42,11 @@ def identity():
     pid = int(pid.group(1))
     live = run(["/bin/ps", "-ww", "-p", str(pid), "-o", "command="])
     command = shlex.split(live.stdout.strip())
+    state = re.search(r"^\s*state = (.+)$", text, re.M)
+    if (pid >= 2 and not live.returncode and state and state.group(1) == "xpcproxy"
+            and command in (["xpcproxy", "local.mimi-whisper"],
+                            ["/usr/libexec/xpcproxy", "local.mimi-whisper"])):
+        raise Starting("job_starting")
     # Python may resolve its executable symlink, but every script argument must match.
     if pid < 2 or live.returncode or not command or command[1:] != ARGS[1:]:
         raise RuntimeError("process_identity_mismatch")
@@ -68,7 +77,11 @@ def main():
     action = parser.parse_args().action
     if Path(__file__).resolve().parent != ROOT:
         raise RuntimeError("run_installed_control")
-    exists, pid = identity()
+    starting = False
+    try:
+        exists, pid = identity()
+    except Starting:
+        exists, pid, starting = True, None, True
     if action == "stop":
         if exists:
             result = run(["/bin/launchctl", "bootout", JOB])
@@ -84,14 +97,17 @@ def main():
         print("Whisper service stopped. Other local services were not changed.")
         return 0
     if action == "start":
-        if exists and not pid:
+        if exists and not pid and not starting:
             raise RuntimeError("job_exited_stop_then_start")
         if not exists:
             result = run(["/bin/launchctl", "bootstrap", f"gui/{os.getuid()}", str(ROOT / "service.plist")])
             if result.returncode:
                 raise RuntimeError("start_failed")
         for _ in range(60):
-            _, pid = identity()
+            try:
+                _, pid = identity()
+            except Starting:
+                pid = None
             if listening(pid):
                 break
             time.sleep(1)

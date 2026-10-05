@@ -419,6 +419,8 @@ async def main(args):
                          compression=None, close_timeout=0.25, logger=LOGGER):
             waits = [asyncio.create_task(stop.wait()), asyncio.create_task(worker.failed.wait())]
             await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+            if worker.failed.is_set() and not stop.is_set():
+                raise Failure("worker_failed")
     finally:
         for task in waits + startup:
             task.cancel()

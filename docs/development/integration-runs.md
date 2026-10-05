@@ -19,10 +19,14 @@
   实验定位，不推荐作为 Parakeet 的替代。该复核不是原生链路验收。
 - 同长双路的 finish-task 间隔 0.081 ms，收尾 457/735 ms；不同输入并发
   另验证结果隔离。这里只证明短公开夹具，不保证持续双路或资源争用时延。
-- 22 项协议/边界/生命周期测试及 Metal 构建通过；实际 start/status/stop
+- 26 项协议/边界/生命周期测试及 Metal 构建通过；实际 start/status/stop
   验证 launchd、精确 loopback listener、桥接和 worker 身份，停止后无残留。
   模型约 547 MiB，暖加载 286.5 ms，采样 worker RSS 752.2 MiB；这不含
   Mimi/翻译模型，不与不含系统模型的 Apple Speech 客户进程 RSS 横比。
+- 后续 native 启动诊断复现 launchd 尚为本 job 的 `xpcproxy` 时，控制器
+  提前校验 Python argv 并误报；已仅将确证的该过渡状态视为 starting，完整
+  Python/worker/listener 校验后才 ready。真实 Rust context/auto 请求形状
+  有协议回归；worker 就绪后异常退出改为失败码，正常 stop 仍成功。
 - 原生系统音频→独立翻译→浮窗仍为单独验收，噪声、低音量、多语种、长时
   双路及连续无停顿语音未通过本轮样本证明。没有真实采音、用户录制或私密
   字幕进入 Git。

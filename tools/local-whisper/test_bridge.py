@@ -2,17 +2,19 @@ import asyncio
 import contextlib
 import json
 from pathlib import Path
+import signal
 import struct
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 from websockets.exceptions import InvalidStatus
 
 from bridge import Bridge, Failure, FRAME, MAX_SEGMENT, MODEL, Segmenter, Session, Worker, load_token
+import bridge
 import status
 
 TOKEN = "synthetic-test-token-not-a-real-credential"
@@ -161,6 +163,33 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(await ws.recv())["header"]["event"], "task-finished")
         self.assertEqual(self.worker.requests, [])
 
+    async def test_mimi_audio3_encoder_context_and_automatic_language(self):
+        # Exact wire shape from Audio3ASRRequestEncoder::run_task_for_model,
+        # including context always supplied by audio3_client::connect_with_heartbeat.
+        for language in ("en", "auto"):
+            payload = json.loads(start(language=language))
+            parameters = payload["payload"]["parameters"]
+            parameters.update(semantic_punctuation_enabled=True, heartbeat=True)
+            if language == "auto":
+                del parameters["language_hints"]
+                context = ("Natural audiovisual dialogue, including interjections, breaths, "
+                           "gasps, moans, cries, laughter, and other vocalizations.")
+            else:
+                context = ("Natural English audiovisual dialogue, including interjections, "
+                           "hesitations, breaths, gasps, moans, cries, laughter, and other vocalizations.")
+            payload["payload"]["input"] = {"context": [
+                {"role": "user", "content": [{"type": "input_text", "text": context}]}]}
+            async with self.connect() as ws:
+                await ws.send(json.dumps(payload))
+                self.assertEqual(json.loads(await ws.recv())["header"]["event"], "task-started")
+                await ws.send(VOICE)
+                await ws.send(finish())
+                result = json.loads(await ws.recv())
+                self.assertEqual(result["payload"]["output"]["sentence"]["text"],
+                                 f"Synthetic {language} result")
+                self.assertEqual(json.loads(await ws.recv())["header"]["event"], "task-finished")
+        self.assertEqual([language for _, language in self.worker.requests], ["en", "auto"])
+
     async def test_two_sessions_are_isolated_and_third_is_busy(self):
         async with self.connect() as first, self.connect() as second:
             with self.assertRaises(InvalidStatus) as raised:
@@ -295,6 +324,27 @@ class WorkerTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(worker.pending)
 
 
+class ServiceLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_failure_exits_with_error_but_explicit_stop_is_success(self):
+        loop = asyncio.get_running_loop()
+        for failed in (False, True):
+            handlers = {}
+            worker = SimpleNamespace(failed=asyncio.Event(), close=AsyncMock())
+            async def started():
+                loop.call_later(0.02, worker.failed.set if failed else handlers[signal.SIGTERM])
+            worker.start = AsyncMock(side_effect=started)
+            args = SimpleNamespace(worker="unused", model="unused", token_file="unused", port=0)
+            with patch("bridge.Worker", return_value=worker), \
+                 patch("bridge.load_token", return_value=TOKEN), \
+                 patch.object(loop, "add_signal_handler", side_effect=lambda sig, callback: handlers.update({sig: callback})):
+                if failed:
+                    with self.assertRaisesRegex(Failure, "worker_failed"):
+                        await bridge.main(args)
+                else:
+                    await bridge.main(args)
+            worker.close.assert_awaited_once()
+
+
 class ControlIdentityTests(unittest.TestCase):
     def command(self, args):
         if args[0] == "/bin/launchctl":
@@ -324,6 +374,30 @@ class ControlIdentityTests(unittest.TestCase):
                 return result
             with patch("status.run", command), self.assertRaises(RuntimeError):
                 status.identity()
+
+    def test_verified_launchd_proxy_is_starting_but_wrong_proxy_is_rejected(self):
+        for proxy in ("xpcproxy local.mimi-whisper", "/usr/libexec/xpcproxy local.mimi-whisper",
+                      "xpcproxy other-job", "other-process local.mimi-whisper"):
+            def command(args):
+                result = self.command(args)
+                if args[0] == "/bin/launchctl":
+                    result.stdout += "state = xpcproxy\n"
+                elif args[0] == "/bin/ps":
+                    result.stdout = proxy
+                return result
+            with patch("status.run", command), self.assertRaises(RuntimeError) as raised:
+                status.identity()
+            self.assertEqual(isinstance(raised.exception, status.Starting),
+                             proxy in ("xpcproxy local.mimi-whisper",
+                                       "/usr/libexec/xpcproxy local.mimi-whisper"))
+
+    def test_start_polls_verified_proxy_until_full_identity_and_listener(self):
+        with patch("status.__file__", str(status.ROOT / "status.py")), \
+             patch("sys.argv", ["status.py", "start"]), \
+             patch("status.identity", side_effect=[(None, None), status.Starting(), (True, 123)]), \
+             patch("status.listening", side_effect=[False, True, True]), \
+             patch("status.run", self.command), patch("status.time.sleep"), patch("builtins.print"):
+            self.assertEqual(status.main(), 0)
 
     def test_wildcard_extra_listener_or_missing_worker_are_not_ready(self):
         for output, command_name in [("p123\nn*:18082\n", "/usr/sbin/lsof"),

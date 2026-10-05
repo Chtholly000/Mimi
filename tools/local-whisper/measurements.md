@@ -11,7 +11,9 @@ found a meaning-changing negation error caused by the shorter segmentation.
 ## Fixed configuration and inputs
 
 Final inference revision: `9dfde940f4b5e3cca00c8c34d364e47a82983f53` (clean).
-Later changes only document/install these results and correct the benchmark mode description.
+Later changes document/install these results, correct the benchmark mode label,
+and fix launchd startup inspection and the post-ready worker-failure exit code;
+the decoding and segmentation used for these measurements are unchanged.
 whisper.cpp `927cfce34f31707e17f2bff35c349632fb9e2c3a`, Metal, turbo Q5_0,
 greedy / four CPU threads / no previous text context / no translation,
 1024 encoder positions, 200 ms energy-gate quiet period, 8 s maximum segment.
@@ -112,18 +114,27 @@ running previews remain non-cancellable and can delay finals under other loads.
 
 ## Verification and next boundary
 
-- 22 focused tests pass: token/origin/path rejection, independent two-source
+- 26 focused tests pass: token/origin/path rejection, independent two-source
   state, third-connection rejection, bounded segmentation and pending work,
   silence/partial EOF, cancellation, worker exit/reaping, stale draft retirement,
-  sanitized failures, and false process/listener identity rejection.
+  sanitized failures, and false process/listener identity rejection. The actual
+  Mimi Audio3 request shape, including its nonempty input context, heartbeat,
+  punctuation parameters and automatic-language omission, is covered explicitly.
 - The pinned Metal worker compiled locally. Actual manual launchd start/status/
   stop verified the job, bridge PID/arguments, worker child and exact loopback
   listener; both processes and job were absent after stop. No other service was
   stopped and no app profiles or credentials were edited by the adapter installer.
+- A subsequent native startup exposed a verified race: immediately after
+  bootstrap, launchd reported `state = xpcproxy` and `ps` reported this job's
+  `xpcproxy` command before Python exec. The old controller called that an identity
+  mismatch. It now recognizes only that exact, job-verified transition as starting;
+  Python, worker and listener still must match before ready. Wrong proxy/job/process
+  identities remain rejected. A separate regression makes post-ready worker failure
+  exit nonzero after cleanup, while explicit stop remains successful.
 - The canonical `scripts/check.sh` passed on base `51820ad` before the rebase:
   desktop Rust 1086 passed / 2 ignored, shared-core/JNI, frontend 107 files /
   1416 tests, typecheck/lint/build. After rebasing onto `a0ac37f`, the changed
-  adapter's 22 tests and Metal build were rerun; the desktop source is unchanged.
+  adapter tests and Metal build were rerun; the desktop source is unchanged.
   The adapter workflow adds Linux/macOS protocol tests and a macOS build without
   downloading weights or pretending CI performs real inference.
 - Native Mimi system-audio → recognition → independent translation → overlay is
