@@ -62,6 +62,10 @@ in Settings, the overlay control panel, or the tray. Switch instantly with
 without restarting translation. Bilingual mode pairs confirmed sentences and
 previews the recognized original while a translation is pending.
 
+When Show subtitles earlier is enabled, the overlay shows drafts that may still
+change. Turn it off to wait for confirmed results; uninterrupted speech can take
+longer to appear. This display choice does not turn a draft into saved history.
+
 ## Recognition errors
 
 Recognition errors stay visible in the subtitle window alongside existing
