@@ -19,7 +19,7 @@ describe("atomic subtitle preview capability", () => {
   // custom ASR's independent text destination and Alibaba's text alternatives.
   it.each<[ServiceProvider, boolean]>([
     ["alibabaCloud", true], ["deepLX", true],
-    ["customDashScopeASR", true], ["customOpenAIASR", true],
+    ["customDashScopeASR", true], ["customOpenAIASR", true], ["appleSpeech", true],
     ["openAIRealtime", false], ["googleGeminiLive", false], ["azureOpenAIRealtime", false],
     ["volcanoEngine", false], ["tencentCloud", false], ["baiduTranslate", false], ["xAIRealtime", false],
   ])("uses complete preview pairs for %s only when its route supports them", (provider, expected) => {

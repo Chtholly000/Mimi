@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import { useStore } from "../../lib/store";
-import type { SettingsSnapshot } from "../../lib/types";
+import { SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
 import { ProfileLanguageSettings } from "./ProfileLanguageSettings";
 
 const initial = useStore.getState();
@@ -46,6 +46,23 @@ it("saves an explicit Chinese source without replacing the translation target", 
   await choose(I18N.settings.sourceLanguage, "zh");
   expect(save).toHaveBeenCalledExactlyOnceWith({ sourceLanguage: "zh" });
   expect(host.textContent).toContain(I18N.settings.languageSaved);
+});
+
+it.each(["zh", "en", "ja"] as const)("keeps Apple source choices and explicit-language help consistent in %s settings", async locale => {
+  setStoredUiLanguage(locale);
+  settings = { ...settings, sourceLanguage: "en", targetLanguage: "original", activeProfileId: "apple",
+    profiles: [{ id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "missing" }],
+    languageCapabilities: { profileId: "apple", provider: "appleSpeech", textTranslation: "followService", targetLanguage: "original",
+      sourceLanguages: ["en", "fr"], targetLanguages: ["original"] } };
+  await render();
+  const help = host.querySelector('.settings-row .settings-help-control__description')!;
+  expect(help.textContent).toBe(I18N.settings.appleSpeechLanguageHelp);
+  expect(help.textContent).not.toBe(I18N.settings.recognitionHintHelp);
+  const group = host.querySelector(`[role="group"][aria-label="${I18N.settings.sourceLanguage}"]`)!;
+  const choices = [...group.querySelectorAll<HTMLButtonElement>('button')];
+  expect(choices.map(choice => choice.textContent)).toEqual([SOURCE_LANGUAGE_DISPLAY_NAMES.en, SOURCE_LANGUAGE_DISPLAY_NAMES.fr]);
+  await act(async () => choices[1].click());
+  expect(save).toHaveBeenCalledExactlyOnceWith({ sourceLanguage: "fr" });
 });
 
 it.each(["fr", "zh_tw"])("saves a searched %s target with its exact wire key", async code => {

@@ -39,6 +39,8 @@ pub enum ProviderKind {
     CustomDashScopeASR,
     #[serde(rename = "customOpenAIASR")]
     CustomOpenAIASR,
+    #[serde(rename = "appleSpeech")]
+    AppleSpeech,
 }
 
 impl ProviderKind {
@@ -47,7 +49,7 @@ impl ProviderKind {
         route: TextTranslation,
         target: TargetLanguage,
     ) -> ProviderCapabilities {
-        if self.is_custom_speech() {
+        if self.is_standalone_asr() {
             custom_speech_capabilities(self, route, target)
         } else if self == Self::AlibabaCloud {
             alibaba_capabilities(route, target)
@@ -69,6 +71,7 @@ impl ProviderKind {
             Self::DeepLX => "deepLX",
             Self::CustomDashScopeASR => "customDashScopeASR",
             Self::CustomOpenAIASR => "customOpenAIASR",
+            Self::AppleSpeech => "appleSpeech",
         }
     }
 
@@ -85,6 +88,7 @@ impl ProviderKind {
             Self::DeepLX => "DeepLX (Audio 3.0 ASR)",
             Self::CustomDashScopeASR => "Custom DashScope ASR",
             Self::CustomOpenAIASR => "Custom OpenAI ASR",
+            Self::AppleSpeech => "Apple Speech",
         }
     }
 
@@ -156,11 +160,13 @@ impl ProviderKind {
                 ],
                 16_000,
             ),
-            Self::CustomDashScopeASR | Self::CustomOpenAIASR => custom_speech_capabilities(
-                self,
-                TextTranslation::FollowService,
-                TargetLanguage::Original,
-            ),
+            Self::CustomDashScopeASR | Self::CustomOpenAIASR | Self::AppleSpeech => {
+                custom_speech_capabilities(
+                    self,
+                    TextTranslation::FollowService,
+                    TargetLanguage::Original,
+                )
+            }
         }
     }
 
@@ -168,8 +174,12 @@ impl ProviderKind {
         matches!(self, Self::CustomDashScopeASR | Self::CustomOpenAIASR)
     }
 
+    pub const fn is_standalone_asr(self) -> bool {
+        self.is_custom_speech() || matches!(self, Self::AppleSpeech)
+    }
+
     pub const fn supports_text_translation(self) -> bool {
-        matches!(self, Self::AlibabaCloud | Self::DeepLX) || self.is_custom_speech()
+        matches!(self, Self::AlibabaCloud | Self::DeepLX) || self.is_standalone_asr()
     }
 
     pub const fn uses_api_key_only(self) -> bool {
@@ -200,12 +210,18 @@ fn custom_speech_capabilities(
         ]);
     }
     ProviderCapabilities {
-        // These are configurable protocol codes, not a claim that an arbitrary model supports them.
+        // Custom options are encodable codes, not verified model support.
+        // Apple choices also intersect the OS inventory in the app layer.
         source_languages: if target == TargetLanguage::Original
             || route == TextTranslation::FollowService
             || route.uses_chat_completions()
         {
-            SourceLanguage::ALL.to_vec()
+            SourceLanguage::ALL
+                .into_iter()
+                .filter(|language| {
+                    provider != ProviderKind::AppleSpeech || *language != SourceLanguage::Automatic
+                })
+                .collect()
         } else {
             // DeepL/DeepLX currently encode only these explicit sources.
             vec![
@@ -215,6 +231,11 @@ fn custom_speech_capabilities(
                 SourceLanguage::Japanese,
                 SourceLanguage::Korean,
             ]
+            .into_iter()
+            .filter(|language| {
+                provider != ProviderKind::AppleSpeech || *language != SourceLanguage::Automatic
+            })
+            .collect()
         },
         target_languages,
         translation_modes: vec![TranslationMode::Turbo],
@@ -653,7 +674,7 @@ impl ServiceProfile {
     }
 
     pub fn capabilities(&self, target: TargetLanguage) -> ProviderCapabilities {
-        if self.provider.is_custom_speech() {
+        if self.provider.is_standalone_asr() {
             let mut capabilities =
                 custom_speech_capabilities(self.provider, self.text_translation(), target);
             if let Some(declared) = &self.custom_speech_source_languages {
@@ -702,6 +723,26 @@ impl Default for ServiceProfile {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn apple_source_catalog_respects_the_selected_text_encoder() {
+        for route in [TextTranslation::DeepL, TextTranslation::DeepLX] {
+            let translated =
+                ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::English);
+            assert!(translated.source_languages.contains(&SourceLanguage::English));
+            assert!(!translated.source_languages.contains(&SourceLanguage::French));
+            assert!(!translated.source_languages.contains(&SourceLanguage::Automatic));
+            let original =
+                ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::Original);
+            assert!(original.source_languages.contains(&SourceLanguage::French));
+        }
+        for route in [TextTranslation::OpenAICompatible, TextTranslation::ChatMock] {
+            let translated =
+                ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::English);
+            assert!(translated.source_languages.contains(&SourceLanguage::French));
+            assert!(!translated.source_languages.contains(&SourceLanguage::Automatic));
+        }
+    }
+
     #[test]
     fn profile_proxy_fields_read_legacy_and_normalize_without_losing_preferences() {
         use crate::core::network_proxy::ProxyMode;

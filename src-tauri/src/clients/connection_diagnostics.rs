@@ -57,6 +57,10 @@ pub enum ConnectionCheckReason {
     Timeout,
     Unreachable,
     TextTranslationNotConfigured,
+    AppleSpeechAssetsMissing,
+    AppleSpeechLanguageUnsupported,
+    AppleSpeechUnavailable,
+    AppleSpeechRecognitionFailed,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,7 +68,7 @@ pub struct ConnectionDiagnostic {
     pub credential: &'static str,
     pub service: ServiceAvailability,
     pub reason: Option<ConnectionCheckReason>,
-    /// Actual setup/request duration; absent when no network request was made.
+    /// Actual setup/request duration, including local model setup; absent when skipped.
     #[serde(rename = "elapsedMs", skip_serializing_if = "Option::is_none")]
     pub elapsed_ms: Option<u64>,
 }
@@ -141,7 +145,9 @@ pub async fn check_speech_service(
         ProviderKind::AlibabaCloud | ProviderKind::DeepLX => {
             probe_alibaba(configuration, include_translation).await
         }
-        ProviderKind::CustomDashScopeASR | ProviderKind::CustomOpenAIASR => {
+        ProviderKind::CustomDashScopeASR
+        | ProviderKind::CustomOpenAIASR
+        | ProviderKind::AppleSpeech => {
             probe_custom_speech(configuration, include_translation).await
         }
         _ => {
@@ -271,7 +277,7 @@ async fn probe_text_translation(
     configuration: &LiveTranslationConfiguration,
     network: &ProviderNetwork,
 ) -> Result<(), ConnectionCheckReason> {
-    if configuration.provider.is_custom_speech() && configuration.text_credentials.is_none() {
+    if configuration.provider.is_standalone_asr() && configuration.text_credentials.is_none() {
         return if configuration.target_language == TargetLanguage::Original {
             Ok(())
         } else {
@@ -335,7 +341,7 @@ async fn probe_text_translation(
                 .await
                 .map_err(|error| openai_compatible_reason(&error))?
         }
-        ProviderCredentials::CustomSpeech { .. } => {
+        ProviderCredentials::CustomSpeech { .. } | ProviderCredentials::AppleSpeech => {
             probe_independent_text_translation(
                 configuration
                     .text_credentials
@@ -361,26 +367,14 @@ async fn probe_custom_speech(
     configuration: &LiveTranslationConfiguration,
     include_translation: bool,
 ) -> Result<(), ConnectionCheckReason> {
-    let ProviderCredentials::CustomSpeech {
-        endpoint,
-        model,
-        api_key,
-    } = &configuration.credentials
-    else {
-        return Err(ConnectionCheckReason::InvalidConfiguration);
-    };
-    let network = ProviderNetwork::resolve(&configuration.network_proxy)
-        .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
-    let mut asr = RecognitionClient::custom(
-        configuration.provider,
-        endpoint,
-        model,
-        api_key,
-        configuration.source_language,
-    )
-    .map_err(|error| recognition_reason(&error))?;
-    asr.set_network(network.clone())
-        .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+    let mut asr =
+        RecognitionClient::standalone(configuration).map_err(|error| recognition_reason(&error))?;
+    if configuration.provider != ProviderKind::AppleSpeech {
+        let network = ProviderNetwork::resolve(&configuration.network_proxy)
+            .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+        asr.set_network(network)
+            .map_err(|_| ConnectionCheckReason::InvalidConfiguration)?;
+    }
     let (events, _receiver) = provider_event_channel();
     asr.set_event_sender(events).await;
     let task_id = uuid::Uuid::new_v4().simple().to_string();
@@ -491,6 +485,16 @@ async fn probe_independent_text_translation(
 }
 
 fn recognition_reason(error: &RecognitionClientError) -> ConnectionCheckReason {
+    if let RecognitionClientError::Apple(label) = error {
+        return match label.as_str() {
+            "apple_speech_assets_missing" => ConnectionCheckReason::AppleSpeechAssetsMissing,
+            "apple_speech_language_unsupported" => {
+                ConnectionCheckReason::AppleSpeechLanguageUnsupported
+            }
+            "apple_speech_unavailable" => ConnectionCheckReason::AppleSpeechUnavailable,
+            _ => ConnectionCheckReason::AppleSpeechRecognitionFailed,
+        };
+    }
     if error.is_missing_credentials() {
         ConnectionCheckReason::CredentialsMissing
     } else if error.is_invalid_configuration() {
@@ -637,6 +641,37 @@ pub fn authentication_rejected(error: &tokio_tungstenite::tungstenite::Error) ->
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn apple_probe_reports_resource_recovery_without_network_or_credential_advice() {
+        for (label, expected) in [
+            (
+                "apple_speech_assets_missing",
+                ConnectionCheckReason::AppleSpeechAssetsMissing,
+            ),
+            (
+                "apple_speech_language_unsupported",
+                ConnectionCheckReason::AppleSpeechLanguageUnsupported,
+            ),
+            (
+                "apple_speech_unavailable",
+                ConnectionCheckReason::AppleSpeechUnavailable,
+            ),
+            (
+                "apple_speech_setup_timeout",
+                ConnectionCheckReason::AppleSpeechRecognitionFailed,
+            ),
+            (
+                "unknown-private-error",
+                ConnectionCheckReason::AppleSpeechRecognitionFailed,
+            ),
+        ] {
+            assert_eq!(
+                recognition_reason(&RecognitionClientError::Apple(label.into())),
+                expected
+            );
+        }
+    }
+
     use super::*;
     use crate::clients::openai_realtime_client::OpenAIRealtimeClient;
     use crate::core::models::TranslationMode;

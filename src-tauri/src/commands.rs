@@ -108,11 +108,11 @@ impl ServiceProfilePayload {
             credential_storage: "keychain",
             speech_credential_state: profile
                 .provider
-                .is_custom_speech()
+                .is_standalone_asr()
                 .then_some(CredentialState::Unavailable),
             text_credential_state: profile
                 .provider
-                .is_custom_speech()
+                .is_standalone_asr()
                 .then_some(CredentialState::Unavailable),
             text_translation,
             text_translation_names: profile.text_translation_names,
@@ -133,7 +133,16 @@ pub struct LanguageCapabilitiesPayload {
 
 impl LanguageCapabilitiesPayload {
     fn from_profile(profile: &ServiceProfile, target: TargetLanguage) -> Self {
-        let capabilities = profile.capabilities(target);
+        let mut capabilities = profile.capabilities(target);
+        if profile.provider == ProviderKind::AppleSpeech {
+            let support = crate::apple_speech_support::cached();
+            capabilities.source_languages.retain(|source| {
+                support
+                    .languages
+                    .iter()
+                    .any(|language| language.source_language == *source)
+            });
+        }
         Self {
             profile_id: profile.id.clone(),
             provider: profile.provider,
@@ -498,6 +507,20 @@ mod tests {
             .all(|entry| entry.contains("identifier = \"app-settings\"")
                 || entry.contains("identifier = \"app-overlay-control\"")));
         assert!(include_str!("lib.rs").contains("commands::capture_status,"));
+    }
+
+    #[test]
+    fn apple_asset_management_is_settings_only() {
+        for command in ["get_apple_speech_support", "prepare_apple_speech_language"] {
+            let permissions = include_str!("../permissions/app.toml");
+            let permitted: Vec<_> = permissions
+                .split("[[permission]]")
+                .filter(|entry| entry.contains(&format!("\"{command}\"")))
+                .collect();
+            assert_eq!(permitted.len(), 1);
+            assert!(permitted[0].contains("identifier = \"app-settings\""));
+            assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
+        }
     }
 
     #[test]
@@ -1104,7 +1127,59 @@ pub struct SettingsDraft {
 /// main-thread path.
 #[tauri::command]
 pub async fn settings_get(state: State<'_, AppState>) -> Result<SettingsSnapshotPayload, String> {
+    if !app_is_ui_test()
+        && !crate::apple_speech_support::is_loaded()
+        && state
+            .settings
+            .active_profile()
+            .is_ok_and(|profile| profile.provider == ProviderKind::AppleSpeech)
+    {
+        // Query runtime support once for an already selected local recognizer.
+        // Failure leaves an empty language list and is surfaced by its editor.
+        let _ = crate::apple_speech_support::refresh().await;
+    }
     Ok(SettingsSnapshotPayload::from_store(&state.settings))
+}
+
+#[tauri::command]
+pub async fn get_apple_speech_support(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::apple_speech_support::AppleSpeechSupport, String> {
+    if app_is_ui_test() {
+        return Ok(Default::default());
+    }
+    let result = crate::apple_speech_support::refresh().await;
+    emit_settings_snapshot(&app, &state.settings)?;
+    result
+}
+
+#[tauri::command]
+pub async fn prepare_apple_speech_language(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source_language: SourceLanguage,
+) -> Result<crate::apple_speech_support::AppleSpeechSupport, String> {
+    if app_is_ui_test() {
+        return Err("apple_speech_ui_test_unavailable".into());
+    }
+    {
+        let _lifecycle = state.session.settings_mutation_guard(true).await?;
+        ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    }
+    // The explicit settings action is the only path allowed to request assets.
+    let result = crate::apple_speech_support::prepare_source(source_language).await;
+    emit_settings_snapshot(&app, &state.settings)?;
+    result
+}
+
+async fn ensure_apple_provider_available(provider: ProviderKind) -> Result<(), String> {
+    if provider == ProviderKind::AppleSpeech
+        && (app_is_ui_test() || !crate::apple_speech_support::refresh().await?.available)
+    {
+        return Err("apple_speech_unavailable".into());
+    }
+    Ok(())
 }
 
 /// Lets the frontend select a deterministic updater adapter during native UI
@@ -1234,6 +1309,20 @@ async fn apply_settings_draft(
                 error
             }
         })?;
+    if draft.source_language.is_some() || draft.target_language.is_some() {
+        let profile = state.settings.active_profile()?;
+        if profile.provider == ProviderKind::AppleSpeech {
+            let prefs = state.settings.preferences();
+            let support = crate::apple_speech_support::refresh().await?;
+            crate::apple_speech_support::validate_profile_source(
+                &support,
+                &profile,
+                draft.source_language.unwrap_or(prefs.source_language),
+                draft.target_language.unwrap_or(prefs.target_language),
+                false,
+            )?;
+        }
+    }
     apply_settings_draft_guarded(app, state, draft)
 }
 
@@ -1562,6 +1651,7 @@ pub async fn profile_create(
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    ensure_apple_provider_available(provider).await?;
     state.settings.create_profile(provider, &name)?;
     emit_settings_snapshot(&app, &state.settings)
 }
@@ -1638,8 +1728,25 @@ pub async fn profile_save_credentials(
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
-    let is_active_profile = state.settings.active_profile()?.id == profile_id;
+    let mut profile = state.settings.active_profile()?;
+    let is_active_profile = profile.id == profile_id;
     let configuration_failure = state.session.configuration_failure_snapshot();
+    if profile.provider == ProviderKind::AppleSpeech && is_active_profile {
+        if let ProviderCredentials::AlibabaTranslation {
+            text_translation, ..
+        } = &credentials
+        {
+            let prefs = state.settings.preferences();
+            profile.text_translation = Some(*text_translation);
+            if !profile
+                .capabilities(prefs.target_language)
+                .source_languages
+                .contains(&prefs.source_language)
+            {
+                return Err("apple_speech_translation_language_unsupported".into());
+            }
+        }
+    }
     state.settings.save_credentials(&profile_id, &credentials)?;
     // An explicit successful service save is a repair action; do not read
     // credentials a second time merely to compare private values.

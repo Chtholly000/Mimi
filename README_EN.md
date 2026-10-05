@@ -39,9 +39,15 @@ For your first setup, **we recommend starting with Alibaba Cloud**. We’ve done
 2. Choose the recognition and translation languages.
 3. Play something and turn on Live Subtitles under Subtitles. On macOS, allow Screen & System Audio Recording when asked.
 
-Bring your own provider credentials. Audio is sent to your configured speech service; cloud usage charges may apply.
+Cloud speech services require your own credentials and receive your audio; usage charges may apply. Apple Speech recognizes audio locally on supported Macs. Independent text translation sends recognized text to your chosen translation service.
 
 [Setup & help](docs/usage.md) · [Android](android/README.md) · [Report a bug](https://github.com/yuxino/mimi/issues) · [Contributing](CONTRIBUTING.md)
+
+### Apple local recognition
+
+**Apple Speech** appears when the system supports it: Apple silicon, macOS 26 or later, and an available system transcriber. It needs no speech API key. The configuration shows this Mac's supported languages and resource status. Stop subtitles, choose the target language under **Speech resources**, and click **Prepare speech resources** if it is missing; this explicit action may download system assets. Then choose the same **Recognition Language** and start subtitles. Automatic language detection is not offered.
+
+Use original-only subtitles, or configure a separate text translator such as Index-Translate. Apple recognition does not supply the translation model, and a remote text translator still receives recognized text.
 
 ### Try Index-Translate
 

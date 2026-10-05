@@ -101,6 +101,25 @@ function languageSettings(draft: Partial<SettingsSnapshot> = {}): SettingsSnapsh
 function sourcePicker() {
   return host.querySelector<HTMLButtonElement>('.tray-setting-row--language [role="combobox"]')!;
 }
+
+it.each(["zh", "en", "ja"] as const)("keeps Apple source choices and explicit-language help consistent in the %s tray", async locale => {
+  setStoredUiLanguage(locale);
+  const switchSourceLanguage = vi.fn().mockResolvedValue(undefined);
+  const settings = languageSettings({ sourceLanguage: "en", targetLanguage: "original", activeProfileId: "apple",
+    profiles: [{ id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "missing" }],
+    languageCapabilities: { profileId: "apple", provider: "appleSpeech", textTranslation: "followService", targetLanguage: "original",
+      sourceLanguages: ["en", "fr"], targetLanguages: ["original"] } });
+  useStore.setState({ ...initial, settings, switchSourceLanguage }, true);
+  await act(async () => root.render(<TrayPanel />));
+  const help = host.querySelector('.tray-setting-row--language .settings-help-control__description')!;
+  expect(help.textContent).toBe(I18N.settings.appleSpeechLanguageHelp);
+  expect(help.textContent).not.toBe(I18N.settings.recognitionHintHelp);
+  await act(async () => sourcePicker().click());
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(options.map(option => option.textContent)).toEqual([SOURCE_LANGUAGE_DISPLAY_NAMES.en, SOURCE_LANGUAGE_DISPLAY_NAMES.fr]);
+  await act(async () => options[1].click());
+  expect(switchSourceLanguage).toHaveBeenCalledExactlyOnceWith("fr");
+});
 async function filter(query: string) {
   const search = document.querySelector<HTMLInputElement>("input.mimi-select__search")!;
   expect(search.getAttribute("aria-label")).toBe(I18N.settings.searchLanguages);

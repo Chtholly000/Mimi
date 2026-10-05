@@ -156,7 +156,7 @@ impl MTBudgetScope {
         profile_id: String,
         configuration: &LiveTranslationConfiguration,
     ) -> Option<Self> {
-        let route = if configuration.provider.is_custom_speech() {
+        let route = if configuration.provider.is_standalone_asr() {
             if !configuration.target_language.translates_audio() {
                 return None;
             }
@@ -2543,6 +2543,21 @@ impl SessionManager {
             .iter()
             .find(|profile| profile.id == profile_id)
             .ok_or_else(|| "The service profile does not exist.".to_string())?;
+        let apple_support = if profile.provider == ProviderKind::AppleSpeech {
+            if self.is_ui_test() {
+                return Err("apple_speech_ui_test_unavailable".into());
+            }
+            let support = crate::apple_speech_support::refresh().await?;
+            if !support.available {
+                return Err("apple_speech_unavailable".into());
+            }
+            if !self.is_lifecycle_request_current(switch_epoch) {
+                return Err("profile_switch_superseded".into());
+            }
+            Some(support)
+        } else {
+            None
+        };
         let live = action != ProfileSwitchAction::SelectOnly;
         // Validate before persistence: an incomplete profile must not replace
         // the working session. UI fixtures never resolve credentials.
@@ -2551,6 +2566,15 @@ impl SessionManager {
         } else {
             None
         };
+        if let (Some(support), Some(configuration)) = (&apple_support, &proposed) {
+            crate::apple_speech_support::validate_profile_source(
+                support,
+                profile,
+                configuration.source_language,
+                configuration.target_language,
+                true,
+            )?;
+        }
         if live {
             let target = self.settings.preferences().target_language;
             let current_rate = self
@@ -2635,6 +2659,22 @@ impl SessionManager {
             .map_err(|_| "source_switch_profile".to_string())?;
         let provider = profile.effective_provider();
         let prefs = self.settings.preferences();
+        if provider == ProviderKind::AppleSpeech {
+            // Validate once while holding the lifecycle guard. Refusals must
+            // reach IPC instead of looking like a successful language change.
+            let support = crate::apple_speech_support::refresh().await?;
+            let installed_required = self.has_active_session() || self.is_paused();
+            crate::apple_speech_support::validate_profile_source(
+                &support,
+                &profile,
+                language,
+                prefs.target_language,
+                installed_required,
+            )?;
+            if !self.is_lifecycle_request_current(switch_epoch) {
+                return Err("source_switch_superseded".into());
+            }
+        }
         let capabilities = profile.capabilities(prefs.target_language);
         if !capabilities.source_languages.contains(&language) {
             return Err("source_switch_unsupported".into());
@@ -2746,6 +2786,19 @@ impl SessionManager {
         if prefs.target_language == target {
             return Ok(());
         }
+        if profile.provider == ProviderKind::AppleSpeech {
+            let support = crate::apple_speech_support::refresh().await?;
+            crate::apple_speech_support::validate_profile_source(
+                &support,
+                &profile,
+                prefs.source_language,
+                target,
+                self.has_active_session() || self.is_paused(),
+            )?;
+            if !self.is_lifecycle_request_current(switch_epoch) {
+                return Err("language_switch_superseded".into());
+            }
+        }
         let selection = profile.normalize_preferences(ProviderPreferences {
             source_language: prefs.source_language,
             target_language: target,
@@ -2760,7 +2813,7 @@ impl SessionManager {
                 configuration.source_language = selection.source_language;
                 configuration.target_language = selection.target_language;
                 configuration.translation_mode = selection.translation_mode;
-                if configuration.provider.is_custom_speech()
+                if configuration.provider.is_standalone_asr()
                     && target.translates_audio()
                     && configuration.text_credentials.is_none()
                 {
@@ -3691,6 +3744,12 @@ impl SessionManager {
         {
             return false;
         }
+        let records_network_latency = self
+            .active_settings
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|configuration| configuration.provider != ProviderKind::AppleSpeech);
         let mut maximum_latency_ms = 0;
         for &source in self.sources() {
             let Some(client) = self.client_for_generation(source, generation) else {
@@ -3710,11 +3769,12 @@ impl SessionManager {
                         {
                             return false;
                         }
-                        *self.health_latency.lock().unwrap() = Some(HealthCheckLatency {
-                            generation,
-                            task_id,
-                            milliseconds: maximum_latency_ms.max(elapsed_ms),
-                        });
+                        *self.health_latency.lock().unwrap() =
+                            records_network_latency.then_some(HealthCheckLatency {
+                                generation,
+                                task_id,
+                                milliseconds: maximum_latency_ms.max(elapsed_ms),
+                            });
                     }
                     maximum_latency_ms = maximum_latency_ms.max(elapsed_ms);
                 }

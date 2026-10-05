@@ -68,6 +68,27 @@ Rules:
   then relaunch the intended worktree. Do not reset preferences or permissions
   to repair a package mismatch.
 
+## Apple Speech build and resource boundaries
+
+Apple silicon macOS builds require Xcode 26 or later for the Swift Speech adapter.
+The app deployment target remains macOS 13, with macOS 26 and actual
+`SpeechTranscriber.isAvailable` checks before every supported entry point. Intel,
+Windows and Linux use an unavailable implementation and hide the add-provider choice.
+Do not remove availability checks or silently ship an Apple silicon build with the
+adapter omitted because its SDK is old.
+
+When worktrees share a Cargo target directory, switching back from a branch without
+the Swift adapter can leave a stale build-script output. If linking reports missing
+Apple bridge symbols, inspect the current build output for the Swift link/search
+directives and rerun this branch's build script (for example, touch `src-tauri/build.rs`).
+Preserve reusable caches and signing identity; do not clear global caches or reset TCC.
+
+Language support and installed resources are queried from the running app. A successful
+standalone probe does not establish the app's asset state: prepare through the explicit
+settings action under Mimi's actual identity, then query again. Querying capabilities or
+starting recognition must not trigger hidden downloads. The adapter accepts already
+captured PCM; it must not request microphone access for a system-only session.
+
 ## ScreenCaptureKit native property types
 
 Use the Apple SDK and Objective-C runtime method signatures when checking native

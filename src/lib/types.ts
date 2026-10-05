@@ -193,6 +193,7 @@ export interface SettingsDraft {
 }
 
 export type ServiceProvider =
+  | "appleSpeech"
   | "alibabaCloud"
   | "openAIRealtime"
   | "googleGeminiLive"
@@ -270,6 +271,11 @@ export interface ProviderCapabilities {
   sourceLanguages: readonly SourceLanguage[];
   targetLanguages: readonly TargetLanguage[];
   translationModes: readonly TranslationMode[];
+}
+
+export interface AppleSpeechSupport {
+  available: boolean;
+  languages: { sourceLanguage: Exclude<SourceLanguage, "auto">; locale: string; installed: boolean }[];
 }
 
 export interface LanguageCapabilitiesSnapshot {

@@ -49,7 +49,7 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
   return <section id="translation-languages" className="profile-language-settings" aria-labelledby="translation-languages-title" aria-busy={busy}>
     <header className="profile-language-settings__heading"><h3 id="translation-languages-title">{I18N.settings.subtitleLanguages}</h3><SettingsHelp text={guidance.catalogHelp} label={I18N.settings.helpLabel} />{requiresStop && <SettingsHelp text={I18N.settings.languageChangeRequiresStop} label={I18N.settings.helpLabel} icon="lock" />}</header>
     <SettingsRow label={I18N.settings.sourceLanguage} description={guidance.help} feedback={guidance.notice && <span className="recognition-language-notice">{guidance.notice}</span>} align="start">
-      <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} disabled={disabled || busy || sources.length === 1}
+      <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} disabled={disabled || busy || sources.length <= 1}
         options={sources.map(value => ({ value, label: guidance.optionLabel(value) }))}
         onChange={value => { const sourceLanguage = sources.find(language => language === value); if (sourceLanguage) void save({ sourceLanguage }); }} />
     </SettingsRow>

@@ -1,4 +1,4 @@
-//! Provider-specific credentials kept exclusively in the OS keychain.
+//! Provider credentials and credential-free local recognition configuration.
 
 use crate::core::provider::{ProviderKind, ServiceProfile, TextTranslation};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,10 @@ impl CredentialRevealField {
                     || profile.provider == ProviderKind::AzureOpenAIRealtime
                     || profile.provider.is_custom_speech()
             }
-            Self::AsrApiKey => profile.provider.supports_text_translation(),
+            Self::AsrApiKey => {
+                profile.provider.supports_text_translation()
+                    && profile.provider != ProviderKind::AppleSpeech
+            }
             Self::Token => {
                 profile.provider.supports_text_translation()
                     && profile.text_translation() != TextTranslation::FollowService
@@ -85,6 +88,8 @@ impl CredentialRevealField {
     deny_unknown_fields
 )]
 pub enum ProviderCredentials {
+    /// Local recognition has no persisted credential slot.
+    AppleSpeech,
     /// Write-only request. Empty api_key reuses the profile's existing key
     /// natively; this request variant is never stored or returned over IPC.
     AlibabaTranslation {
@@ -570,6 +575,7 @@ impl ProviderCredentials {
 
     pub const fn kind_label(&self) -> &'static str {
         match self {
+            Self::AppleSpeech => "apple_speech",
             Self::AlibabaTranslation { .. } => "alibaba_translation_update",
             Self::DeepLX { .. } => "deeplx",
             Self::DeepL { .. } => "deepl",
@@ -585,6 +591,7 @@ impl ProviderCredentials {
 
     pub fn validated_for(&self, provider: ProviderKind) -> Result<Self, ProviderCredentialsError> {
         match (provider, self) {
+            (ProviderKind::AppleSpeech, Self::AppleSpeech) => Ok(Self::AppleSpeech),
             (
                 provider,
                 Self::CustomSpeech {
@@ -715,6 +722,7 @@ impl ProviderCredentials {
     ) -> Result<String, ProviderCredentialsError> {
         let credentials = self.validated_for(provider)?;
         match credentials {
+            Self::AppleSpeech => Err(ProviderCredentialsError::ProviderMismatch),
             Self::ApiKey { api_key } => Ok(api_key),
             other => serde_json::to_string(&other)
                 .map_err(|_| ProviderCredentialsError::InvalidStoredValue),
@@ -725,6 +733,9 @@ impl ProviderCredentials {
         provider: ProviderKind,
         value: &str,
     ) -> Result<Self, ProviderCredentialsError> {
+        if provider == ProviderKind::AppleSpeech {
+            return Err(ProviderCredentialsError::ProviderMismatch);
+        }
         if value.trim().is_empty() {
             return Err(ProviderCredentialsError::Missing(provider));
         }
@@ -781,7 +792,8 @@ impl ProviderCredentials {
             Self::ApiKey { api_key } => Some(api_key),
             Self::AzureOpenAI { api_key, .. } => Some(api_key),
             Self::CustomSpeech { api_key, .. } => Some(api_key),
-            Self::AlibabaTranslation { .. }
+            Self::AppleSpeech
+            | Self::AlibabaTranslation { .. }
             | Self::DeepLX { .. }
             | Self::DeepL { .. }
             | Self::OpenAICompatible { .. }
@@ -900,6 +912,26 @@ fn validated_azure_endpoint(value: &str) -> Result<String, ProviderCredentialsEr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn apple_credentials_cannot_be_saved_decoded_or_revealed_as_a_secret() {
+        let profile = ServiceProfile::new("apple", "Apple", ProviderKind::AppleSpeech).unwrap();
+        assert_eq!(
+            ProviderCredentials::AppleSpeech.validated_for(profile.provider),
+            Ok(ProviderCredentials::AppleSpeech)
+        );
+        assert!(ProviderCredentials::AppleSpeech
+            .encode_for_keychain(profile.provider)
+            .is_err());
+        assert!(ProviderCredentials::decode_from_keychain(
+            profile.provider,
+            "{\"kind\":\"appleSpeech\"}"
+        )
+        .is_err());
+        assert!(!CredentialRevealField::AsrApiKey.allowed_for(&profile, None));
+        assert!(!CredentialRevealField::ApiKey.allowed_for(&profile, None));
+        assert_eq!(ProviderCredentials::AppleSpeech.direct_api_key(), None);
+    }
+
     use super::*;
 
     #[test]

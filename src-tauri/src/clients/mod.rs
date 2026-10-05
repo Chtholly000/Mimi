@@ -1,4 +1,6 @@
-//! Network clients for built-in live-translation providers.
+//! Native and network clients for live recognition and translation.
+
+pub mod apple_speech_client;
 
 pub mod audio3_client;
 pub mod azure_openai_realtime_client;

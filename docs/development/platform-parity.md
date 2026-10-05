@@ -69,7 +69,8 @@ counterpart. Shared subtitle and independent text-translation policy are unchang
 | --- | --- | --- |
 | Independent text services | DeepL, DeepLX, ChatMock, OpenAI compatible; original-only with custom ASR | Same text choices after Alibaba realtime ASR; original-only supported |
 | Text service display names | Optional names per profile and independent route; shown in settings and subtitle service label | Existing provider labels |
-| Recognition selection | Eight built-in services plus custom DashScope/OpenAI ASR; optional per-profile user declaration narrows explicit recognition languages | Eight built-in adapters; independent text currently pairs with Alibaba ASR; no custom speech profile/declaration editor |
+| Recognition selection | Eight built-in services plus custom DashScope/OpenAI ASR and Apple Speech on supported Apple silicon Macs running macOS 26+; optional per-profile user declaration narrows custom recognition languages | Eight built-in adapters; independent text currently pairs with Alibaba ASR; no custom speech profile/declaration editor |
+| Apple local recognition | Runtime language availability, explicit language-asset preparation, no speech API key; independent text translation keeps its own service and credentials | Not available; no Apple API or asset-management dependency |
 | Built-in Alibaba pipeline | Desktop Audio 3.0/Qwen-MT scheduling | Existing integrated realtime translation adapter |
 | Translation scheduling | Speculative drafts plus serial prioritized finals and provider recovery | Final-only serial HTTP; same shared final bounds/retry decisions, native execution and cancellation |
 | Independent text HTTP bounds | HQ source fields up to 65,536 UTF-8 bytes; response bodies up to 1 MiB; decoded text uses native adapter bounds | Source/result text up to 4,096 UTF-16 code units; response bodies up to 64 KiB |

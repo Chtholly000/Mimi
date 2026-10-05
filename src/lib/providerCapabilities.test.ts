@@ -67,6 +67,27 @@ const BASE_SETTINGS: SettingsSnapshot = {
   networkProxy: { mode: "system", url: null },
 };
 
+it("uses only this Mac's stamped Apple languages without inventing automatic detection or a fallback", () => {
+  const apple = { id: "apple", provider: "appleSpeech", name: "Apple Speech", credentialState: "missing", speechCredentialState: "present", textTranslation: "openAICompatible" } as const;
+  const base = { ...BASE_SETTINGS, profiles: [apple], activeProfileId: apple.id };
+  expect(sourceLanguagesForSettings(base)).toEqual([]);
+  const languageCapabilities = { profileId: apple.id, provider: apple.provider, textTranslation: apple.textTranslation, targetLanguage: "zh", sourceLanguages: ["en", "fr"], targetLanguages: ["original", "zh", "en", "ja"] } as const;
+  expect(sourceLanguagesForSettings({ ...base, languageCapabilities })).toEqual(["en", "fr"]);
+  expect(sourceLanguagesForSettings({ ...base, languageCapabilities: { ...languageCapabilities, sourceLanguages: ["auto"] } })).toEqual([]);
+  expect(sourceLanguagesForSettings({ ...base, languageCapabilities: { ...languageCapabilities, sourceLanguages: [] } })).toEqual([]);
+  expect(sourceLanguagesForSettings({ ...base, languageCapabilities: { ...languageCapabilities, profileId: "old" } })).toEqual([]);
+  expect(credentialStateForTarget(apple, "original")).toBe("present");
+  expect(credentialStateForTarget(apple, "zh")).toBe("missing");
+});
+
+it.each(["deepL", "deepLX"] as const)("intersects Apple sources with the %s text encoder while keeping original-only choices", route => {
+  const profile = { id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "present", textTranslation: route } as const;
+  const languageCapabilities = { profileId: profile.id, provider: profile.provider, textTranslation: route, targetLanguage: "en", sourceLanguages: ["en", "fr"], targetLanguages: ["original", "zh", "en", "ja"] } as const;
+  const settings = { ...BASE_SETTINGS, profiles: [profile], activeProfileId: profile.id, targetLanguage: "en" as const, languageCapabilities };
+  expect(sourceLanguagesForSettings(settings)).toEqual(["en"]);
+  expect(sourceLanguagesForSettings({ ...settings, targetLanguage: "original", languageCapabilities: { ...languageCapabilities, targetLanguage: "original" } })).toEqual(["en", "fr"]);
+});
+
 describe("provider capabilities", () => {
   it("keeps language controls and only Turbo for manual Alibaba input", () => {
     const settings = { ...BASE_SETTINGS, sourceLanguage: "ja" as const };
@@ -139,7 +160,7 @@ describe("provider capabilities", () => {
   });
 
   it("lists every provider exactly once with custom recognition protocols after built-in services", () => {
-    expect(new Set(SERVICE_PROVIDERS).size).toBe(10);
+    expect(new Set(SERVICE_PROVIDERS).size).toBe(11);
     expect(SERVICE_PROVIDERS).toEqual([
       "alibabaCloud",
       "openAIRealtime",
@@ -149,6 +170,7 @@ describe("provider capabilities", () => {
       "tencentCloud",
       "baiduTranslate",
       "xAIRealtime",
+      "appleSpeech",
       "customDashScopeASR",
       "customOpenAIASR",
     ]);

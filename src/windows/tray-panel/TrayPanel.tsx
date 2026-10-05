@@ -104,7 +104,7 @@ export function TrayPanel() {
   const sourcePickerDisabled =
     anyActionPending ||
     !presentation.canChangeSourceLanguage ||
-    sourceLanguages.length === 1;
+    sourceLanguages.length <= 1;
 
   const performAction = (
     name: PendingAction,

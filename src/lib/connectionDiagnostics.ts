@@ -156,6 +156,10 @@ export function diagnosticCopy(platform: DiagnosticPlatform = diagnosticPlatform
     ...labels,
     storage: labels.storage,
     reasons: { ...labels.reasons, credentialsAccessDenied: recovery,
+      appleSpeechAssetsMissing: I18N.settings.appleSpeechAssetsMissing,
+      appleSpeechLanguageUnsupported: I18N.settings.appleSpeechLanguageUnsupported,
+      appleSpeechUnavailable: I18N.settings.appleSpeechUnavailable,
+      appleSpeechRecognitionFailed: I18N.settings.appleSpeechRecognitionFailed,
       localDevCredentialsUnavailable: labels.localDevUnavailable },
   };
 }
@@ -224,6 +228,14 @@ const openAICompatibleErrors = {
 /** Match only sanitized backend labels; never interpolate arbitrary native errors. */
 export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlatform): string | null {
   if (typeof error !== "string") return null;
+  if (error === "apple_speech_assets_missing") return I18N.settings.appleSpeechAssetsMissing;
+  if (error === "apple_speech_language_unsupported") return I18N.settings.appleSpeechLanguageUnsupported;
+  if (error === "apple_speech_translation_language_unsupported") return I18N.settings.appleSpeechTranslationLanguageUnsupported;
+  if (error === "apple_speech_unavailable" || error === "apple_speech_ui_test_unavailable") return I18N.settings.appleSpeechUnavailable;
+  if (error === "apple_speech_status_failed") return I18N.settings.appleSpeechLoadFailed;
+  if (error === "apple_speech_prepare_failed") return I18N.settings.appleSpeechPrepareFailed;
+  if (error === "apple_speech_preparing") return I18N.settings.appleSpeechPreparing;
+  if (["apple_speech_setup_timeout", "apple_speech_start_failed", "apple_speech_recognition_failed", "apple_speech_audio_failed", "apple_speech_not_connected", "apple_speech_result_backlog", "apple_speech_invalid_result", "apple_speech_finalize_timeout"].includes(error)) return I18N.settings.appleSpeechRecognitionFailed;
   if (error === "custom_speech_endpoint_invalid") return I18N.settings.customSpeechEndpointInvalid;
   if (error === "custom_speech_model_invalid") return I18N.settings.customSpeechModelInvalid;
   if (error === "custom_speech_session_rejected") return I18N.settings.customSpeechRejected;

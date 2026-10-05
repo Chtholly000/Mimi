@@ -1,6 +1,8 @@
 //! mimi — live translated subtitles for anything playing on your device.
 //! Tauri v2 shell wiring: plugins, tray, global shortcut, windows, and state.
 
+mod apple_speech;
+mod apple_speech_support;
 mod audio;
 #[cfg(test)]
 mod audio3_benchmark;
@@ -344,6 +346,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::settings_get,
+            commands::get_apple_speech_support,
+            commands::prepare_apple_speech_language,
             fonts::installed_font_families,
             commands::windows_audio_status,
             commands::audio_census,

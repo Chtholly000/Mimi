@@ -3,6 +3,21 @@ import { afterEach, expect, it } from "vitest";
 import { I18N, setStoredUiLanguage } from "./i18n";
 import { languageActionErrorMessage, connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
 
+it.each(["zh", "en", "ja"] as const)("gives Apple resource and language recovery in %s without exposing runtime labels", language => {
+  setStoredUiLanguage(language);
+  expect(credentialErrorMessage("apple_speech_assets_missing")).toBe(I18N.settings.appleSpeechAssetsMissing);
+  expect(profileErrorMessage("apple_speech_language_unsupported")).toBe(I18N.settings.appleSpeechLanguageUnsupported);
+  expect(profileErrorMessage("apple_speech_translation_language_unsupported")).toBe(I18N.settings.appleSpeechTranslationLanguageUnsupported);
+  expect(I18N.settings.appleSpeechAssetsMissing).toContain(I18N.settings.appleSpeechResources);
+  expect(I18N.settings.appleSpeechAssetsMissing).toContain(I18N.settings.appleSpeechPrepare);
+  expect(I18N.settings.appleSpeechAssetsMissing).toContain(I18N.settings.sourceLanguage);
+  expect(credentialErrorMessage("apple_speech_unavailable")).toBe(I18N.settings.appleSpeechUnavailable);
+  for (const suffix of ["setup_timeout", "start_failed", "recognition_failed", "audio_failed", "not_connected", "result_backlog", "invalid_result", "finalize_timeout"]) {
+    expect(credentialErrorMessage(`apple_speech_${suffix}`)).toBe(I18N.settings.appleSpeechRecognitionFailed);
+  }
+  expect(profileErrorMessage("apple_speech_prepare_failed: private-native-path")).not.toContain("private-native-path");
+});
+
 it("localizes exhausted translation recovery without showing internal labels", () => {
   for (const language of ["zh", "en", "ja"] as const) {
     setStoredUiLanguage(language);
@@ -59,7 +74,7 @@ it("shows a short unavailable reason instead of a reachability disclaimer", () =
   expect(message).not.toContain("认证成功");
 });
 it("localizes every service failure reason and explains skipped preview-mode checks", () => {
-  const reasons = ["credentialsMissing", "credentialsUnavailable", "credentialsServiceUnavailable", "credentialsAccessDenied", "textTranslationNotConfigured", "invalidConfiguration", "unsupportedLanguage", "localRecognitionOverloaded", "localRecognitionTimeout", "authenticationRejected", "serviceRejected", "timeout", "unreachable"] as const;
+  const reasons = ["credentialsMissing", "credentialsUnavailable", "credentialsServiceUnavailable", "credentialsAccessDenied", "textTranslationNotConfigured", "invalidConfiguration", "unsupportedLanguage", "localRecognitionOverloaded", "localRecognitionTimeout", "authenticationRejected", "serviceRejected", "timeout", "unreachable", "appleSpeechAssetsMissing", "appleSpeechLanguageUnsupported", "appleSpeechUnavailable", "appleSpeechRecognitionFailed"] as const;
   for (const language of ["zh", "en", "ja"] as const) {
     setStoredUiLanguage(language);
     for (const reason of reasons) {

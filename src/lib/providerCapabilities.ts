@@ -45,6 +45,7 @@ export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
   "tencentCloud",
   "baiduTranslate",
   "xAIRealtime",
+  "appleSpeech",
   "customDashScopeASR",
   "customOpenAIASR",
 ];
@@ -52,6 +53,7 @@ export const SERVICE_PROVIDERS: readonly ServiceProvider[] = [
 const PROVIDER_CAPABILITIES: Readonly<
   Record<ServiceProvider, ProviderCapabilities>
 > = {
+  appleSpeech: { sourceLanguages: [], targetLanguages: ["original"], translationModes: ["turbo"] },
   customDashScopeASR: { sourceLanguages: CUSTOM_CONFIGURABLE_SOURCES, targetLanguages: ["original"], translationModes: ["turbo"] },
   customOpenAIASR: { sourceLanguages: CUSTOM_CONFIGURABLE_SOURCES, targetLanguages: ["original"], translationModes: ["turbo"] },
   deepLX: { sourceLanguages: LEGACY_SOURCE_LANGUAGE_CASES, targetLanguages: ["zh", "en", "ja"], translationModes: ["turbo"] },
@@ -130,8 +132,12 @@ function declaredCustomSources(profile: ServiceProfile, sources: readonly Source
   return ["auto", ...sources.filter(source => source !== "auto" && (declared == null || declared.includes(source)))];
 }
 
+export function isStandaloneAsrProvider(provider: ServiceProvider): boolean {
+  return provider === "appleSpeech" || isCustomSpeechProvider(provider);
+}
+
 export function credentialStateForTarget(profile: ServiceProfile | undefined, target: TargetLanguage): CredentialState {
-  return profile && isCustomSpeechProvider(profile.provider) && target === "original"
+  return profile && isStandaloneAsrProvider(profile.provider) && target === "original"
     ? profile.speechCredentialState ?? profile.credentialState : profile?.credentialState ?? "unavailable";
 }
 
@@ -145,12 +151,12 @@ export function capabilitiesForProfile(
   profile: ServiceProfile,
   targetLanguage: TargetLanguage = "zh",
 ): ProviderCapabilities {
-  if (isCustomSpeechProvider(profile.provider)) {
+  if (isStandaloneAsrProvider(profile.provider)) {
     const capabilities = capabilitiesForProvider(profile.provider);
     const route = textTranslationForProfile(profile);
     const generic = isChatCompletionsTranslation(route);
     return { ...capabilities,
-      sourceLanguages: declaredCustomSources(profile, targetLanguage === "original" || route === "followService" || generic ? capabilities.sourceLanguages : LEGACY_SOURCE_LANGUAGE_CASES),
+      sourceLanguages: declaredCustomSources(profile, profile.provider === "appleSpeech" || targetLanguage === "original" || route === "followService" || generic ? capabilities.sourceLanguages : LEGACY_SOURCE_LANGUAGE_CASES),
       targetLanguages: route === "followService" ? capabilities.targetLanguages : generic ? ALIBABA_TARGETS : ["original", "zh", "en", "ja"],
     };
   }
@@ -188,13 +194,16 @@ function capabilitiesForSettings(
     native.provider === profile.provider &&
     native.textTranslation === textTranslationForProfile(profile) &&
     native.targetLanguage === target &&
-    Array.isArray(native.sourceLanguages) && native.sourceLanguages.length > 0 &&
+    Array.isArray(native.sourceLanguages) && (profile.provider === "appleSpeech" || native.sourceLanguages.length > 0) &&
     Array.isArray(native.targetLanguages) && native.targetLanguages.length > 0 &&
-    native.sourceLanguages.every((code) => SOURCE_CODES.has(code)) &&
+    native.sourceLanguages.every((code) => SOURCE_CODES.has(code) && (profile.provider !== "appleSpeech" || code !== "auto")) &&
     native.targetLanguages.every((code) => TARGET_CODES.has(code))
   ) {
     return {
-      sourceLanguages: declaredCustomSources(profile, [...new Set(native.sourceLanguages)]),
+      sourceLanguages: declaredCustomSources(profile, [...new Set(native.sourceLanguages)].filter(source =>
+        profile.provider !== "appleSpeech" || target === "original"
+        || !["deepL", "deepLX"].includes(textTranslationForProfile(profile))
+        || LEGACY_SOURCE_LANGUAGE_CASES.includes(source))),
       targetLanguages: [...new Set(native.targetLanguages)],
       translationModes: fallback.translationModes,
     };
