@@ -37,6 +37,8 @@
 
 For your first setup, **we recommend starting with Alibaba Cloud**. We’ve done more real-world testing with it. We’re still improving support for other services, so results and reliability may vary.
 
+You can also try Google Gemini; it works well with a stable connection. It currently offers a free tier. Check your quota and billing in [Google AI Studio](https://aistudio.google.com/), where you can also get an API key.
+
 1. Open Settings → Speech & Translation, add a configuration, enter the requested provider credentials, and save.
 2. Choose the recognition and translation languages.
 3. Play something and turn on Live Subtitles under Subtitles. On macOS, allow Screen & System Audio Recording when asked.
