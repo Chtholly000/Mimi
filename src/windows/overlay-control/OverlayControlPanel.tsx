@@ -5,6 +5,7 @@ import { LanguageSelect } from "../../components/LanguageSelect";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
+import { activeServiceProfile } from "../../lib/providerCapabilities";
 import {
   isTauri,
   overlayControlSetPanelHeight,
@@ -96,6 +97,7 @@ export function OverlayControlPanel({
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const canChangeSessionSettings = !isChangingSession && pendingAction === null;
+  const activeProfile = activeServiceProfile(settings);
 
   useLayoutEffect(() => {
     if (!isTauri || !panelRef.current || !contentRef.current) return;
@@ -201,7 +203,7 @@ export function OverlayControlPanel({
 
         {model.sourceOptions.length > 0 && (
           <div ref={sourceControlRef} className="overlay-control-picker">
-            <span>{I18N.overlay.sourceLanguage} <SettingsHelp text={I18N.settings.recognitionLanguageHelp} label={I18N.settings.helpLabel} /></span>
+            <span>{I18N.overlay.sourceLanguage} <SettingsHelp text={activeProfile?.provider === "appleSpeech" ? I18N.settings.appleSpeechLanguageHelp : I18N.settings.recognitionLanguageHelp} label={I18N.settings.helpLabel} /></span>
             <LanguageSelect
               label={I18N.overlay.sourceLanguage}
               value={settings.sourceLanguage}

@@ -185,6 +185,24 @@ it.each(["zh", "en", "ja"] as const)("offers the same full source list as settin
   expect(document.querySelector('[role="listbox"]')).toBeNull();
 });
 
+it.each(["zh", "en", "ja"] as const)("keeps Apple source choices and explicit-language help consistent in %s", async locale => {
+  setStoredUiLanguage(locale);
+  configure({ sourceLanguage: "en", targetLanguage: "original", activeProfileId: "apple",
+    profiles: [{ id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "missing" }],
+    languageCapabilities: { profileId: "apple", provider: "appleSpeech", textTranslation: "followService", targetLanguage: "original",
+      sourceLanguages: ["en", "fr"], targetLanguages: ["original"] } });
+  await mount();
+  const source = picker(I18N.overlay.sourceLanguage);
+  const help = source.closest('.overlay-control-picker')!.querySelector('.settings-help-control__description')!;
+  expect(help.textContent).toBe(I18N.settings.appleSpeechLanguageHelp);
+  expect(help.textContent).not.toBe(I18N.settings.recognitionLanguageHelp);
+  await act(async () => source.click());
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(options.map(option => option.textContent)).toEqual([SOURCE_LANGUAGE_DISPLAY_NAMES.en, SOURCE_LANGUAGE_DISPLAY_NAMES.fr]);
+  await act(async () => options[1].click());
+  expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("fr");
+});
+
 it("offers all Original-mode recognition hints including searchable Norwegian", async () => {
   configure({ targetLanguage: "original" });
   await mount();

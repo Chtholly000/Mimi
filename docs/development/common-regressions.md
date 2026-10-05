@@ -77,6 +77,12 @@ Windows and Linux use an unavailable implementation and hide the add-provider ch
 Do not remove availability checks or silently ship an Apple silicon build with the
 adapter omitted because its SDK is old.
 
+When worktrees share a Cargo target directory, switching back from a branch without
+the Swift adapter can leave a stale build-script output. If linking reports missing
+Apple bridge symbols, inspect the current build output for the Swift link/search
+directives and rerun this branch's build script (for example, touch `src-tauri/build.rs`).
+Preserve reusable caches and signing identity; do not clear global caches or reset TCC.
+
 Language support and installed resources are queried from the running app. A successful
 standalone probe does not establish the app's asset state: prepare through the explicit
 settings action under Mimi's actual identity, then query again. Querying capabilities or
