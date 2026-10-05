@@ -835,7 +835,7 @@
 ### 2026-10-05 — Speech language setup and official parameter alignment
 
 - Source: `feat/speech-language-guidance`, isolated from the model experiments and
-  service-error-feedback branches; base `a0ac37f`.
+  service-error-feedback branches; base `a0ac37f`, code commit `6b1cfba`.
 - Scope: xAI optional input hint; OpenAI 13 and Gemini 30 represented output
   languages; explicit custom ASR protocol codes with unknown model support;
   DeepL/DeepLX automatic reported-source fallback; shared Android language labels;
@@ -846,8 +846,28 @@
   exercise desktop encoders, and a local WebSocket fixture verifies the xAI hint
   reaches the transport. DeepL/DeepLX use local HTTP fixtures; no provider key or
   private audio was used.
-- Limits: Android JVM/lint/APK checks run in CI, not locally in this pass. Signed
-  native UI and cloud-account acceptance are distinct and not claimed by these
-  automated checks. No dev app was installed/restarted by this branch. Broader
-  Azure, Tencent, Baidu, Volcano and regional-code gaps remain listed in the
+- CI at code commit `6b1cfba` passed:
+  [desktop/frontend/MSRV/Windows ARM64](https://github.com/yuxino/Mimi/actions/runs/37277950841)
+  and [Android JVM/lint/APK](https://github.com/yuxino/Mimi/actions/runs/37277948366).
+  Android was verified in CI, not with a local JVM run or physical device.
+- Native evidence uses the signed canonical macOS `local-dev` combination
+  `b59c607`, which also includes separate Apple compatibility and service-error
+  changes; it is not a standalone build of this PR. Its complete check passed:
+  1,123 Rust tests (2 ignored), 113 frontend files / 1,528 tests.
+- Real Settings UI showed the custom Whisper profile's **Service default** label,
+  unknown model-support notice and `language_hints` explanation. In original-only
+  mode, French was searchable and selectable. Re-enabling independent Index text
+  translation normalized the source to Auto and displayed the explicit toast
+  “识别语言已从法语改为服务默认，以匹配文字翻译接口”; the resulting selection matched it.
+  A saved Gemini profile showed automatic-source guidance and German in target
+  search; cancelling preserved its target and made no cloud API request.
+- Restored and read back the active custom Whisper profile with Auto → Chinese,
+  system audio only, overlay unlocked, subtitle history and audio recording off,
+  and subtitles idle. Earlier independent Whisper recognition and Index translation
+  connection checks passed; their durations are not subtitle-latency evidence.
+- Limits: native inspection did not cover every official target, the complete tray
+  mode matrix or an Android device. Shared wire fixtures and CI establish request
+  behavior, not cloud-account audio quality. Broader Azure, Tencent, Baidu,
+  Volcano and regional-code gaps remain listed in the
   [official audit matrix](../speech-language-setup.md#official-api-audit--2026-10-05).
+  The follow-up after `6b1cfba` records evidence only and does not change code.
