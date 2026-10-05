@@ -1,0 +1,11 @@
+{
+  "repository": "openai/whisper",
+  "revision": "86098128c0b4f24f0e2aa2994de830614b474227",
+  "files": {
+    "__init__.py": "f18fcdce4caee7f2e80e4c01ab0457d3a080a872a29489542c6d23c4b0bba572",
+    "basic.py": "4742eaa040e0657fa1247a1361e0d856c62317a43326ea59a40c2e9edd8d2c38",
+    "english.py": "d31a52685b5b42628ea4e3343c3a7925ce5b2f317e6c0ec4575677dd5c8b5d2c",
+    "english.json": "6607f948be9824d2e1b2fa2223cd94c06c45afa4e05ea0e3d5e1f2bdffde2465"
+  },
+  "license_sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
+}

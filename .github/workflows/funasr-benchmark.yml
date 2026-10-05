@@ -1,0 +1,25 @@
+name: funasr-benchmark
+on:
+  pull_request:
+    paths:
+      - 'tools/funasr/**'
+      - '.github/workflows/funasr-benchmark.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tools/funasr/**'
+      - '.github/workflows/funasr-benchmark.yml'
+permissions:
+  contents: read
+jobs:
+  tooling-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Run isolated tests without models
+        run: |
+          python3 -m venv "$RUNNER_TEMP/funasr-tests"
+          "$RUNNER_TEMP/funasr-tests/bin/python" -m pip install 'psutil==7.2.2'
+          "$RUNNER_TEMP/funasr-tests/bin/python" -B -m unittest discover -s tools/funasr -p 'test_*.py'
+          bash -n tools/funasr/setup.sh
+          git diff --check

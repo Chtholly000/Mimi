@@ -830,3 +830,32 @@
   loaded real profiles. The formal app was quit with explicit user permission
   and its installed bundle was not replaced. Temporary editor drafts were
   cancelled/restored before releasing the development app to other work.
+
+### 2026-10-05 — Standalone FunASR CPU English comparison
+
+- Scope explicitly tests local ASR itself: no Index/MT, Mimi connection, capture,
+  native dev restart or application configuration changes. Base `a0ac37f` plus
+  task-owned benchmark tools at measurement time; follow-up metadata/scoring
+  clarifications do not alter hypotheses or measured timings.
+- Apple M5 / 16 GiB / macOS 26.3.1(a), Python 3.12.13, fixed official model/file
+  SHA256, CPU FP32 with four threads. SenseVoiceSmall and Fun-ASR-Nano native
+  Transformers both installed and ran successfully. See the
+  [full method/results](../research/2026-10-05-funasr-macos.md) and
+  [reproducible tools](../../tools/funasr/README.md).
+- On the same 40 public LibriSpeech clips (290.790 s), normalized WER was
+  SenseVoice 36/752 (4.79%) and Nano 15/752 (1.99%). CPU inference-call wall time
+  was 20.793 s and 58.057 s respectively. Literal WER remains separately recorded.
+  These audiobook samples are a small controlled set, not general English or
+  real-time subtitle acceptance.
+- Both models passed the familiar JFK transcription but emitted one word on a
+  three-second zero-PCM control. Fixed 30-second cuts in the 96-second synthetic
+  sample damaged boundary recognition; neither silence nor boundary failures
+  were hidden with retrospective filters. No VAD/streaming capability is implied.
+- Model processes were reaped after every run; no service remains. Raw audio,
+  references, hypotheses and per-case timing/resource JSONL stay in private
+  model storage outside Git. MPS and other runtimes, actual subtitle latency,
+  continuous session lifecycle and native overlay behavior remain unverified.
+- Verification: 15 focused tool tests passed, including cancellation and
+  incomplete-result rejection. Canonical `scripts/check.sh` passed (Rust 1,088 /
+  2 ignored; frontend 1,444 tests across 110 files; shared core/JNI, clippy,
+  lint/typecheck and build). Separate model-free CI tests accompany the tools.
