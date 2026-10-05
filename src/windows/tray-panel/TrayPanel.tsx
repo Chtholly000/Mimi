@@ -8,6 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "../../components/Icon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
 import { isTauri } from "../../lib/ipc";
+import { languageActionErrorMessage } from "../../lib/connectionDiagnostics";
 import {
   activeServiceProfile,
   credentialStateForTarget,
@@ -113,11 +114,13 @@ export function TrayPanel() {
         setOperationError(
           name === "quit"
             ? I18N.tray.quitFailed
-            : name === "dock"
-              ? I18N.settings.dockSaveFailed
-              : name === "intermediate"
-                ? I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles)
-                : actionErrorMessage(error, I18N.settings.profileActionFailed),
+            : name === "language"
+              ? languageActionErrorMessage(error, I18N.settings.profileActionFailed)
+              : name === "dock"
+                ? I18N.settings.dockSaveFailed
+                : name === "intermediate"
+                  ? I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles)
+                  : actionErrorMessage(error, I18N.settings.profileActionFailed),
         );
       })
       .finally(() => {

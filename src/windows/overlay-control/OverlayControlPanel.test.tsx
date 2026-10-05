@@ -337,3 +337,15 @@ it("keeps custom service-default semantics and scope visible in overlay controls
   expect(host.querySelector('.recognition-language-notice')?.textContent).toBe(I18N.settings.recognitionCustomNotice);
   expect(host.textContent).toContain(I18N.settings.recognitionDashScopeParameter);
 });
+
+
+it("keeps the panel and current language after a rejected source switch and shows its safe reason", async () => {
+  props.onSwitchSourceLanguage = vi.fn().mockRejectedValue("source_switch_unsupported");
+  await mount();
+  await searchSource("fr");
+  await act(async () => document.querySelector<HTMLElement>('[role="option"]')!.click());
+  expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("fr");
+  expect(props.onDismiss).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.languageSwitchUnsupported);
+  expect(picker(I18N.overlay.sourceLanguage).textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.auto);
+});

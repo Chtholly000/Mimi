@@ -381,12 +381,8 @@ export const useStore = create<StoreState>()((set, get) => ({
 
   switchSourceLanguage: async (language) => {
     const current = get();
-    if (
-      sessionSettingsAreChanging(current.session) ||
-      !sourceLanguagesForSettings(current.settings).includes(language)
-    ) {
-      return;
-    }
+    if (sessionSettingsAreChanging(current.session)) throw new Error("source_switch_busy");
+    if (!sourceLanguagesForSettings(current.settings).includes(language)) throw new Error("source_switch_unsupported");
     if (isTauri) {
       await sessionSwitchSourceLanguage(language);
       return;

@@ -1715,8 +1715,7 @@ pub async fn session_switch_source_language(
     // The session manager broadcasts settings-changed immediately after the
     // preference write, so no window keeps a stale selection while the
     // reconnect (which this awaits) is still in flight.
-    state.session.switch_source_language(language).await;
-    Ok(())
+    state.session.switch_source_language(language).await
 }
 
 #[tauri::command]

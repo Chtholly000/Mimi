@@ -224,3 +224,17 @@ it("shows custom service default and unknown support beside the tray picker", as
   expect(host.querySelector('.recognition-language-notice')?.textContent).toBe(I18N.settings.recognitionCustomNotice);
   expect(host.textContent).toContain(I18N.settings.recognitionOpenAIParameter);
 });
+
+
+it("localizes a rejected tray language switch without exposing the IPC label", async () => {
+  const switchSourceLanguage = vi.fn().mockRejectedValue(new Error("source_switch_save_failed"));
+  useStore.setState({ ...initial, settings: languageSettings(), switchSourceLanguage }, true);
+  await act(async () => root.render(<TrayPanel />));
+  await act(async () => sourcePicker().click());
+  await filter("fr");
+  await act(async () => document.querySelector<HTMLElement>('[role="option"]')!.click());
+  expect(switchSourceLanguage).toHaveBeenCalledExactlyOnceWith("fr");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.languageSaveFailed);
+  expect(host.textContent).not.toContain("source_switch_save_failed");
+  expect(sourcePicker().textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.auto);
+});

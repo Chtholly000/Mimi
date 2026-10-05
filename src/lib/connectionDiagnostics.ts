@@ -261,3 +261,15 @@ export function profileErrorMessage(error: unknown): string {
   if (typeof error === "string" && error.startsWith("Use an HTTPS DeepLX endpoint")) return I18N.settings.deepLXEndpointInvalid;
   return credentialErrorMessage(error) ?? I18N.settings.profileActionFailed;
 }
+
+/** Keep language failures actionable without exposing arbitrary IPC/provider text. */
+export function languageActionErrorMessage(error: unknown, fallback: string): string {
+  const label = error instanceof Error ? error.message : error;
+  if (label === "source_switch_busy" || label === "target_switch_busy") return I18N.settings.languageSwitchBusy;
+  if (label === "source_switch_superseded" || label === "language_switch_superseded") return I18N.settings.languageSwitchSuperseded;
+  if (label === "source_switch_unsupported" || label === "target_switch_unsupported") return I18N.settings.languageSwitchUnsupported;
+  if (label === "source_switch_save_failed" || label === "target_switch_save_failed") return I18N.settings.languageSaveFailed;
+  if (label === "source_switch_profile" || label === "target_switch_profile") return I18N.settings.languageSwitchProfileUnavailable;
+  if (label === "Listening settings cannot be changed while a session is active.") return I18N.settings.languageChangeRequiresStop;
+  return credentialErrorMessage(label) ?? fallback;
+}

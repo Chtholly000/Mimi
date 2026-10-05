@@ -146,3 +146,12 @@ it("updates explicit selected classes with the actual saved language", async () 
   expect(choice("Japanese").classList.contains("is-selected")).toBe(true);
   expect(choice("Japanese").getAttribute("aria-pressed")).toBe("true");
 });
+
+
+it("explains a native session lock after a language save race without announcing success", async () => {
+  save.mockRejectedValueOnce("Listening settings cannot be changed while a session is active.");
+  await render();
+  await choose(I18N.settings.sourceLanguage, "fr");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.languageChangeRequiresStop);
+  expect(host.textContent).not.toContain(I18N.settings.languageSaved);
+});

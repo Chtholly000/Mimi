@@ -5,6 +5,7 @@ import { Icon } from "../../components/Icon";
 import { LanguageSelect } from "../../components/LanguageSelect";
 import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { I18N } from "../../lib/i18n";
+import { languageActionErrorMessage } from "../../lib/connectionDiagnostics";
 import { sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import { useStore } from "../../lib/store";
 import { TARGET_LANGUAGE_DISPLAY_NAMES, type SettingsDraft, type SettingsSnapshot } from "../../lib/types";
@@ -37,9 +38,9 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
       await saveSettings(draft);
       if (mounted.current) notify(I18N.settings.languageSaved);
       finishLanguageChange(true);
-    } catch {
+    } catch (error) {
       finishLanguageChange(false);
-      if (mounted.current) notify(I18N.settings.languageSaveFailed, true);
+      if (mounted.current) notify(languageActionErrorMessage(error, I18N.settings.languageSaveFailed), true);
     } finally {
       inFlight.current = false;
       if (mounted.current) setBusy(false);

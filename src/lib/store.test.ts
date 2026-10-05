@@ -318,3 +318,23 @@ it("keeps custom declarations independent and normalizes only the active source 
     await expect(useStore.getState().updateProfile(original.settings.activeProfileId, undefined, { customSpeechSourceLanguages: [] })).rejects.toThrow("provider-mismatch");
   } finally { useStore.setState(original, true); }
 });
+
+
+it("rejects stale or busy recognition choices without changing preferences or subtitle state", async () => {
+  const original = useStore.getState();
+  try {
+    const settings = { ...original.settings, sourceLanguage: "auto" as const, languageCapabilities: undefined,
+      profiles: [{ id: "test", name: "Test", provider: "openAIRealtime" as const, credentialState: "present" as const }], activeProfileId: "test" };
+    useStore.setState({ settings, session: original.session });
+    await expect(useStore.getState().switchSourceLanguage("fr")).rejects.toThrow("source_switch_unsupported");
+    expect(useStore.getState().settings).toBe(settings);
+    expect(useStore.getState().session).toBe(original.session);
+    for (const kind of ["connecting", "stopping"] as const) {
+      const session = { ...original.session, status: { kind } };
+      useStore.setState({ session });
+      await expect(useStore.getState().switchSourceLanguage("auto")).rejects.toThrow("source_switch_busy");
+      expect(useStore.getState().settings).toBe(settings);
+      expect(useStore.getState().session).toBe(session);
+    }
+  } finally { useStore.setState(original, true); }
+});

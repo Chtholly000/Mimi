@@ -20,3 +20,25 @@ Alternatives rejected: displaying one universal model-support list would misrepr
 Cover omission versus hint, unsupported regional choices, target mappings, custom recognition-only versus translated-route intersections, persisted declarations and clearing, active-source normalization, rejected/busy saves, actual xAI loopback setup, localized help and all sibling controls. Generic text fixtures exercise the actual Rust and Android encoders; desktop-only custom declaration editing is documented in platform parity. Run the canonical repository check and Android shared-contract CI. No live cloud request or native capture is needed to verify field serialization. Signed native UI acceptance remains a separate check coordinated by the main task; this branch does not launch or install a dev app.
 
 The [setup guide and audit matrix](../speech-language-setup.md) state the exact implemented subsets and unresolved provider gaps. This change does not claim all providers expose their complete official language catalogs.
+
+
+## Language action failures (implementation only; checks deferred)
+
+The October 5 follow-up keeps one translation target at a time. The current
+31 generic output mappings, 13 OpenAI outputs and 30 Gemini outputs match their
+implemented encoders; the other providers retain the documented narrower
+integration limits. This is not a claim that every upstream language is exposed.
+
+Source-language changes now reject busy, unsupported, superseded and failed
+preference writes instead of returning success. Saving fails before any subtitle
+state mutation or reconnect. After a durable selection, a reconnect failure
+leaves the selected preference and the existing session error visible, and also
+rejects the initiating control; no automatic rollback is claimed. Other lifecycle
+callers retain their existing behavior. Settings, tray and overlay map known
+sanitized language/provider errors and never display arbitrary IPC bodies.
+
+The latest main service-switch change (#163) concerns saved profiles; it does
+not replace this source-language failure path. Apple runtime checks belong to
+its separate integration branch. Regression source was added, but no tests,
+format checks, builds, UI acceptance or CI were run for this follow-up at the
+user's request. Verification is explicitly pending.

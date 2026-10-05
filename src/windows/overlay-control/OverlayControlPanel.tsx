@@ -7,6 +7,7 @@ import { LanguageSelect } from "../../components/LanguageSelect";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
+import { languageActionErrorMessage } from "../../lib/connectionDiagnostics";
 import {
   isTauri,
   overlayControlSetPanelHeight,
@@ -152,7 +153,7 @@ export function OverlayControlPanel({
       .then(() => {
         if (dismissAfter) onDismiss();
       })
-      .catch(() => setOperationError(failureMessage))
+      .catch((error: unknown) => setOperationError(name === "source" || name === "translation" ? languageActionErrorMessage(error, failureMessage) : failureMessage))
       .finally(() => { actionInFlight.current = false; setPendingAction(null); });
   };
 
