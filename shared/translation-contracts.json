@@ -1,6 +1,13 @@
 {
   "schemaVersion": 1,
   "description": "Shared independent text translation wire semantics. Synthetic fixtures only. Platform-specific UI, transport limits and scheduling are tested separately.",
+  "websocketHandshakeFailures": [
+    { "id": "unauthorized", "httpStatus": 401, "expected": "credential_authentication_failed" },
+    { "id": "forbidden", "httpStatus": 403, "expected": "credential_authentication_failed" },
+    { "id": "rate-limited", "httpStatus": 429, "expected": null },
+    { "id": "server-error", "httpStatus": 500, "expected": null },
+    { "id": "network-failure", "httpStatus": null, "expected": null }
+  ],
   "requests": [
     {
       "id": "deepL-auto-zh",

@@ -65,7 +65,7 @@ class StreamingServiceEngine(private val config: ServiceConfiguration, private v
                         adapter.binary(bytes.toByteArray())
                     }
                     override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = synchronized(lock) {
-                        if (!finishGate.complete()) fail("transport_error")
+                        if (!finishGate.complete()) fail(websocketFailureCode(response?.code))
                     }
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                         webSocket.close(code, null)

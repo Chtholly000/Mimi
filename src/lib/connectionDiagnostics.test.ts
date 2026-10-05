@@ -306,3 +306,119 @@ it("routes only exact resource errors to Apple preparation and preserves other r
     expect(sessionErrorSettingsTarget(label)).toBeNull();
   }
 });
+
+
+it.each(["en", "zh", "ja"] as const)("keeps safe provider failures actionable across session, language and profile actions in %s", language => {
+  setStoredUiLanguage(language);
+  const labels = diagnosticCopy();
+  const rejected = `${labels.reasons.serviceRejected} ${labels.reasons.invalidConfiguration}`;
+  const cases: [string, string][] = [];
+  for (const provider of ["OpenAI Realtime Translation", "Gemini Live Translation", "Azure OpenAI Realtime Translation", "xAI Grok Voice", "Tencent Cloud realtime translation", "Baidu realtime translation"]) {
+    cases.push(
+      [`The ${provider} connection failed.`, labels.unreachable],
+      [`The ${provider} session is not connected.`, labels.unreachable],
+      [`The ${provider} connection stopped responding.`, labels.timeout],
+      [`${provider} rejected the session configuration.`, rejected],
+      [`${provider} rejected the session.`, rejected],
+      [`${provider} returned an invalid response.`, labels.translationTemporary],
+      [`${provider} requires a translated output language.`, I18N.settings.languageSwitchUnsupported],
+    );
+    const setup = provider === "Tencent Cloud realtime translation" || provider === "Baidu realtime translation"
+      ? "session" : "session configuration";
+    cases.push([`${provider} did not confirm the ${setup} in time.`, labels.timeout]);
+  }
+  cases.push(
+    ["The live translation transport failed.", labels.unreachable],
+    ["The live translation session is not connected.", labels.unreachable],
+    ["The live translation connection closed.", labels.unreachable],
+    ["The live translation connection could not be established in time.", labels.timeout],
+    ["The live translation connection stopped responding.", labels.timeout],
+    ["The live translation session setup timed out.", labels.timeout],
+    ["The live translation session setup was rejected.", rejected],
+    ["The live translation service returned invalid data.", labels.translationTemporary],
+    ["The Volcano Engine connection failed.", labels.unreachable],
+    ["The Volcano Engine transport failed.", labels.unreachable],
+    ["The Volcano Engine translation session is not connected.", labels.unreachable],
+    ["The Volcano Engine connection stopped responding.", labels.timeout],
+    ["The Volcano Engine connection could not be established in time.", labels.timeout],
+    ["Volcano Engine did not confirm the session configuration in time.", labels.timeout],
+    ["Volcano Engine rejected the session configuration.", rejected],
+    ["Volcano Engine rejected the translation session.", rejected],
+    ["Volcano Engine returned an invalid response.", labels.translationTemporary],
+    ["Volcano Engine ended the translation session unexpectedly.", labels.translationTemporary],
+    ["Volcano Engine requires an explicit Chinese, English, or Japanese source language.", I18N.settings.languageSwitchUnsupported],
+    ["Volcano Engine requires a Chinese, English, or Japanese translation language.", I18N.settings.languageSwitchUnsupported],
+    ["Baidu realtime translation requires an explicit supported source language.", I18N.settings.languageSwitchUnsupported],
+    ["Baidu realtime translation ended the session unexpectedly.", labels.translationTemporary],
+    ["Tencent Cloud realtime translation ended the session unexpectedly.", labels.translationTemporary],
+    ["xAI Grok Voice did not finish the final turn in time.", labels.timeout],
+    ["xAI Grok Voice did not complete the current turn.", labels.translationTemporary],
+    ["credential_authentication_failed", labels.auth],
+    ["custom_speech_authentication_failed", labels.auth],
+    ["custom_speech_credentials_missing", labels.missing],
+    ["custom_speech_endpoint_invalid", I18N.settings.customSpeechEndpointInvalid],
+    ["custom_speech_model_invalid", I18N.settings.customSpeechModelInvalid],
+    ["text_translation_credentials_missing", labels.missing],
+  );
+  for (const error of [
+    "Add an Alibaba Cloud Model Studio API key in Settings.",
+    "Add an OpenAI API key in Settings.",
+    "Add a Google Gemini API key in Settings.",
+    "Add an Azure OpenAI API key in Settings.",
+    "Add an xAI API key in Settings.",
+    "Add a Tencent Cloud AppID, SecretID, and SecretKey in Settings.",
+    "Add a Baidu Cloud AppID and AppKey in Settings.",
+    "Add a Volcano Engine API key in Settings.",
+  ]) cases.push([error, labels.missing]);
+  for (const error of [
+    "Enter a valid Azure OpenAI resource endpoint in Settings.",
+    "Enter Azure OpenAI translation and transcription deployment names in Settings.",
+    "The Azure OpenAI endpoint must be an official HTTPS resource endpoint.",
+    "The Azure OpenAI deployment name is invalid.",
+  ]) cases.push([error, labels.reasons.invalidConfiguration]);
+  for (const [label, expected] of cases) {
+    expect(credentialErrorMessage(label), label).toBe(expected);
+    const target = [labels.auth, labels.missing, labels.reasons.invalidConfiguration, I18N.settings.languageSwitchUnsupported, I18N.settings.customSpeechEndpointInvalid, I18N.settings.customSpeechModelInvalid].includes(expected) ? "service" : null;
+    for (const error of [label, new Error(label)]) {
+      expect(sessionErrorSettingsTarget(error), label).toBe(target);
+      expect(languageActionErrorMessage(error, "fallback"), label).toBe(expected);
+      expect(profileErrorMessage(error), label).toBe(expected);
+      expect(sessionActionErrorMessage(error, "fallback"), label).toBe(expected);
+    }
+    for (const unsafe of [`${label} https://synthetic-private-endpoint?token=private`, `private-provider-body ${label}`, `${label}\n`]) {
+      expect(sessionErrorSettingsTarget(unsafe)).toBeNull();
+      expect(credentialErrorMessage(unsafe)).toBeNull();
+      expect(languageActionErrorMessage(new Error(unsafe), "fallback")).toBe("fallback");
+      expect(profileErrorMessage(unsafe)).toBe(I18N.settings.profileActionFailed);
+      expect(sessionActionErrorMessage(unsafe, "fallback")).toBe("fallback");
+    }
+  }
+  expect(credentialErrorMessage("The unknown provider connection failed.")).toBeNull();
+  expect(credentialErrorMessage("Baidu realtime translation rejected the session: private-provider-body")).toBeNull();
+  expect(sessionActionErrorMessage({ message: "The Baidu realtime translation connection failed." }, "fallback")).toBe("fallback");
+});
+
+it.each(["en", "zh", "ja"] as const)("retains only a canonical bounded Baidu setup code in %s", language => {
+  setStoredUiLanguage(language);
+  const labels = diagnosticCopy();
+  const rejected = `${labels.reasons.serviceRejected} ${labels.reasons.invalidConfiguration}`;
+  for (const code of ["0", "31003", "-1", "9223372036854775807", "-9223372036854775808"]) {
+    const error = `Baidu realtime translation rejected the session configuration (code ${code}).`;
+    const expected = `${rejected} (${code})`;
+    expect(sessionErrorSettingsTarget(error)).toBeNull();
+    expect(credentialErrorMessage(error)).toBe(expected);
+    expect(languageActionErrorMessage(new Error(error), "fallback")).toBe(expected);
+    expect(profileErrorMessage(error)).toBe(expected);
+    expect(sessionActionErrorMessage(error, "fallback")).toBe(expected);
+  }
+  for (const code of ["9223372036854775808", "-9223372036854775809", "99999999999999999999", "-0", "01", "+1", "1.5", "1e3", "31003 private-token", "https://private-endpoint"]) {
+    expect(credentialErrorMessage(`Baidu realtime translation rejected the session configuration (code ${code}).`)).toBeNull();
+  }
+  const exact = "Baidu realtime translation rejected the session configuration (code 31003).";
+  for (const unsafe of [`${exact}\n`, `${exact}\r\n`, `${exact} private-token`, `private-token ${exact}`, exact.replace("31003", "31003) private-token ("), "Other service rejected the session configuration (code 31003). "]) {
+    expect(credentialErrorMessage(unsafe)).toBeNull();
+    expect(languageActionErrorMessage(unsafe, "fallback")).toBe("fallback");
+    expect(sessionActionErrorMessage(unsafe, "fallback")).toBe("fallback");
+    expect(profileErrorMessage(unsafe)).toBe(I18N.settings.profileActionFailed);
+  }
+});

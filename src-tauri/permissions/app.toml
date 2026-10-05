@@ -85,9 +85,10 @@ commands.allow = [
 
 [[permission]]
 identifier = "app-overlay-control"
-description = "Allows the overlay control island to change live options and manage its panel."
+description = "Allows the overlay control island to retry failed sessions, change live options and manage its panel."
 commands.allow = [
   "profile_select",
+  "session_start",
   "session_toggle_paused",
   "capture_status",
   "audio_applications",

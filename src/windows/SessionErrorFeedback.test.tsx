@@ -341,3 +341,61 @@ it.each(["control", "tray"] as const)("shows the compact resource entry only for
   expect(host.textContent).not.toContain("private-resource-navigation-failure");
   expect(host.querySelectorAll('[role="alert"]').length).toBeGreaterThan(1);
 });
+
+
+it.each(["en", "zh", "ja"] as const)("opens service settings for fixed authentication and configuration failures across %s surfaces", async language => {
+  setStoredUiLanguage(language);
+  const labels = diagnosticCopy();
+  for (const [error, message] of [
+    ["credential_authentication_failed", labels.auth],
+    ["custom_speech_authentication_failed", labels.auth],
+    ["custom_speech_credentials_missing", labels.missing],
+    ["custom_speech_endpoint_invalid", I18N.settings.customSpeechEndpointInvalid],
+    ["custom_speech_model_invalid", I18N.settings.customSpeechModelInvalid],
+    ["text_translation_credentials_missing", labels.missing],
+    ["Add a Google Gemini API key in Settings.", labels.missing],
+    ["Enter a valid Azure OpenAI resource endpoint in Settings.", labels.reasons.invalidConfiguration],
+    ["Baidu realtime translation requires an explicit supported source language.", I18N.settings.languageSwitchUnsupported],
+  ]) {
+    for (const surface of surfaces) {
+      await act(async () => root.render(null));
+      useStore.setState(state => ({ session: { ...state.session, status: { kind: "error", message: error } } }));
+      showSettings.mockClear();
+      await mount(surface);
+      expect(feedback().querySelector("p")?.textContent).toBe(isOverlaySurface(surface) ? localizedSessionErrorSummary(message) : message);
+      expect(configure().textContent).toBe(I18N.settings.openSpeechSettings);
+      expect(feedback().querySelectorAll("button")).toHaveLength(1);
+      expect([...host.querySelectorAll("button")].some(button => button.textContent === I18N.settings.sessionRetry)).toBe(false);
+      await act(async () => configure().click());
+      expect(showSettings).toHaveBeenCalledExactlyOnceWith("service");
+      expect(start).not.toHaveBeenCalled();
+      if (surface === "settings" || surface === "compact-settings") {
+        showSettings.mockClear();
+        await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+        expect(showSettings).toHaveBeenCalledExactlyOnceWith("service");
+        expect(start).not.toHaveBeenCalled();
+      }
+    }
+  }
+});
+
+it.each(["en", "zh", "ja"] as const)("retains retry for built-in timeouts and unclassified rejections across %s surfaces", async language => {
+  setStoredUiLanguage(language);
+  for (const error of [
+    "Gemini Live Translation did not confirm the session configuration in time.",
+    "Baidu realtime translation rejected the session configuration.",
+    "Baidu realtime translation rejected the session configuration (code 31003).",
+  ]) {
+    for (const surface of ["overlay", "control", "tray", "settings", "compact-settings"] as const) {
+      await act(async () => root.render(null));
+      useStore.setState(state => ({ session: { ...state.session, status: { kind: "error", message: error } } }));
+      start.mockClear();
+      await mount(surface);
+      const retry = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === I18N.settings.sessionRetry)!;
+      expect(retry).toBeDefined();
+      await act(async () => retry.click());
+      expect(start).toHaveBeenCalledOnce();
+      expect(showSettings).not.toHaveBeenCalled();
+    }
+  }
+});

@@ -31,6 +31,8 @@ const UNEXPECTED_SESSION_END_ERROR: &str =
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BaiduTranslateClientError {
+    #[error("credential_authentication_failed")]
+    AuthenticationFailed,
     #[error("Add a Baidu Cloud AppID and AppKey in Settings.")]
     MissingCredentials,
     #[error("Baidu realtime translation requires an explicit supported source language.")]
@@ -223,7 +225,13 @@ impl BaiduTranslateClient {
         )
         .await
         .map_err(|_| BaiduTranslateClientError::TransportFailure)?
-        .map_err(|_| BaiduTranslateClientError::TransportFailure)?;
+        .map_err(|error| {
+            if super::connection_diagnostics::authentication_rejected(&error) {
+                BaiduTranslateClientError::AuthenticationFailed
+            } else {
+                BaiduTranslateClientError::TransportFailure
+            }
+        })?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);
@@ -651,6 +659,40 @@ fn emit_if_current(context: &ReceiveContext, event: LiveTranslateServerEvent) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn handshake_authentication_rejections_preserve_transport_failures() {
+        for (status, expected_auth_label) in
+            crate::clients::connection_diagnostics::handshake_failure_cases()
+        {
+            let (endpoint, server) =
+                crate::clients::connection_diagnostics::rejected_websocket_endpoint(status).await;
+            let (events, _receiver) = provider_event_channel();
+            let mut client = BaiduTranslateClient::with_endpoint(
+                SourceLanguage::Japanese,
+                TargetLanguage::English,
+                events,
+                endpoint,
+            );
+            client.network = super::super::provider_network::ProviderNetwork::resolve(
+                &crate::core::network_proxy::ProxyConfig {
+                    mode: crate::core::network_proxy::ProxyMode::Direct,
+                    url: None,
+                },
+            )
+            .unwrap();
+            let error = client.connect().await.unwrap_err();
+            server.await.unwrap();
+            if let Some(expected_label) = expected_auth_label {
+                assert_eq!(error, BaiduTranslateClientError::AuthenticationFailed);
+                assert_eq!(error.to_string(), expected_label);
+            } else {
+                assert_eq!(error, BaiduTranslateClientError::TransportFailure);
+            }
+            assert!(!error.to_string().contains("private-handshake-body"));
+            assert!(!client.inner.ready.load(Ordering::SeqCst));
+        }
+    }
+
     #[test]
     fn clear_observes_an_already_decoded_old_end_without_dropping_the_next_sentence() {
         let mut turn = SentenceContentState {

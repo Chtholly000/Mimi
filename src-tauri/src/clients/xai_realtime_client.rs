@@ -32,6 +32,8 @@ const SERVER_VAD_TAIL_FRAME_COUNT: usize = (XAIRealtimeEndpoint::SERVER_VAD_SILE
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum XAIRealtimeClientError {
+    #[error("credential_authentication_failed")]
+    AuthenticationFailed,
     #[error("Add an xAI API key in Settings.")]
     MissingAPIKey,
     #[error("xAI Grok Voice requires a translated output language.")]
@@ -460,7 +462,13 @@ impl XAIRealtimeClient {
         )
         .await
         .map_err(|_| XAIRealtimeClientError::TransportFailure)?
-        .map_err(|_| XAIRealtimeClientError::TransportFailure)?;
+        .map_err(|error| {
+            if super::connection_diagnostics::authentication_rejected(&error) {
+                XAIRealtimeClientError::AuthenticationFailed
+            } else {
+                XAIRealtimeClientError::TransportFailure
+            }
+        })?;
         let (sink, stream) = socket.split();
         *self.inner.sink.lock().await = Some(sink);
         self.inner.ready.store(false, Ordering::SeqCst);
@@ -1017,6 +1025,41 @@ fn emit_if_current(context: &ReceiveContext, event: LiveTranslateServerEvent) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn handshake_authentication_rejections_preserve_transport_failures() {
+        for (status, expected_auth_label) in
+            crate::clients::connection_diagnostics::handshake_failure_cases()
+        {
+            let (endpoint, server) =
+                crate::clients::connection_diagnostics::rejected_websocket_endpoint(status).await;
+            let (events, _receiver) = provider_event_channel();
+            let mut client = XAIRealtimeClient::with_endpoint(
+                "test-key-not-real",
+                TargetLanguage::Japanese,
+                events,
+                endpoint,
+            )
+            .unwrap();
+            client.network = super::super::provider_network::ProviderNetwork::resolve(
+                &crate::core::network_proxy::ProxyConfig {
+                    mode: crate::core::network_proxy::ProxyMode::Direct,
+                    url: None,
+                },
+            )
+            .unwrap();
+            let error = client.connect().await.unwrap_err();
+            server.await.unwrap();
+            if let Some(expected_label) = expected_auth_label {
+                assert_eq!(error, XAIRealtimeClientError::AuthenticationFailed);
+                assert_eq!(error.to_string(), expected_label);
+            } else {
+                assert_eq!(error, XAIRealtimeClientError::TransportFailure);
+            }
+            assert!(!error.to_string().contains("private-handshake-body"));
+            assert!(!client.inner.ready.load(Ordering::SeqCst));
+        }
+    }
+
     #[tokio::test]
     async fn clear_waits_for_real_response_boundary_then_accepts_the_next_item() {
         let (sender, mut receiver) = provider_event_channel();
