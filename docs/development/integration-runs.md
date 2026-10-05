@@ -830,3 +830,11 @@
   loaded real profiles. The formal app was quit with explicit user permission
   and its installed bundle was not replaced. Temporary editor drafts were
   cancelled/restored before releasing the development app to other work.
+
+## 2026-10-05 — TranslateGemma 4B Q4_K_M local MT experiment
+
+Base `51820ad` plus isolated Python adapter; M5/16 GB, llama.cpp b11146.
+Same 28 public synthetic English texts as Index, no ASR/capture; 28 complete HTTP
+responses, but no semantic-accuracy improvement established. Native Settings/overlay
+acceptance remains pending. Model hashes, timings, prompt controls and failure cases
+are in [the report](../research/2026-10-05-local-translategemma.md).

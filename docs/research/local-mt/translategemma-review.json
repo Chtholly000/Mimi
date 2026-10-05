@@ -1,0 +1,43 @@
+{
+  "method": "Unblinded AI-assisted semantic review against prewritten meaning notes; not a human rating or accuracy percentage.",
+  "categories": {
+    "adequate": "Core meaning preserved, allowing reasonable paraphrase.",
+    "term/style": "Terminology, style, script, small omission or unsupported detail; main event remains understandable.",
+    "material": "Changed negation, quantity, event relationship, gameplay meaning or untranslated source."
+  },
+  "counts": {
+    "adequate": 16,
+    "term/style": 8,
+    "material": 4
+  },
+  "results": [
+    {"id":"probe-01","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"probe-02","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"probe-03","rating":"term/style","note":"Lara Croft name is poorly transliterated."},
+    {"id":"probe-04","rating":"term/style","note":"Potion is rendered as medicine with an unnatural classifier."},
+    {"id":"negation-01","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"negation-02","rating":"material","note":"Explicitly asserts that the file was backed up, reversing the contrast."},
+    {"id":"negation-03","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"negation-04","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"number-01","rating":"term/style","note":"Adds morning although the source gives no AM/PM."},
+    {"id":"number-02","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"number-03","rating":"material","note":"Surviving the second round becomes advancing into the second round."},
+    {"id":"number-04","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"name-01","rating":"term/style","note":"Black Mesa is transliterated 黑梅萨 rather than the established name."},
+    {"id":"name-02","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"name-03","rating":"term/style","note":"Hollow Knight becomes the unrelated title 空之之刃."},
+    {"id":"name-04","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"game-01","rating":"term/style","note":"Bottleneck is generalized to a key position."},
+    {"id":"game-02","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"game-03","rating":"material","note":"Team wipes become cleanup; boss and adds are not understood in context."},
+    {"id":"game-04","rating":"term/style","note":"Saving the dash and recovery-window punishment are weakened to generic dodge/counterattack."},
+    {"id":"game-05","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"game-06","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"general-01","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"general-02","rating":"term/style","note":"Omits the one-minute duration."},
+    {"id":"general-03","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"general-04","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"fragment-01","rating":"material","note":"Behind you becomes you are behind, changing the referent."},
+    {"id":"literal-01","rating":"adequate","note":"Core meaning preserved in this sample."}
+  ]
+}

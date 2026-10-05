@@ -1,0 +1,18 @@
+{
+  "id": "mimi-translategemma-4b",
+  "port": 18085,
+  "backend_port": 18086,
+  "repository": "bullerwins/translategemma-4b-it-GGUF",
+  "revision": "7c938465a870d8624bcfa98a8e4a3510053c19a8",
+  "filename": "translategemma-4b-it-Q4_K_M.gguf",
+  "size": 2489909312,
+  "sha256": "7f7357c14abd9da4eb200b38b05da502cd6e10d7e1d403fbc9f78c19f3209b72",
+  "license": "Gemma Terms of Use",
+  "license_url": "https://ai.google.dev/gemma/terms",
+  "chat_template_file": "translategemma-text.jinja",
+  "source_languages": ["zh","en","ja","ko","vi","th","id","ms","tl","hi","ar","fr","de","es","pt","ru","it","nl","sv","da","fi","no","el","pl","cs","hu","ro","bg","hr","sk"],
+  "user_template": "{text}",
+  "template_kwargs": {"source_lang_code": "{source_code}", "target_lang_code": "{target_code}"},
+  "target_codes": {"zh": "zh-Hans"},
+  "generation": {"temperature": 0, "max_tokens": 256, "seed": 42}
+}

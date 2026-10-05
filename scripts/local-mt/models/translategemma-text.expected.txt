@@ -1,0 +1,7 @@
+<bos><start_of_turn>user
+You are a professional English (en) to Chinese (zh-Hans) translator. Your goal is to accurately convey the meaning and nuances of the original English text while adhering to Chinese grammar, vocabulary, and cultural sensitivities.
+Produce only the Chinese translation, without any additional explanations or commentary. Please translate the following English text into Chinese:
+
+
+Synthetic input.<end_of_turn>
+<start_of_turn>model

@@ -1,0 +1,30 @@
+name: local-mt-tools
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/local-mt/**'
+      - '.github/workflows/local-mt.yml'
+      - 'src-tauri/src/core/protocols/openai_compatible.rs'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/local-mt/**'
+      - '.github/workflows/local-mt.yml'
+      - 'src-tauri/src/core/protocols/openai_compatible.rs'
+
+permissions:
+  contents: read
+
+jobs:
+  fake-service-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y lsof
+      - run: python -m pip install -r scripts/local-mt/requirements-test.txt
+      - run: python -m unittest discover -s scripts/local-mt -p 'test_*.py' -v

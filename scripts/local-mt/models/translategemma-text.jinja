@@ -1,0 +1,44 @@
+{# Text-only transport projection of Google's TranslateGemma template.
+   Preserves its emitted translation prompt and control tokens. The gateway
+   requires explicit language codes; defaults below only allow llama.cpp's
+   startup parser probe. No images, system messages or language guessing.
+   Gemma is provided under and subject to the Gemma Terms of Use found at
+   ai.google.dev/gemma/terms. #}
+{%- set languages = {
+    'zh': 'Chinese', 'zh-Hans': 'Chinese', 'en': 'English', 'ja': 'Japanese',
+    'ko': 'Korean', 'vi': 'Vietnamese', 'th': 'Thai', 'id': 'Indonesian',
+    'ms': 'Malay', 'tl': 'Tagalog', 'hi': 'Hindi', 'ar': 'Arabic',
+    'fr': 'French', 'de': 'German', 'es': 'Spanish', 'pt': 'Portuguese',
+    'ru': 'Russian', 'it': 'Italian', 'nl': 'Dutch', 'sv': 'Swedish',
+    'da': 'Danish', 'fi': 'Finnish', 'no': 'Norwegian', 'el': 'Greek',
+    'pl': 'Polish', 'cs': 'Czech', 'hu': 'Hungarian', 'ro': 'Romanian',
+    'bg': 'Bulgarian', 'hr': 'Croatian', 'sk': 'Slovak'
+} -%}
+{%- set source_code = source_lang_code | default('en') -%}
+{%- set target_code = target_lang_code | default('en') -%}
+{%- if source_code not in languages or target_code not in languages -%}
+    {{ raise_exception('Unsupported explicit language code') }}
+{%- endif -%}
+{%- set source_lang = languages[source_code] -%}
+{%- set target_lang = languages[target_code] -%}
+{{ bos_token }}
+{%- for message in messages -%}
+    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+        {{ raise_exception('Conversation roles must alternate user/assistant') }}
+    {%- endif -%}
+    {%- if message['role'] == 'assistant' -%}
+        {{ '<start_of_turn>model\n' + message['content'] | trim }}
+    {%- elif message['role'] == 'user' and message['content'] is string -%}
+        {{ '<start_of_turn>user\nYou are a professional ' + source_lang + ' (' + source_code + ') to ' +
+           target_lang + ' (' + target_code + ') translator. Your goal is to accurately convey the meaning and '
+           'nuances of the original ' + source_lang + ' text while adhering to ' + target_lang + ' grammar, '
+           'vocabulary, and cultural sensitivities.\n' }}
+        {{- 'Produce only the ' + target_lang + ' translation, without any additional explanations or ' +
+           'commentary. Please translate the following ' + source_lang + ' text into ' + target_lang + ':\n\n\n' +
+           message['content'] | trim }}
+    {%- else -%}
+        {{ raise_exception('Only user text and assistant strings are supported') }}
+    {%- endif -%}
+    {{ '<end_of_turn>\n' }}
+{%- endfor -%}
+{%- if add_generation_prompt -%}{{ '<start_of_turn>model\n' }}{%- endif -%}

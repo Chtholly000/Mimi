@@ -1,0 +1,78 @@
+{
+  "sample_sha256": "a27a95b4ea33775f18cd3968a608f7bc778180380e1b94c1719f4eec1d92afbb",
+  "model": "mimi-translategemma-4b",
+  "request": {
+    "template": "gateway",
+    "temperature": 0,
+    "max_tokens": 256,
+    "seed": 42,
+    "stream": false
+  },
+  "count": 4,
+  "median_ms": 479.2,
+  "max_ms": 541.7,
+  "manifest": {
+    "id": "mimi-translategemma-4b",
+    "port": 18085,
+    "backend_port": 18086,
+    "repository": "bullerwins/translategemma-4b-it-GGUF",
+    "revision": "7c938465a870d8624bcfa98a8e4a3510053c19a8",
+    "filename": "translategemma-4b-it-Q4_K_M.gguf",
+    "size": 2489909312,
+    "sha256": "7f7357c14abd9da4eb200b38b05da502cd6e10d7e1d403fbc9f78c19f3209b72",
+    "license": "Gemma Terms of Use",
+    "license_url": "https://ai.google.dev/gemma/terms",
+    "chat_template_file": "translategemma-text.jinja",
+    "source_languages": [
+      "zh",
+      "en",
+      "ja",
+      "ko",
+      "vi",
+      "th",
+      "id",
+      "ms",
+      "tl",
+      "hi",
+      "ar",
+      "fr",
+      "de",
+      "es",
+      "pt",
+      "ru",
+      "it",
+      "nl",
+      "sv",
+      "da",
+      "fi",
+      "no",
+      "el",
+      "pl",
+      "cs",
+      "hu",
+      "ro",
+      "bg",
+      "hr",
+      "sk"
+    ],
+    "user_template": "{text}",
+    "template_kwargs": {
+      "source_lang_code": "{source_code}",
+      "target_lang_code": "{target_code}"
+    },
+    "target_codes": {
+      "zh": "zh-Hans"
+    },
+    "generation": {
+      "temperature": 0,
+      "max_tokens": 256,
+      "seed": 42
+    }
+  },
+  "results": [
+    {"id":"probe-01","status":200,"text":"请在下一个路口向左转。","finish_reason":"stop","usage":{"prompt_tokens":85,"completion_tokens":10,"total_tokens":95},"timings":null,"elapsed_ms":485.2},
+    {"id":"probe-02","status":200,"text":"这次更新并未解决音频问题。","finish_reason":"stop","usage":{"prompt_tokens":86,"completion_tokens":8,"total_tokens":94},"timings":null,"elapsed_ms":401.9},
+    {"id":"probe-03","status":200,"text":"拉拉·克罗夫将于明天返回伦敦。","finish_reason":"stop","usage":{"prompt_tokens":86,"completion_tokens":12,"total_tokens":98},"timings":null,"elapsed_ms":541.7},
+    {"id":"probe-04","status":200,"text":"我们需要两个护盾和三个治疗药。","finish_reason":"stop","usage":{"prompt_tokens":86,"completion_tokens":10,"total_tokens":96},"timings":null,"elapsed_ms":473.2}
+  ]
+}
