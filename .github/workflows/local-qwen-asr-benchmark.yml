@@ -1,0 +1,23 @@
+name: local-qwen-asr-benchmark
+
+on:
+  pull_request:
+    paths:
+      - tools/local-qwen-asr-benchmark/**
+      - .github/workflows/local-qwen-asr-benchmark.yml
+  push:
+    branches: [main]
+    paths:
+      - tools/local-qwen-asr-benchmark/**
+      - .github/workflows/local-qwen-asr-benchmark.yml
+
+permissions:
+  contents: read
+
+jobs:
+  pure-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Check standalone benchmark boundaries without model downloads
+        run: python3 -m unittest discover -s tools/local-qwen-asr-benchmark -p 'test_*.py'

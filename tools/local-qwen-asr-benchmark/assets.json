@@ -1,0 +1,153 @@
+{
+  "runtime": {
+    "repo": "moona3k/mlx-qwen3-asr",
+    "revision": "41878a11cf338c59e13edc84bf4cb35f4b0f3ff6",
+    "archive_sha256": "336b49ade0dcfb02126d66ef1eff1c51e09c08cb4b2e6a60f33745863c16559a",
+    "tree_sha256": {
+      "LICENSE": "b1bf3235db81e05ddee37f4734454807b3a6b2c72b68b2cf1cd6af6cc30baee0",
+      "mlx_qwen3_asr/__init__.py": "ab5a4f7c92f29e2ee429b60a75982d1b2096d6ed9aef6d80e0671c4b00c3290b",
+      "mlx_qwen3_asr/__main__.py": "d03203978daf18b8201c8bd9347f714394ff797b39a8ec288348ab15ab6c174c",
+      "mlx_qwen3_asr/_version.py": "e86fe0897e9472ec1ea3bc393a27eda1799b34ba2a894feca1726853c6a22e66",
+      "mlx_qwen3_asr/assets/korean_dict_jieba.dict": "cc157a9ab78f92bf11ed98a69b285768d6627cf5cd57a581e6c06693effce37d",
+      "mlx_qwen3_asr/assets/mel_filters.npz": "084872864fd3534f82076964b27ae0af92cf8ead8585200232b3c66a3703d1cf",
+      "mlx_qwen3_asr/attention.py": "18f9c200a22c53e0bbd54ee7989d9b4a8181a397a60158d25e5b657cfad7ce5f",
+      "mlx_qwen3_asr/audio.py": "0e8be26ab99d14f26bdbb91f888583d940306f28abd76cdc13b6e99c4f9f2be6",
+      "mlx_qwen3_asr/cache_utils.py": "c237bc7c23f40e622c5bd338650820556ecb40295eb156f0a42a69d846839922",
+      "mlx_qwen3_asr/chunking.py": "b414495f8ceb5797b7ad4e32d07d017687e84bd5321ae0c56f500b4cf412d9a7",
+      "mlx_qwen3_asr/cli.py": "d154ae1058301bc62a3a1e9673af4a20cf200808800040b22c137528991e08ac",
+      "mlx_qwen3_asr/config.py": "d6ec7d76c488caf508ae56f184384e85db65d9925708efc9c302c0a88fb4ef0c",
+      "mlx_qwen3_asr/convert.py": "ae14f0fdd17a96c6cadc27fb53bbb0cece9640d6a0a7630a2f64277174918994",
+      "mlx_qwen3_asr/decoder.py": "3dc7fdc9d605736c333bc142eda62227666d0150fe25386350418a08055c66cd",
+      "mlx_qwen3_asr/diarization.py": "ef6843d196907b2d8e8f3e20f6bf6caf1e666ab5a9899bc102eadabf1df96a70",
+      "mlx_qwen3_asr/encoder.py": "23944d9c6cd446e9dff1c28bb38a7e7deccd7f9fa1f3fff94e39545212b0db93",
+      "mlx_qwen3_asr/forced_aligner.py": "04c6add8512eb7ff29aa5943b94bcd8879c25aeaf5699488301e8efaa7d8ca2b",
+      "mlx_qwen3_asr/generate.py": "b317a31ed9312f469c2883eaf1810c61b9a08d47332450d21afd24853909d016",
+      "mlx_qwen3_asr/load_models.py": "3dfdefaf5ea1c71943245ef7363977e5a04745f3010528b461e6f78949007449",
+      "mlx_qwen3_asr/model.py": "3d17f166e228c94b1df6fe68f64284c73013cd06bb7a6bb04e013fe4d94cfd43",
+      "mlx_qwen3_asr/mrope.py": "1c0956f77999f9e8a278543564d125c57be03c5a6a867bb6ed7479517ff8f2fe",
+      "mlx_qwen3_asr/py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mlx_qwen3_asr/server.py": "7256b696b9ee6824f0cd6e65454cf53ff70389dd1077592793d2bd4a4a9a92ff",
+      "mlx_qwen3_asr/session.py": "0656c2659945cdd1bb07ee242fb26eb05769931d7ed1fa3a6971897703a81f71",
+      "mlx_qwen3_asr/streaming.py": "1425faacc7450e2ce5f183d4aa21bd560602aa5d196022d11ef957b8f76ff6f4",
+      "mlx_qwen3_asr/tokenizer.py": "68ff4e357a7142fc47343f488fef392b796eb5017fe7b07742959effc9fd31fa",
+      "mlx_qwen3_asr/transcribe.py": "5468f0c1dcf9bb4c5055f4a88c964e4872a18d572cd80f8740b4dbb88bb93162",
+      "mlx_qwen3_asr/writers.py": "d3d4c8de4af3bfed5f6e8976af9bc18b5712a86f62cccab013603556458bc045",
+      "pyproject.toml": "9bc744d8978f431db5e24aa7773363770bd4634fcf8f366511ed66833b39ffcf"
+    }
+  },
+  "models": {
+    "0.6B": {
+      "repo": "Qwen/Qwen3-ASR-0.6B",
+      "revision": "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
+      "files": [
+        {
+          "name": "chat_template.json",
+          "bytes": 1161,
+          "sha256": "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff"
+        },
+        {
+          "name": "config.json",
+          "bytes": 6193,
+          "sha256": "76d3ae4601ce939830b2517f4a6cadb86cc51316c3900af6b020b051c21a478c"
+        },
+        {
+          "name": "generation_config.json",
+          "bytes": 142,
+          "sha256": "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c"
+        },
+        {
+          "name": "merges.txt",
+          "bytes": 1671853,
+          "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+        },
+        {
+          "name": "model.safetensors",
+          "bytes": 1876091704,
+          "sha256": "79d6cbd4c98c7bbffe9db2edac07f56cd6637d0d5944b27f6c2b8353840323ea"
+        },
+        {
+          "name": "preprocessor_config.json",
+          "bytes": 330,
+          "sha256": "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "bytes": 12487,
+          "sha256": "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c"
+        },
+        {
+          "name": "vocab.json",
+          "bytes": 2776833,
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+        }
+      ]
+    },
+    "1.7B": {
+      "repo": "Qwen/Qwen3-ASR-1.7B",
+      "revision": "7278e1e70fe206f11671096ffdd38061171dd6e5",
+      "files": [
+        {
+          "name": "chat_template.json",
+          "bytes": 1161,
+          "sha256": "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff"
+        },
+        {
+          "name": "config.json",
+          "bytes": 6194,
+          "sha256": "2e74a751548b8ad7d7526d29365ad8144c345d8b412b1152d25dc6698452712f"
+        },
+        {
+          "name": "generation_config.json",
+          "bytes": 142,
+          "sha256": "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c"
+        },
+        {
+          "name": "merges.txt",
+          "bytes": 1671853,
+          "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+        },
+        {
+          "name": "model-00001-of-00002.safetensors",
+          "bytes": 4220320824,
+          "sha256": "a4cd1f1a04d90b757dc7f7dd26254e69a013b19e80efe590a83c6a3bde8608d6"
+        },
+        {
+          "name": "model-00002-of-00002.safetensors",
+          "bytes": 478200688,
+          "sha256": "6e0b9d9e09e2e0238e7ef3cc8a484ab387e91b90f1900bedf88bc92d7929ccfc"
+        },
+        {
+          "name": "model.safetensors.index.json",
+          "bytes": 64821,
+          "sha256": "f994739fe38e5210b9e3e8ce6c6307315e2ceac3cb630e7b7414d69dce520f60"
+        },
+        {
+          "name": "preprocessor_config.json",
+          "bytes": 330,
+          "sha256": "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d"
+        },
+        {
+          "name": "tokenizer_config.json",
+          "bytes": 12487,
+          "sha256": "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c"
+        },
+        {
+          "name": "vocab.json",
+          "bytes": 2776833,
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+        }
+      ]
+    }
+  },
+  "normalizer": {
+    "repository": "openai/whisper",
+    "revision": "86098128c0b4f24f0e2aa2994de830614b474227",
+    "files": {
+      "__init__.py": "f18fcdce4caee7f2e80e4c01ab0457d3a080a872a29489542c6d23c4b0bba572",
+      "basic.py": "4742eaa040e0657fa1247a1361e0d856c62317a43326ea59a40c2e9edd8d2c38",
+      "english.py": "d31a52685b5b42628ea4e3343c3a7925ce5b2f317e6c0ec4575677dd5c8b5d2c",
+      "english.json": "6607f948be9824d2e1b2fa2223cd94c06c45afa4e05ea0e3d5e1f2bdffde2465"
+    },
+    "license_sha256": "b5d65a59060e68c4ff940e1eddfa6f94b2d68fdf58ed7f4dd57721c997e35e9d"
+  }
+}

@@ -830,3 +830,30 @@
   loaded real profiles. The formal app was quit with explicit user permission
   and its installed bundle was not replaced. Temporary editor drafts were
   cancelled/restored before releasing the development app to other work.
+
+### 2026-10-05 — Qwen3-ASR standalone model comparison
+
+- User correction: evaluate the recognition models directly before considering
+  Mimi/translation integration. No application launch, capture, credentials or
+  translation occurred. Tooling and full method are in
+  `tools/local-qwen-asr-benchmark/`; fixed source/model/normalizer hashes are
+  recorded there. Official 0.6B and 1.7B weights ran as FP16 using native MLX on
+  M5 / 16 GB, sequentially with an exclusive model-process lock.
+- Primary comparison: 24 synthetic utterances plus 40 public LibriSpeech
+  utterances (20 distinct speakers per clean/other split). Normalized micro WER
+  was 17/984 (1.73%) for 0.6B and 11/984 (1.12%) for 1.7B; human-only was
+  15/752 (1.99%) and 9/752 (1.20%). Human offline RTF was 0.0406 and 0.1028.
+  Literal WER is retained separately. A fixed official Whisper normalizer
+  changes more than numbers; it is not a semantic accuracy metric.
+- Separate 96-second paced-PCM runs produced normalized 2/232 and 0/232, first
+  text at 2.355/2.913 seconds and EOF flush at 105/217 ms. Maximum delivery lag
+  was 483/1,096 ms because synchronous decoding can block feed calls. Both
+  generated text on ten seconds of zero PCM; no hidden VAD suppresses it.
+- An initial scheduling overlap was detected, cancelled and excluded. Both
+  offline baselines were rerun after adding/test-covering process exclusion.
+  Final runs exited successfully; zero worker processes and an available lock
+  were verified. Raw public-fixture hypotheses, lifecycle sidecars and SHA
+  manifest are private under the model cache's `qwen-asr/evidence/` directory.
+- No general multilingual/noise/long-session/live-subtitle acceptance claim.
+  Recognition/translation integration remains a separate decision. The
+  standalone scripts do not require a desktop or Android provider change.
