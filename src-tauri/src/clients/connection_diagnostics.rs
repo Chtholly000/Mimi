@@ -49,6 +49,9 @@ pub enum ConnectionCheckReason {
     CredentialsAccessDenied,
     LocalDevCredentialsUnavailable,
     InvalidConfiguration,
+    UnsupportedLanguage,
+    LocalRecognitionOverloaded,
+    LocalRecognitionTimeout,
     AuthenticationRejected,
     ServiceRejected,
     Timeout,
@@ -513,6 +516,13 @@ fn audio3_reason(error: &Audio3ASRClientError) -> ConnectionCheckReason {
             match token.split('.').nth(2) {
                 Some("authentication") => ConnectionCheckReason::AuthenticationRejected,
                 Some("timeout") => ConnectionCheckReason::Timeout,
+                Some("local_overload") => ConnectionCheckReason::LocalRecognitionOverloaded,
+                Some("local_timeout") => ConnectionCheckReason::LocalRecognitionTimeout,
+                Some("unsupported_language")
+                    if token.ends_with(".unsupported_language.UNSUPPORTED_LANGUAGE") =>
+                {
+                    ConnectionCheckReason::UnsupportedLanguage
+                }
                 _ => ConnectionCheckReason::ServiceRejected,
             }
         }
@@ -1069,6 +1079,20 @@ mod tests {
         assert_eq!(
             deepl_reason(&DeepLError::Connection),
             ConnectionCheckReason::Unreachable
+        );
+    }
+
+    #[test]
+    fn unsupported_audio3_language_has_an_actionable_probe_reason() {
+        assert_eq!(
+            audio3_reason(&Audio3ASRClientError::Task(
+                "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE".into()
+            )),
+            ConnectionCheckReason::UnsupportedLanguage
+        );
+        assert_eq!(
+            serde_json::to_value(ConnectionCheckReason::UnsupportedLanguage).unwrap(),
+            "unsupportedLanguage"
         );
     }
 

@@ -58,7 +58,7 @@ it("shows a short unavailable reason instead of a reachability disclaimer", () =
   expect(message).not.toContain("认证成功");
 });
 it("localizes every service failure reason and explains skipped preview-mode checks", () => {
-  const reasons = ["credentialsMissing", "credentialsUnavailable", "credentialsServiceUnavailable", "credentialsAccessDenied", "textTranslationNotConfigured", "invalidConfiguration", "authenticationRejected", "serviceRejected", "timeout", "unreachable"] as const;
+  const reasons = ["credentialsMissing", "credentialsUnavailable", "credentialsServiceUnavailable", "credentialsAccessDenied", "textTranslationNotConfigured", "invalidConfiguration", "unsupportedLanguage", "localRecognitionOverloaded", "localRecognitionTimeout", "authenticationRejected", "serviceRejected", "timeout", "unreachable"] as const;
   for (const language of ["zh", "en", "ja"] as const) {
     setStoredUiLanguage(language);
     for (const reason of reasons) {
@@ -165,6 +165,25 @@ it.each(["en", "zh", "ja"] as const)("ordinary file errors do not recommend nati
   }
 });
 
+it.each(["en", "zh", "ja"] as const)("explains fixed Audio3 connection failures without exposing transport details in %s", language => {
+  setStoredUiLanguage(language);
+  const unreachable = [
+    "The speech recognition transport failed.",
+    "The speech recognition session is not connected.",
+    "The speech recognition connection closed.",
+  ];
+  const timeouts = [
+    "The speech recognition connection could not be established in time.",
+    "The speech recognition connection stopped responding.",
+  ];
+  for (const error of unreachable) expect(credentialErrorMessage(error)).toBe(diagnosticCopy().speechUnreachable);
+  for (const error of timeouts) expect(credentialErrorMessage(error)).toBe(diagnosticCopy().speechTimeout);
+  expect(diagnosticCopy().speechUnreachable).not.toBe(diagnosticCopy().unreachable);
+  for (const error of [...unreachable, ...timeouts]) {
+    expect(credentialErrorMessage(`${error} ws://synthetic-private-endpoint`)).toBeNull();
+  }
+  expect(credentialErrorMessage("IO error: connection refused at synthetic-private-endpoint")).toBeNull();
+});
 
 it.each(["en", "zh", "ja"] as const)("localizes profile switch restrictions without raw payloads in %s", language => {
   setStoredUiLanguage(language);

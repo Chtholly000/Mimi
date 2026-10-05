@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { I18N } from "../../lib/i18n";
+import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
 import { credentialStateForTarget } from "../../lib/providerCapabilities";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { selectSessionErrorMessage, selectSessionStatusKind, useStore } from "../../lib/store";
@@ -12,6 +13,7 @@ export function SubtitleSessionControls({ visible = true, compact = false, onCon
   const { nativeShortcuts, commands } = useDesktopShortcuts();
   const sessionStatusKind = useStore(selectSessionStatusKind);
   const sessionErrorMessage = useStore(selectSessionErrorMessage);
+  const errorRequiresConfiguration = useStore(state => state.session.status.kind === "error" && audio3ErrorRequiresConfiguration(state.session.status.message));
   const sessionIsActive = useStore(state => state.session.isActive);
   const sessionIsPaused = useStore(state => state.session.isPaused);
   const translationRecoveryReason = useStore(state => state.session.translationRecovery?.reason);
@@ -99,11 +101,13 @@ export function SubtitleSessionControls({ visible = true, compact = false, onCon
             checked={sessionControl.checked}
             disabled={sessionControl.disabled || sessionIsResuming}
             status={sessionControl.visibleStatus}
+            errorMessage={sessionErrorMessage}
+            errorRequiresConfiguration={errorRequiresConfiguration}
             statusText={sessionControl.visibleStatus === "listening" && translationRecoveryReason
               ? translationRecoveryRetryScheduled === false
                 ? translationRecoveryReason === "rateLimited" ? I18N.overlay.translationLimited : I18N.overlay.translationUnavailable
                 : translationRecoveryReason === "rateLimited" ? I18N.overlay.translationRateLimited : I18N.overlay.translationRetrying
-              : settingsSessionStatusText(sessionControl.visibleStatus, sessionErrorMessage)}
+              : settingsSessionStatusText(sessionControl.visibleStatus)}
             isActive={sessionIsActive}
             isChanging={isChangingSession || sessionPendingAction !== null || sessionIsResuming}
             immersive={settings.subtitleBlendsWithBackground}
@@ -123,7 +127,6 @@ export function SubtitleSessionControls({ visible = true, compact = false, onCon
 
 function settingsSessionStatusText(
   status: SettingsSessionVisibleStatus,
-  sessionErrorMessage: string | null,
 ): string {
   switch (status) {
     case "idle":
@@ -137,7 +140,7 @@ function settingsSessionStatusText(
     case "stopping":
       return I18N.settings.sessionStopping;
     case "error":
-      return sessionErrorMessage ?? I18N.settings.sessionError;
+      return I18N.settings.sessionError;
     case "setupRequired":
       return I18N.settings.sessionSetupRequired;
     case "credentialUnavailable":

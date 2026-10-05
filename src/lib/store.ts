@@ -1,4 +1,5 @@
-import { audio3ErrorMessage } from "./audio3Errors";
+import { audio3ErrorMessage, audio3ErrorSummary } from "./audio3Errors";
+import { localizedSessionErrorSummary } from "./sessionErrorPresentation";
 import { audioSourceErrorMessage } from "./windowsAudioSource";
 import { applicationAudioError } from "./applicationAudio";
 import { audioInputErrorMessage } from "./audioInput";
@@ -44,7 +45,7 @@ import {
   trayPanelHide,
   type SettingsNavigationTarget,
 } from "./ipc";
-import { setStoredUiLanguage } from "./i18n";
+import { I18N, setStoredUiLanguage } from "./i18n";
 import {
   capabilitiesForProvider,
   capabilitiesForProfile,
@@ -194,8 +195,14 @@ export function selectSessionStatusKind(state: SessionStoreSlice) {
 
 export function selectSessionErrorMessage(state: SessionStoreSlice) {
   return state.session.status.kind === "error"
-    ? credentialErrorMessage(state.session.status.message) ?? applicationAudioError(state.session.status.message) ?? audioInputErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? audio3ErrorMessage(state.session.status.message) ?? state.session.status.message
+    ? credentialErrorMessage(state.session.status.message) ?? applicationAudioError(state.session.status.message) ?? audioInputErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? audio3ErrorMessage(state.session.status.message) ?? I18N.settings.sessionError
     : null;
+}
+
+export function selectSessionErrorSummary(state: SessionStoreSlice) {
+  const message = selectSessionErrorMessage(state);
+  if (message === null || state.session.status.kind !== "error") return null;
+  return audio3ErrorSummary(state.session.status.message) ?? localizedSessionErrorSummary(message);
 }
 
 export function selectHasRecognizingSourceDraft(state: SessionStoreSlice) {

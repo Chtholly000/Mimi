@@ -1,0 +1,85 @@
+.session-error-feedback {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 0;
+  color: var(--settings-text, var(--tray-text, var(--control-text, #f4f4f4)));
+  font-family: var(--mimi-ui-font);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.session-error-feedback--summary {
+  gap: 8px;
+}
+
+.session-error-feedback--summary .session-error-feedback__message {
+  font-weight: 500;
+}
+
+.session-error-feedback__message {
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.session-error-feedback__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.session-error-feedback__action {
+  display: inline-flex;
+  min-height: 32px;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid var(--settings-border-strong, var(--tray-border-strong, var(--control-border-strong, rgba(255, 255, 255, 0.24))));
+  border-radius: 7px;
+  color: inherit;
+  background: var(--settings-control, var(--tray-surface, var(--control-surface, rgba(255, 255, 255, 0.08))));
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.session-error-feedback__action > svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.session-error-feedback__action:hover:not(:disabled) {
+  background: var(--settings-selection-soft, var(--tray-surface-hover, var(--control-surface-hover, rgba(255, 255, 255, 0.14))));
+}
+
+.session-error-feedback__action:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.session-error-feedback__action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.overlay-session-error-content {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.overlay-session-error-content > .session-error-feedback {
+  margin: 0 12px;
+}
+
+.overlay-control-panel .session-error-feedback {
+  padding: 8px 4px 12px;
+}

@@ -1,4 +1,5 @@
 import { SettingsHelp } from "../settings/SettingsHelp";
+import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
 import { LanguageSelect } from "../../components/LanguageSelect";
@@ -49,6 +50,8 @@ interface OverlayControlPanelProps {
   isWaitingForFinalTranslation: boolean;
   isChangingSession: boolean;
   isStopping?: boolean;
+  sessionErrorMessage?: string | null;
+  onRetrySession?: () => Promise<void>;
   onDismiss: () => void;
   onTogglePaused: () => Promise<void>;
   onSelectProfile: (profileId: string) => Promise<void>;
@@ -73,6 +76,8 @@ export function OverlayControlPanel({
   isWaitingForFinalTranslation,
   isChangingSession,
   isStopping = false,
+  sessionErrorMessage,
+  onRetrySession,
   onDismiss,
   onTogglePaused,
   onSelectProfile,
@@ -181,7 +186,12 @@ export function OverlayControlPanel({
           onToggle={onDismiss}
         />
 
-        <button
+        {sessionErrorMessage ? <SessionErrorFeedback
+          message={sessionErrorMessage}
+          onConfigure={() => performAction("settings", () => onShowSettings("service"))}
+          onRetry={onRetrySession ? () => performAction("pause", onRetrySession, false) : undefined}
+          disabled={pendingAction !== null || isChangingSession}
+        /> : <button
           type="button"
           className="overlay-control-session-action"
           aria-label={isPaused ? I18N.overlay.resume : I18N.overlay.pause}
@@ -190,7 +200,7 @@ export function OverlayControlPanel({
         >
           <Icon name={isPaused ? "play" : "pause"} />
           <span>{isPaused ? I18N.overlay.resume : I18N.overlay.pause}</span>
-        </button>
+        </button>}
 
         <CaptureStatusRow
           disabled={pendingAction !== null}
@@ -311,7 +321,7 @@ export function OverlayControlPanel({
           aria-checked={model.immersiveModeEnabled}
           aria-label={I18N.overlay.immersiveMode}
           className={`overlay-control-setting${model.immersiveModeEnabled ? " is-on" : ""}`}
-          disabled={pendingAction !== null}
+          disabled={pendingAction !== null || Boolean(sessionErrorMessage)}
           onClick={() =>
             performAction("immersive", () =>
               onSetImmersiveMode(!model.immersiveModeEnabled),
@@ -336,7 +346,7 @@ export function OverlayControlPanel({
           aria-checked={model.overlayLocked}
           aria-label={I18N.overlay.lockPosition}
           className={`overlay-control-setting${model.overlayLocked ? " is-on" : ""}`}
-          disabled={pendingAction !== null}
+          disabled={pendingAction !== null || Boolean(sessionErrorMessage)}
           onClick={() =>
             performAction("lock", () =>
               onSetOverlayLocked(!model.overlayLocked),

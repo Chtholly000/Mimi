@@ -23,6 +23,8 @@ const copy = {
     subtitleTooLarge: "The service returned too much text. Reconnect to continue.",
     timeout: "Connection timed out. Check your network or proxy, then try again.",
     unreachable: "Secure connection failed. Check your network, proxy and system clock.",
+    speechUnreachable: "Could not connect to the speech recognition service. Check its address, network and proxy. If it runs locally, make sure it is started.",
+    speechTimeout: "The speech recognition connection timed out. Make sure the service is ready, then check its address, network and proxy before retrying.",
     test: "Check connection", testing: "Checking…",
     available: "Connection available", unavailable: "Unavailable", notTested: "Not checked",
     checkSkipped: "UI preview mode does not check connections. Use normal mode to check.",
@@ -39,8 +41,11 @@ const copy = {
       credentialsServiceUnavailable: "Enable Secret Service (such as GNOME Keyring), then check again.",
       credentialsAccessDenied: "Unlock the credential store or allow access.",
       invalidConfiguration: "Check the service settings.",
+      unsupportedLanguage: "This speech service does not support the selected source language. Change the language or speech service.",
       authenticationRejected: "Check your credentials and account access.",
       serviceRejected: "The service rejected the request.",
+      localRecognitionOverloaded: "Local recognition is overloaded. Stop other local models or choose a smaller model, then retry.",
+      localRecognitionTimeout: "Local recognition timed out. Wait for the service to be ready, then retry.",
       timeout: "Connection timed out.",
       unreachable: "Could not connect to the service.",
     },
@@ -65,6 +70,8 @@ const copy = {
     subtitleTooLarge: "服务返回的字幕过长，请重新连接。",
     timeout: "连接超时。检查网络或代理后重试。",
     unreachable: "安全连接失败。请检查网络、代理和系统时间。",
+    speechUnreachable: "无法连接语音识别服务。请检查服务地址、网络和代理；使用本地服务时，请确认服务已启动。",
+    speechTimeout: "语音识别连接超时。请确认服务已就绪，并检查服务地址、网络和代理后重试。",
     test: "检查连接", testing: "正在检查…",
     available: "连接可用", unavailable: "不可用", notTested: "尚未检查",
     checkSkipped: "界面预览模式不检查连接，请在正常模式下检查。",
@@ -81,8 +88,11 @@ const copy = {
       credentialsServiceUnavailable: "启用 Secret Service（如 GNOME Keyring）后重试。",
       credentialsAccessDenied: "解锁凭据存储或允许访问。",
       invalidConfiguration: "请检查服务配置。",
+      unsupportedLanguage: "当前语音服务不支持所选源语言。请更换源语言或语音服务。",
       authenticationRejected: "请检查凭据和账号权限。",
       serviceRejected: "服务拒绝了请求。",
+      localRecognitionOverloaded: "本地识别积压。请停止其他本地模型或选择更小的模型后重试。",
+      localRecognitionTimeout: "本地识别超时。请等待服务就绪后重试。",
       timeout: "连接超时。",
       unreachable: "无法连接服务。",
     },
@@ -107,6 +117,8 @@ const copy = {
     subtitleTooLarge: "サービスの字幕が長すぎます。再接続してください。",
     timeout: "接続がタイムアウトしました。ネットワークやプロキシを確認してください。",
     unreachable: "安全な接続に失敗しました。ネットワーク、プロキシ、システム時刻を確認してください。",
+    speechUnreachable: "音声認識サービスに接続できません。サービスの URL、ネットワーク、プロキシを確認してください。ローカルサービスの場合は起動を確認してください。",
+    speechTimeout: "音声認識の接続がタイムアウトしました。サービスの準備ができていることと、URL、ネットワーク、プロキシを確認して再試行してください。",
     test: "接続を確認", testing: "確認中…",
     available: "接続可能", unavailable: "利用不可", notTested: "未確認",
     checkSkipped: "UI プレビューモードでは接続を確認できません。通常モードで確認してください。",
@@ -123,8 +135,11 @@ const copy = {
       credentialsServiceUnavailable: "GNOME Keyring などの Secret Service を有効にし、再確認してください。",
       credentialsAccessDenied: "認証情報ストアのロックを解除するかアクセスを許可してください。",
       invalidConfiguration: "サービス設定を確認してください。",
+      unsupportedLanguage: "選択した入力言語に対応していません。入力言語または音声認識サービスを変更してください。",
       authenticationRejected: "認証情報とアカウントの権限を確認してください。",
       serviceRejected: "サービスがリクエストを拒否しました。",
+      localRecognitionOverloaded: "ローカル認識の処理が追いつきません。他のモデルを停止するか、小さいモデルで再試行してください。",
+      localRecognitionTimeout: "ローカル認識がタイムアウトしました。サービスの準備ができてから再試行してください。",
       timeout: "接続がタイムアウトしました。",
       unreachable: "サービスに接続できません。",
     },
@@ -250,6 +265,10 @@ export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlat
   if (error === "credential_service_unavailable") return diagnosticCopy(platform).serviceUnavailable;
   if (error === "credential_store_access_denied") return diagnosticCopy(platform).accessDenied;
   if (error === "credential_store_unavailable" || error === "The system credential store is unavailable.") return diagnosticCopy(platform).storage;
+  // Audio3 uses these fixed labels for both built-in and custom speech routes.
+  // Match exactly: native transport details or provider bodies are never safe copy.
+  if (["The speech recognition transport failed.", "The speech recognition session is not connected.", "The speech recognition connection closed."].includes(error)) return diagnosticCopy().speechUnreachable;
+  if (["The speech recognition connection could not be established in time.", "The speech recognition connection stopped responding."].includes(error)) return diagnosticCopy().speechTimeout;
   if (["The live translation transport failed.", "The OpenAI Realtime Translation connection failed."].includes(error)) return diagnosticCopy().unreachable;
   if (["The live translation connection could not be established in time.", "The live translation connection stopped responding.", "The OpenAI Realtime Translation connection stopped responding."].includes(error)) return diagnosticCopy().timeout;
   if (error === "credential_authentication_failed") return diagnosticCopy().auth;

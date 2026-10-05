@@ -1211,6 +1211,8 @@ fn apply_settings_draft_guarded(
     if draft.show_in_dock.is_some() {
         return Err("dock-preference-unsupported".into());
     }
+    let configuration_failure = state.session.configuration_failure_snapshot();
+    let previous_preferences = state.settings.preferences();
     let changes_ui_language = draft.ui_language.is_some();
     let enables_background_blend = draft.subtitle_blends_with_background == Some(true);
     ensure_settings_draft_allowed(&draft, state.session.has_active_session())?;
@@ -1355,6 +1357,12 @@ fn apply_settings_draft_guarded(
     )?;
     #[cfg(not(target_os = "macos"))]
     save_preferences()?;
+    let saved_preferences = state.settings.preferences();
+    state.session.configuration_saved(
+        configuration_failure,
+        previous_preferences.source_language != saved_preferences.source_language
+            || previous_preferences.network_proxy != saved_preferences.network_proxy,
+    );
     sync_overlay_minimum(app);
     // Source changes can clear recording even when the draft omits it. Use
     // the saved value so a combined draft cannot retain old-source audio.
@@ -1531,6 +1539,12 @@ pub async fn profile_update(
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    let previous_profile = state.settings.active_profile()?;
+    let changes_active_speech_route = previous_profile.id == profile_id
+        && speech_network_proxy
+            .as_ref()
+            .is_some_and(|proxy| previous_profile.speech_network_proxy.as_ref() != Some(proxy));
+    let configuration_failure = state.session.configuration_failure_snapshot();
     state.settings.update_profile_options(
         &profile_id,
         name.as_deref(),
@@ -1539,6 +1553,9 @@ pub async fn profile_update(
         text_translation_name,
         speech_recognition_name.as_deref(),
     )?;
+    state
+        .session
+        .configuration_saved(configuration_failure, changes_active_speech_route);
     emit_settings_snapshot(&app, &state.settings)
 }
 
@@ -1560,7 +1577,12 @@ pub async fn profile_delete(
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    let was_active = state.settings.active_profile()?.id == profile_id;
+    let configuration_failure = state.session.configuration_failure_snapshot();
     state.settings.delete_profile(&profile_id)?;
+    state
+        .session
+        .configuration_saved(configuration_failure, was_active);
     emit_settings_snapshot(&app, &state.settings)
 }
 
@@ -1573,7 +1595,14 @@ pub async fn profile_save_credentials(
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    let is_active_profile = state.settings.active_profile()?.id == profile_id;
+    let configuration_failure = state.session.configuration_failure_snapshot();
     state.settings.save_credentials(&profile_id, &credentials)?;
+    // An explicit successful service save is a repair action; do not read
+    // credentials a second time merely to compare private values.
+    state
+        .session
+        .configuration_saved(configuration_failure, is_active_profile);
     emit_settings_snapshot(&app, &state.settings)
 }
 
@@ -1833,7 +1862,9 @@ pub fn overlay_move_start(
     window: tauri::WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    OverlayWindowManager::move_start(&app, &state.overlay);
+    if !OverlayWindowManager::move_start(&app, &state.overlay) {
+        return Ok(());
+    }
     if window.start_dragging().is_err() {
         OverlayWindowManager::move_cancel(&state.overlay);
         return Err("Could not start overlay drag.".to_string());

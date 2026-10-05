@@ -352,7 +352,7 @@ export function appDesktopShortcutCommands(): Promise<DesktopShortcutCommands | 
 export interface ConnectionDiagnostic {
   credential: "present" | "missing" | "unavailable" | "localDevUnavailable" | "serviceUnavailable" | "accessDenied" | "invalid";
   service: "available" | "unavailable" | "notTested";
-  reason: null | "credentialsMissing" | "credentialsUnavailable" | "localDevCredentialsUnavailable" | "credentialsServiceUnavailable" | "credentialsAccessDenied" | "invalidConfiguration" | "authenticationRejected" | "serviceRejected" | "timeout" | "unreachable" | "textTranslationNotConfigured";
+  reason: null | "credentialsMissing" | "credentialsUnavailable" | "localDevCredentialsUnavailable" | "credentialsServiceUnavailable" | "credentialsAccessDenied" | "invalidConfiguration" | "unsupportedLanguage" | "localRecognitionOverloaded" | "localRecognitionTimeout" | "authenticationRejected" | "serviceRejected" | "timeout" | "unreachable" | "textTranslationNotConfigured";
   elapsedMs?: number | null;
 }
 export type ConnectionCheckStage = "speech" | "text";

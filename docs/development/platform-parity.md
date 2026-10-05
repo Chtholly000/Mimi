@@ -58,6 +58,12 @@ update both implementations and their platform-specific tests in the same change
 
 ## Deliberate platform differences
 
+Desktop's custom Audio3 adapter recognizes the exact `UNSUPPORTED_LANGUAGE`
+`task-failed` code as a configuration error and offers speech settings instead of
+blind retry. Android's DashScope adapter currently uses the separate realtime
+`session.update` protocol, so this Audio3 transport change has no Android decoder
+counterpart. Shared subtitle and independent text-translation policy are unchanged.
+
 | Area | Desktop | Android |
 | --- | --- | --- |
 | Independent text services | DeepL, DeepLX, ChatMock, OpenAI compatible; original-only with custom ASR | Same text choices after Alibaba realtime ASR; original-only supported |

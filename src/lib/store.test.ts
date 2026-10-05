@@ -3,6 +3,7 @@ import { isTauri } from "./ipc";
 import {
   selectHasRecognizingSourceDraft,
   selectSessionErrorMessage,
+  selectSessionErrorSummary,
   selectSessionStatusKind,
   useStore,
 } from "./store";
@@ -212,14 +213,14 @@ describe("local preview store", () => {
       ...current,
       session: {
         ...current.session,
-        status: { kind: "error" as const, message: "first failure" },
+        status: { kind: "error" as const, message: "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE" },
       },
     };
     const replacement = {
       ...first,
       session: {
         ...first.session,
-        status: { kind: "error" as const, message: "second failure" },
+        status: { kind: "error" as const, message: "audio3_error.setup.timeout.CLIENT_ERROR" },
       },
     };
 
@@ -270,7 +271,6 @@ describe("local preview store", () => {
   });
 });
 
-
 it.each(["chatMock", "openAICompatible"] as const)("preview accepts keyless %s without changing speech credentials", async (textTranslation) => {
   const original = useStore.getState();
   const profile = { ...original.settings.profiles[0], provider: "alibabaCloud" as const, credentialState: "present" as const, textTranslation: "followService" as const };
@@ -308,6 +308,21 @@ it.each([false, true])("quick-switches Original and translation while preserving
   } finally { useStore.setState(original, true); }
 });
 
+it("never renders an arbitrary provider error body as a session reason", () => {
+  const state = useStore.getState();
+  const message = selectSessionErrorMessage({ session: { ...state.session, status: { kind: "error", message: "private provider content sk-example" } } });
+  expect(message).toBeTruthy();
+  expect(message).not.toContain("private");
+  expect(message).not.toContain("sk-example");
+});
+
+it("keeps arbitrary provider content out of the compact error cause", () => {
+  const state = useStore.getState();
+  const failed = { session: { ...state.session, status: { kind: "error" as const, message: "provider-private-content synthetic-key" } } };
+  expect(selectSessionErrorSummary(failed)).toBe(selectSessionErrorMessage(failed));
+  expect(selectSessionErrorSummary(failed)).not.toMatch(/provider-private-content|synthetic-key/);
+  expect(selectSessionErrorSummary({ session: { ...state.session, status: { kind: "listening" } } })).toBeNull();
+});
 
 it.each([false, true])("selects a saved preview profile preserving subtitles, capture choice and pause=%s", async isPaused => {
   const original = useStore.getState();
