@@ -1,0 +1,43 @@
+{
+  "method": "Unblinded AI-assisted semantic review against prewritten meaning notes; not a human rating or accuracy percentage.",
+  "categories": {
+    "adequate": "Core meaning preserved, allowing reasonable paraphrase.",
+    "term/style": "Terminology, style, script, small omission or unsupported detail; main event remains understandable.",
+    "material": "Changed negation, quantity, event relationship, gameplay meaning or untranslated source."
+  },
+  "counts": {
+    "adequate": 17,
+    "material": 8,
+    "term/style": 3
+  },
+  "results": [
+    {"id":"probe-01","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"probe-02","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"probe-03","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"probe-04","rating":"material","note":"Three potions becomes three kinds of potion, changing the quantity/unit."},
+    {"id":"negation-01","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"negation-02","rating":"material","note":"Adds an assertion that no backup was made; source only denies having said it was backed up."},
+    {"id":"negation-03","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"negation-04","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"number-01","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"number-02","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"number-03","rating":"material","note":"Omits the twelve-player denominator."},
+    {"id":"number-04","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"name-01","rating":"term/style","note":"Black Mesa is transliterated 黑梅萨 rather than the established name."},
+    {"id":"name-02","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"name-03","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"name-04","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"game-01","rating":"term/style","note":"Bottleneck is generalized to a key node."},
+    {"id":"game-02","rating":"material","note":"Eight seconds remaining becomes cooldown increased by eight seconds."},
+    {"id":"game-03","rating":"material","note":"Wiped/boss/adds become wiped surfaces/boss at work/advertising effect."},
+    {"id":"game-04","rating":"material","note":"Invents energy and loses the dash/recovery timing relationship."},
+    {"id":"game-05","rating":"material","note":"Critical chance becomes 关键几率; the build trade-off is mistranslated."},
+    {"id":"game-06","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"general-01","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"general-02","rating":"term/style","note":"Omits the one-minute duration."},
+    {"id":"general-03","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"general-04","rating":"adequate","note":"Core meaning preserved in this sample."},
+    {"id":"fragment-01","rating":"material","note":"English is returned unchanged."},
+    {"id":"literal-01","rating":"adequate","note":"Core meaning preserved in this sample."}
+  ]
+}
