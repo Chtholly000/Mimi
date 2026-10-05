@@ -64,6 +64,7 @@ import {
   SnapshotBootstrapTimeoutError,
   SnapshotResponseGate,
 } from "./settingsState";
+import { AUDIO3_RECOGNITION_LANGUAGE_CODES } from "./types";
 import type {
   ProfileOptionsDraft,
   AudioInput,
@@ -532,6 +533,13 @@ export const useStore = create<StoreState>()((set, get) => ({
       return snapshot;
     }
     const current = get().settings;
+    const hasDeclaration = options !== undefined && Object.hasOwn(options, "customSpeechSourceLanguages");
+    const declaration = options?.customSpeechSourceLanguages ?? null;
+    if (hasDeclaration) {
+      const profile = current.profiles.find(profile => profile.id === profileId);
+      if (!profile || !isCustomSpeechProvider(profile.provider)) throw new Error("provider-mismatch");
+      if (declaration !== null && (declaration.length > 30 || declaration.includes("auto"))) throw new Error("custom-speech-languages-invalid");
+    }
     const snapshot: SettingsSnapshot = {
       ...current,
       profiles: current.profiles.map((profile) =>
@@ -543,10 +551,16 @@ export const useStore = create<StoreState>()((set, get) => ({
             if (value) textTranslationNames[textTranslationName.route] = value;
             else delete textTranslationNames[textTranslationName.route];
           }
-          return { ...profile, ...(name === undefined ? {} : { name: name.trim() }), ...proxies, textTranslationNames };
+          return { ...profile, ...(name === undefined ? {} : { name: name.trim() }), ...proxies, textTranslationNames,
+            ...(hasDeclaration ? { customSpeechSourceLanguages: declaration === null ? null : AUDIO3_RECOGNITION_LANGUAGE_CODES.filter(code => declaration.includes(code)) } : {}),
+          };
         })() : profile,
       ),
     };
+    if (hasDeclaration && current.activeProfileId === profileId) {
+      const sources = sourceLanguagesForSettings(snapshot);
+      if (!sources.includes(snapshot.sourceLanguage)) snapshot.sourceLanguage = sources[0]!;
+    }
     set({ settings: snapshot });
     return snapshot;
   },

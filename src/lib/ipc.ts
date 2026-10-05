@@ -125,7 +125,12 @@ export function profileUpdate(
   name: string | undefined,
   options?: ProfileOptionsDraft,
 ): Promise<SettingsSnapshot> {
-  return invoke<SettingsSnapshot>("profile_update", { profileId, name, ...options });
+  const { customSpeechSourceLanguages, ...otherOptions } = options ?? {};
+  return invoke<SettingsSnapshot>("profile_update", {
+    profileId, name, ...otherOptions,
+    ...(options && Object.hasOwn(options, "customSpeechSourceLanguages")
+      ? { customSpeechLanguagesPatch: { languages: customSpeechSourceLanguages ?? null } } : {}),
+  });
 }
 
 export function profileSelect(profileId: string): Promise<SettingsSnapshot> {

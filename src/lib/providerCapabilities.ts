@@ -123,6 +123,13 @@ export function isCustomSpeechProvider(provider: ServiceProvider): boolean {
   return provider === "customDashScopeASR" || provider === "customOpenAIASR";
 }
 
+/** User declarations only narrow encodable options; they never certify model support. */
+function declaredCustomSources(profile: ServiceProfile, sources: readonly SourceLanguage[]): readonly SourceLanguage[] {
+  if (!isCustomSpeechProvider(profile.provider)) return sources;
+  const declared = profile.customSpeechSourceLanguages;
+  return ["auto", ...sources.filter(source => source !== "auto" && (declared == null || declared.includes(source)))];
+}
+
 export function credentialStateForTarget(profile: ServiceProfile | undefined, target: TargetLanguage): CredentialState {
   return profile && isCustomSpeechProvider(profile.provider) && target === "original"
     ? profile.speechCredentialState ?? profile.credentialState : profile?.credentialState ?? "unavailable";
@@ -140,15 +147,19 @@ export function capabilitiesForProfile(
 ): ProviderCapabilities {
   if (isCustomSpeechProvider(profile.provider)) {
     const capabilities = capabilitiesForProvider(profile.provider);
-    return textTranslationForProfile(profile) === "followService" ? capabilities
-      : { ...capabilities, sourceLanguages: targetLanguage === "original" ? capabilities.sourceLanguages : LEGACY_SOURCE_LANGUAGE_CASES,
-        targetLanguages: ["original", "zh", "en", "ja"] };
+    const route = textTranslationForProfile(profile);
+    const generic = isChatCompletionsTranslation(route);
+    return { ...capabilities,
+      sourceLanguages: declaredCustomSources(profile, targetLanguage === "original" || route === "followService" || generic ? capabilities.sourceLanguages : LEGACY_SOURCE_LANGUAGE_CASES),
+      targetLanguages: route === "followService" ? capabilities.targetLanguages : generic ? ALIBABA_TARGETS : ["original", "zh", "en", "ja"],
+    };
   }
   if (profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") {
     return capabilitiesForProvider(profile.provider);
   }
   const route = textTranslationForProfile(profile);
-  if (route === "deepL" || isChatCompletionsTranslation(route)) return LEGACY_ALIBABA_CAPABILITIES;
+  if (isChatCompletionsTranslation(route)) return { ...LEGACY_ALIBABA_CAPABILITIES, sourceLanguages: ALIBABA_RECOGNITION_SOURCES, targetLanguages: ALIBABA_TARGETS };
+  if (route === "deepL") return LEGACY_ALIBABA_CAPABILITIES;
   if (route === "deepLX") return PROVIDER_CAPABILITIES.deepLX;
   const capabilities = PROVIDER_CAPABILITIES.alibabaCloud;
   return targetLanguage === "original"
@@ -169,8 +180,10 @@ function capabilitiesForSettings(
   const native = settings.languageCapabilities;
   // A profile can retain its ID while changing providers or text destinations.
   // Never borrow options stamped for a different route/target or stale profile.
+  // Custom declarations are locally computable and absent from the native stamp;
+  // an older narrow list must not override a newly expanded or cleared declaration.
   if (
-    profile && native &&
+    profile && !isCustomSpeechProvider(profile.provider) && native &&
     native.profileId === profile.id &&
     native.provider === profile.provider &&
     native.textTranslation === textTranslationForProfile(profile) &&
@@ -181,7 +194,7 @@ function capabilitiesForSettings(
     native.targetLanguages.every((code) => TARGET_CODES.has(code))
   ) {
     return {
-      sourceLanguages: [...new Set(native.sourceLanguages)],
+      sourceLanguages: declaredCustomSources(profile, [...new Set(native.sourceLanguages)]),
       targetLanguages: [...new Set(native.targetLanguages)],
       translationModes: fallback.translationModes,
     };

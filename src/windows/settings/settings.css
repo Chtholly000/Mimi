@@ -1138,7 +1138,7 @@
   }
 
   .settings-category-nav__item.is-selected,
-  .profile-language-choice[aria-pressed="true"] {
+  .profile-language-choice.is-selected {
     forced-color-adjust: none;
     border-color: Highlight;
     color: HighlightText;
@@ -1941,7 +1941,7 @@
   overflow-wrap: anywhere;
   cursor: pointer;
 }
-.profile-language-choice[aria-pressed="true"] {
+.profile-language-choice.is-selected {
   background: var(--settings-text);
   border-color: var(--settings-text);
   color: var(--settings-canvas);
@@ -2485,7 +2485,7 @@
 }
 
 @media (forced-colors: active) {
-  .profile-language-choice[aria-pressed="true"] {
+  .profile-language-choice.is-selected {
     forced-color-adjust: none;
     border-color: Highlight;
     color: HighlightText;
@@ -2985,3 +2985,23 @@
 .config-input--expanded > textarea::placeholder { color: var(--settings-text-faint); }
 .config-input--expanded > textarea:focus { border-color: var(--settings-text-muted); }
 .config-input--expanded > textarea:disabled { opacity: .55; }
+
+/* User-declared custom ASR languages are expanded only while editing. */
+.custom-speech-languages .settings-row__control { flex-wrap: wrap; gap: 8px; }
+.custom-speech-languages .settings-row__control > .settings-button { margin-inline-start: auto; }
+.custom-speech-languages__summary { color: var(--settings-text-muted); font-size: 13px; line-height: 1.5; }
+.custom-speech-languages__expanded,
+.custom-speech-languages__editor { display: grid; min-width: 0; gap: 12px; }
+.custom-speech-languages__editor .settings-field { display: grid; gap: 8px; }
+.custom-speech-languages__choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  max-height: 216px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  gap: 6px;
+  padding: 3px;
+}
+.custom-speech-languages__choices .profile-language-choice { justify-content: flex-start; }
+.custom-speech-languages__code { margin-inline-start: auto; opacity: .75; font-size: 11px; }
+.custom-speech-languages__choices .profile-language-choice > svg { flex: 0 0 auto; }

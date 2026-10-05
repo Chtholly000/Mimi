@@ -7,7 +7,7 @@ import { useStore } from "../../lib/store";
 import { OverlayControlPanel } from "./OverlayControlPanel";
 import { overlayControlPanelModel } from "./overlayControlModel";
 import { sourceLanguagesForSettings } from "../../lib/providerCapabilities";
-import { SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
+import { AUDIO3_RECOGNITION_LANGUAGE_CODES, SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -201,7 +201,7 @@ it("offers all Original-mode recognition hints including searchable Norwegian", 
   expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("no");
 });
 
-it.each(["deepL", "deepLX", "openAICompatible"] as const)("keeps the %s small route list non-searchable and matches settings language labels", async route => {
+it.each(["deepL", "deepLX"] as const)("keeps the %s small route list non-searchable and matches settings language labels", async route => {
   configure({ profiles: [{ ...props.settings.profiles[0], textTranslation: route }] });
   await mount();
   await act(async () => picker(I18N.overlay.sourceLanguage).click());
@@ -213,6 +213,28 @@ it.each(["deepL", "deepLX", "openAICompatible"] as const)("keeps the %s small ro
   const chinese = options.find(option => option.textContent === SOURCE_LANGUAGE_DISPLAY_NAMES.zh)!;
   await act(async () => chinese.click());
   expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("zh");
+});
+
+it.each(["openAICompatible", "chatMock"] as const)("searches all 31 sources with the %s text route and sends the selected code", async route => {
+  configure({ profiles: [{ ...props.settings.profiles[0], textTranslation: route }] });
+  await mount();
+  await act(async () => picker(I18N.overlay.sourceLanguage).click());
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(options).toHaveLength(31);
+  expect(options.map(option => option.textContent)).toEqual(["auto" as const, ...AUDIO3_RECOGNITION_LANGUAGE_CODES]
+    .map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]));
+  const search = document.querySelector<HTMLInputElement>("input.mimi-select__search")!;
+  expect(search.getAttribute("aria-label")).toBe(I18N.settings.searchLanguages);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "Norwegian");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const filtered = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(filtered.map(option => option.textContent)).toEqual([SOURCE_LANGUAGE_DISPLAY_NAMES.no]);
+  await act(async () => filtered[0].click());
+  expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("no");
+  expect(props.onDismiss).toHaveBeenCalledOnce();
+  expect(document.querySelector('[role="listbox"]')).toBeNull();
 });
 
 it("uses native source choices without search for six options and ignores a stale route stamp", async () => {

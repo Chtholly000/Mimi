@@ -8,7 +8,7 @@ A third-party service can use a language selected in Mimi **only if its endpoint
 
 1. Open **Settings → Speech & Translation**, add **Custom Recognition (DashScope Compatible)** or **Custom Recognition (OpenAI Realtime Compatible)** according to the service's documented protocol.
 2. Enter its **full WebSocket URL**, deployed **recognition model ID**, and API key. A website, HTTP file-transcription endpoint, or Chat Completions endpoint cannot be used as live recognition.
-3. Save recognition settings and select the profile. Enable **Skip translation** to test recognition alone. The recognition language below belongs to this active profile.
+3. Save recognition settings and select the profile. Optionally declare the recognition languages documented by that deployment; leave the range undeclared if unknown. The declaration is saved with this profile and filters the language picker, but does not query or change the model. An empty declaration leaves only Service default. Enable **Skip translation** to test recognition alone. The recognition language below belongs to this active profile.
 4. Choose **Service default** to omit language parameters. Use a specific language only when the service documents that code and parameter. Save/check success confirms the connection contract, not recognition quality or support for every displayed language.
 5. Use **Check recognition** beside recognition. Once recognition works, configure and check text translation separately, then disable Skip translation if needed.
 
@@ -22,7 +22,7 @@ Examples of configuration values (use your own service key; region/account avail
 
 The model name selects the field shape; it does not establish compatibility of a custom host. Remote addresses require `wss://`; only loopback accepts `ws://`. No URL query parameters are accepted by the custom editor. Bearer authentication, PCM format, acknowledgements and result events must match the selected protocol. See [DashScope events](https://help.aliyun.com/zh/model-studio/qwen-audio-asr-streaming-client-events) and [OpenAI transcription](https://developers.openai.com/api/docs/guides/realtime-transcription).
 
-The custom picker exposes 30 explicit codes that Mimi can encode in recognition-only mode: `zh en ja ko vi th id ms tl hi ar fr de es pt ru it nl sv da fi no el pl cs hu ro bg hr sk`. This is **not a model support list**. When a separate text translation service is enabled, its currently implemented explicit-source mapping narrows the picker to Chinese, English, Japanese and Korean plus Service default. If enabling translation changes the recognition language to Service default, a transient notice names the adjustment. Auto-detected languages outside that mapping remain automatic for DeepL/DeepLX rather than failing locally. Arbitrary custom translation models may have their own limits.
+The custom picker exposes 30 explicit codes that Mimi can encode in recognition-only mode: `zh en ja ko vi th id ms tl hi ar fr de es pt ru it nl sv da fi no el pl cs hu ro bg hr sk`. This is **not a model support list**. OpenAI-compatible/ChatMock text translation keeps these source choices and exposes Mimi’s represented target codes, including Traditional Chinese; these are configurable values, not a support guarantee for a third-party model. DeepL/DeepLX still narrow explicit source choices to their implemented Chinese/English/Japanese/Korean mapping plus Service default. A profile’s declared recognition range further narrows the choices. If enabling translation changes the recognition language to Service default, a transient notice names the adjustment. Auto-detected languages outside that mapping remain automatic for DeepL/DeepLX rather than failing locally. Arbitrary custom translation models may have their own limits.
 
 ### Automatic detection, hints and explicit input
 
@@ -52,7 +52,9 @@ This audit distinguishes current code coverage from official capability. It is n
 | [DeepL request](https://developers.deepl.com/api-reference/translate/request-translation) / [language API](https://developers.deepl.com/docs/languages/using-the-languages-api) | Preserves Auto by omitting `source_lang` when an ASR report cannot be mapped locally. Source/target catalogs differ; broader DeepL language selection is still not exposed. No account capability lookup was made. |
 | [DeepLX/DLX upstream](https://github.com/OwO-Network/DLX) / [OpenAI-compatible chat](https://developers.openai.com/api/reference/resources/chat) | DeepLX is not official DeepL and depends on its deployment. Chat-compatible translation uses instructions, with no universal language-capability discovery. Neither protocol implies support for all languages. |
 
-Custom recognition editors remain a desktop feature. Android shares the changed OpenAI/Gemini/xAI wire behavior and catalogs, but its Alibaba model/route differs; no desktop-only custom profile is implied. Apple, Whisper, Parakeet, FunASR and Qwen local experiments are not included or installed by this change.
+Official catalogs in this UI come from Mimi’s API mappings, not automatic service discovery. Custom declarations remain user-provided and may become stale when the endpoint or model changes; recheck the service documentation when editing those fields.
+
+Custom recognition editors and their optional language declarations remain desktop features. Android shares the changed OpenAI/Gemini/xAI wire behavior and catalogs, but its Alibaba model/route differs; no desktop-only custom profile is implied. Apple, Whisper, Parakeet, FunASR and Qwen local experiments are not included or installed by this change.
 
 ## 中文
 
@@ -62,13 +64,15 @@ Custom recognition editors remain a desktop feature. Android shares the changed 
 
 1. 打开「设置 → 语音与翻译」，按服务文档选择「自定义识别（阿里云兼容）」或「自定义识别（OpenAI 实时兼容）」。
 2. 填入完整 WebSocket 地址、实际部署的识别模型 ID 和密钥，点击「保存识别配置」。不能填网页地址、HTTP 文件转写接口或 Chat Completions 地址。上方表格给出了官方地址与模型示例；不要把翻译模型填进识别模型。
-3. 使用这项服务配置，先开启「跳过翻译」，只测试语音转文字，再在下方选择「识别语言」。
+3. 可按该部署的文档声明它支持的识别语言；不确定时保持未声明。声明只保存在这项配置中并筛选语言选项，不会查询或改变模型；声明为空时只保留「服务默认」。使用这项服务配置，先开启「跳过翻译」，只测试语音转文字，再在下方选择「识别语言」。
 4. 「服务默认」代表不发送语言参数，是否自动检测取决于对端。选择英语等具体语言会发送对应参数；请先确认该模型接受这个代码。连接检查成功不代表识别质量好，也不证明列表里每种语言都可用。
 5. 点击识别旁的检查操作。识别正常后，再独立配置并检查文字翻译，按需关闭「跳过翻译」。
 
 阿里兼容接入发送 `language_hints: ["en"]`；OpenAI 独立转写通常发送 `transcription.language: "en"`，`gpt-live-transcribe` 系列改用 `transcription.languages: ["en"]`。自动/服务默认时省略这些字段。模型名只用于选择字段形状，不能证明任意兼容地址支持该能力。区域地址与账户权限请以服务自己的文档为准；这里不会自动探测私有地址。
 
-自定义识别的原文模式可选择 Mimi 能编码的 30 种语言代码（见上方完整代码表），**它们不是模型支持列表**。开启独立文字翻译后，当前文字接口显式源语种映射仍将选项限制为中、英、日、韩及服务默认。如果开启翻译使识别语言回到服务默认，界面会用短暂通知说明实际调整。选自动时，DeepL/DeepLX 对无法本地映射的检测结果保留服务自动检测，不再因法语、德语等报告在本地失败。
+自定义识别的原文模式可选择 Mimi 能编码的 30 种语言代码（见上方完整代码表），**它们不是模型支持列表**。OpenAI 兼容／ChatMock 文字翻译保留这些源语言，并提供 Mimi 已表示的目标语言（含繁体中文）；这些是可发送的参数，不保证任意模型都支持。DeepL／DeepLX 仍按各自已实现的映射限制显式源语言为中、英、日、韩及服务默认。每项配置里用户声明的识别范围会进一步筛选选项。如果开启翻译使识别语言回到服务默认，界面会用短暂通知说明实际调整。选自动时，DeepL/DeepLX 对无法本地映射的检测结果保留服务自动检测，不再因法语、德语等报告在本地失败。
+
+界面中的官方语言目录来自 Mimi 对已接入 API 的映射，不是远端自动发现。第三方声明由用户提供，修改地址或模型后应重新核对文档；选择语言不会自动下载模型资源。
 
 ### 手动还是自动
 
@@ -77,4 +81,4 @@ Custom recognition editors remain a desktop feature. Android shares the changed 
 - **腾讯 / 百度 / 火山当前接入：** 必须明确选输入语言。当前选项是 Mimi 已接入的子集，并非服务的完整官方范围。
 - **自定义服务：** 支持范围未知，按自己的 endpoint 和 model 文档配置。若本地桥忽略语言提示，Mimi 的选择不会改变模型行为。
 
-上方官方审计表逐项列出本次已补齐和仍未覆盖的范围：xAI hint、OpenAI/Gemini 输出已补；腾讯语言对矩阵、百度完整专有代码、Azure 更广输出、火山日语核验和更广独立文字翻译语言仍有明确边界。不能把这次修改称为“所有官方 API 全量对齐”。此文档和协议测试没有使用云端付费请求，也不代表账户、网络或音频质量的验收。
+上方官方审计表逐项列出本次已补齐和仍未覆盖的范围：xAI hint、OpenAI/Gemini 输出已补；腾讯语言对矩阵、百度完整专有代码、Azure 更广输出、火山日语核验和更广 DeepL／DeepLX 文字翻译语言仍有明确边界。不能把这次修改称为“所有官方 API 全量对齐”。此文档和协议测试没有使用云端付费请求，也不代表账户、网络或音频质量的验收。

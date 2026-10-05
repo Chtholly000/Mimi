@@ -23,6 +23,7 @@ update both implementations and their platform-specific tests in the same change
   Existing combined-entry settings remain OpenAI compatible, and credentials never move
   between choices. Localhost means the device running Mimi, while translation models are
   still called online through the signed-in ChatMock account.
+- OpenAI-compatible/ChatMock text translation accepts the represented source and target language codes on both platforms, including Traditional Chinese. These are configurable request values, not a discovery result or guarantee of model support. Existing Chinese/English/Japanese prompts are unchanged; shared fixtures cover the additional mappings. DeepL/DeepLX retain their separate implemented catalogs.
 - Endpoint prefixes are preserved. An OpenAI-compatible base receives `/chat/completions`;
   use an explicit `/v1` base for ChatMock. Complete endpoints remain unchanged. HTTPS is
   the default; each platform's explicit local transport boundary remains enforced.
@@ -62,7 +63,7 @@ update both implementations and their platform-specific tests in the same change
 | --- | --- | --- |
 | Independent text services | DeepL, DeepLX, ChatMock, OpenAI compatible; original-only with custom ASR | Same text choices after Alibaba realtime ASR; original-only supported |
 | Text service display names | Optional names per profile and independent route; shown in settings and subtitle service label | Existing provider labels |
-| Recognition selection | Eight built-in services plus custom DashScope/OpenAI ASR | Eight built-in adapters; independent text currently pairs with Alibaba ASR |
+| Recognition selection | Eight built-in services plus custom DashScope/OpenAI ASR; optional per-profile user declaration narrows explicit recognition languages | Eight built-in adapters; independent text currently pairs with Alibaba ASR; no custom speech profile/declaration editor |
 | Built-in Alibaba pipeline | Desktop Audio 3.0/Qwen-MT scheduling | Existing integrated realtime translation adapter |
 | Translation scheduling | Speculative drafts plus serial prioritized finals and provider recovery | Final-only serial HTTP; same shared final bounds/retry decisions, native execution and cancellation |
 | Independent text HTTP bounds | HQ source fields up to 65,536 UTF-8 bytes; response bodies up to 1 MiB; decoded text uses native adapter bounds | Source/result text up to 4,096 UTF-16 code units; response bodies up to 64 KiB |

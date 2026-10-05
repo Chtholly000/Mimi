@@ -24,6 +24,25 @@ class ServiceProtocolTest {
         assertEquals("auto" to "zh",ServiceProvider.OPENAI.normalize("en","zh"))
         assertFalse(ServiceProvider.VOLCANO.sources.contains("ko"))
     }
+    @Test fun genericTextTargetsStaySeparateFromSpeechAndStrictTranslationCatalogs() {
+        for (route in listOf(TextTranslationProvider.OPENAI_COMPATIBLE, TextTranslationProvider.CHAT_MOCK)) {
+            val targets = ServiceProvider.DASHSCOPE.targetsForTranslation(route)
+            assertEquals(31, targets.size)
+            assertFalse(targets.contains("original"))
+            for (target in targets) assertEquals("auto" to target, ServiceProvider.DASHSCOPE.normalize("auto", target, route))
+            assertEquals("ja" to "zh_tw", ServiceProvider.DASHSCOPE.normalize("ja", "zh_tw", route))
+            // This Android ASR model retains its own explicit hint catalog.
+            assertEquals("auto" to "fr", ServiceProvider.DASHSCOPE.normalize("fr", "fr", route))
+            for (provider in ServiceProvider.entries.filter { it != ServiceProvider.DASHSCOPE }) {
+                assertEquals(provider.targets, provider.targetsForTranslation(route))
+            }
+        }
+        for (route in listOf(TextTranslationProvider.BUILTIN, TextTranslationProvider.DEEPL, TextTranslationProvider.DEEPLX, TextTranslationProvider.NONE)) {
+            assertEquals(listOf("zh", "en", "ja"), ServiceProvider.DASHSCOPE.targetsForTranslation(route))
+            assertEquals("auto" to "zh", ServiceProvider.DASHSCOPE.normalize("auto", "fr", route))
+        }
+    }
+
     @Test fun credentialsDoNotLeakThroughObjectDiagnostics() {
         assertFalse(config(ServiceProvider.GEMINI,"apiKey" to "do-not-print").toString().contains("do-not-print"))
     }

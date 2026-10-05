@@ -33,7 +33,14 @@ enum class ServiceProvider(
         else -> listOf("zh", "en", "ja")
     }
     val hasAdvanced: Boolean get() = endpoint.isNotEmpty()
-    fun normalize(source: String, target: String): Pair<String, String> {
+    // Independent text translation is currently available only with DashScope ASR.
+    // Other speech providers keep their own model's translation catalog.
+    fun targetsForTranslation(translation: TextTranslationProvider): List<String> =
+        if (this == DASHSCOPE && translation.usesOpenAIProtocol) OPENAI_COMPATIBLE_TARGET_LANGUAGE_NAMES.keys.toList()
+        else targets
+
+    fun normalize(source: String, target: String, translation: TextTranslationProvider = TextTranslationProvider.BUILTIN): Pair<String, String> {
+        val targets = targetsForTranslation(translation)
         val normalizedSource = source.takeIf { it in sources }
             ?: sources.firstOrNull { it != target } ?: sources.first()
         val normalizedTarget = target.takeIf { it in targets && it != normalizedSource }

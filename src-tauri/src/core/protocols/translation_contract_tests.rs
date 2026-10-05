@@ -66,6 +66,36 @@ fn shared_request_contracts() {
 }
 
 #[test]
+fn generic_requests_cover_every_configurable_source_and_target() {
+    let fixtures = contract();
+    let requests: Vec<_> = fixtures["requests"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|case| case["provider"] == "openaiCompatible" && !case["expected"].is_null())
+        .collect();
+    for source in SourceLanguage::ALL {
+        assert!(
+            requests
+                .iter()
+                .any(|case| case["source"] == source.raw_value()),
+            "missing generic source {}",
+            source.raw_value()
+        );
+    }
+    for target in TargetLanguage::ALL {
+        assert_eq!(
+            requests
+                .iter()
+                .any(|case| case["target"] == target.raw_value()),
+            target != TargetLanguage::Original,
+            "generic target {}",
+            target.raw_value()
+        );
+    }
+}
+
+#[test]
 fn shared_detected_source_request_contracts() {
     let fixtures = contract();
     for case in fixtures["detectedSourceRequests"].as_array().unwrap() {

@@ -108,6 +108,15 @@ class SharedTranslationContractTest {
         else assertTrue(case.getString("id"), case.getJSONObject("expected").similar(actual.getOrThrow()))
     }
 
+    @Test fun genericRequestContractsCoverEveryConfigurableTarget() {
+        val targets = mutableSetOf<String>()
+        cases("requests") { case ->
+            if (case.getString("provider") == "openaiCompatible" && !case.isNull("expected")) targets += case.getString("target")
+        }
+        assertEquals(OPENAI_COMPATIBLE_TARGET_LANGUAGE_NAMES.keys, targets)
+        assertFalse(targets.contains("original"))
+    }
+
     @Test fun sharedDetectedSourceRequestContracts() = cases("detectedSourceRequests") { case ->
         val actual = runCatching {
             val reported = if (case.isNull("reported")) null else case.getString("reported")

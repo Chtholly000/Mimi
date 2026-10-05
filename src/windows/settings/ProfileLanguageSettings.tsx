@@ -46,7 +46,7 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
     }
   };
   return <section id="translation-languages" className="profile-language-settings" aria-labelledby="translation-languages-title" aria-busy={busy}>
-    <header className="profile-language-settings__heading"><h3 id="translation-languages-title">{I18N.settings.subtitleLanguages}</h3>{requiresStop && <SettingsHelp text={I18N.settings.languageChangeRequiresStop} label={I18N.settings.helpLabel} icon="lock" />}</header>
+    <header className="profile-language-settings__heading"><h3 id="translation-languages-title">{I18N.settings.subtitleLanguages}</h3><SettingsHelp text={guidance.catalogHelp} label={I18N.settings.helpLabel} />{requiresStop && <SettingsHelp text={I18N.settings.languageChangeRequiresStop} label={I18N.settings.helpLabel} icon="lock" />}</header>
     <SettingsRow label={I18N.settings.sourceLanguage} description={guidance.help} feedback={guidance.notice && <span className="recognition-language-notice">{guidance.notice}</span>} align="start">
       <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} disabled={disabled || busy || sources.length === 1}
         options={sources.map(value => ({ value, label: guidance.optionLabel(value) }))}
@@ -60,7 +60,7 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
           if (targetLanguage) void save({ targetLanguage });
         }} />
     </SettingsRow>}
-    <SettingsRow label={I18N.settings.translateTo} align="start">
+    <SettingsRow label={I18N.settings.translateTo} description={I18N.settings.translationConfiguredHelp} align="start">
       <LanguageChoices label={I18N.settings.translateTo} value={settings.targetLanguage} disabled={disabled || busy || skipped || targets.length === 1}
         options={targets.map(value => ({ value, label: TARGET_LANGUAGE_DISPLAY_NAMES[value] }))}
         onChange={value => { const targetLanguage = targets.find(language => language === value); if (targetLanguage) void save({ targetLanguage }); }} />
@@ -73,7 +73,7 @@ function LanguageChoices({ label, value, options, disabled, onChange }: {
 }) {
   if (options.length > 6) return <LanguageSelect label={label} value={value} options={options} disabled={disabled} onChange={onChange} />;
   return <div className="profile-language-choices" role="group" aria-label={label}>
-    {options.map(option => <button key={option.value} type="button" className="profile-language-choice" aria-pressed={option.value === value}
+    {options.map(option => <button key={option.value} type="button" className={`profile-language-choice${option.value === value ? " is-selected" : ""}`} aria-pressed={option.value === value}
       disabled={disabled} onClick={() => { if (option.value !== value) onChange(option.value); }}>
       <span>{option.label}</span>{option.value === value && <Icon name="checkmark" />}
     </button>)}

@@ -90,7 +90,7 @@ it("explains a session lock separately from a transient connection check", async
 
 it("persists skipping translation as Original, restores the previous target, and keeps source-language help compact", async () => {
   await render();
-  expect(host.querySelector('.settings-help-control__description')?.textContent).toContain(I18N.settings.recognitionHintHelp);
+  expect(host.querySelector('.settings-row .settings-help-control__description')?.textContent).toContain(I18N.settings.recognitionHintHelp);
   const toggle = () => host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${I18N.settings.skipTranslation}"]`)!;
   await act(async () => toggle().click());
   expect(save).toHaveBeenCalledWith({ targetLanguage: "original" });
@@ -107,7 +107,7 @@ it.each(["zh", "en", "ja"] as const)("explains unknown custom support and servic
   await render();
   expect(host.querySelector(".recognition-language-notice")?.textContent).toBe(I18N.settings.recognitionCustomNotice);
   expect(host.querySelector('[aria-label="' + I18N.settings.sourceLanguage + '"]')?.textContent).toContain(I18N.settings.recognitionServiceDefault);
-  expect(host.querySelector('.settings-help-control__description')?.textContent).toContain(I18N.settings.recognitionDashScopeParameter);
+  expect(host.querySelector('.settings-row .settings-help-control__description')?.textContent).toContain(I18N.settings.recognitionDashScopeParameter);
   await choose(I18N.settings.sourceLanguage, "fr");
   expect(save).toHaveBeenCalledExactlyOnceWith({ sourceLanguage: "fr" });
 });
@@ -125,4 +125,24 @@ it("explains when enabling text translation actually resets a custom source", as
   await act(async () => host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${I18N.settings.skipTranslation}"]`)!.click());
   await render();
   expect(host.textContent).toContain(I18N.settings.recognitionLanguageAdjusted("French", I18N.settings.recognitionServiceDefault));
+});
+
+it("shows the configured services in compact help and filters declared custom languages", async () => {
+  settings = { ...settings, profiles: [{ ...settings.profiles[0], provider: "customOpenAIASR", textTranslation: "openAICompatible", textTranslationNames: { openAICompatible: "Local MT" }, customSpeechSourceLanguages: ["en", "fr"] }] };
+  await render();
+  expect(host.querySelector(".profile-language-settings__heading .settings-help-control__description")?.textContent).toContain("Local MT");
+  expect(host.querySelector(".recognition-language-notice")?.textContent).toBe(I18N.settings.recognitionDeclaredNotice);
+  const sources = host.querySelector('[role="group"][aria-label="' + I18N.settings.sourceLanguage + '"]')!;
+  expect([...sources.querySelectorAll("button")].map(button => button.textContent)).toEqual([I18N.settings.recognitionServiceDefault, "English", "French"]);
+});
+
+it("updates explicit selected classes with the actual saved language", async () => {
+  settings = { ...settings, profiles: [{ ...settings.profiles[0], provider: "azureOpenAIRealtime" }] };
+  await render();
+  const choice = (name: string) => [...host.querySelectorAll<HTMLButtonElement>(".profile-language-choice")].find(button => button.textContent === name)!;
+  expect(choice("English").classList.contains("is-selected")).toBe(true);
+  settings = { ...settings, targetLanguage: "ja" }; await render();
+  expect(choice("English").classList.contains("is-selected")).toBe(false);
+  expect(choice("Japanese").classList.contains("is-selected")).toBe(true);
+  expect(choice("Japanese").getAttribute("aria-pressed")).toBe("true");
 });

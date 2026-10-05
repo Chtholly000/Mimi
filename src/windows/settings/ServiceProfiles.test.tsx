@@ -62,10 +62,13 @@ it.each(["en", "zh", "ja"].flatMap(language => ["alibabaCloud", "googleGeminiLiv
   setStoredUiLanguage(language);
   const snapshot: SettingsSnapshot = { ...settings, credentialStorage: "localDevFile", profiles: [{ ...profile, provider, credentialStorage: "localDevFile", credentialState: "present" }] };
   await render(snapshot);
+  expect(host.querySelectorAll(".services-toolbar button.settings-button")).toHaveLength(1);
+  expect(host.querySelector(".services-toolbar button.settings-button")?.textContent).toBe(I18N.settings.addProfile);
   expect(host.querySelector(".services-toolbar__count .settings-help-control__description")?.textContent).toBe(diagnosticCopy().localDevReadOnly);
   expect(host.querySelector(".services-hint")).toBeNull();
   await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
   expect(host.textContent).toContain(diagnosticCopy().localDevReadOnly);
+  expect([...host.querySelectorAll("button")].some(button => button.textContent === I18N.settings.addProfile)).toBe(false);
   expect(host.querySelector('input[type="password"]')).toBeNull();
   expect(host.querySelector(".credential-form")).toBeNull();
   expect([...host.querySelectorAll(".service-stage h3")].map(node => node.textContent)).toEqual(provider === "alibabaCloud" ? [I18N.settings.speechRecognition, I18N.settings.textTranslationLabel] : [I18N.settings.voiceTranslation]);
@@ -507,9 +510,16 @@ it.each(["deepL", "deepLX", "openAICompatible", "chatMock"] as const)("keeps %s 
   const snapshot = { ...settings, profiles: [{ ...profile, textTranslation }] };
   await render(snapshot);
   await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
-  expect(host.querySelectorAll("#translation-languages [role=combobox]")).toHaveLength(0);
-  const groups = [...host.querySelectorAll("#translation-languages [role=group]")];
-  expect(groups[1].textContent).toBe(targetLanguagesForSettings(snapshot).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]).join(""));
+  const targets = targetLanguagesForSettings(snapshot).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]);
+  if (textTranslation === "openAICompatible" || textTranslation === "chatMock") {
+    expect(host.querySelectorAll("#translation-languages [role=combobox]")).toHaveLength(2);
+    await act(async () => host.querySelector<HTMLButtonElement>(`#translation-languages [role="combobox"][aria-label="${I18N.settings.translateTo}"]`)!.click());
+    expect([...document.querySelectorAll('[role="option"]')].map(option => option.textContent)).toEqual(targets);
+  } else {
+    expect(host.querySelectorAll("#translation-languages [role=combobox]")).toHaveLength(0);
+    const groups = [...host.querySelectorAll("#translation-languages [role=group]")];
+    expect(groups[1].textContent).toBe(targets.join(""));
+  }
   expect(testProfileConnection).not.toHaveBeenCalled();
 });
 
@@ -1056,4 +1066,36 @@ it("checks saved OpenAI credentials after reveal, then checks an actual secret e
   expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
   expect(actions.updateProfile).not.toHaveBeenCalled();
   expect(actions.selectProfile).not.toHaveBeenCalled();
+});
+
+
+it.each([true, false])("saves a declaration and reports normalized recognition when event-first is %s", async eventFirst => {
+  const custom: ServiceProfile = { ...profile, provider: "customDashScopeASR", textTranslation: "openAICompatible", customSpeechSourceLanguages: ["en", "fr"] };
+  const before: SettingsSnapshot = { ...settings, profiles: [custom], sourceLanguage: "fr" };
+  const after: SettingsSnapshot = { ...before, sourceLanguage: "auto", profiles: [{ ...custom, customSpeechSourceLanguages: ["en"] }] };
+  let resolve!: (value: SettingsSnapshot) => void;
+  actions.updateProfile.mockImplementationOnce(() => new Promise(value => { resolve = value; }));
+  await render(before);
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>(".custom-speech-languages button")].find(item => item.textContent === label)!;
+  await act(async () => button(I18N.settings.customSpeechLanguagesEdit).click());
+  await act(async () => [...host.querySelectorAll<HTMLButtonElement>(".custom-speech-languages__choices button")].find(item => item.textContent === "Frenchfr")!.click());
+  await act(async () => button(I18N.settings.customSpeechLanguagesSave).click());
+  expect(actions.updateProfile).toHaveBeenCalledExactlyOnceWith(custom.id, undefined, { customSpeechSourceLanguages: ["en"] });
+  if (eventFirst) await render(after);
+  expect(host.textContent).not.toContain(I18N.settings.recognitionLanguageAdjusted("French", I18N.settings.recognitionServiceDefault));
+  await act(async () => resolve(after));
+  if (!eventFirst) await render(after);
+  expect(host.textContent).toContain(I18N.settings.recognitionLanguageAdjusted("French", I18N.settings.recognitionServiceDefault));
+  expect(host.querySelector(".custom-speech-languages__expanded")).toBeNull();
+  expect(host.querySelector(".custom-speech-languages__summary")?.textContent).toBe(I18N.settings.customSpeechLanguagesCount(1));
+});
+
+it("keeps language declaration edits locked during an active session", async () => {
+  const snapshot: SettingsSnapshot = { ...settings, profiles: [{ ...profile, provider: "customOpenAIASR" }] };
+  await render(snapshot);
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  await act(async () => root.render(<><ServiceProfiles settings={snapshot} sessionIsActive={true} sessionStatusKind="listening" /><SettingsToastRegion /></>));
+  expect(host.querySelector<HTMLButtonElement>(".custom-speech-languages .settings-button")?.disabled).toBe(true);
+  expect(actions.updateProfile).not.toHaveBeenCalled();
 });

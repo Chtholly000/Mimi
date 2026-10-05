@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import { useStore } from "../../lib/store";
 import { TrayPanel } from "./TrayPanel";
-import { SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
+import { AUDIO3_RECOGNITION_LANGUAGE_CODES, SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
 import { sourceLanguagesForSettings } from "../../lib/providerCapabilities";
 
 let host: HTMLDivElement;
@@ -137,7 +137,7 @@ it("offers 31 Original-mode sources and selects Norwegian after Chinese", async 
   expect(switchSourceLanguage).toHaveBeenCalledExactlyOnceWith("no");
 });
 
-it.each(["deepL", "deepLX", "openAICompatible"] as const)("keeps %s route limits and uses a non-searchable five-language tray picker", async route => {
+it.each(["deepL", "deepLX"] as const)("keeps %s route limits and uses a non-searchable five-language tray picker", async route => {
   const settings = languageSettings();
   settings.profiles = [{ ...settings.profiles[0], textTranslation: route }];
   useStore.setState({ ...initial, settings }, true);
@@ -149,6 +149,26 @@ it.each(["deepL", "deepLX", "openAICompatible"] as const)("keeps %s route limits
     .map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]));
   expect(document.querySelector("input.mimi-select__search")).toBeNull();
   expect(options.map(option => option.textContent)).not.toContain(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+});
+
+it.each(["openAICompatible", "chatMock"] as const)("searches all 31 sources with the %s text route and sends the selected code from the tray", async route => {
+  const settings = languageSettings();
+  settings.profiles = [{ ...settings.profiles[0], textTranslation: route }];
+  const switchSourceLanguage = vi.fn().mockResolvedValue(undefined);
+  useStore.setState({ ...initial, settings, switchSourceLanguage }, true);
+  await act(async () => root.render(<TrayPanel />));
+  await act(async () => sourcePicker().click());
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(options).toHaveLength(31);
+  expect(options.map(option => option.textContent)).toEqual(["auto" as const, ...AUDIO3_RECOGNITION_LANGUAGE_CODES]
+    .map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]));
+  expect(document.querySelector("input.mimi-select__search")).not.toBeNull();
+  await filter("Norwegian");
+  const filtered = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(filtered.map(option => option.textContent)).toEqual([SOURCE_LANGUAGE_DISPLAY_NAMES.no]);
+  await act(async () => filtered[0].click());
+  expect(switchSourceLanguage).toHaveBeenCalledExactlyOnceWith("no");
+  expect(document.querySelector('[role="listbox"]')).toBeNull();
 });
 
 it("uses native options without search when small and falls back after a stale target stamp", async () => {

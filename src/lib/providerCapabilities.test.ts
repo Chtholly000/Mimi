@@ -290,8 +290,8 @@ it("keeps inactive profile routes isolated, including migrated legacy DeepLX pro
     expect(capabilitiesForProfile({ ...profile, textTranslation: "deepL" }).sourceLanguages).toEqual(["auto", "ja", "en", "ko", "zh"]);
     expect(capabilitiesForProfile({ ...profile, textTranslation: "deepL" }).targetLanguages).toEqual(["original", "zh", "en", "ja"]);
     expect(capabilitiesForProfile({ ...profile, textTranslation: "deepLX" }).targetLanguages).toEqual(["zh", "en", "ja"]);
-    expect(capabilitiesForProfile({ ...profile, textTranslation: "openAICompatible" }).sourceLanguages).toEqual(["auto", "ja", "en", "ko", "zh"]);
-    expect(capabilitiesForProfile({ ...profile, textTranslation: "openAICompatible" }).targetLanguages).toEqual(["original", "zh", "en", "ja"]);
+    expect(capabilitiesForProfile({ ...profile, textTranslation: "openAICompatible" }).sourceLanguages).toEqual(["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES]);
+    expect(capabilitiesForProfile({ ...profile, textTranslation: "openAICompatible" }).targetLanguages).toEqual(["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES]);
     expect(capabilitiesForProfile({ ...profile, textTranslation: "followService" }).targetLanguages).toHaveLength(32);
   }
 });
@@ -372,4 +372,27 @@ it.each(["customDashScopeASR", "customOpenAIASR"] as const)("exposes protocol co
   const profile = { id: "custom", name: "Custom", provider, credentialState: "present", textTranslation: "deepL" } as const;
   expect(capabilitiesForProfile(profile, "original").sourceLanguages).toEqual(["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES]);
   expect(capabilitiesForProfile(profile, "zh").sourceLanguages).not.toContain("fr");
+});
+
+
+it.each(["customDashScopeASR", "customOpenAIASR"] as const)("filters %s by declaration and text encoder without inferring model support", provider => {
+  const profile = { id: "custom", name: "Any model", provider, credentialState: "present" as const, customSpeechSourceLanguages: ["en", "fr"] as const };
+  const declared = { ...profile, customSpeechSourceLanguages: [...profile.customSpeechSourceLanguages] };
+  for (const textTranslation of ["openAICompatible", "chatMock"] as const) {
+    expect(capabilitiesForProfile({ ...declared, textTranslation }).sourceLanguages).toEqual(["auto", "en", "fr"]);
+    expect(capabilitiesForProfile({ ...declared, textTranslation }).targetLanguages).toEqual(["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES]);
+  }
+  expect(capabilitiesForProfile({ ...declared, textTranslation: "deepL" }).sourceLanguages).toEqual(["auto", "en"]);
+  expect(capabilitiesForProfile({ ...declared, customSpeechSourceLanguages: [] }).sourceLanguages).toEqual(["auto"]);
+});
+
+it.each([undefined, null, ["en", "fr"] as const])("does not let a stale native custom list hide expanded or cleared declarations: %j", declaration => {
+  const profile = { id: "custom", name: "Custom", provider: "customDashScopeASR" as const, credentialState: "present" as const, textTranslation: "openAICompatible" as const,
+    customSpeechSourceLanguages: declaration ? [...declaration] : declaration };
+  const snapshot: SettingsSnapshot = { ...BASE_SETTINGS, activeProfileId: profile.id, profiles: [profile], languageCapabilities: {
+    profileId: profile.id, provider: profile.provider, textTranslation: profile.textTranslation, targetLanguage: "zh",
+    sourceLanguages: ["auto", "en"], targetLanguages: ["original", "zh", "en", "ja"],
+  } };
+  expect(sourceLanguagesForSettings(snapshot)).toEqual(declaration ? ["auto", "en", "fr"] : ["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES]);
+  expect(targetLanguagesForSettings(snapshot)).toEqual(["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES]);
 });

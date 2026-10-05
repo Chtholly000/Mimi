@@ -237,7 +237,10 @@ export type CredentialState = "present" | "missing" | "unavailable";
 
 export type ProfileNetworkProxyDraft = Partial<Pick<ServiceProfile, "speechNetworkProxy" | "textNetworkProxy">>;
 export type TextTranslationNameDraft = { route: Exclude<TextTranslation, "followService">; name: string };
-export type ProfileOptionsDraft = ProfileNetworkProxyDraft & { textTranslationName?: TextTranslationNameDraft };
+export type ProfileOptionsDraft = ProfileNetworkProxyDraft & {
+  textTranslationName?: TextTranslationNameDraft;
+  customSpeechSourceLanguages?: SourceLanguage[] | null;
+};
 
 export interface ServiceProfile {
   id: string;
@@ -251,6 +254,8 @@ export interface ServiceProfile {
   textCredentialState?: CredentialState;
   /** Optional for historical/native fixture snapshots; inferred from provider when absent. */
   textTranslation?: TextTranslation;
+  /** User-declared custom ASR languages, not discovered capabilities. Null/absent is unknown; [] keeps only service default. */
+  customSpeechSourceLanguages?: SourceLanguage[] | null;
   /** Display metadata only; names stay independent for each saved translation route. */
   textTranslationNames?: Partial<Record<Exclude<TextTranslation, "followService">, string>>;
   /** Missing legacy fields inherit SettingsSnapshot.networkProxy. */

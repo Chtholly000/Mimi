@@ -20,3 +20,10 @@ it.each(["zh", "en", "ja"] as const)("separates automatic, hint, explicit and un
     expect(unknown.help).not.toContain(I18N.settings.recognitionAutomaticHelp);
   }
 });
+
+it("labels explicit declarations without claiming discovered or verified support", () => {
+  const unknown = settings("customOpenAIASR");
+  const declared = { ...unknown, profiles: [{ ...unknown.profiles[0], customSpeechSourceLanguages: ["fr" as const] }] };
+  expect(speechLanguageGuidance(declared).notice).toBe(I18N.settings.recognitionDeclaredNotice);
+  expect(speechLanguageGuidance(declared).optionLabel("auto")).toBe(I18N.settings.recognitionServiceDefault);
+});

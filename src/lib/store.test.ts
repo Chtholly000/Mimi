@@ -301,3 +301,20 @@ it.each([false, true])("quick-switches Original and translation while preserving
     await expect(useStore.getState().switchTargetLanguage("original")).rejects.toThrow("target_switch_unsupported");
   } finally { useStore.setState(original, true); }
 });
+
+it("keeps custom declarations independent and normalizes only the active source in the browser preview", async () => {
+  const original = useStore.getState();
+  const profile = { id: "custom", name: "Custom", provider: "customDashScopeASR" as const, credentialState: "missing" as const, textTranslation: "openAICompatible" as const };
+  try {
+    useStore.setState({ settings: { ...original.settings, profiles: [profile], activeProfileId: profile.id, sourceLanguage: "fr", targetLanguage: "zh" } });
+    const narrowed = await useStore.getState().updateProfile(profile.id, undefined, { customSpeechSourceLanguages: ["en", "en"] });
+    expect(narrowed.sourceLanguage).toBe("auto");
+    expect(narrowed.profiles[0].customSpeechSourceLanguages).toEqual(["en"]);
+    await useStore.getState().updateProfile(profile.id, "Renamed");
+    expect(useStore.getState().settings.profiles[0].customSpeechSourceLanguages).toEqual(["en"]);
+    const cleared = await useStore.getState().updateProfile(profile.id, undefined, { customSpeechSourceLanguages: null });
+    expect(cleared.profiles[0].customSpeechSourceLanguages).toBeNull();
+    useStore.setState({ settings: original.settings });
+    await expect(useStore.getState().updateProfile(original.settings.activeProfileId, undefined, { customSpeechSourceLanguages: [] })).rejects.toThrow("provider-mismatch");
+  } finally { useStore.setState(original, true); }
+});
