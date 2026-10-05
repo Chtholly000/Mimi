@@ -53,6 +53,8 @@ pub struct ServiceProfilePayload {
     pub id: String,
     pub name: String,
     pub provider: ProviderKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_recognition_name: Option<String>,
     pub credential_state: CredentialState,
     pub credential_storage: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -82,6 +84,7 @@ impl ServiceProfilePayload {
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
+            speech_recognition_name: profile.speech_recognition_name,
             credential_state,
             credential_storage,
             speech_credential_state: states.map(|(speech, _)| speech),
@@ -100,6 +103,7 @@ impl ServiceProfilePayload {
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
+            speech_recognition_name: profile.speech_recognition_name,
             credential_state: CredentialState::Unavailable,
             credential_storage: "keychain",
             speech_credential_state: profile
@@ -184,6 +188,27 @@ pub struct SettingsSnapshotPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_snapshots_keep_speech_names_when_credentials_are_unavailable() {
+        let store = SettingsStore::in_memory(Box::new(PartiallyUnavailableSecretStore), false);
+        let mut profile =
+            ServiceProfile::new("custom", "Configuration", ProviderKind::CustomOpenAIASR).unwrap();
+        profile
+            .set_speech_recognition_name("Whisper · 本地")
+            .unwrap();
+        for payload in [
+            ServiceProfilePayload::from_profile(&store, profile.clone()),
+            ServiceProfilePayload::unavailable(profile),
+        ] {
+            let json = serde_json::to_value(payload).unwrap();
+            assert_eq!(json["speechRecognitionName"], "Whisper · 本地");
+            assert_eq!(json["name"], "Configuration");
+            for field in ["endpoint", "apiKey", "token", "model"] {
+                assert!(json.get(field).is_none());
+            }
+        }
+    }
 
     #[test]
     fn profile_snapshots_keep_translation_names_when_credentials_are_unavailable() {
@@ -641,6 +666,7 @@ mod tests {
                 id: "alibaba-default".into(),
                 name: "Alibaba Cloud".into(),
                 provider: ProviderKind::AlibabaCloud,
+                speech_recognition_name: None,
                 credential_state: CredentialState::Present,
                 credential_storage: "keychain",
                 speech_credential_state: None,
@@ -1533,7 +1559,7 @@ pub async fn profile_create(
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)] // Preserve the existing IPC fields plus an optional metadata patch.
+#[allow(clippy::too_many_arguments)] // Preserve the existing optional IPC patch fields.
 pub async fn profile_update(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1542,6 +1568,7 @@ pub async fn profile_update(
     speech_network_proxy: Option<ProxyConfig>,
     text_network_proxy: Option<ProxyConfig>,
     text_translation_name: Option<TextTranslationName>,
+    speech_recognition_name: Option<String>,
     custom_speech_languages_patch: Option<CustomSpeechLanguagesPatch>,
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
@@ -1552,6 +1579,7 @@ pub async fn profile_update(
         speech_network_proxy,
         text_network_proxy,
         text_translation_name,
+        speech_recognition_name.as_deref(),
         custom_speech_languages_patch,
     )?;
     emit_settings_snapshot(&app, &state.settings)
@@ -1563,9 +1591,7 @@ pub async fn profile_select(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<SettingsSnapshotPayload, String> {
-    let _lifecycle = state.session.settings_mutation_guard(true).await?;
-    ensure_profile_mutation_allowed(state.session.has_active_session())?;
-    state.settings.select_profile(&profile_id)?;
+    state.session.switch_profile(&profile_id).await?;
     emit_settings_snapshot(&app, &state.settings)
 }
 

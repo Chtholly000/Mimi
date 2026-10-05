@@ -299,6 +299,63 @@ fn pipeline_settings_mutation_is_allowed(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProfileSwitchAction {
+    SelectOnly,
+    KeepPaused,
+    Reconnect,
+}
+
+fn profile_switch_action(
+    status: &SessionStatus,
+    paused: bool,
+    recovering: bool,
+    lifecycle_operations: usize,
+) -> Result<ProfileSwitchAction, &'static str> {
+    if recovering || !pipeline_settings_mutation_is_allowed(status, lifecycle_operations) {
+        return Err("profile_switch_busy");
+    }
+    if paused {
+        Ok(ProfileSwitchAction::KeepPaused)
+    } else if matches!(status, SessionStatus::Listening) {
+        Ok(ProfileSwitchAction::Reconnect)
+    } else {
+        Ok(ProfileSwitchAction::SelectOnly)
+    }
+}
+
+fn ensure_profile_switch_audio_format(
+    recording: bool,
+    current_sample_rate: u32,
+    next_sample_rate: u32,
+) -> Result<(), String> {
+    if recording && current_sample_rate != next_sample_rate {
+        Err("profile_switch_recording_requires_stop".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Caller holds the lifecycle and generation-transition gates. Persist before
+/// replacing the resumable configuration, retaining its current owner (which
+/// can be NO_GENERATION after a failed resume leaves the session paused).
+fn commit_profile_selection(
+    lifecycle_sequence: &AtomicU64,
+    expected_epoch: u64,
+    active_settings: &Mutex<Option<LiveTranslationConfiguration>>,
+    proposed: Option<LiveTranslationConfiguration>,
+    select: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if !lifecycle_sequence_matches(lifecycle_sequence, expected_epoch) {
+        return Err("profile_switch_superseded".into());
+    }
+    select()?;
+    if let Some(proposed) = proposed {
+        *active_settings.lock().unwrap() = Some(proposed);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AudioInputSwitchAction {
     ReconfigureOnly,
     Reconnect,
@@ -2402,6 +2459,84 @@ impl SessionManager {
         })
     }
 
+    /// Selects a saved profile while retaining the current session and its
+    /// selected sources. A live selection reconnects; a paused one only
+    /// replaces the configuration used by Resume.
+    pub async fn switch_profile(self: &Arc<Self>, profile_id: &str) -> Result<(), String> {
+        let switch_epoch = self.lifecycle_sequence.load(Ordering::SeqCst);
+        let lifecycle = self.settings_mutation_guard(false).await?;
+        if !self.is_lifecycle_request_current(switch_epoch) {
+            return Err("profile_switch_superseded".into());
+        }
+        let status = self.controller.lock().unwrap().state.status.clone();
+        let action = profile_switch_action(
+            &status,
+            self.is_paused(),
+            self.is_recovering.load(Ordering::SeqCst),
+            self.lifecycle_operations.load(Ordering::SeqCst),
+        )
+        .map_err(str::to_owned)?;
+        let current_profile = self.settings.active_profile()?;
+        if current_profile.id == profile_id {
+            return Ok(());
+        }
+        let (_, profiles) = self.settings.profile_catalog()?;
+        let profile = profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+            .ok_or_else(|| "The service profile does not exist.".to_string())?;
+        let live = action != ProfileSwitchAction::SelectOnly;
+        // Validate before persistence: an incomplete profile must not replace
+        // the working session. UI fixtures never resolve credentials.
+        let proposed = if live && !self.is_ui_test() {
+            Some(self.settings.configuration_for_profile_selection(profile)?)
+        } else {
+            None
+        };
+        if live {
+            let target = self.settings.preferences().target_language;
+            let current_rate = self
+                .active_settings
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|configuration| configuration.capabilities().input_sample_rate_hz)
+                .unwrap_or_else(|| current_profile.capabilities(target).input_sample_rate_hz);
+            let next_rate = proposed
+                .as_ref()
+                .map(|configuration| configuration.capabilities().input_sample_rate_hz)
+                .unwrap_or_else(|| profile.capabilities(target).input_sample_rate_hz);
+            // Every session audio track has one fixed PCM rate. Keep its
+            // existing bytes and consent intact rather than dropping a track
+            // or silently ceasing recording after a 16/24 kHz switch.
+            ensure_profile_switch_audio_format(
+                self.history_pending_audio.load(Ordering::SeqCst),
+                current_rate,
+                next_rate,
+            )?;
+        }
+        {
+            let _transition = self.generation_transition.lock().unwrap();
+            commit_profile_selection(
+                &self.lifecycle_sequence,
+                switch_epoch,
+                &self.active_settings,
+                proposed,
+                || {
+                    self.settings
+                        .select_profile(profile_id)
+                        .map_err(|_| "profile_switch_save_failed".to_string())
+                },
+            )?;
+        }
+        self.publish_settings();
+        if action == ProfileSwitchAction::Reconnect {
+            drop(lifecycle);
+            self.reconnect_if_current(switch_epoch).await;
+        }
+        Ok(())
+    }
+
     /// Quick-switches the source language, reconnecting when needed.
     /// Source changes preserve the single Turbo path for every provider.
     pub async fn switch_source_language(
@@ -2586,8 +2721,7 @@ impl SessionManager {
             return Ok(());
         }
         drop(lifecycle);
-        self.reconnect_if_current(switch_epoch).await;
-        Ok(())
+        self.try_reconnect_if_current(switch_epoch).await
     }
 
     /// Quick-switches the translation mode, reconnecting when needed.
@@ -6343,6 +6477,97 @@ mod lifecycle_tests {
             None
         );
         assert_eq!(sequence.load(Ordering::SeqCst), stop_epoch);
+    }
+
+    #[test]
+    fn profile_selection_reconnects_only_a_live_unpaused_session() {
+        assert_eq!(
+            profile_switch_action(&SessionStatus::Listening, false, false, 0),
+            Ok(ProfileSwitchAction::Reconnect)
+        );
+        assert_eq!(
+            profile_switch_action(&SessionStatus::Listening, true, false, 0),
+            Ok(ProfileSwitchAction::KeepPaused)
+        );
+        for status in [
+            SessionStatus::Idle,
+            SessionStatus::Error("synthetic".into()),
+        ] {
+            assert_eq!(
+                profile_switch_action(&status, false, false, 0),
+                Ok(ProfileSwitchAction::SelectOnly)
+            );
+        }
+        for status in [SessionStatus::Connecting, SessionStatus::Stopping] {
+            for paused in [false, true] {
+                assert_eq!(
+                    profile_switch_action(&status, paused, false, 0),
+                    Err("profile_switch_busy")
+                );
+            }
+        }
+        for (recovering, operations) in [(true, 0), (false, 1)] {
+            assert_eq!(
+                profile_switch_action(&SessionStatus::Listening, true, recovering, operations),
+                Err("profile_switch_busy")
+            );
+        }
+    }
+
+    #[test]
+    fn profile_selection_preserves_recordings_by_rejecting_sample_rate_changes() {
+        for current_rate in [16_000, 24_000] {
+            for next_rate in [16_000, 24_000] {
+                assert!(ensure_profile_switch_audio_format(false, current_rate, next_rate).is_ok());
+                assert_eq!(
+                    ensure_profile_switch_audio_format(true, current_rate, next_rate),
+                    if current_rate == next_rate {
+                        Ok(())
+                    } else {
+                        Err("profile_switch_recording_requires_stop".into())
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn profile_selection_commit_keeps_previous_configuration_on_failed_or_stale_selection() {
+        let old = LiveTranslationConfiguration::for_provider(
+            ProviderKind::AlibabaCloud,
+            "synthetic-old",
+            SourceLanguage::Japanese,
+            crate::core::models::TargetLanguage::English,
+            TranslationMode::Turbo,
+        );
+        let next = LiveTranslationConfiguration::for_provider(
+            ProviderKind::OpenAIRealtime,
+            "synthetic-next",
+            SourceLanguage::Automatic,
+            crate::core::models::TargetLanguage::English,
+            TranslationMode::Turbo,
+        );
+        let active = Mutex::new(Some(old.clone()));
+        let sequence = AtomicU64::new(11);
+        assert_eq!(
+            commit_profile_selection(&sequence, 11, &active, Some(next.clone()), || {
+                Err("profile_switch_save_failed".into())
+            }),
+            Err("profile_switch_save_failed".into())
+        );
+        assert_eq!(*active.lock().unwrap(), Some(old.clone()));
+        assert_eq!(
+            commit_profile_selection(&sequence, 10, &active, Some(next.clone()), || {
+                panic!("a superseded selection must never persist")
+            }),
+            Err("profile_switch_superseded".into())
+        );
+        assert_eq!(*active.lock().unwrap(), Some(old));
+        commit_profile_selection(&sequence, 11, &active, Some(next.clone()), || Ok(())).unwrap();
+        assert_eq!(*active.lock().unwrap(), Some(next));
+        // The commit does not claim a new lifecycle operation; a later pause
+        // or stop remains able to supersede the reconnect.
+        assert_eq!(sequence.load(Ordering::SeqCst), 11);
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ComponentProps, type FormEvent } from "react";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { Icon } from "../../components/Icon";
-import { I18N } from "../../lib/i18n";
+import { I18N, providerDisplayName } from "../../lib/i18n";
 import { credentialUnavailableHelp } from "../../lib/connectionDiagnostics";
 import type { ProviderCredentialsInput } from "../../lib/types";
 import { buildCustomSpeechCredentials, customSpeechEndpointIsValid, emptyCredentialDraft, openAICompatibleModelIsValid } from "../../lib/providerCredentials";
@@ -13,9 +13,12 @@ import { SettingsHelp } from "./SettingsHelp";
 import { CredentialStorageHelp } from "./CredentialStorageHelp";
 import { InlineFeedback } from "./SettingsPrimitives";
 import { DestructiveConfirmation } from "./DestructiveConfirmation";
+import { AutoSaveNameField } from "./AutoSaveNameField";
 
 /** Independent ASR and text credentials; neither form can write the other's key. */
-export function CustomSpeechCredentialEditor(props: ComponentProps<typeof AlibabaCredentialEditor>) {
+export function CustomSpeechCredentialEditor(props: ComponentProps<typeof AlibabaCredentialEditor> & {
+  onSaveRecognitionName?: (name: string) => Promise<unknown>;
+}) {
   const { profile, inputId, disabled, busy, feedback, onSave, onRequestDelete, onConfirmDelete, confirmingDelete, onCancelDelete, connectionCheck, readOnly = false } = props;
   const [draft, setDraft] = useState(emptyCredentialDraft);
   const [editing, setEditing] = useState(false);
@@ -86,6 +89,10 @@ export function CustomSpeechCredentialEditor(props: ComponentProps<typeof Alibab
       <header className="service-stage__heading"><div className="service-stage__name-help"><h3 id={`${speechId}-title`}>{I18N.settings.speechRecognition}</h3><SettingsHelp id={helpId} text={requirements} label={I18N.settings.helpLabel} /></div>
       </header>
       <div className="settings-field service-stage__selector"><span>{I18N.settings.serviceProvider}</span><span className="service-stage__provider"><ProviderIcon provider={profile.provider} size={32} />{openAI ? "OpenAI Realtime ASR" : "DashScope ASR"}</span></div>
+      {props.onSaveRecognitionName && <AutoSaveNameField key={profile.id} id={`${speechId}-name`}
+        className="recognition-name-field" label={I18N.settings.speechRecognitionName}
+        value={profile.speechRecognitionName ?? ""} placeholder={providerDisplayName(profile.provider)}
+        disabled={disabled} readOnly={readOnly} allowEmpty onSave={props.onSaveRecognitionName} />}
       {!readOnly && (!saved || editing) && <form className="credential-form" onSubmit={submit}>
         {editorState.error && <InlineFeedback tone="error">{editorState.error}<button type="button" className="settings-link" disabled={disabled} onClick={() => setSpeechEpoch(current => current + 1)}>{I18N.settings.retryLoadingSettings}</button></InlineFeedback>}
         <div className="credential-form__fields">

@@ -4,6 +4,55 @@
 实测范围和未解决项；条目是历史证据，后续任务仍须核对当前源码与设备。
 不写密钥、音频、字幕正文或个人目录，不把临时日志当作已持久归档的案例。
 
+## 2026-10-05：运行中切换已保存的服务配置
+
+- 基线 `4634034` 加本轮改动（验证时 dirty）。设置、托盘和字幕控制面板
+  共用受生命周期保护的配置选择；运行时重连，暂停时更新恢复配置并保持
+  暂停。保留确认字幕和音频来源；录音跨采样率切换明确拒绝。
+- `./scripts/check.sh`：桌面 Rust 1099 passed／2 ignored，前端 110 文件／
+  1486 项通过；共享核心、实际 JNI、lint、类型和生产构建通过。新增保护
+  覆盖预验证不写入、Original 不读取文字凭据、失败与过期选择、暂停恢复、
+  录音采样率、重复点击、脱敏错误以及两个面板的最小 IPC 权限。
+- canonical 签名 `local-dev` UI-only 原生检查：创建内存测试配置；启动
+  合成会话后在设置切换，确认编辑项锁定；字幕控制面板暂停后切换仍为
+  暂停，恢复后再次切换回原配置，状态和设置同步。检查空字幕、收起／
+  展开及选择菜单，随后正常停止、退出。无真实凭据、服务请求或采音。
+- Ego 浏览器检查 320 px 托盘、280 px 字幕控制面板，中英日长配置名。
+  修正新标签的帮助图标换行；复测标签／选择器间距与溢出、暂停中实际
+  选择、错误状态可选以及连接／停止状态禁用。最终标签排版由浏览器
+  验证；原生交互发生在该排版微调前。临时截图未作为持久样本归档。
+- 测试后恢复此前已签名、兼容本机实验服务的开发包，校验二进制与备份
+  一致，普通模式打开且会话未启动。本轮未验证真实服务重连延迟、原生
+  托盘操作、全部长字幕／错误视觉状态或 Windows/Linux 实机；自动测试
+  和浏览器预览不能替代这些证据。
+
+## 2026-10-05：独立自定义识别名称
+
+- 基线 `a0ac37f` 加本轮改动（验证时 dirty）。两种自定义识别协议新增独立
+  名称；配置名、翻译名与协议身份保持独立。复用自动保存字段和完整提示，
+  空白名称回退本地化协议名；元数据补丁及重启持久化有回归覆盖。
+- `./scripts/check.sh` 通过：桌面 Rust 1093 passed／2 ignored，前端
+  110 文件／1462 项通过，共享核心与实际 JNI、lint、类型及生产构建通过。
+  新增覆盖包括旧数据、非法名称、写入失败回滚、凭据零访问、只读配置、
+  未保存草稿隔离、重试、配置切换与同名独立服务。
+- 稳定签名 canonical `local-dev` UI-only 原生检查：创建临时自定义配置，
+  输入含中文和空格的识别名、提交、返回列表及重新进入后值一致；清空后
+  列表回退协议名。实际截图检查字段对齐与间距。测试配置仅存内存，
+  无服务请求、采音或记录。结束后恢复普通开发模式，自动启动关闭。
+- 实际浏览器组件检查通过：两协议 × 中英日 × 520 暗色／952 亮色，共
+  12 个设置组合；短名／长中日名 × 中英日 × 360／552 px，共 12 个浮窗
+  组合。自动保存、失败保留草稿与重试、清空回退均通过；目视检查设置
+  和浮窗完整提示。临时截图不是持久媒体基线。
+- 本轮原生验证覆盖名称编辑和列表，不替代原生浮窗全部会话状态、实际
+  IME 人工输入、Windows/Linux 外观或真实识别链路验证。字幕阶段逻辑
+  与长名称布局由组件和浏览器检查覆盖。
+- 恢复普通模式时，main 构建无法解析已有 Apple Speech 试验配置，触发
+  catalog 写保护并显示不可用的回退配置；原文件仍保留全部 10 个配置。
+  从原兼容预览 `14aec32` 叠加名称改动得到隔离预览 `a73818e`，类型检查、
+  157 项相关测试及签名构建通过。重新启动后原生确认 10 个配置恢复、
+  凭据状态恢复、新名称字段可用且会话未启动。该组合仅供本机预览，
+  Apple Speech 试验未随此次名称 PR 发布；预防规则已补入常见回归。
+
 ## 2026-10-05：连续改名、字体方向键与服务身份
 
 - 基线 `51820ad` 加本轮修复及 v1.5.13 版本准备（验证时 dirty）。配置名和
@@ -830,44 +879,3 @@
   loaded real profiles. The formal app was quit with explicit user permission
   and its installed bundle was not replaced. Temporary editor drafts were
   cancelled/restored before releasing the development app to other work.
-
-
-### 2026-10-05 — Speech language setup and official parameter alignment
-
-- Source: `feat/speech-language-guidance`, isolated from the model experiments and
-  service-error-feedback branches; base `a0ac37f`, code commit `6b1cfba`.
-- Scope: xAI optional input hint; OpenAI 13 and Gemini 30 represented output
-  languages; explicit custom ASR protocol codes with unknown model support;
-  DeepL/DeepLX automatic reported-source fallback; shared Android language labels;
-  localized Settings/tray/overlay help and transient normalization feedback.
-- Evidence: canonical `./scripts/check.sh` passed: 1,092 Rust tests (2 ignored),
-  112 frontend files / 1,461 tests, shared-core/JNI checks, strict clippy, lint,
-  typecheck and production build. The shared language catalog/setup fixtures
-  exercise desktop encoders, and a local WebSocket fixture verifies the xAI hint
-  reaches the transport. DeepL/DeepLX use local HTTP fixtures; no provider key or
-  private audio was used.
-- CI at code commit `6b1cfba` passed:
-  [desktop/frontend/MSRV/Windows ARM64](https://github.com/yuxino/Mimi/actions/runs/37277950841)
-  and [Android JVM/lint/APK](https://github.com/yuxino/Mimi/actions/runs/37277948366).
-  Android was verified in CI, not with a local JVM run or physical device.
-- Native evidence uses the signed canonical macOS `local-dev` combination
-  `b59c607`, which also includes separate Apple compatibility and service-error
-  changes; it is not a standalone build of this PR. Its complete check passed:
-  1,123 Rust tests (2 ignored), 113 frontend files / 1,528 tests.
-- Real Settings UI showed the custom Whisper profile's **Service default** label,
-  unknown model-support notice and `language_hints` explanation. In original-only
-  mode, French was searchable and selectable. Re-enabling independent Index text
-  translation normalized the source to Auto and displayed the explicit toast
-  “识别语言已从法语改为服务默认，以匹配文字翻译接口”; the resulting selection matched it.
-  A saved Gemini profile showed automatic-source guidance and German in target
-  search; cancelling preserved its target and made no cloud API request.
-- Restored and read back the active custom Whisper profile with Auto → Chinese,
-  system audio only, overlay unlocked, subtitle history and audio recording off,
-  and subtitles idle. Earlier independent Whisper recognition and Index translation
-  connection checks passed; their durations are not subtitle-latency evidence.
-- Limits: native inspection did not cover every official target, the complete tray
-  mode matrix or an Android device. Shared wire fixtures and CI establish request
-  behavior, not cloud-account audio quality. Broader Azure, Tencent, Baidu,
-  Volcano and regional-code gaps remain listed in the
-  [official audit matrix](../speech-language-setup.md#official-api-audit--2026-10-05).
-  The follow-up after `6b1cfba` records evidence only and does not change code.

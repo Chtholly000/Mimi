@@ -64,7 +64,7 @@ it.each(["en", "zh", "ja"].flatMap(language => ["alibabaCloud", "googleGeminiLiv
   await render(snapshot);
   expect(host.querySelectorAll(".services-toolbar button.settings-button")).toHaveLength(1);
   expect(host.querySelector(".services-toolbar button.settings-button")?.textContent).toBe(I18N.settings.addProfile);
-  expect(host.querySelector(".services-toolbar__count .settings-help-control__description")?.textContent).toBe(diagnosticCopy().localDevReadOnly);
+  expect(host.querySelector(".services-toolbar__count .settings-help-control__description")?.textContent).toContain(diagnosticCopy().localDevReadOnly);
   expect(host.querySelector(".services-hint")).toBeNull();
   await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
   expect(host.textContent).toContain(diagnosticCopy().localDevReadOnly);
@@ -528,7 +528,7 @@ it("does not edit the active service's global languages from another profile's d
   await act(async () => host.querySelectorAll<HTMLButtonElement>(".service-row__edit")[1].click());
   expect(host.querySelector("#translation-languages")).toBeNull();
   expect(host.querySelector(".service-detail__language-note")).toBeNull();
-  expect(host.querySelector(".service-detail__actions .settings-help-control__description")?.textContent).toBe(I18N.settings.useProfileForLanguages);
+  expect(host.querySelector(".service-detail__actions .settings-help-control__description")?.textContent).toBe(I18N.settings.profileSwitchHelp);
   expect(host.querySelector(".service-detail__actions")?.textContent).toContain(I18N.settings.useProfile);
   expect(actions.saveSettings).not.toHaveBeenCalled();
 });
@@ -964,6 +964,101 @@ it.each(["alibabaCloud", "customDashScopeASR", "customOpenAIASR"] as const)(
   },
 );
 
+it.each(["customDashScopeASR", "customOpenAIASR"] as const)(
+  "shows and saves a %s recognition name independently of configuration, translation, and credential drafts", async provider => {
+    vi.useFakeTimers();
+    const named: ServiceProfile = { ...profile, provider, name: "Whisper · Index", credentialState: "present", speechCredentialState: "present", textCredentialState: "present",
+      speechRecognitionName: "Old recognizer", textTranslation: "openAICompatible", textTranslationNames: { openAICompatible: "Index · Local" } };
+    const snapshot = { ...settings, profiles: [named] };
+    vi.mocked(profileCredentialEditorState).mockImplementation(async request => request.textTranslation
+      ? { savedFields: ["token"], endpoint: "https://synthetic.example/v1", model: "saved-translation-model" }
+      : { savedFields: ["apiKey"], endpoint: "wss://synthetic.example/speech", model: "saved-speech-model" });
+    const renamed = { ...snapshot, profiles: [{ ...named, speechRecognitionName: "Whisper" }] };
+    actions.updateProfile.mockResolvedValueOnce(renamed);
+    await render(snapshot);
+    expect(host.querySelector(".service-row__copy strong")?.textContent).toBe(named.name);
+    expect(host.querySelector(".service-row__provider")?.textContent).toBe(`${I18N.settings.speechRecognition} · Old recognizer`);
+    expect(host.querySelector(".service-row__translation")?.textContent).toBe(`${I18N.settings.textTranslationLabel} · Index · Local`);
+    expect(host.querySelector(".service-row .provider-icon")?.getAttribute("data-provider")).toBe(provider);
+    expect(host.querySelector(".service-row__main")?.getAttribute("aria-label")).toContain("Old recognizer");
+    await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+    const nameField = host.querySelector<HTMLInputElement>(".recognition-name-field input")!;
+    expect(host.querySelector(".recognition-name-field label")?.textContent).toBe(I18N.settings.speechRecognitionName);
+    expect(nameField.value).toBe("Old recognizer");
+    expect(nameField.placeholder).toBe(providerDisplayName(provider));
+    expect(host.querySelector('input[id$="-speech-key"]')).toBeNull();
+    await click(I18N.settings.editSpeechConfiguration);
+    await change(".service-detail__name input", "Unsaved configuration name");
+    await change(".translation-name-field input", "Unsaved translator");
+    await change('input[id$="-speech-key"]', "synthetic-unsaved-speech-key");
+    await change('.service-stage--translation input[id$="-token"]', "synthetic-unsaved-translation-token");
+    await change(".recognition-name-field input", "  Whisper  ");
+    await act(async () => nameField.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(actions.updateProfile).toHaveBeenCalledExactlyOnceWith(profile.id, undefined, { speechRecognitionName: "Whisper" });
+    await render(renamed);
+    expect(host.querySelector<HTMLInputElement>(".service-detail__name input")!.value).toBe("Unsaved configuration name");
+    expect(host.querySelector<HTMLInputElement>(".translation-name-field input")!.value).toBe("Unsaved translator");
+    expect(host.querySelector<HTMLInputElement>('input[id$="-speech-key"]')!.value).toBe("synthetic-unsaved-speech-key");
+    expect(host.querySelector<HTMLInputElement>('.service-stage--translation input[id$="-token"]')!.value).toBe("synthetic-unsaved-translation-token");
+    expect(host.querySelector('.service-stage--translation [role="combobox"]')?.textContent).toBe("Index · Local");
+
+    const cleared = { ...snapshot, profiles: [{ ...named, speechRecognitionName: undefined }] };
+    actions.updateProfile.mockResolvedValueOnce(cleared);
+    await change(".recognition-name-field input", "   ");
+    await act(async () => nameField.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    expect(actions.updateProfile).toHaveBeenCalledTimes(2);
+    expect(actions.updateProfile).toHaveBeenLastCalledWith(profile.id, undefined, { speechRecognitionName: "" });
+    await render(cleared);
+    expect(nameField.value.trim()).toBe("");
+    expect(nameField.placeholder).toBe(providerDisplayName(provider));
+    expect(host.querySelector<HTMLInputElement>('input[id$="-speech-key"]')!.value).toBe("synthetic-unsaved-speech-key");
+    expect(host.querySelector('.settings-toast[role="status"]')).toBeNull();
+    expect(host.querySelector(".recognition-name-field .settings-button")).toBeNull();
+    expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
+    expect(actions.selectProfile).not.toHaveBeenCalled();
+    expect(profileRevealCredential).not.toHaveBeenCalled();
+  },
+);
+
+it("keeps a failed recognition-name draft available for retry without touching credentials", async () => {
+  const named: ServiceProfile = { ...profile, provider: "customOpenAIASR", credentialState: "present", speechCredentialState: "present", speechRecognitionName: "Old recognizer" };
+  const snapshot = { ...settings, profiles: [named] };
+  actions.updateProfile.mockRejectedValueOnce(new Error("synthetic-private-save-error"));
+  await render(snapshot);
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  await change(".recognition-name-field input", "Whisper");
+  await act(async () => host.querySelector<HTMLInputElement>(".recognition-name-field input")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+  expect(host.querySelector<HTMLInputElement>(".recognition-name-field input")!.value).toBe("Whisper");
+  expect(host.querySelector('.recognition-name-field [role="alert"]')?.textContent).toContain(I18N.settings.profileActionFailed);
+  expect(host.textContent).not.toContain("synthetic-private-save-error");
+  expect(host.querySelector<HTMLInputElement>(".recognition-name-field input")!.disabled).toBe(false);
+  actions.updateProfile.mockResolvedValueOnce({ ...snapshot, profiles: [{ ...named, speechRecognitionName: "Whisper" }] });
+  await act(async () => host.querySelector<HTMLButtonElement>(".recognition-name-field .auto-save-name-field__error button")!.click());
+  expect(actions.updateProfile).toHaveBeenCalledTimes(2);
+  expect(actions.updateProfile).toHaveBeenLastCalledWith(profile.id, undefined, { speechRecognitionName: "Whisper" });
+  expect(host.querySelector('.recognition-name-field [role="alert"]')).toBeNull();
+  expect(host.querySelector('.settings-toast[role="status"]')).toBeNull();
+  expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
+  expect(actions.selectProfile).not.toHaveBeenCalled();
+  expect(profileRevealCredential).not.toHaveBeenCalled();
+});
+
+it.each(["localDevFile", "active"] as const)("respects the %s edit restriction for recognition names", async restriction => {
+  const named: ServiceProfile = { ...profile, provider: "customDashScopeASR", credentialState: "present", speechCredentialState: "present", speechRecognitionName: "Whisper",
+    ...(restriction === "localDevFile" ? { credentialStorage: "localDevFile" as const } : {}) };
+  const snapshot = { ...settings, profiles: [named] };
+  await render(snapshot);
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  if (restriction === "active") await act(async () => root.render(<><ServiceProfiles settings={snapshot} sessionIsActive /><SettingsToastRegion /></>));
+  const nameField = host.querySelector<HTMLInputElement>(".recognition-name-field input")!;
+  expect(nameField.value).toBe("Whisper");
+  expect(nameField.readOnly).toBe(restriction === "localDevFile");
+  expect(nameField.disabled).toBe(restriction === "active");
+  expect(actions.updateProfile).not.toHaveBeenCalled();
+  expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
+  expect(profileRevealCredential).not.toHaveBeenCalled();
+});
+
 it("keeps a failed translation-name edit beside its field and retries without credential writes", async () => {
   const named: ServiceProfile = { ...profile, credentialState: "present", textTranslation: "deepLX", textTranslationNames: { deepLX: "Old translator" } };
   const snapshot = { ...settings, profiles: [named] };
@@ -1098,4 +1193,37 @@ it("keeps language declaration edits locked during an active session", async () 
   await act(async () => root.render(<><ServiceProfiles settings={snapshot} sessionIsActive={true} sessionStatusKind="listening" /><SettingsToastRegion /></>));
   expect(host.querySelector<HTMLButtonElement>(".custom-speech-languages .settings-button")?.disabled).toBe(true);
   expect(actions.updateProfile).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("switches saved services while live or paused without unlocking edits (paused=%s)", async paused => {
+  const other = { ...profile, id: "other", name: "Other model", credentialState: "present" as const };
+  const snapshot = { ...settings, profiles: [profile, other] };
+  let finish!: (value: SettingsSnapshot) => void;
+  actions.selectProfile.mockReturnValue(new Promise<SettingsSnapshot>(resolve => { finish = resolve; }));
+  await act(async () => root.render(<><ServiceProfiles settings={snapshot} sessionIsActive={!paused} sessionIsPaused={paused} sessionStatusKind="listening" /><SettingsToastRegion /></>));
+  const choices = host.querySelectorAll<HTMLButtonElement>(".service-row__main");
+  expect(choices[1].disabled).toBe(false);
+  const add = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes(I18N.settings.addProfile))!;
+  expect(add.disabled).toBe(true);
+  await act(async () => { choices[1].click(); choices[1].click(); });
+  expect(actions.selectProfile).toHaveBeenCalledExactlyOnceWith(other.id);
+  expect(choices[1].disabled).toBe(true);
+  await act(async () => finish({ ...snapshot, activeProfileId: other.id }));
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  expect(host.querySelector<HTMLInputElement>(`#profile-name-${profile.id}`)?.disabled).toBe(true);
+});
+
+it.each(["connecting", "stopping"] as const)("blocks service selection during %s", async status => {
+  await act(async () => root.render(<ServiceProfiles settings={{ ...settings, profiles: [profile, { ...profile, id: "other" }] }} sessionIsActive sessionStatusKind={status} />));
+  for (const button of host.querySelectorAll<HTMLButtonElement>(".service-row__main")) expect(button.disabled).toBe(true);
+  expect(actions.selectProfile).not.toHaveBeenCalled();
+});
+
+it("keeps the current service and shows a sanitized recording restriction when switching fails", async () => {
+  actions.selectProfile.mockRejectedValue("profile_switch_recording_requires_stop");
+  await act(async () => root.render(<><ServiceProfiles settings={{ ...settings, profiles: [profile, { ...profile, id: "other", credentialState: "present" }] }} sessionIsActive sessionStatusKind="listening" /><SettingsToastRegion /></>));
+  await act(async () => host.querySelectorAll<HTMLButtonElement>(".service-row__main")[1].click());
+  expect(host.querySelector('.service-row[data-active="true"]')).toBe(host.querySelector(".service-row"));
+  expect(host.querySelector(".settings-toast")?.textContent).toContain(I18N.settings.profileSwitchRecordingRequiresStop);
+  expect(host.querySelectorAll<HTMLButtonElement>(".service-row__main")[1].disabled).toBe(false);
 });

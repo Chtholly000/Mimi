@@ -186,3 +186,11 @@ it.each(["zh", "en", "ja"] as const)("explains known language failures without e
   expect(languageActionErrorMessage(new Error("custom_speech_unreachable"), "fallback")).toBe(I18N.settings.customSpeechUnreachable);
   expect(languageActionErrorMessage("synthetic-private-provider-body", "fallback")).toBe("fallback");
 });
+
+it.each(["en", "zh", "ja"] as const)("localizes profile switch restrictions without raw payloads in %s", language => {
+  setStoredUiLanguage(language);
+  expect(profileErrorMessage("profile_switch_recording_requires_stop")).toBe(I18N.settings.profileSwitchRecordingRequiresStop);
+  expect(profileErrorMessage(new Error("profile_switch_busy"))).toBe(I18N.settings.profileSwitchBusy);
+  expect(profileErrorMessage("profile_switch_superseded")).toBe(I18N.settings.profileSwitchBusy);
+  expect(profileErrorMessage("profile_switch_recording_requires_stop: private-value")).toBe(I18N.settings.profileActionFailed);
+});

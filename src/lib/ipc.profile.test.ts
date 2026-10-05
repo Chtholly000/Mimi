@@ -11,3 +11,10 @@ it.each([null, [], ["en", "fr"]] as const)("preserves the explicit language patc
   await profileUpdate("p", undefined, { customSpeechSourceLanguages: languages === null ? null : [...languages] });
   expect(invoke).toHaveBeenCalledExactlyOnceWith("profile_update", { profileId: "p", name: undefined, customSpeechLanguagesPatch: { languages } });
 });
+
+it("keeps recognition names and language declarations as independent IPC patches", async () => {
+  await profileUpdate("p", undefined, { speechRecognitionName: "Recognizer" });
+  expect(invoke).toHaveBeenLastCalledWith("profile_update", { profileId: "p", name: undefined, speechRecognitionName: "Recognizer" });
+  await profileUpdate("p", undefined, { speechRecognitionName: "Renamed", customSpeechSourceLanguages: ["en"] });
+  expect(invoke).toHaveBeenLastCalledWith("profile_update", { profileId: "p", name: undefined, speechRecognitionName: "Renamed", customSpeechLanguagesPatch: { languages: ["en"] } });
+});

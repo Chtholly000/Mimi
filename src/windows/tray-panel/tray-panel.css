@@ -277,6 +277,7 @@
   background: transparent;
 }
 
+.tray-setting-row--profile,
 .tray-setting-row--language,
 .tray-setting-row--display,
 .tray-setting-row--alignment,
@@ -363,6 +364,13 @@
 }
 
 .tray-select-wrap .mimi-select { height: 100%; }
+
+.tray-setting-row--profile .tray-select-wrap { max-width: 104px; }
+.tray-setting-row__copy > .tray-setting-row__profile-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 
 .tray-select-wrap .mimi-select__trigger {
   --select-menu-bg: #171717;

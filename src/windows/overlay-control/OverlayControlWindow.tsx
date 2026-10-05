@@ -45,6 +45,7 @@ export function OverlayControlWindow() {
   );
   const settings = useStore((state) => state.settings);
   const trackLanguageChange = useLanguageNormalizationToast(settings);
+  const selectProfile = useStore((state) => state.selectProfile);
   const switchSourceLanguage = useStore((state) => state.switchSourceLanguage);
   const switchTargetLanguage = useStore((state) => state.switchTargetLanguage);
   const saveSettings = useStore((state) => state.saveSettings);
@@ -163,6 +164,7 @@ export function OverlayControlWindow() {
           isStopping={sessionStatusKind === "stopping"}
           onDismiss={dismiss}
           onTogglePaused={togglePaused}
+          onSelectProfile={async (profileId) => { await selectProfile(profileId); }}
           onSwitchSourceLanguage={switchSourceLanguage}
           onSetSkipTranslation={setSkipTranslation}
           onSetIntermediateSubtitles={(showIntermediateSubtitles) => saveSettings({ showIntermediateSubtitles })}

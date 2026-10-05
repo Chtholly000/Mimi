@@ -332,6 +332,45 @@ it("pauses and resumes the actual immersive session from its floating panel", as
   }
 });
 
+it("switches saved profiles through the shared store from the paused floating panel", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  const initial = useStore.getState();
+  const session = { ...initial.session, status: { kind: "listening" as const }, isActive: true, isPaused: true };
+  const settings: SettingsSnapshot = { ...initial.settings, activeProfileId: "first", sourceLanguage: "en", targetLanguage: "zh", languageCapabilities: undefined,
+    profiles: [
+      { id: "first", name: "First model", provider: "alibabaCloud", credentialState: "present" },
+      { id: "second", name: "Second model", provider: "openAIRealtime", credentialState: "present" },
+    ] };
+  const selectProfile = vi.fn(async (activeProfileId: string) => {
+    const snapshot = { ...settings, activeProfileId };
+    useStore.setState({ settings: snapshot });
+    return snapshot;
+  });
+  useStore.setState({ settings, session, selectProfile });
+  const host = document.createElement("div"); document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => root.render(<OverlayControlWindow />));
+    const picker = () => host.querySelector<HTMLButtonElement>(`.overlay-control-picker--profile [role="combobox"]`)!;
+    expect(picker().textContent).toBe("First model");
+    expect(picker().disabled).toBe(false);
+    await act(async () => picker().click());
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === "Second model")!;
+    await act(async () => option.click());
+    expect(selectProfile).toHaveBeenCalledExactlyOnceWith("second");
+    expect(picker().textContent).toBe("Second model");
+    expect(useStore.getState().session).toBe(session);
+    expect(native.hide).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => root.unmount()); host.remove();
+    useStore.setState(initial, true); native.hide.mockClear(); vi.unstubAllGlobals();
+  }
+});
+
 
 it("lets IME Escape cancel composition without dismissing application search or the floating panel", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);

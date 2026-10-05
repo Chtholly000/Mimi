@@ -489,6 +489,14 @@
   font-size: 12px;
   color: var(--control-text-faint);
 }
+.overlay-control-picker--profile {
+  grid-template-columns: minmax(0, 1fr) minmax(112px, 128px);
+}
+.overlay-control-picker__profile-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
 .overlay-control-picker .mimi-select__trigger {
   height: 28px;
   padding: 0 8px;

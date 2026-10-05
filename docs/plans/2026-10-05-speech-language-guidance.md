@@ -42,3 +42,19 @@ not replace this source-language failure path. Apple runtime checks belong to
 its separate integration branch. Regression source was added, but no tests,
 format checks, builds, UI acceptance or CI were run for this follow-up at the
 user's request. Verification is explicitly pending.
+
+## Product integration follow-up
+
+Preserve main's independent recognition display name and live saved-profile
+selection alongside optional language declarations. Profile updates patch both
+metadata fields independently; selecting a declared profile keeps its source
+validation before credential resolution. Translation-target switches now return
+the actual reconnect outcome, just like source-language switches, so a failed
+reconnect cannot dismiss its initiating control as a successful operation. A
+durable selection remains selected on reconnect failure; rejected persistence
+leaves the previous selection intact.
+
+The setup guide distinguishes saving from checking a connection and states the
+single-target semantics. Historical local-model session reports are excluded
+from this product integration. No tests, builds, native UI or provider requests
+have run for this follow-up; current integration verification remains pending.

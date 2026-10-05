@@ -33,6 +33,9 @@ window.__TAURI_INTERNALS__ = {
           if (name.trim()) next.textTranslationNames[route] = name.trim();
           else delete next.textTranslationNames[route];
         }
+        if (args.speechRecognitionName !== undefined) {
+          next.speechRecognitionName = args.speechRecognitionName.trim() || undefined;
+        }
         return next;
       }) };
       // Stand in for the native settings event; this fixture never writes disk.
@@ -72,7 +75,7 @@ window.applyLayoutCase = async next => {
   useStore.setState({
     initializationStatus: "ready",
     settings: { ...initial.settings, uiLanguage: next.language, microphoneInputAvailable: next.platform === "macos", windowsAudioSource: next.state === "missing" ? "removed-output" : "fixture-output",
-      ...(next.editor ? { profiles: [{ id: "layout-custom", name: next.profileName ?? "Fixture configuration", provider: next.provider ?? "customDashScopeASR", credentialState: "present", speechCredentialState: "present", textCredentialState: "present", textTranslation: "chatMock", textTranslationNames: { chatMock: next.translationName ?? "" } }], activeProfileId: "layout-custom" } : {}),
+      ...(next.editor ? { profiles: [{ id: "layout-custom", name: next.profileName ?? "Fixture configuration", provider: next.provider ?? "customDashScopeASR", credentialState: "present", speechCredentialState: "present", textCredentialState: "present", textTranslation: "chatMock", textTranslationNames: { chatMock: next.translationName ?? "" }, speechRecognitionName: next.speechRecognitionName }], activeProfileId: "layout-custom" } : {}),
     },
     session: { ...initial.session, isActive: active || next.state === "paused", isPaused: next.state === "paused", status: { kind: active ? "listening" : next.state === "paused" ? "paused" : "idle" } },
   });

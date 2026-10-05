@@ -258,6 +258,9 @@ export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlat
   return null;
 }
 export function profileErrorMessage(error: unknown): string {
+  const label = error instanceof Error ? error.message : error;
+  if (label === "profile_switch_recording_requires_stop") return I18N.settings.profileSwitchRecordingRequiresStop;
+  if (label === "profile_switch_busy" || label === "profile_switch_superseded") return I18N.settings.profileSwitchBusy;
   if (typeof error === "string" && error.startsWith("Use an HTTPS DeepLX endpoint")) return I18N.settings.deepLXEndpointInvalid;
   return credentialErrorMessage(error) ?? I18N.settings.profileActionFailed;
 }

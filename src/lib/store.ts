@@ -540,7 +540,7 @@ export const useStore = create<StoreState>()((set, get) => ({
       ...current,
       profiles: current.profiles.map((profile) =>
         profile.id === profileId ? (() => {
-          const { textTranslationName, ...proxies } = options ?? {};
+          const { textTranslationName, speechRecognitionName, ...proxies } = options ?? {};
           const textTranslationNames = { ...profile.textTranslationNames };
           if (textTranslationName) {
             const value = textTranslationName.name.trim();
@@ -549,7 +549,7 @@ export const useStore = create<StoreState>()((set, get) => ({
           }
           return { ...profile, ...(name === undefined ? {} : { name: name.trim() }), ...proxies, textTranslationNames,
             ...(hasDeclaration ? { customSpeechSourceLanguages: declaration === null ? null : AUDIO3_RECOGNITION_LANGUAGE_CODES.filter(code => declaration.includes(code)) } : {}),
-          };
+            ...(speechRecognitionName === undefined ? {} : { speechRecognitionName: speechRecognitionName.trim() || undefined }) };
         })() : profile,
       ),
     };
@@ -562,7 +562,8 @@ export const useStore = create<StoreState>()((set, get) => ({
   },
 
   selectProfile: async (profileId) => {
-    ensureProfileMutationsAllowed(get().session);
+    if (profileId === get().settings.activeProfileId) return get().settings;
+    if (sessionSettingsAreChanging(get().session)) throw new Error("profile_switch_busy");
     if (isTauri) {
       const revision = settingsResponseGate.capture();
       const snapshot = await profileSelect(profileId);
