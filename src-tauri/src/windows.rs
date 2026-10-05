@@ -547,6 +547,11 @@ impl OverlayState {
             return false;
         }
         self.minimum_height = minimum_height;
+        if self.session_error {
+            // The resulting native resize/fit is programmatic, even if an
+            // earlier manual error drag had already settled.
+            self.native_drag_start = None;
+        }
         // A smaller requirement lets the user resize later; it never shrinks
         // their chosen frame or resets its position/width automatically.
         self.user_frame.height = self.user_frame.height.max(minimum_height);
@@ -628,15 +633,30 @@ impl OverlayWindowManager {
         overlay_state: &Arc<std::sync::Mutex<OverlayState>>,
         settings: &SettingsStore,
     ) {
-        let expected = {
-            let mut state = overlay_state.lock().unwrap();
-            let minimum = minimum_height_for_preferences(&settings.preferences());
-            if !state.update_minimum_height(minimum) {
+        {
+            let state = overlay_state.lock().unwrap();
+            if state.minimum_height == minimum_height_for_preferences(&settings.preferences()) {
                 return;
             }
-            OverlayApplySnapshot::from(&*state)
+        }
+        let (mut state, observed, areas, primary) =
+            lock_overlay_after_native_geometry_read(app, overlay_state);
+        let manual_drag = if state.session_error {
+            reconcile_native_drag(&mut state, observed, &areas, primary)
+        } else {
+            NativeDragReconcile::default()
         };
-        Self::apply_if_geometry_current(app, overlay_state, expected, false);
+        let minimum = minimum_height_for_preferences(&settings.preferences());
+        let changed = state.update_minimum_height(minimum);
+        let frame_to_persist = manual_drag.promoted.then_some(state.user_frame);
+        let expected = OverlayApplySnapshot::from(&*state);
+        drop(state);
+        if let Some(frame) = frame_to_persist {
+            persist_user_frame_if_current(overlay_state, settings, frame);
+        }
+        if changed || manual_drag.fit_changed {
+            Self::apply_if_geometry_current(app, overlay_state, expected, false);
+        }
     }
 
     pub fn ensure_overlay(app: &AppHandle, state: &Arc<std::sync::Mutex<OverlayState>>) {
@@ -739,15 +759,29 @@ impl OverlayWindowManager {
     ) {
         let has_error = if let Some(app_state) = app.try_state::<crate::commands::AppState>() {
             let has_error = app_state.session.status_kind() == "error";
-            let geometry = {
-                let mut state = app_state.overlay.lock().unwrap();
-                state.set_session_error(has_error).then(|| {
+            let transition = app_state.overlay.lock().unwrap().session_error != has_error;
+            let geometry = if transition {
+                // A settings repair can retire the error before the 350 ms
+                // geometry debounce. Accept explicit movement before resetting
+                // its drag marker or restoring the normal presentation.
+                let (mut state, observed, areas, primary) =
+                    lock_overlay_after_native_geometry_read(app, &app_state.overlay);
+                let manual_drag = reconcile_native_drag(&mut state, observed, &areas, primary);
+                let frame_to_persist = manual_drag.promoted.then_some(state.user_frame);
+                let geometry = state.set_session_error(has_error).then(|| {
                     (
                         state.effective_mode(),
                         state.effective_frame(),
                         state.effective_minimum_height(),
                     )
-                })
+                });
+                drop(state);
+                if let Some(frame) = frame_to_persist {
+                    persist_user_frame_if_current(&app_state.overlay, &app_state.settings, frame);
+                }
+                geometry
+            } else {
+                None
             };
             if let Some((mode, mut frame, minimum_height)) = geometry {
                 // This presentation cannot alter the user's saved size or position.
@@ -1110,6 +1144,9 @@ impl OverlayWindowManager {
             }
         }
         state.mode = new_mode;
+        if state.session_error {
+            state.native_drag_start = None;
+        }
         let expected_state = OverlayApplySnapshot::from(&*state);
         drop(state);
         if let Some(frame) = frame_to_persist {
@@ -1202,26 +1239,12 @@ impl OverlayWindowManager {
                 // A different native frame means the user moved the followed
                 // overlay. Promote that intentional placement to canonical
                 // state and resume the ordinary persistence path.
-                let minimum_height = state.minimum_height;
-                let geometry_changed = match state.mode {
-                    OverlayMode::Expanded => {
-                        fit_user_frame_to_work_areas(
-                            &mut state.user_frame,
-                            &work_areas,
-                            primary_work_area,
-                            minimum_height,
-                        ) || !frames_approximately_equal(&state.user_frame, &observed_frame)
-                    }
-                    OverlayMode::Collapsed => {
-                        // Only the position is meaningful while collapsed; the
-                        // remembered expanded size must survive.
-                        fit_collapsed_position_to_work_areas(
-                            &mut state.user_frame,
-                            &work_areas,
-                            primary_work_area,
-                        )
-                    }
-                };
+                let geometry_changed = fit_promoted_user_frame(
+                    &mut state,
+                    &observed_frame,
+                    &work_areas,
+                    primary_work_area,
+                );
                 let frame_to_persist = state.user_frame;
                 let expected_state = OverlayApplySnapshot::from(&*state);
                 drop(state);
@@ -1252,9 +1275,6 @@ impl OverlayWindowManager {
     ) -> bool {
         let (mut state, observed, _, _) =
             lock_overlay_after_native_geometry_read(app, overlay_state);
-        if state.session_error {
-            return false;
-        }
         let Some(observed) = observed else {
             return false;
         };
@@ -1863,7 +1883,14 @@ fn presentation_frame_matches_observed(state: &OverlayState, observed: &OverlayF
 /// presentation remains a runtime override and must not reach preferences.
 fn adopt_observed_frame(state: &mut OverlayState, observed: OverlayFrame) -> bool {
     if state.session_error {
-        return false;
+        if !state
+            .native_drag_start
+            .is_some_and(|start| native_drag_changed_position(start, &observed))
+        {
+            return false;
+        }
+        promote_observed_user_frame(state, observed);
+        return true;
     }
     if presentation_frame_matches_observed(state, &observed) {
         if state
@@ -1882,6 +1909,20 @@ fn adopt_observed_frame(state: &mut OverlayState, observed: OverlayFrame) -> boo
 
 fn promote_observed_user_frame(state: &mut OverlayState, observed: OverlayFrame) {
     if state.session_error {
+        if state
+            .native_drag_start
+            .is_some_and(|start| native_drag_changed_position(start, &observed))
+        {
+            // Only explicit native movement can replace this temporary
+            // presentation. Retain the user's normal expanded dimensions.
+            state.user_frame.x = observed.x;
+            state.user_frame.y = observed.y;
+            state.presentation_frame = None;
+            // Native dragging can pause longer than the debounce and then
+            // continue. Retain its intent until a programmatic transition;
+            // matching events never count as another placement.
+            state.native_drag_start = Some((observed.x, observed.y));
+        }
         return;
     }
     state.presentation_frame = None;
@@ -1913,37 +1954,62 @@ fn reconcile_native_drag(
     work_areas: &[LogicalWorkArea],
     primary_work_area: Option<LogicalWorkArea>,
 ) -> NativeDragReconcile {
-    if state.session_error {
-        return NativeDragReconcile::default();
-    }
     let Some(start) = state.native_drag_start else {
         return NativeDragReconcile::default();
     };
     let Some(observed) = observed else {
         return NativeDragReconcile::default();
     };
-    state.native_drag_start = None;
     if !native_drag_changed_position(start, &observed) {
+        if !state.session_error {
+            state.native_drag_start = None;
+        }
         return NativeDragReconcile::default();
     }
     promote_observed_user_frame(state, observed);
-    let minimum_height = state.minimum_height;
-    let fit_changed = match state.mode {
-        OverlayMode::Expanded => fit_user_frame_to_work_areas(
-            &mut state.user_frame,
+    let fit_changed = fit_promoted_user_frame(state, &observed, work_areas, primary_work_area);
+    NativeDragReconcile {
+        promoted: true,
+        fit_changed,
+    }
+}
+
+/// Fit after confirmed user movement. Error presentation may need a larger
+/// temporary height or a smaller screen fit, neither of which is a user resize.
+fn fit_promoted_user_frame(
+    state: &mut OverlayState,
+    observed: &OverlayFrame,
+    work_areas: &[LogicalWorkArea],
+    primary_work_area: Option<LogicalWorkArea>,
+) -> bool {
+    if state.session_error {
+        let mut shown = state.effective_frame();
+        fit_user_frame_to_work_areas(
+            &mut shown,
             work_areas,
             primary_work_area,
-            minimum_height,
-        ),
+            state.effective_minimum_height(),
+        );
+        state.user_frame.x = shown.x;
+        state.user_frame.y = shown.y;
+        state.native_drag_start = Some((shown.x, shown.y));
+        return !frames_approximately_equal(&shown, observed);
+    }
+    let minimum_height = state.minimum_height;
+    match state.mode {
+        OverlayMode::Expanded => {
+            fit_user_frame_to_work_areas(
+                &mut state.user_frame,
+                work_areas,
+                primary_work_area,
+                minimum_height,
+            ) || !frames_approximately_equal(&state.user_frame, observed)
+        }
         OverlayMode::Collapsed => fit_collapsed_position_to_work_areas(
             &mut state.user_frame,
             work_areas,
             primary_work_area,
         ),
-    };
-    NativeDragReconcile {
-        promoted: true,
-        fit_changed,
     }
 }
 
@@ -3206,6 +3272,113 @@ mod geometry_tests {
         assert!(state.set_session_error(false));
         assert_eq!(state.presentation_frame, Some(followed));
         assert_eq!(state.user_frame, saved);
+    }
+
+    #[test]
+    fn error_drag_keeps_normal_dimensions_and_survives_recovery() {
+        for mode in [OverlayMode::Expanded, OverlayMode::Collapsed] {
+            let saved = frame(400.0, 300.0, 663.0, 257.0);
+            let mut state = state_with_frame(saved);
+            state.mode = mode;
+            state.set_session_error(true);
+            state.native_drag_start = Some((saved.x, saved.y));
+            let moved = frame(500.0, 400.0, 663.0, 280.0);
+            assert!(adopt_observed_frame(&mut state, moved));
+            assert!(!fit_promoted_user_frame(
+                &mut state,
+                &moved,
+                &[WORK_AREA],
+                Some(WORK_AREA)
+            ));
+            let chosen = frame(500.0, 400.0, saved.width, saved.height);
+            assert_eq!(state.user_frame, chosen);
+            assert_eq!(state.effective_frame(), moved);
+            assert!(!state.set_session_error(true));
+            assert_eq!(state.effective_frame(), moved);
+            state.set_session_error(false);
+            assert_eq!(state.user_frame, chosen);
+            assert_eq!(state.effective_frame(), chosen);
+            assert_eq!(state.effective_mode(), mode);
+        }
+    }
+
+    #[test]
+    fn error_drag_reconciles_before_debounce_and_discards_old_space_origin() {
+        let saved = frame(400.0, 300.0, 663.0, 257.0);
+        let mut state = state_with_frame(saved);
+        state.presentation_frame = Some(frame(100.0, 200.0, 500.0, 257.0));
+        state.set_session_error(true);
+        state.native_drag_start = Some((100.0, 200.0));
+        let moved = frame(210.0, 330.0, 500.0, 280.0);
+        let result = reconcile_native_drag(&mut state, Some(moved), &[WORK_AREA], Some(WORK_AREA));
+        assert!(result.promoted);
+        assert!(result.fit_changed); // Restore the chosen width, never adopt a screen-fit width.
+        assert_eq!(state.presentation_frame, None);
+        assert_eq!(state.user_frame, frame(210.0, 330.0, 663.0, 257.0));
+        assert!(!active_space_follow_allowed(&state));
+        state.set_session_error(false);
+        assert_eq!(state.effective_frame(), frame(210.0, 330.0, 663.0, 257.0));
+    }
+
+    #[test]
+    fn error_drag_fit_updates_only_origin_and_handles_a_paused_gesture() {
+        let saved = frame(400.0, 300.0, 663.0, 257.0);
+        let mut state = state_with_frame(saved);
+        state.set_session_error(true);
+        state.native_drag_start = Some((saved.x, saved.y));
+        let moved = frame(500.0, 900.0, 663.0, 280.0);
+        assert!(adopt_observed_frame(&mut state, moved));
+        assert!(fit_promoted_user_frame(
+            &mut state,
+            &moved,
+            &[WORK_AREA],
+            Some(WORK_AREA)
+        ));
+        assert_eq!(state.user_frame, frame(500.0, 702.0, 663.0, 257.0));
+        let fitted = frame(500.0, 702.0, 663.0, 280.0);
+        assert!(!adopt_observed_frame(&mut state, fitted));
+        // Another event after the 350 ms debounce belongs to the same explicit drag.
+        let continued = frame(550.0, 600.0, 663.0, 280.0);
+        assert!(adopt_observed_frame(&mut state, continued));
+        assert_eq!(state.user_frame, frame(550.0, 600.0, 663.0, 257.0));
+    }
+
+    #[test]
+    fn automatic_error_fits_without_drag_intent_never_replace_the_saved_frame() {
+        let saved = frame(900.0, 800.0, 663.0, 257.0);
+        let mut state = state_with_frame(saved);
+        state.set_session_error(true);
+        let fitted = frame(849.0, 702.0, 663.0, 280.0);
+        assert!(!adopt_observed_frame(&mut state, fitted));
+        assert!(
+            !reconcile_native_drag(&mut state, Some(fitted), &[WORK_AREA], Some(WORK_AREA))
+                .promoted
+        );
+        assert_eq!(state.user_frame, saved);
+        state.native_drag_start = Some((fitted.x, fitted.y));
+        // A click with no movement must not adopt the automatic fit either.
+        assert!(!adopt_observed_frame(&mut state, fitted));
+        assert_eq!(state.user_frame, saved);
+        // A new layout fit cannot inherit an earlier drag's authorization.
+        state.update_minimum_height(200.0);
+        assert!(state.native_drag_start.is_none());
+        assert!(!adopt_observed_frame(
+            &mut state,
+            frame(700.0, 500.0, 663.0, 280.0)
+        ));
+        assert_eq!(state.user_frame, saved);
+    }
+
+    #[test]
+    fn ordinary_drag_reconciliation_still_adopts_and_fits_the_complete_frame() {
+        let mut state = state_with_frame(frame(400.0, 300.0, 640.0, 136.0));
+        state.native_drag_start = Some((400.0, 300.0));
+        let moved = frame(1200.0, 400.0, 700.0, 200.0);
+        let result = reconcile_native_drag(&mut state, Some(moved), &[WORK_AREA], Some(WORK_AREA));
+        assert!(result.promoted);
+        assert!(result.fit_changed);
+        assert_eq!(state.user_frame, frame(812.0, 400.0, 700.0, 200.0));
+        assert!(state.native_drag_start.is_none());
     }
 
     #[test]

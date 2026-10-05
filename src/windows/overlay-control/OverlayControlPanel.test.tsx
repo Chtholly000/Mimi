@@ -119,6 +119,40 @@ it("blocks conflicting operations and retains an inline error after a failed tog
   expect(props.onDismiss).not.toHaveBeenCalled();
 });
 
+it.each([false, true])("preserves saved reading mode %j while error presentation overrides lock and immersive actions", async enabled => {
+  configure({ subtitleBlendsWithBackground: enabled, isOverlayLocked: enabled });
+  const savedSettings = props.settings;
+  const actions = () => [I18N.overlay.immersiveMode, I18N.overlay.lockPosition].map(label =>
+    host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${label}"]`)!,
+  );
+  await mount();
+  expect(actions().every(button => !button.disabled)).toBe(true);
+  props.sessionErrorMessage = I18N.settings.sessionError;
+  await mount();
+  for (const button of actions()) {
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute("aria-checked")).toBe(String(enabled));
+    await act(async () => button.click());
+    expect(button.disabled).toBe(true);
+  }
+  expect(props.onSetImmersiveMode).not.toHaveBeenCalled();
+  expect(props.onSetOverlayLocked).not.toHaveBeenCalled();
+  expect(props.onDismiss).not.toHaveBeenCalled();
+  expect(picker(I18N.settings.subtitleDisplay).disabled).toBe(false);
+  expect(host.querySelector<HTMLButtonElement>(".overlay-control-settings-link")!.disabled).toBe(false);
+  props.sessionErrorMessage = null;
+  await mount();
+  expect(props.settings).toBe(savedSettings);
+  for (const button of actions()) {
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute("aria-checked")).toBe(String(enabled));
+    await act(async () => button.click());
+  }
+  expect(props.onSetImmersiveMode).toHaveBeenCalledExactlyOnceWith(!enabled);
+  expect(props.onSetOverlayLocked).toHaveBeenCalledExactlyOnceWith(!enabled);
+  expect(props.onDismiss).toHaveBeenCalledTimes(2);
+});
+
 it("keeps recognition locked during transitions while independent display remains available", async () => {
   props.isChangingSession = true;
   await mount();

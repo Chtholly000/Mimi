@@ -304,7 +304,7 @@ export function OverlayControlPanel({
           aria-checked={model.immersiveModeEnabled}
           aria-label={I18N.overlay.immersiveMode}
           className={`overlay-control-setting${model.immersiveModeEnabled ? " is-on" : ""}`}
-          disabled={pendingAction !== null}
+          disabled={pendingAction !== null || Boolean(sessionErrorMessage)}
           onClick={() =>
             performAction("immersive", () =>
               onSetImmersiveMode(!model.immersiveModeEnabled),
@@ -329,7 +329,7 @@ export function OverlayControlPanel({
           aria-checked={model.overlayLocked}
           aria-label={I18N.overlay.lockPosition}
           className={`overlay-control-setting${model.overlayLocked ? " is-on" : ""}`}
-          disabled={pendingAction !== null}
+          disabled={pendingAction !== null || Boolean(sessionErrorMessage)}
           onClick={() =>
             performAction("lock", () =>
               onSetOverlayLocked(!model.overlayLocked),

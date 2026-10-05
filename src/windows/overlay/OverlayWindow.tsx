@@ -131,6 +131,7 @@ export function OverlayWindow() {
   // Native geometry temporarily expands an error surface too. Preserve both
   // presentation preferences so recovery restores the user's reading mode.
   const blendsWithBackground = settings.subtitleBlendsWithBackground && !hasSessionError;
+  const presentationLocked = settings.isOverlayLocked && !hasSessionError;
   // Resolved once per render: an explicit switch overrides the system, and the
   // body class is what the CSS animations key off.
   const pulseOn = useResolvedMotion(settings.pulseAnimation);
@@ -330,7 +331,7 @@ export function OverlayWindow() {
       );
     }
 
-    const hoverHighlight = isHovering && !settings.isOverlayLocked;
+    const hoverHighlight = isHovering && !presentationLocked;
     const borderColor = hoverHighlight
       ? hexToRgba(ACCENT, 0.34)
       : "rgba(255,255,255,0.12)";
@@ -377,14 +378,15 @@ export function OverlayWindow() {
               <DragHandle
                 onToggleCollapsed={toggleCollapsed}
                 width={topChromeLayout.dragHandleWidth}
-                disabled={controlAction.pending || hasSessionError}
+                disabled={controlAction.pending}
+                collapseDisabled={hasSessionError}
                 busy={pendingControl === "collapse"}
               />
             </div>
           </div>
 
           {showSessionControls &&
-            !settings.isOverlayLocked &&
+            !presentationLocked &&
             topChromeLayout.showPrimaryAction && (
             <div
               className="absolute flex"
@@ -427,7 +429,7 @@ export function OverlayWindow() {
                   runControlAction("immersive", () => saveSettings({ subtitleBlendsWithBackground: true }))
                 }
                 busy={pendingControl === "immersive"}
-                disabled={controlAction.pending}
+                disabled={controlAction.pending || hasSessionError}
                 data-testid="toggle-immersive-mode"
               />
               <ControlButton
@@ -435,7 +437,7 @@ export function OverlayWindow() {
                 label={I18N.overlay.lockPosition}
                 onClick={() => runControlAction("lock", () => setOverlayLocked(true))}
                 busy={pendingControl === "lock"}
-                disabled={controlAction.pending}
+                disabled={controlAction.pending || hasSessionError}
                 data-testid="toggle-overlay-lock"
               />
               <ControlButton

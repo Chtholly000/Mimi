@@ -35,7 +35,13 @@ retry. This left a configuration failure looking like a transient connection fau
   applies on the main loop, invalidates old resize transactions, and rejects
   persistence of this temporary frame. Stored collapsed, immersive, locked and
   expanded-size preferences remain unchanged. Recovery restores those preferences.
-  Manual dragging/resizing and Space following are suspended during this override.
+  Explicit dragging remains available during the override and updates position only,
+  retaining the normal saved width and height. Automatic error expansion is never
+  promoted to user geometry. Reconcile a pending drag before recovery so a quick
+  settings correction cannot snap the window back. Resizing, collapse, entering
+  immersive/locked mode and automatic Space following remain suspended while the
+  error needs to be readable. Top actions use the same temporary unlocked state as
+  the native window; saved reading-mode preferences remain unchanged.
 
 ## Scope and verification
 

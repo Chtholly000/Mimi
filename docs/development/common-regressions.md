@@ -262,6 +262,15 @@ page must include a review of other instances of the same pattern.
 - Immersive mode owns its complete state: locked overlay position, hidden
   recognition pill, background treatment, and hidden scrollbar. Toggling it
   must restore the prior normal-mode interaction state.
+- Error presentation may temporarily expand and unlock the subtitle window, but
+  must leave a visible drag handle usable. Keep dragging separate from collapse;
+  explicit movement changes position without saving the temporary error height.
+  Use the same effective lock state in native hit testing and React top actions.
+  Replay a real mouse drag and inspect top controls in an error reached from
+  normal, collapsed, locked and immersive states, then verify recovery and saved
+  geometry. Text visibility or clicking only the error-body settings button is
+  insufficient acceptance. Cover the capsule panel too: controls overridden by
+  the error must not accept a change that only takes effect after recovery.
 - Streaming drafts are replaceable previews; finals are durable. During
   cross-language translation, delayed or absent translations must not reveal
   source recognition as fallback. Keep translated history and the activity

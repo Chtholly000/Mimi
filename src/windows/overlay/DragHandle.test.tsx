@@ -158,3 +158,29 @@ it("uses shared tooltip feedback for inactive native hover and keyboard focus", 
   expect(toggle).not.toHaveBeenCalled();
   expect(native.move).not.toHaveBeenCalled();
 });
+
+it("allows native movement while error presentation prevents pointer, keyboard and assistive collapse", async () => {
+  const button = await render({ collapseDisabled: true });
+  expect(button.disabled).toBe(false);
+  expect(button.style.cursor).toBe("pointer");
+  expect(isClickablePointerTarget(button.firstElementChild)).toBe(true);
+  expect(button.getAttribute("aria-label")).toBe(I18N.overlay.moveSubtitle);
+  await press(button);
+  expect(native.move).toHaveBeenCalledOnce();
+  await press(button, 2);
+  await act(() => {
+    button.click();
+    for (const key of ["Enter", " "]) {
+      const keydown = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      button.dispatchEvent(keydown);
+      expect(keydown.defaultPrevented).toBe(true);
+    }
+  });
+  expect(toggle).not.toHaveBeenCalled();
+  await act(() => document.dispatchEvent(new CustomEvent(OVERLAY_POINTER_TARGET_EVENT, { detail: null })));
+  await act(() => document.dispatchEvent(new CustomEvent(OVERLAY_POINTER_TARGET_EVENT, { detail: button.firstElementChild })));
+  expect(document.querySelector('[role="tooltip"]')?.textContent).toBe(I18N.overlay.moveSubtitle);
+  await render();
+  await press(button, 2);
+  expect(toggle).toHaveBeenCalledOnce();
+});
