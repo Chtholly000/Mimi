@@ -53,6 +53,7 @@ import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { AutoSaveNameField } from "./AutoSaveNameField";
 import { AppleSpeechSettings } from "./AppleSpeechSettings";
 import { useAppleSpeechSupport } from "./useAppleSpeechSupport";
+import { TencentSetupHelp } from "./TencentSetupHelp";
 
 const CONNECTION_CHECK_TIMEOUT_MS = 30_000;
 
@@ -774,6 +775,7 @@ function CredentialEditor({
   const serviceIdentity = <section className="service-stage service-stage--integrated">
     <header className="service-stage__heading"><h3>{I18N.settings.voiceTranslation}</h3><SettingsHelp text={I18N.settings.textTranslationUnsupported} label={I18N.settings.helpLabel} /></header>
     <div className="settings-field service-stage__selector"><span>{I18N.settings.serviceProvider}</span><span className="service-stage__provider"><ProviderIcon provider={profile.provider} size={32} />{providerDisplayName(profile.provider)}</span></div>
+    {profile.provider === "tencentCloud" && <TencentSetupHelp />}
   </section>;
   const storageHelp = <CredentialStorageHelp id={noteId} profile={profile} readOnly={readOnly} />;
   if (readOnly) return <div className="credential-panel"><div className="service-credential-toolbar">{storageHelp}{check}</div>{serviceIdentity}</div>;

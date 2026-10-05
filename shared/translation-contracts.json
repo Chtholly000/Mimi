@@ -1,6 +1,158 @@
 {
   "schemaVersion": 1,
-  "description": "Shared independent text translation wire semantics. Synthetic fixtures only. Platform-specific UI, transport limits and scheduling are tested separately.",
+  "description": "Shared text translation and provider wire semantics. Synthetic fixtures only. Platform-specific UI, transport limits and scheduling are tested separately.",
+  "tencentSpeechTranslation": {
+    "signing": [
+      {
+        "id": "hmac-sha1-golden",
+        "credentials": {
+          "appId": "1250000000",
+          "secretId": "AKIDEXAMPLE",
+          "secretKey": "secret-key"
+        },
+        "source": "zh",
+        "target": "en",
+        "timestamp": 1700000000,
+        "expired": 1700003600,
+        "nonce": 123456,
+        "voiceId": "voice-123",
+        "expected": {
+          "url": "wss://asr.cloud.tencent.com/asr/speech_translate/1250000000?expired=1700003600&nonce=123456&secretid=AKIDEXAMPLE&source=zh&target=en&timestamp=1700000000&trans_model=hunyuan-translation-lite&voice_format=1&voice_id=voice-123&signature=Y43cc1HS6RnEpdWr1dLaa1fnsQU%3D",
+          "frameBytes": 6400
+        }
+      }
+    ],
+    "events": [
+      {
+        "id": "ready",
+        "frame": "{\"code\":0}",
+        "expected": {
+          "type": "ready"
+        }
+      },
+      {
+        "id": "draft",
+        "frame": "{\"code\":0,\"result\":{\"source_text\":\"Synthetic source\",\"target_text\":\"合成译文\",\"source\":\"en\",\"target\":\"zh\",\"sentence_end\":false}}",
+        "expected": {
+          "type": "draft",
+          "source": "Synthetic source",
+          "translation": "合成译文",
+          "language": "en"
+        }
+      },
+      {
+        "id": "atomic-final-pair",
+        "frame": "{\"code\":0,\"result\":{\"source_text\":\"  Synthetic source.  \",\"target_text\":\" 合成译文。 \",\"source\":\"en\",\"target\":\"zh\",\"sentence_end\":true}}",
+        "expected": {
+          "type": "finalPair",
+          "source": "Synthetic source.",
+          "translation": "合成译文。",
+          "language": "en"
+        }
+      },
+      {
+        "id": "blank-final-ignored",
+        "frame": "{\"code\":0,\"result\":{\"source_text\":\"Synthetic source.\",\"target_text\":\"  \",\"source\":\"en\",\"target\":\"zh\",\"sentence_end\":true}}",
+        "expected": {
+          "type": "ignored"
+        }
+      },
+      {
+        "id": "session-finished",
+        "frame": "{\"code\":0,\"final\":1}",
+        "expected": {
+          "type": "finished"
+        }
+      },
+      {
+        "id": "nonterminal-final-ignored",
+        "frame": "{\"code\":0,\"final\":0}",
+        "expected": {
+          "type": "ignored"
+        }
+      },
+      {
+        "id": "missing-source-language",
+        "frame": "{\"code\":0,\"result\":{\"source_text\":\"Synthetic source.\",\"target_text\":\"合成译文。\",\"target\":\"zh\",\"sentence_end\":true}}",
+        "expected": null
+      },
+      {
+        "id": "invalid-language-label",
+        "frame": "{\"code\":0,\"result\":{\"source_text\":\"Synthetic source.\",\"target_text\":\"合成译文。\",\"source\":\"private label\",\"target\":\"zh\",\"sentence_end\":true}}",
+        "expected": null
+      },
+      {
+        "id": "non-string-transcript",
+        "frame": "{\"code\":0,\"result\":{\"source_text\":123,\"target_text\":\"合成译文。\",\"source\":\"en\",\"target\":\"zh\",\"sentence_end\":true}}",
+        "expected": null
+      },
+      {
+        "id": "string-boolean-rejected",
+        "frame": "{\"code\":0,\"result\":{\"source_text\":\"Synthetic source.\",\"target_text\":\"合成译文。\",\"source\":\"en\",\"target\":\"zh\",\"sentence_end\":\"true\"}}",
+        "expected": null
+      },
+      {
+        "id": "string-status-rejected",
+        "frame": "{\"code\":\"0\"}",
+        "expected": null
+      },
+      {
+        "id": "fractional-status-rejected",
+        "frame": "{\"code\":0.5}",
+        "expected": null
+      }
+    ],
+    "errors": [
+      {
+        "id": "status-6001",
+        "code": 6001,
+        "expected": "configuration",
+        "label": "tencent_configuration_rejected"
+      },
+      {
+        "id": "status-6002",
+        "code": 6002,
+        "expected": "authentication",
+        "label": "credential_authentication_failed"
+      },
+      {
+        "id": "status-6003",
+        "code": 6003,
+        "expected": "activation",
+        "label": "tencent_service_activation_required"
+      },
+      {
+        "id": "status-6004",
+        "code": 6004,
+        "expected": "quota",
+        "label": "tencent_quota_exhausted"
+      },
+      {
+        "id": "status-6005",
+        "code": 6005,
+        "expected": "quota",
+        "label": "tencent_quota_exhausted"
+      },
+      {
+        "id": "status-6006",
+        "code": 6006,
+        "expected": "capacity",
+        "label": "tencent_capacity_exceeded"
+      },
+      {
+        "id": "status-6008",
+        "code": 6008,
+        "expected": "rejected",
+        "label": "tencent_provider_rejected"
+      },
+      {
+        "id": "status-9999",
+        "code": 9999,
+        "expected": "rejected",
+        "label": "tencent_provider_rejected"
+      }
+    ]
+  },
   "websocketHandshakeFailures": [
     { "id": "unauthorized", "httpStatus": 401, "expected": "credential_authentication_failed" },
     { "id": "forbidden", "httpStatus": 403, "expected": "credential_authentication_failed" },
