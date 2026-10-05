@@ -776,7 +776,6 @@ describe("current complete display pair", () => {
   });
 });
 
-
 describe("realtime drafts after a confirmed display pair", () => {
   const previous = { source: "Synthetic previous source.", translation: "合成的上一条译文。" };
   const next = { source: "Synthetic next source grows across a long turn.", translation: "合成的新译文继续增长。" };
