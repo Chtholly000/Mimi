@@ -22,6 +22,7 @@ interface SettingsSessionControlsProps {
   retrying?: boolean;
   resuming?: boolean;
   resumeFailed?: boolean;
+  resumeFailureMessage?: string | null;
   onSessionChange: (enabled: boolean) => void;
   onResume: () => void;
   onImmersiveChange: (enabled: boolean) => void;
@@ -74,6 +75,6 @@ export function SettingsSessionControls(props: SettingsSessionControlsProps) {
         <dt>{I18N.settings.subtitleDisplay}</dt><dd><code>{props.desktopShortcuts.cycleSubtitleDisplay}</code></dd>
       </dl>
     </details>}
-    {(props.actionFailed || props.resumeFailed) && <p className="settings-feedback" data-tone="error" role="alert">{props.resumeFailed ? I18N.settings.sessionResumeFailed : I18N.settings.sessionActionFailed}</p>}
+    {(props.actionFailed || props.resumeFailed) && <p className="settings-feedback" data-tone="error" role="alert">{props.resumeFailed ? props.resumeFailureMessage ?? I18N.settings.sessionResumeFailed : I18N.settings.sessionActionFailed}</p>}
   </section>;
 }

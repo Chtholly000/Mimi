@@ -1,7 +1,7 @@
 import { audio3ErrorMessage } from "./audio3Errors";
 import { afterEach, expect, it } from "vitest";
 import { I18N, setStoredUiLanguage } from "./i18n";
-import { languageActionErrorMessage, connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
+import { sessionActionErrorMessage, languageActionErrorMessage, connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
 
 it.each(["zh", "en", "ja"] as const)("gives Apple resource and language recovery in %s without exposing runtime labels", language => {
   setStoredUiLanguage(language);
@@ -246,4 +246,14 @@ it.each(["en", "zh", "ja"] as const)("keeps post-save reconnect failures actiona
     expect(languageActionErrorMessage(`${label}: private-provider-body`, "fallback")).toBe("fallback");
   }
   expect(profileErrorMessage(new Error("The speech recognition transport failed."))).toBe(diagnosticCopy().speechUnreachable);
+});
+
+
+it.each(["en", "zh", "ja"] as const)("sanitizes paused-session recovery errors in %s", language => {
+  setStoredUiLanguage(language);
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  expect(sessionActionErrorMessage(new Error(error), "fallback")).toBe(audio3ErrorMessage(error));
+  expect(sessionActionErrorMessage("apple_speech_assets_missing", "fallback")).toBe(I18N.settings.appleSpeechAssetsMissing);
+  expect(sessionActionErrorMessage(`${error}: private-provider-body`, "fallback")).toBe("fallback");
+  expect(sessionActionErrorMessage(new Error("private-provider-body"), "fallback")).toBe("fallback");
 });

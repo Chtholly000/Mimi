@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
-import { profileErrorMessage } from "../../lib/connectionDiagnostics";
+import { sessionActionErrorMessage, profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { useStore } from "../../lib/store";
 import { TrayPanel } from "./TrayPanel";
 import { AUDIO3_RECOGNITION_LANGUAGE_CODES, SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
@@ -359,4 +359,19 @@ it("keeps a persisted tray profile selected when its reconnect fails", async () 
   expect(host.querySelector('[role="alert"]')?.textContent).toBe(profileErrorMessage(error));
   expect(host.textContent).not.toContain(error);
   expect(selectProfile).toHaveBeenCalledExactlyOnceWith("custom");
+});
+
+
+it.each([false, true])("keeps tray resume feedback safe and ignores a later successful resume=%s", async superseded => {
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  let reject!: (reason: string) => void;
+  const togglePaused = vi.fn(() => new Promise<void>((_resolve, failure) => { reject = failure; }));
+  useStore.setState({ ...initial, togglePaused, settings: profileSettings(), session: { ...initial.session,
+    status: { kind: "listening" }, isActive: true, isPaused: true } }, true);
+  await act(async () => root.render(<TrayPanel />));
+  await act(async () => host.querySelector<HTMLButtonElement>('[data-action="resume"]')!.click());
+  if (superseded) await act(async () => useStore.setState({ session: { ...useStore.getState().session, isPaused: false } }));
+  await act(async () => reject(error));
+  expect(host.querySelector('[role="alert"]')?.textContent ?? null).toBe(superseded ? null : sessionActionErrorMessage(error, "fallback"));
+  expect(host.textContent).not.toContain(error);
 });

@@ -1827,8 +1827,7 @@ pub async fn session_stop(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn session_toggle_paused(state: State<'_, AppState>) -> Result<(), String> {
-    state.session.toggle_paused().await;
-    Ok(())
+    state.session.toggle_paused().await
 }
 
 #[tauri::command]

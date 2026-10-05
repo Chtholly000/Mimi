@@ -8,7 +8,7 @@ import { LanguageSelect } from "../../components/LanguageSelect";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
-import { languageActionErrorMessage, profileErrorMessage } from "../../lib/connectionDiagnostics";
+import { languageActionErrorMessage, profileErrorMessage, sessionActionErrorMessage } from "../../lib/connectionDiagnostics";
 import {
   isTauri,
   overlayControlSetPanelHeight,
@@ -105,6 +105,8 @@ export function OverlayControlPanel({
   const actionInFlight = useRef(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
+  const latestSession = useRef({ isPaused, canPauseSession });
+  latestSession.current = { isPaused, canPauseSession };
   const canChangeSessionSettings = !isChangingSession && pendingAction === null;
 
   useLayoutEffect(() => {
@@ -157,15 +159,19 @@ export function OverlayControlPanel({
     actionInFlight.current = true;
     setPendingAction(name);
     setOperationError(null);
+    const resuming = name === "pause" && isPaused;
     void operation()
       .then(() => {
         if (dismissAfter) onDismiss();
       })
-      .catch((error: unknown) => setOperationError(
-        name === "profile" ? profileErrorMessage(error)
-          : name === "source" || name === "translation" ? languageActionErrorMessage(error, failureMessage)
-            : failureMessage,
-      ))
+      .catch((error: unknown) => {
+        if (resuming && (!latestSession.current.isPaused || !latestSession.current.canPauseSession)) return;
+        setOperationError(
+          name === "profile" ? profileErrorMessage(error)
+            : name === "source" || name === "translation" ? languageActionErrorMessage(error, failureMessage)
+              : name === "pause" ? sessionActionErrorMessage(error, failureMessage) : failureMessage,
+        );
+      })
       .finally(() => { actionInFlight.current = false; setPendingAction(null); });
   };
 

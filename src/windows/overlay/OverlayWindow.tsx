@@ -64,6 +64,7 @@ export function OverlayWindow() {
   const showSettings = useStore((state) => state.showSettings);
   const sessionAction = useSessionAction();
   const controlAction = useSessionAction();
+  const actionFailureMessage = sessionAction.failureMessage ?? controlAction.failureMessage ?? I18N.overlay.controlActionFailed;
   const { run: runGuardedControl, clearFailure: clearControlFailure } = controlAction;
   const [pendingControl, setPendingControl] = useState<ControlAction | null>(null);
   const { clearFailure } = sessionAction;
@@ -183,7 +184,15 @@ export function OverlayWindow() {
     if (errorRequiresConfiguration) {
       runControlAction("settings", () => showSettings("service"));
     } else {
-      void sessionAction.run(hasSessionError ? start : togglePaused);
+      const resuming = !hasSessionError && session.isPaused;
+      void sessionAction.run(async () => {
+        try {
+          await (hasSessionError ? start() : togglePaused());
+        } catch (error) {
+          const current = useStore.getState().session;
+          if (!resuming || (current.isActive && current.isPaused)) throw error;
+        }
+      });
     }
   };
 
@@ -264,7 +273,7 @@ export function OverlayWindow() {
       style={{ top: contentTopBandHeight - 14, columnGap: separateMetadataRow || blendsWithBackground ? 8 : topChromeLayout.dragHandleWidth + 16 }}>
       <div className="overlay-status-row__leading">
         {sessionAction.pending || actionFailed ? <div role={sessionAction.pending ? "status" : "alert"} className="overlay-action-feedback">
-          {sessionAction.pending ? I18N.overlay.connecting : I18N.overlay.controlActionFailed}
+          {sessionAction.pending ? I18N.overlay.connecting : actionFailureMessage}
         </div> : showTiming ? <OverlayLatency session={session} translationRequired={settings.targetLanguage !== "original"} /> : null}
       </div>
       <div className={`overlay-status-row__trailing${returnToLive ? " overlay-status-row__trailing--reading" : ""}`}>
@@ -562,10 +571,10 @@ export function OverlayWindow() {
           <span
             className="truncate"
             role={sessionAction.failed || controlAction.failed ? "alert" : undefined}
-            title={sessionAction.failed || controlAction.failed ? I18N.overlay.controlActionFailed : phaseLabel}
+            title={sessionAction.failed || controlAction.failed ? actionFailureMessage : phaseLabel}
             style={{ minWidth: 0, fontSize: 12, fontWeight: 500, color: "rgba(255,255,255,0.76)" }}
           >
-            {sessionAction.failed || controlAction.failed ? I18N.overlay.controlActionFailed : phaseLabel}
+            {sessionAction.failed || controlAction.failed ? actionFailureMessage : phaseLabel}
           </span>
           <span className="flex-1" style={{ minWidth: 4 }} />
           <ControlButton

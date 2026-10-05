@@ -9,7 +9,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "../../components/Icon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
-import { languageActionErrorMessage, profileErrorMessage } from "../../lib/connectionDiagnostics";
+import { languageActionErrorMessage, profileErrorMessage, sessionActionErrorMessage } from "../../lib/connectionDiagnostics";
 import { isTauri } from "../../lib/ipc";
 import {
   activeServiceProfile,
@@ -31,7 +31,6 @@ import {
 import { subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import type { SubtitleDisplayMode } from "../../lib/types";
 import {
-  actionErrorMessage,
   deriveTrayPresentation,
   hasSubtitleContent,
   type TrayActionPresentation,
@@ -116,6 +115,8 @@ export function TrayPanel() {
     setOperationError(null);
     void operation()
       .catch((error: unknown) => {
+        const current = useStore.getState().session;
+        if (name === "resume" && (!current.isActive || !current.isPaused)) return;
         setOperationError(
           name === "quit"
             ? I18N.tray.quitFailed
@@ -127,7 +128,7 @@ export function TrayPanel() {
                 ? I18N.settings.dockSaveFailed
                 : name === "intermediate"
                   ? I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles)
-                  : actionErrorMessage(error, I18N.settings.profileActionFailed),
+                  : sessionActionErrorMessage(error, I18N.settings.sessionActionFailed),
         );
       })
       .finally(() => {
@@ -198,7 +199,7 @@ export function TrayPanel() {
       event.preventDefault();
       void hideTrayPanel().catch((error: unknown) => {
         setOperationError(
-          actionErrorMessage(error, I18N.settings.profileActionFailed),
+          sessionActionErrorMessage(error, I18N.settings.profileActionFailed),
         );
       });
     };

@@ -28,7 +28,7 @@ export function SubtitleSessionControls({ visible = true, compact = false, onCon
   const [sessionActionError, setSessionActionError] = useState(false);
   const [sessionActionCoordinator] = useState(() => new SettingsSessionActionCoordinator());
   const resumeInFlight = useRef(false);
-  const { pending: sessionIsResuming, failed: sessionResumeFailed, run: runResume, clearFailure: clearResumeFailure } = useSessionAction();
+  const { pending: sessionIsResuming, failed: sessionResumeFailed, failureMessage: sessionResumeFailureMessage, run: runResume, clearFailure: clearResumeFailure } = useSessionAction();
   const isChangingSession = sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
   const sessionControl = settingsSessionControlState({ statusKind: sessionStatusKind, isActive: sessionIsActive, isPaused: sessionIsPaused,
     credentialState: credentialStateForTarget(activeProfile, settings.targetLanguage), pendingAction: sessionPendingAction });
@@ -67,7 +67,7 @@ export function SubtitleSessionControls({ visible = true, compact = false, onCon
         // A tray/shortcut resume or stop supersedes a late IPC rejection.
         if (current.isActive && current.isPaused) throw error;
       }
-    }).finally(() => { resumeInFlight.current = false; });
+    }, I18N.settings.sessionResumeFailed).finally(() => { resumeInFlight.current = false; });
   }, [sessionActionCoordinator, runResume, togglePaused]);
 
   useEffect(() => {
@@ -98,6 +98,7 @@ export function SubtitleSessionControls({ visible = true, compact = false, onCon
             retrying={sessionPendingAction === "start" && sessionStatusKind === "error"}
             resuming={sessionIsResuming}
             resumeFailed={sessionResumeFailed}
+            resumeFailureMessage={sessionResumeFailureMessage}
             checked={sessionControl.checked}
             disabled={sessionControl.disabled || sessionIsResuming}
             status={sessionControl.visibleStatus}

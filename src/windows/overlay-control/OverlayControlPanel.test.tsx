@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
-import { profileErrorMessage } from "../../lib/connectionDiagnostics";
+import { sessionActionErrorMessage, profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { useStore } from "../../lib/store";
 import { OverlayControlPanel } from "./OverlayControlPanel";
 import { overlayControlPanelModel } from "./overlayControlModel";
@@ -493,4 +493,19 @@ it("keeps the persisted profile visible when its reconnect fails", async () => {
   expect(host.textContent).not.toContain(error);
   expect(props.onDismiss).not.toHaveBeenCalled();
   expect(props.onSelectProfile).toHaveBeenCalledExactlyOnceWith("custom");
+});
+
+
+it.each([false, true])("keeps a failed panel resume actionable unless a newer resume won=%s", async superseded => {
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  let reject!: (reason: string) => void;
+  props.isPaused = true;
+  props.onTogglePaused = vi.fn(() => new Promise<void>((_resolve, failure) => { reject = failure; }));
+  await mount();
+  await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${I18N.overlay.resume}"]`)!.click());
+  if (superseded) { props.isPaused = false; await mount(); }
+  await act(async () => reject(error));
+  expect(host.querySelector('[role="alert"]')?.textContent ?? null).toBe(superseded ? null : sessionActionErrorMessage(error, "fallback"));
+  expect(host.textContent).not.toContain(error);
+  expect(props.onDismiss).not.toHaveBeenCalled();
 });

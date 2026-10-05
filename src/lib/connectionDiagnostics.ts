@@ -294,7 +294,7 @@ export function profileErrorMessage(error: unknown): string {
   if (label === "profile_switch_recording_requires_stop") return I18N.settings.profileSwitchRecordingRequiresStop;
   if (label === "profile_switch_busy" || label === "profile_switch_superseded") return I18N.settings.profileSwitchBusy;
   if (typeof error === "string" && error.startsWith("Use an HTTPS DeepLX endpoint")) return I18N.settings.deepLXEndpointInvalid;
-  return credentialErrorMessage(label) ?? (typeof label === "string" ? audio3ErrorMessage(label) : null) ?? I18N.settings.profileActionFailed;
+  return sessionActionErrorMessage(label, I18N.settings.profileActionFailed);
 }
 
 /** Keep language failures actionable without exposing arbitrary IPC/provider text. */
@@ -306,5 +306,12 @@ export function languageActionErrorMessage(error: unknown, fallback: string): st
   if (label === "source_switch_save_failed" || label === "target_switch_save_failed") return I18N.settings.languageSaveFailed;
   if (label === "source_switch_profile" || label === "target_switch_profile") return I18N.settings.languageSwitchProfileUnavailable;
   if (label === "Listening settings cannot be changed while a session is active.") return I18N.settings.languageChangeRequiresStop;
+  return sessionActionErrorMessage(label, fallback);
+}
+
+
+/** Reuse the same allowlisted provider causes for pause/resume and start actions. */
+export function sessionActionErrorMessage(error: unknown, fallback: string): string {
+  const label = error instanceof Error ? error.message : error;
   return credentialErrorMessage(label) ?? (typeof label === "string" ? audio3ErrorMessage(label) : null) ?? fallback;
 }

@@ -635,6 +635,22 @@ fn resume_failure_is_still_owned(
         && active_generation == NO_GENERATION
 }
 
+/// Ownership validation and paused-state restoration share the lifecycle gate.
+/// Stop may claim a newer epoch immediately, but its final state must run after
+/// this restoration or make the ownership check fail before any state is changed.
+async fn restore_failed_resume(
+    lifecycle_lock: Arc<TokioMutex<()>>,
+    owns_failure: impl FnOnce() -> bool,
+    restore: impl FnOnce(),
+) -> bool {
+    let _lifecycle = lifecycle_lock.lock_owned().await;
+    if !owns_failure() {
+        return false;
+    }
+    restore();
+    true
+}
+
 fn cancelled_recovery_attempt_is_retryable(
     retry_generation: u64,
     attempt_generation: u64,
@@ -2262,7 +2278,7 @@ impl SessionManager {
         pipeline_log!("session stopped");
     }
 
-    pub async fn toggle_paused(self: &Arc<Self>) {
+    pub async fn toggle_paused(self: &Arc<Self>) -> Result<(), String> {
         if self.is_ui_test() {
             let paused = self.is_paused.load(Ordering::SeqCst);
             self.is_paused.store(!paused, Ordering::SeqCst);
@@ -2272,12 +2288,13 @@ impl SessionManager {
                 self.controller.lock().unwrap().did_pause();
             }
             self.publish_state();
-            return;
+            return Ok(());
         }
         if self.is_paused() {
-            self.resume().await;
+            self.resume().await
         } else {
             self.pause().await;
+            Ok(())
         }
     }
 
@@ -2318,9 +2335,9 @@ impl SessionManager {
         pipeline_log!("session paused");
     }
 
-    pub async fn resume(self: &Arc<Self>) {
+    pub async fn resume(self: &Arc<Self>) -> Result<(), String> {
         if !self.can_resume_current_session() {
-            return;
+            return Ok(());
         }
         let _operation = self.begin_lifecycle_operation();
         let resume_generation = self.next_lifecycle_request();
@@ -2328,7 +2345,7 @@ impl SessionManager {
         if !self.is_lifecycle_request_current(resume_generation)
             || !self.can_resume_current_session()
         {
-            return;
+            return Ok(());
         }
         pipeline_log!("session resume requested");
         self.record_diagnostic_event(DiagnosticEvent::Lifecycle {
@@ -2340,33 +2357,40 @@ impl SessionManager {
             .store(resume_generation, Ordering::SeqCst);
         self.retag_active_settings(resume_generation);
         drop(lifecycle);
-        let resumed = self.establish_session(resume_generation).await;
-        match resumed {
+        let error = match self.establish_session(resume_generation).await {
             Ok(()) => {
                 pipeline_log!("session resumed");
-                return;
+                return Ok(());
             }
-            Err(error) if error == SESSION_START_CANCELLED => return,
-            Err(error) => {
-                let failure_epoch = resume_generation.wrapping_add(1);
-                let _lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
-                let status = self.controller.lock().unwrap().state.status.clone();
-                if !resume_failure_is_still_owned(
+            Err(error) if error == SESSION_START_CANCELLED => return Ok(()),
+            Err(error) => error,
+        };
+        let restored = restore_failed_resume(
+            Arc::clone(&self.lifecycle_lock),
+            || {
+                resume_failure_is_still_owned(
                     &error,
-                    failure_epoch,
+                    resume_generation.wrapping_add(1),
                     self.lifecycle_sequence.load(Ordering::SeqCst),
-                    &status,
+                    &self.controller.lock().unwrap().state.status,
                     self.active_generation.load(Ordering::SeqCst),
-                ) {
-                    return;
-                }
-            }
+                )
+            },
+            || {
+                self.set_active_settings(NO_GENERATION, paused_configuration);
+                self.is_paused.store(true, Ordering::SeqCst);
+                self.controller.lock().unwrap().did_pause();
+            },
+        )
+        .await;
+        if !restored {
+            return Ok(());
         }
-        self.set_active_settings(NO_GENERATION, paused_configuration);
-        self.is_paused.store(true, Ordering::SeqCst);
-        self.controller.lock().unwrap().did_pause();
-        self.publish_state();
+        // Deliver the restored paused state before rejecting the IPC action.
+        // A newer stop/resume can still win; publish only its current snapshot.
+        self.publish_state_now().await;
         pipeline_log!("session resume failed; remaining paused");
+        Err(error)
     }
 
     /// The compact audio switches are explicit live reconfiguration. Preserve
@@ -6499,6 +6523,94 @@ mod lifecycle_tests {
             active.load(Ordering::SeqCst),
         ));
         assert_eq!(controller.state.status, SessionStatus::Idle);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_resume_keeps_the_gate_through_restore_so_a_waiting_stop_wins() {
+        let lifecycle = Arc::new(TokioMutex::new(()));
+        let sequence = Arc::new(AtomicU64::new(72));
+        let controller = Arc::new(Mutex::new(TranslationSessionController::default()));
+        let paused = Arc::new(AtomicBool::new(false));
+        let error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+        controller.lock().unwrap().did_fail(error);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let restore = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let sequence = Arc::clone(&sequence);
+            let controller = Arc::clone(&controller);
+            let paused = Arc::clone(&paused);
+            let failed_controller = Arc::clone(&controller);
+            tokio::spawn(async move {
+                restore_failed_resume(
+                    lifecycle,
+                    move || {
+                        resume_failure_is_still_owned(
+                            error,
+                            72,
+                            sequence.load(Ordering::SeqCst),
+                            &failed_controller.lock().unwrap().state.status,
+                            NO_GENERATION,
+                        )
+                    },
+                    move || {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                        paused.store(true, Ordering::SeqCst);
+                        controller.lock().unwrap().did_pause();
+                    },
+                )
+                .await
+            })
+        };
+        entered_rx.await.unwrap();
+        let (claimed_tx, claimed_rx) = tokio::sync::oneshot::channel();
+        let stop = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let sequence = Arc::clone(&sequence);
+            let controller = Arc::clone(&controller);
+            let paused = Arc::clone(&paused);
+            tokio::spawn(async move {
+                sequence.fetch_add(1, Ordering::SeqCst);
+                claimed_tx.send(lifecycle.try_lock().is_err()).unwrap();
+                let _stop_guard = lifecycle.lock_owned().await;
+                paused.store(false, Ordering::SeqCst);
+                controller.lock().unwrap().did_stop();
+            })
+        };
+        let stop_waited_for_restore = claimed_rx.await.unwrap();
+        release_tx.send(()).unwrap();
+        assert!(restore.await.unwrap());
+        stop.await.unwrap();
+        assert!(stop_waited_for_restore);
+        assert_eq!(controller.lock().unwrap().state.status, SessionStatus::Idle);
+        assert!(!paused.load(Ordering::SeqCst));
+        assert_eq!(sequence.load(Ordering::SeqCst), 73);
+    }
+
+    #[tokio::test]
+    async fn failed_resume_skips_restore_after_a_newer_stop_has_finished() {
+        let lifecycle = Arc::new(TokioMutex::new(()));
+        let controller = Mutex::new(TranslationSessionController::default());
+        let restored = AtomicBool::new(false);
+        assert!(
+            !restore_failed_resume(
+                lifecycle,
+                || {
+                    resume_failure_is_still_owned(
+                        "synthetic_failure",
+                        72,
+                        73,
+                        &controller.lock().unwrap().state.status,
+                        NO_GENERATION,
+                    )
+                },
+                || restored.store(true, Ordering::SeqCst),
+            )
+            .await
+        );
+        assert!(!restored.load(Ordering::SeqCst));
+        assert_eq!(controller.lock().unwrap().state.status, SessionStatus::Idle);
     }
 
     #[test]
