@@ -42,9 +42,11 @@ focused regressions and native testing. Earlier branch measurements remain
 separate from the following evidence for this integration; no release is implied.
 
 - Automated regressions: 423 focused frontend tests, all 1,660 frontend tests,
-  and 120 focused Rust tests passed. The canonical check passed fmt and clippy,
-  then reported 1,152 Rust passes and one failure in an older language-selection
-  test. That failure is under investigation; the full check has not passed.
+  and 120 focused Rust tests passed. The initial canonical run found an older
+  language-selection test that conflicted with the expanded catalog. After its
+  parameterization was corrected, the complete check passed: 1,153 Rust tests
+  (2 ignored), 75 shared-core tests, 1,660 frontend tests, 6 updater tests,
+  8 debugger checks, fmt, clippy, lint, typecheck, production build and diff checks.
 - Old installed build `f5859a66334dc954d9ebbfc298f349a4794b0419` (`clean`):
   content-free trace snapshot 505 reached both settings and overlay stores, but
   344 source / 253 translation characters yielded zero selected source characters
@@ -59,8 +61,17 @@ separate from the following evidence for this integration; no release is implied
   had 193 source / 136 translation characters, one history entry, 193 selected
   source characters and 337 visible characters. Both windows applied the same
   snapshot and overlay commits continued; scroll geometry remained at the tail.
+  Native stop/start reached idle then listening and produced new confirmations.
+  A normal quit ended the old process; reopening the same canonical app and
+  starting the same replay produced a new live draft with 399 source / 244
+  translation characters. The first resume took about 0.8 seconds to restore
+  the connection; the UI showed roughly 92–98 ms RTT. Neither measurement is
+  audio-to-visible-subtitle latency.
   The [Gemini design](2026-10-05-gemini-subtitle-progress.md) records the numeric
   observations without subtitle content.
-- Native stop/start and full application quit/relaunch are still pending. These
-  runs do not establish every language, continuous-speech duration or platform,
-  nor do they validate Apple Speech recognition or claim accuracy/latency gains.
+- The tested binary remains `311ad4b`. Subsequent `a71e7d44` Rust formatting and
+  test parameterization, documentation changes and the `ab477597` README guidance
+  merged from main do not change Gemini behavior; they are not a newly tested
+  binary. These runs do not establish every language, continuous-speech duration
+  or platform, nor do they validate Apple Speech recognition or claim
+  accuracy/latency gains.
