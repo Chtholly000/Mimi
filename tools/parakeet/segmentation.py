@@ -23,7 +23,10 @@ class Segment:
 
 
 class Segmenter:
-    def __init__(self):
+    def __init__(self, silence_ms=480):
+        if silence_ms not in (240, 320, 480):
+            raise ValueError("invalid_silence_boundary")
+        self.silence_frames = silence_ms // 20
         self.partial = bytearray()
         self.preroll = deque(maxlen=12)
         self.audio = bytearray()
@@ -68,7 +71,7 @@ class Segmenter:
             else:
                 self.audio.extend(frame)
             self.silent_frames = 0 if voiced else self.silent_frames + 1
-            if self.silent_frames >= 24 or len(self.audio) >= MAX_SEGMENT_BYTES:
+            if self.silent_frames >= self.silence_frames or len(self.audio) >= MAX_SEGMENT_BYTES:
                 yield self._snapshot(final=True)
                 self._reset_segment()
             elif len(self.audio) >= self.next_draft:

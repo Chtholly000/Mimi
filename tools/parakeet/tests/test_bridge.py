@@ -35,6 +35,13 @@ def run_task(task="fixture", language="en"):
 
 
 class SegmentTests(unittest.TestCase):
+    def test_silence_candidate_changes_only_its_explicit_boundary(self):
+        short = Segmenter(silence_ms=320)
+        standard = Segmenter(silence_ms=480)
+        self.assertTrue(any(value.final for value in short.feed(VOICE * 10 + SILENCE * 16)))
+        self.assertFalse(any(value.final for value in standard.feed(VOICE * 10 + SILENCE * 16)))
+        self.assertTrue(any(value.final for value in standard.feed(SILENCE * 8)))
+
     def test_stale_pid_file_never_signals_an_unrelated_process(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)

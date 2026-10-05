@@ -60,6 +60,7 @@ async def run(args, output):
             if ready.get("header") != {"event": "task-started", "task_id": task_id}:
                 raise ValueError("setup_failed")
             started = time.monotonic()
+            started_unix = time.time()
             sent = 0
             eof_at = None
 
@@ -113,6 +114,7 @@ async def run(args, output):
                 await asyncio.gather(sender, return_exceptions=True)
             errors, count = word_errors(reference, " ".join(finals))
             result = {"event": "benchmark", "wav_sha256": digest, "audio_ms": round(duration * 1000, 1),
+                      "started_unix": started_unix,
                       "pcm_bytes": sent, "events": event_count, "finals": len(finals),
                       "first_draft_ms": None if first_draft is None else round(first_draft, 1),
                       "first_final_ms": None if first_final is None else round(first_final, 1),

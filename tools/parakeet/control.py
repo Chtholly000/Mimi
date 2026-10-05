@@ -93,11 +93,13 @@ def main(args):
             os.chmod(log, 0o600)
             process = subprocess.Popen([str(python), str(HERE / "bridge.py"), "--model-dir",
                                         str(state / "model"), "--port", str(args.port), "--log-file", str(log),
-                                        "--token-file", str(state / "bridge-token")],
+                                        "--token-file", str(state / "bridge-token"),
+                                        "--silence-ms", str(args.silence_ms)],
                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL, start_new_session=True)
             state_file = state / "service.json"
-            state_file.write_text(json.dumps({"pid": process.pid, "port": args.port}) + "\n")
+            state_file.write_text(json.dumps({"pid": process.pid, "port": args.port,
+                                             "silence_ms": args.silence_ms}) + "\n")
             os.chmod(state_file, 0o600)
             deadline = time.monotonic() + 125
             try:
@@ -119,6 +121,7 @@ if __name__ == "__main__":
     parser.add_argument("--state-dir", type=Path,
                         default=Path.home() / ".local/share/mimi-local-models/parakeet")
     parser.add_argument("--port", type=int, default=8767)
+    parser.add_argument("--silence-ms", type=int, choices=[240, 320, 480], default=480)
     try:
         main(parser.parse_args())
     except Exception as error:

@@ -155,11 +155,12 @@ class Worker:
 
 
 class Session:
-    def __init__(self, websocket, worker, task_id):
+    def __init__(self, websocket, worker, task_id, silence_ms=480):
         self.ws, self.worker, self.task_id = websocket, worker, task_id
         self.queue = asyncio.Queue(maxsize=101)
         self.queued_bytes = 0
-        self.segmenter = Segmenter()
+        self.silence_ms = silence_ms
+        self.segmenter = Segmenter(silence_ms)
         self.last_draft = ""
 
     async def event(self, name, sentence=None):
@@ -239,14 +240,15 @@ class Session:
             while not self.queue.empty():
                 self.queue.get_nowait()
             self.queued_bytes = 0
-            self.segmenter = Segmenter()
+            self.segmenter = Segmenter(self.silence_ms)
             self.last_draft = ""
 
 
 class Bridge:
-    def __init__(self, worker):
+    def __init__(self, worker, silence_ms=480):
         self.worker = worker
         self.active = 0
+        self.silence_ms = silence_ms
 
     async def handle(self, websocket):
         if self.active >= 2:
@@ -267,7 +269,7 @@ class Bridge:
             task_id = validate_start(raw)
             if getattr(self.worker, "failed", False):
                 raise BridgeError("worker_unavailable")
-            await Session(websocket, self.worker, task_id).run()
+            await Session(websocket, self.worker, task_id, self.silence_ms).run()
         except ConnectionClosed:
             pass
         except Exception as error:
@@ -299,6 +301,9 @@ def check_request(token):
 
 async def main(args):
     global LOG
+    # RotatingFileHandler creates replacement files too; keep every generation
+    # private, not only the initial file created by the controller.
+    os.umask(0o077)
     if args.log_file:
         handler = RotatingFileHandler(args.log_file, maxBytes=1_048_576, backupCount=1)
         os.chmod(args.log_file, 0o600)
@@ -317,11 +322,11 @@ async def main(args):
     token = read_token(args.token_file)
     await worker.start()
     try:
-        async with serve(Bridge(worker).handle, "127.0.0.1", args.port,
+        async with serve(Bridge(worker, args.silence_ms).handle, "127.0.0.1", args.port,
                          origins=[None], process_request=check_request(token),
                          max_size=32768, max_queue=4, write_limit=32768,
                          close_timeout=1, compression=None):
-            diagnostic("listening", port=args.port)
+            diagnostic("listening", port=args.port, silence_ms=args.silence_ms)
             await stop.wait()
     finally:
         await worker.close()
@@ -333,6 +338,7 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=8767)
     parser.add_argument("--log-file", type=Path)
     parser.add_argument("--token-file", type=Path, required=True)
+    parser.add_argument("--silence-ms", type=int, choices=[240, 320, 480], default=480)
     arguments = parser.parse_args()
     try:
         asyncio.run(main(arguments))
