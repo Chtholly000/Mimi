@@ -177,6 +177,7 @@ export function ServiceProfiles({
 
   const requiresStop = sessionIsActive || sessionIsPaused || sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
   const mutationsDisabled = requiresStop || pendingAction !== null;
+  const selectionDisabled = sessionStatusKind === "connecting" || sessionStatusKind === "stopping" || pendingAction !== null;
   const atProfileLimit = settings.profiles.filter(profile => profile.credentialStorage !== "localDevFile").length >= 20;
 
   const perform = async (
@@ -252,7 +253,7 @@ export function ServiceProfiles({
   };
 
   const handleSelect = async (profileId: string) => {
-    if (profileId === settings.activeProfileId) return;
+    if (selectionDisabled || mutationInFlight.current || profileId === settings.activeProfileId) return;
     setPendingConfirmation(null);
     setSelectedProfileId(profileId);
     await perform(
@@ -400,11 +401,6 @@ export function ServiceProfiles({
     <>
     {!showsEditor && !showsProviderPicker && overview}
     <SettingsSection id="service-profiles" title={I18N.settings.serviceProfilesTitle} hideHeading>
-      {(sessionIsActive || sessionIsPaused) && (
-        <InlineFeedback tone="info" icon="lock">
-          {I18N.settings.profileMutationsLocked}
-        </InlineFeedback>
-      )}
       {showsProviderPicker ? (
         <ProviderPicker
           disabled={mutationsDisabled}
@@ -499,13 +495,13 @@ export function ServiceProfiles({
                 <button
                   type="button"
                   className="settings-button settings-button--quiet settings-button--compact"
-                  disabled={mutationsDisabled}
+                  disabled={selectionDisabled}
                   onClick={() => void handleSelect(selectedProfile.id)}
                 >
                   <Icon name="checkmark" />
                   {I18N.settings.useProfile}
                 </button>
-                <SettingsHelp text={I18N.settings.useProfileForLanguages} label={I18N.settings.helpLabel} />
+                <SettingsHelp text={I18N.settings.profileSwitchHelp} label={I18N.settings.helpLabel} />
                 </span>
               )}
             {selectedProfileReadOnly ? <button type="button" className="settings-button settings-button--quiet settings-button--compact" disabled={mutationsDisabled || atProfileLimit} onClick={() => setShowsProviderPicker(true)}><Icon name="plus" />{I18N.settings.addProfile}</button> : <button
@@ -532,7 +528,7 @@ export function ServiceProfiles({
       ) : (
         <div className="services-home">
           <div className="services-toolbar">
-            <span className="services-toolbar__count">{I18N.settings.profileCount(settings.profiles.length)}<SettingsHelp label={I18N.settings.helpLabel} text={settings.profiles.some(profile => profile.credentialStorage === "localDevFile") ? diagnosticCopy().localDevReadOnly : I18N.settings.servicesHint} /></span>
+            <span className="services-toolbar__count">{I18N.settings.profileCount(settings.profiles.length)}<SettingsHelp label={I18N.settings.helpLabel} text={`${settings.profiles.some(profile => profile.credentialStorage === "localDevFile") ? diagnosticCopy().localDevReadOnly : I18N.settings.servicesHint}\n${I18N.settings.profileSwitchHelp}`} /></span>
             <button
               type="button"
               className="settings-button settings-button--compact settings-button--quiet"
@@ -553,7 +549,7 @@ export function ServiceProfiles({
                 <button
                   type="button"
                   className="service-row__main"
-                  disabled={mutationsDisabled}
+                  disabled={selectionDisabled}
                   onClick={() => {
                     if (
                       credentialStateForTarget(profile, settings.targetLanguage) === "present" &&
@@ -582,7 +578,7 @@ export function ServiceProfiles({
                 <button
                   type="button"
                   className="service-row__edit"
-                  disabled={mutationsDisabled}
+                  disabled={pendingAction !== null}
                   aria-label={`${I18N.settings.editProfile}: ${profile.name}`}
                   onClick={() => openEditor(profile.id)}
                 >

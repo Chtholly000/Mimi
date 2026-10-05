@@ -1548,9 +1548,7 @@ pub async fn profile_select(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<SettingsSnapshotPayload, String> {
-    let _lifecycle = state.session.settings_mutation_guard(true).await?;
-    ensure_profile_mutation_allowed(state.session.has_active_session())?;
-    state.settings.select_profile(&profile_id)?;
+    state.session.switch_profile(&profile_id).await?;
     emit_settings_snapshot(&app, &state.settings)
 }
 

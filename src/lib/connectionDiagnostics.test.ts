@@ -164,3 +164,12 @@ it.each(["en", "zh", "ja"] as const)("ordinary file errors do not recommend nati
     expect(connectionDiagnosticMessage({ credential: "unavailable", service: "unavailable", reason: "credentialsUnavailable" }, platform)).not.toMatch(/Keychain|Keyring|Secret Service|Credential Manager|钥匙串|凭据管理器|キーチェーン/);
   }
 });
+
+
+it.each(["en", "zh", "ja"] as const)("localizes profile switch restrictions without raw payloads in %s", language => {
+  setStoredUiLanguage(language);
+  expect(profileErrorMessage("profile_switch_recording_requires_stop")).toBe(I18N.settings.profileSwitchRecordingRequiresStop);
+  expect(profileErrorMessage(new Error("profile_switch_busy"))).toBe(I18N.settings.profileSwitchBusy);
+  expect(profileErrorMessage("profile_switch_superseded")).toBe(I18N.settings.profileSwitchBusy);
+  expect(profileErrorMessage("profile_switch_recording_requires_stop: private-value")).toBe(I18N.settings.profileActionFailed);
+});

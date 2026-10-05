@@ -62,7 +62,7 @@ it.each(["en", "zh", "ja"].flatMap(language => ["alibabaCloud", "googleGeminiLiv
   setStoredUiLanguage(language);
   const snapshot: SettingsSnapshot = { ...settings, credentialStorage: "localDevFile", profiles: [{ ...profile, provider, credentialStorage: "localDevFile", credentialState: "present" }] };
   await render(snapshot);
-  expect(host.querySelector(".services-toolbar__count .settings-help-control__description")?.textContent).toBe(diagnosticCopy().localDevReadOnly);
+  expect(host.querySelector(".services-toolbar__count .settings-help-control__description")?.textContent).toContain(diagnosticCopy().localDevReadOnly);
   expect(host.querySelector(".services-hint")).toBeNull();
   await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
   expect(host.textContent).toContain(diagnosticCopy().localDevReadOnly);
@@ -512,7 +512,7 @@ it("does not edit the active service's global languages from another profile's d
   await act(async () => host.querySelectorAll<HTMLButtonElement>(".service-row__edit")[1].click());
   expect(host.querySelector("#translation-languages")).toBeNull();
   expect(host.querySelector(".service-detail__language-note")).toBeNull();
-  expect(host.querySelector(".service-detail__actions .settings-help-control__description")?.textContent).toBe(I18N.settings.useProfileForLanguages);
+  expect(host.querySelector(".service-detail__actions .settings-help-control__description")?.textContent).toBe(I18N.settings.profileSwitchHelp);
   expect(host.querySelector(".service-detail__actions")?.textContent).toContain(I18N.settings.useProfile);
   expect(actions.saveSettings).not.toHaveBeenCalled();
 });
@@ -1145,4 +1145,38 @@ it("checks saved OpenAI credentials after reveal, then checks an actual secret e
   expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
   expect(actions.updateProfile).not.toHaveBeenCalled();
   expect(actions.selectProfile).not.toHaveBeenCalled();
+});
+
+
+it.each([false, true])("switches saved services while live or paused without unlocking edits (paused=%s)", async paused => {
+  const other = { ...profile, id: "other", name: "Other model", credentialState: "present" as const };
+  const snapshot = { ...settings, profiles: [profile, other] };
+  let finish!: (value: SettingsSnapshot) => void;
+  actions.selectProfile.mockReturnValue(new Promise<SettingsSnapshot>(resolve => { finish = resolve; }));
+  await act(async () => root.render(<><ServiceProfiles settings={snapshot} sessionIsActive={!paused} sessionIsPaused={paused} sessionStatusKind="listening" /><SettingsToastRegion /></>));
+  const choices = host.querySelectorAll<HTMLButtonElement>(".service-row__main");
+  expect(choices[1].disabled).toBe(false);
+  const add = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes(I18N.settings.addProfile))!;
+  expect(add.disabled).toBe(true);
+  await act(async () => { choices[1].click(); choices[1].click(); });
+  expect(actions.selectProfile).toHaveBeenCalledExactlyOnceWith(other.id);
+  expect(choices[1].disabled).toBe(true);
+  await act(async () => finish({ ...snapshot, activeProfileId: other.id }));
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  expect(host.querySelector<HTMLInputElement>(`#profile-name-${profile.id}`)?.disabled).toBe(true);
+});
+
+it.each(["connecting", "stopping"] as const)("blocks service selection during %s", async status => {
+  await act(async () => root.render(<ServiceProfiles settings={{ ...settings, profiles: [profile, { ...profile, id: "other" }] }} sessionIsActive sessionStatusKind={status} />));
+  for (const button of host.querySelectorAll<HTMLButtonElement>(".service-row__main")) expect(button.disabled).toBe(true);
+  expect(actions.selectProfile).not.toHaveBeenCalled();
+});
+
+it("keeps the current service and shows a sanitized recording restriction when switching fails", async () => {
+  actions.selectProfile.mockRejectedValue("profile_switch_recording_requires_stop");
+  await act(async () => root.render(<><ServiceProfiles settings={{ ...settings, profiles: [profile, { ...profile, id: "other", credentialState: "present" }] }} sessionIsActive sessionStatusKind="listening" /><SettingsToastRegion /></>));
+  await act(async () => host.querySelectorAll<HTMLButtonElement>(".service-row__main")[1].click());
+  expect(host.querySelector('.service-row[data-active="true"]')).toBe(host.querySelector(".service-row"));
+  expect(host.querySelector(".settings-toast")?.textContent).toContain(I18N.settings.profileSwitchRecordingRequiresStop);
+  expect(host.querySelectorAll<HTMLButtonElement>(".service-row__main")[1].disabled).toBe(false);
 });
