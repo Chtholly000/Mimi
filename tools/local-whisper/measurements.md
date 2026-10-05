@@ -137,6 +137,35 @@ running previews remain non-cancellable and can delay finals under other loads.
   adapter tests and Metal build were rerun; the desktop source is unchanged.
   The adapter workflow adds Linux/macOS protocol tests and a macOS build without
   downloading weights or pretending CI performs real inference.
-- Native Mimi system-audio → recognition → independent translation → overlay is
-  a separate acceptance step. Noise/quiet speech, multilingual quality, continuous
-  hard cuts, long sessions and simultaneous translation-model load remain open.
+- The post-ready failure fix was also exercised against the installed service:
+  after verifying the job, bridge, exact child argv and listener, only the owned
+  worker was terminated. The bridge exited with code 1 and the worker was reaped.
+  A subsequent new start/status/stop succeeded and left no owned processes/job.
+  Installed bridge SHA-256 was
+  `28291691ab8cfadb950cbbd7905676935ade9663d164312449b8a847b73de8ab`,
+  status inspector SHA-256
+  `4d78878dd0aed1659c1f91cd11a017899ff9aa0445a853944491e3388cfa5778`;
+  both matched revision `688619e`. Worker/model/decoding settings were unchanged.
+
+## Native short-case follow-up
+
+The coordinated signed Mimi dev build at app revision `9d3a6e4` (Apple Speech
+branch; its Custom ASR path matches main) completed a real system-only trial.
+App binary SHA-256:
+`ba1099d67b3b1e78c6f7c5637ad65e1e8433615b0911ca3f21af7663b48d206f`.
+The ASR connection check took 33 ms; that is task setup, not recognition latency.
+The fixed 9.518 s public WAV was played with `afplay`, captured through macOS
+ScreenCaptureKit, recognized by Whisper and translated by the running Index
+service. Native diagnostics received a final original/translation pair including
+the last sentence's two quantities. The session was stopped through Mimi UI.
+No microphone, subtitle-history retention or audio recording was enabled.
+
+This native trial used the measured bridge hash `b1c08a01…` and final worker hash
+`5fccfe83…`, with the corrected startup inspector; the later worker-exit-code
+change was verified separately above. It does not claim that every change in the
+final PR HEAD was present in the native binary. The complete overlay was not
+visually inspected, so full overlay/UI acceptance remains open. Noise/quiet speech,
+multilingual quality, continuous hard cuts, long sessions and sustained dual-source
+use under simultaneous translation-model load are also unverified. This short
+successful transport case does not overturn the independently observed segmented
+negation translation failure.

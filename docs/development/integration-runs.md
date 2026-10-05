@@ -27,9 +27,16 @@
   提前校验 Python argv 并误报；已仅将确证的该过渡状态视为 starting，完整
   Python/worker/listener 校验后才 ready。真实 Rust context/auto 请求形状
   有协议回归；worker 就绪后异常退出改为失败码，正常 stop 仍成功。
-- 原生系统音频→独立翻译→浮窗仍为单独验收，噪声、低音量、多语种、长时
-  双路及连续无停顿语音未通过本轮样本证明。没有真实采音、用户录制或私密
-  字幕进入 Git。
+- 后续 signed dev `9d3a6e4`（Custom ASR 与 main 一致；二进制 SHA 见测量）
+  完成公开 9.518 s `afplay`→ScreenCaptureKit 系统音频→Whisper→Index，
+  native 诊断取得最后一句 final 原文/译文，识别连接检查 33 ms；这不是
+  33 ms 识别时延。无麦克风、历史保留或录音，UI 停止会话。native 使用
+  b1c08a bridge、5fccfe worker 与已修复控制器，不把后续退出码改动冒称为
+  同一个 native HEAD；最终 bridge 另实测强制单个 owned worker 退出后
+  bridge exit1/回收，再次 start/status/stop 通过并全部停止。
+- 完整浮窗视觉未取得，不声称 all UI；噪声、低音量、多语种、長时双路及
+  连续无停顿语音仍未验收。公开夹具链路成功不消除否定分段的翻译损害；
+  私密音频、用户录制或字幕正文没有进入 Git。
 
 ## 2026-10-05：连续改名、字体方向键与服务身份
 
