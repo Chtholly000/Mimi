@@ -155,7 +155,7 @@ async def main(args):
                     if isinstance(result, BaseException):
                         failure = {"mode": "dual", "source": index, "error_type": type(result).__name__}
                         continue
-                    result["mode"] = "two simultaneous synthetic sources"
+                    result["mode"] = "two simultaneous fixture sources"
                     result["source"] = index
                     results.append(result)
     except Exception as error:

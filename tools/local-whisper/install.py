@@ -62,7 +62,7 @@ def main():
     subprocess.run(["cmake", "--build", str(build), "--target", "mimi-whisper-worker",
                     "--config", "Release", "-j", "4"], check=True)
     shutil.copy2(build / "mimi-whisper-worker", ROOT / "mimi-whisper-worker")
-    for name in ("bridge.py", "control.sh", "status.py", "README.md"):
+    for name in ("bridge.py", "control.sh", "status.py", "README.md", "measurements.md"):
         shutil.copy2(source / name, ROOT / name)
     (ROOT / "control.sh").chmod(0o700)
     token = ROOT / "bridge-token"

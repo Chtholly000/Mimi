@@ -1,4 +1,4 @@
-# Local Whisper ASR implementation plan
+# Local Whisper ASR design
 
 Goal: offer an explicitly installed, local macOS Apple Silicon ASR service for
 Mimi's existing Custom DashScope recognition profile, with independent text
@@ -13,20 +13,23 @@ source isolation without loading two models. No transcript, PCM or token logs.
 Tech stack: C++17, whisper.cpp Metal, Python 3.12, websockets 15.0.1; launchd is
 loaded explicitly and is not installed as a login agent.
 
-Implementation and validation:
+Lifecycle and bounds: private, hash-verified installation preserves build/model
+caches and does not load the model. Explicit start/status/stop verify the launchd
+job, bridge command, worker child and exact loopback listener. The bridge accepts
+only bearer-authenticated, non-browser connections; it never reads microphone or
+system audio itself. Each connection owns <=8 s active PCM, <=300 ms preroll,
+two pending finals and one replaceable preview. A 20 ms energy gate closes after
+200 ms quiet; previews decode at 2 s intervals. Finalization retires queued drafts
+before they acquire the shared worker. In-flight decoding is bounded by 15 s but
+is not immediately cancellable; disconnects suppress delivery and preserve the
+shared framing until the worker response is drained.
 
-- [ ] Pin downloads and hashes; reproducible private installation and manual
-  start/status/stop, verifying launchd identity and the exact loopback listener.
-- [ ] Bound PCM frames, segments, pending finals and replacement previews;
-  silence/maximum-duration/EOF finalization, failure and cancellation handling.
-- [ ] Exercise protocol/authentication/bounds/concurrent-session cases with a
-  fake worker and real WebSocket transport.
-- [ ] Reuse the existing public synthetic English fixture and publish a
-  reproducible 24-sentence synthetic corpus generator. Keep WAV/results outside Git.
-- [ ] Measure model load, first draft/final, final flush, total time, WER and RSS
-  on the same inputs; distinguish direct bridge tests from native Mimi acceptance.
-- [ ] Submit a draft PR, without merging. Native dev launch remains coordinated
-  by the parent task.
+Validation uses fake workers, real loopback WebSockets and pinned public fixtures,
+without capture. The 24-sentence generator is original CC0 text; audio, raw result
+content and credentials remain outside Git. The final tested worker uses 1024
+encoder positions; the 512 candidate was rejected after a repetition regression.
+See [measurements](../../tools/local-whisper/measurements.md) for exact revisions,
+hashes, the 600/200 ms comparison, simultaneous EOF and remaining native boundaries.
 
 Limits: energy gating is a bounded segmentation heuristic, not a trained VAD.
 Drafts are repeated whole-segment decoding, not native incremental Whisper.
