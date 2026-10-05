@@ -775,3 +775,91 @@ describe("current complete display pair", () => {
     }] })).toBe(true);
   });
 });
+
+
+describe("realtime drafts after a confirmed display pair", () => {
+  const previous = { source: "Synthetic previous source.", translation: "合成的上一条译文。" };
+  const next = { source: "Synthetic next source grows across a long turn.", translation: "合成的新译文继续增长。" };
+  const bilingual = { ...settings, subtitleDisplayMode: "bilingual" } as const;
+  const snapshot = (retainHistory: boolean): SubtitleSnapshot => ({
+    ...subtitles({ text: next.source, isFinal: false }, { text: next.translation, isFinal: false },
+      retainHistory ? [{ ...previous, createdAt: 1 }] : []),
+    previewPair: null,
+    displayPair: previous,
+    displayPairFinal: true,
+  });
+  const select = (value: SubtitleSnapshot, subtitleDisplayMode: "translation" | "bilingual" = "bilingual", showIntermediateSubtitles = true) =>
+    visibleLiveSubtitles(value, { ...bilingual, subtitleDisplayMode, showIntermediateSubtitles }, "en", false, false,
+      usesAtomicSubtitlePreview("googleGeminiLive"));
+
+  it.each([false, true])("advances both realtime drafts after a final with retained history=%s", retainHistory => {
+    const value = snapshot(retainHistory);
+    const before = structuredClone(value);
+    expect(select(value)).toEqual([
+      { text: next.source, isFinal: false, kind: "source" },
+      { text: next.translation, isFinal: false, kind: "translation" },
+    ]);
+    expect(select(value, "translation")).toEqual([
+      { text: next.translation, isFinal: false, kind: "translation" },
+    ]);
+    value.translation.text += "更多合成文字。";
+    expect(select(value, "translation")[0].text).toBe(value.translation.text);
+    expect(value.history).toEqual(before.history);
+    expect(value.displayPair).toEqual(before.displayPair);
+    expect(value.displayPairFinal).toBe(true);
+    expect(value.source).toEqual(before.source);
+  });
+
+  it.each([false, true])("does not attach the previous final translation to a new source with history=%s", retainHistory => {
+    const value = snapshot(retainHistory);
+    value.translation = { text: previous.translation, isFinal: true };
+    expect(select(value)).toEqual([{ text: next.source, isFinal: false, kind: "source" }]);
+    // Translation-only readers keep their last confirmed text until a new
+    // translation exists; the source draft never replaces that lane.
+    expect(select(value, "translation")).toEqual(retainHistory ? [] : [
+      { text: previous.translation, isFinal: true, kind: "translation", isStable: true },
+    ]);
+  });
+
+  it.each([false, true])("does not attach the previous final source to a translation-first draft with history=%s", retainHistory => {
+    const value = snapshot(retainHistory);
+    value.source = { text: previous.source, isFinal: true };
+    expect(select(value)).toEqual([{ text: next.translation, isFinal: false, kind: "translation" }]);
+  });
+
+  it("preserves a different identified final source even when its wording repeats", () => {
+    const value = snapshot(false);
+    value.displayPair = { ...previous, utteranceId: "previous-turn" };
+    value.source = { text: previous.source, isFinal: true, utteranceId: "current-turn" };
+    value.translation.utteranceId = "current-turn";
+    expect(select(value)).toEqual([
+      { text: previous.source, isFinal: true, kind: "source", utteranceId: "current-turn" },
+      { text: next.translation, isFinal: false, kind: "translation", utteranceId: "current-turn" },
+    ]);
+  });
+
+  it.each([false, true])("keeps interim-off presentation final-only with retained history=%s", retainHistory => {
+    const value = snapshot(retainHistory);
+    expect(select(value, "bilingual", false)).toEqual(retainHistory ? [] : [
+      { text: previous.source, isFinal: true, kind: "source", isStable: true },
+      { text: previous.translation, isFinal: true, kind: "translation", isStable: true },
+    ]);
+  });
+
+  it("preserves complete-pair holding for independent HTTP translation", () => {
+    const value = snapshot(false);
+    expect(visibleLiveSubtitles(value, bilingual, "en", false, false, true)).toEqual([
+      { text: previous.source, isFinal: true, kind: "source", isStable: true },
+      { text: previous.translation, isFinal: true, kind: "translation", isStable: true },
+    ]);
+  });
+
+  it("shows a repeated realtime draft as a new unconfirmed reading", () => {
+    const value = snapshot(true);
+    value.source.text = previous.source;
+    value.translation.text = previous.translation;
+    expect(select(value, "translation")).toEqual([
+      { text: previous.translation, isFinal: false, kind: "translation" },
+    ]);
+  });
+});
