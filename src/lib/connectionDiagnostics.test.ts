@@ -3,6 +3,26 @@ import { afterEach, expect, it } from "vitest";
 import { I18N, setStoredUiLanguage } from "./i18n";
 import { sessionErrorSettingsTarget, sessionActionErrorMessage, languageActionErrorMessage, connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
 
+it.each(["zh", "en", "ja"] as const)("gives Tencent activation, quota and concurrency recovery without provider text in %s", language => {
+  setStoredUiLanguage(language);
+  const reasons = {
+    tencent_configuration_rejected: "invalidConfiguration",
+    tencent_service_activation_required: "serviceNotActivated",
+    tencent_quota_exhausted: "quotaExhausted",
+    tencent_capacity_exceeded: "concurrencyLimited",
+    tencent_provider_rejected: "serviceRejected",
+  } as const;
+  for (const [label, reason] of Object.entries(reasons)) {
+    expect(credentialErrorMessage(label)).toBe(diagnosticCopy().reasons[reason]);
+    expect(connectionDiagnosticMessage({ credential: "present", service: "unavailable", reason }))
+      .toContain(diagnosticCopy().reasons[reason]);
+    expect(credentialErrorMessage(`${label}: private-provider-body`)).toBeNull();
+  }
+  for (const label of ["tencent_configuration_rejected", "tencent_service_activation_required", "tencent_quota_exhausted"])
+    expect(sessionErrorSettingsTarget(label)).toBe("service");
+  expect(sessionErrorSettingsTarget("tencent_capacity_exceeded")).toBeNull();
+});
+
 it.each(["zh", "en", "ja"] as const)("gives Apple resource and language recovery in %s without exposing runtime labels", language => {
   setStoredUiLanguage(language);
   expect(credentialErrorMessage("apple_speech_assets_missing")).toBe(I18N.settings.appleSpeechAssetsMissing);

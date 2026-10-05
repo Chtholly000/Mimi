@@ -533,6 +533,7 @@ mod tests {
             "app_open_support_issue",
             "profile_reveal_credential",
             "profile_credential_editor_state",
+            "open_tencent_setup_page",
         ] {
             assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
             let permissions = include_str!("../permissions/app.toml");
@@ -550,6 +551,21 @@ mod tests {
                 .iter()
                 .any(|permission| permission == "app-settings"));
             assert_eq!(capability["windows"], serde_json::json!(["settings"]));
+        }
+    }
+
+    #[test]
+    fn tencent_setup_pages_reject_arbitrary_urls() {
+        for (value, expected) in [
+            ("account", "https://console.cloud.tencent.com/developer"),
+            ("apiKey", "https://console.cloud.tencent.com/cam/capi"),
+            ("asr", "https://console.cloud.tencent.com/asr"),
+        ] {
+            let page: TencentSetupPage = serde_json::from_value(serde_json::json!(value)).unwrap();
+            assert_eq!(page.url(), expected);
+        }
+        for value in ["https://example.com", "file:///tmp/test", "Account", ""] {
+            assert!(serde_json::from_value::<TencentSetupPage>(serde_json::json!(value)).is_err());
         }
     }
 
@@ -1435,6 +1451,38 @@ pub fn app_open_releases(app: AppHandle) -> Result<(), String> {
         .map_err(|_| {
             tracing::warn!(label = "system_opener_failed", "release page open failed");
             "Could not open the release page.".to_string()
+        })
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TencentSetupPage {
+    Account,
+    ApiKey,
+    Asr,
+}
+
+impl TencentSetupPage {
+    fn url(self) -> &'static str {
+        match self {
+            Self::Account => "https://console.cloud.tencent.com/developer",
+            Self::ApiKey => "https://console.cloud.tencent.com/cam/capi",
+            Self::Asr => "https://console.cloud.tencent.com/asr",
+        }
+    }
+}
+
+/// Settings can open these public setup pages without supplying an arbitrary URL.
+#[tauri::command]
+pub fn open_tencent_setup_page(app: AppHandle, page: TencentSetupPage) -> Result<(), String> {
+    app.opener()
+        .open_url(page.url(), None::<&str>)
+        .map_err(|_| {
+            tracing::warn!(
+                label = "system_opener_failed",
+                "Tencent setup page open failed"
+            );
+            "Could not open the Tencent Cloud setup page.".to_string()
         })
 }
 

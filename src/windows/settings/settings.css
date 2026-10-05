@@ -2542,6 +2542,25 @@
   flex-wrap: wrap;
   gap: 4px;
 }
+.tencent-setup-help,
+.tencent-setup-help__label,
+.tencent-setup-help__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tencent-setup-help {
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.tencent-setup-help__label {
+  font-size: 14px;
+}
+.tencent-setup-help__actions {
+  margin-inline-start: auto;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
 .service-stage__heading h3 {
   margin: 0;
   color: var(--settings-text);
