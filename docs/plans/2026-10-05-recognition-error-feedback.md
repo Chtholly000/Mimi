@@ -17,6 +17,11 @@ retry. This left a configuration failure looking like a transient connection fau
   Explicit LOCAL_ASR_OVERLOADED and LOCAL_ASR_TIMEOUT codes get fixed localized
   recovery advice and retain retry, as do transport, timeout and service errors. Do not infer language support
   from provider names or restrict every custom service to one model's languages.
+- A successful source/profile/speech-route change, or an explicit successful save
+  of the active service, retires its observed configuration error to idle. Compare
+  the original error and lifecycle epoch under the settings guard, retain current
+  subtitles, and never start capture automatically. Failed saves, display changes,
+  inactive-profile edits and newer session errors do not retire the failure.
 - Use a shared normal-size session-error component in settings, tray and overlay
   controls, with an explicit speech-settings action. A configuration error's main
   action opens settings; transient errors retain manual retry. Keep current

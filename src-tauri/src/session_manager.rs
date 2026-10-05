@@ -422,6 +422,27 @@ fn session_error_requires_user_action(error: &str) -> bool {
         )
 }
 
+/// A successful repair may retire only the error observed before that write.
+fn clear_stale_configuration_error(
+    controller: &mut TranslationSessionController,
+    expected: Option<&(u64, String)>,
+    current_epoch: u64,
+    changed: bool,
+) -> bool {
+    let Some((epoch, error)) = expected else {
+        return false;
+    };
+    if !changed
+        || *epoch != current_epoch
+        || !crate::core::protocols::audio3::failure_requires_configuration(error)
+        || controller.state.status != SessionStatus::Error(error.clone())
+    {
+        return false;
+    }
+    controller.did_stop();
+    true
+}
+
 fn source_switch_requires_reconnect(
     is_listening: bool,
     current_source: SourceLanguage,
@@ -1101,6 +1122,39 @@ impl SessionManager {
             Err("Listening settings cannot be changed while a session is active.".into())
         } else {
             Ok(guard)
+        }
+    }
+
+    /// Called under the settings mutation guard before a persisted repair.
+    pub fn configuration_failure_snapshot(&self) -> Option<(u64, String)> {
+        let controller = self.controller.lock().unwrap();
+        match &controller.state.status {
+            SessionStatus::Error(error)
+                if crate::core::protocols::audio3::failure_requires_configuration(error)
+                    && self.active_generation.load(Ordering::SeqCst) == NO_GENERATION =>
+            {
+                Some((
+                    self.lifecycle_sequence.load(Ordering::SeqCst),
+                    error.clone(),
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Does not start capture, erase subtitles or clear a newer session's error.
+    pub fn configuration_saved(self: &Arc<Self>, expected: Option<(u64, String)>, changed: bool) {
+        if self.active_generation.load(Ordering::SeqCst) != NO_GENERATION {
+            return;
+        }
+        let cleared = clear_stale_configuration_error(
+            &mut self.controller.lock().unwrap(),
+            expected.as_ref(),
+            self.lifecycle_sequence.load(Ordering::SeqCst),
+            changed,
+        );
+        if cleared {
+            self.publish_state();
         }
     }
 
@@ -2423,6 +2477,7 @@ impl SessionManager {
         ) {
             return;
         }
+        let configuration_failure = self.configuration_failure_snapshot();
         let profile = match self.settings.active_profile() {
             Ok(profile) => profile,
             Err(_) => return,
@@ -2470,6 +2525,7 @@ impl SessionManager {
             pipeline_log!("preferences unavailable label=source_switch_write_failed");
             return;
         }
+        self.configuration_saved(configuration_failure, prefs.source_language != language);
         // A pause/stop can claim a newer lifecycle epoch while waiting for
         // this guard. Keep the current session's immutable settings snapshot
         // in sync before releasing the guard so a later pause/resume cannot
@@ -6459,6 +6515,57 @@ mod lifecycle_tests {
             "audio3_error.recognition.service.SERVER_ERROR",
         ] {
             assert!(!session_error_requires_user_action(error));
+        }
+    }
+
+    #[test]
+    fn persisted_configuration_repair_restores_idle_without_losing_subtitles() {
+        let error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+        let mut controller = TranslationSessionController::default();
+        seed_ui_test_live_subtitles(&mut controller, AudioInput::System);
+        controller.did_fail(error);
+        let subtitles = controller.state.subtitles.clone();
+        let expected = Some((42, error.to_string()));
+        assert!(!clear_stale_configuration_error(
+            &mut controller,
+            expected.as_ref(),
+            42,
+            false
+        ));
+        assert!(clear_stale_configuration_error(
+            &mut controller,
+            expected.as_ref(),
+            42,
+            true
+        ));
+        assert_eq!(controller.state.status, SessionStatus::Idle);
+        assert_eq!(controller.state.subtitles, subtitles);
+        assert!(!SessionStateEvent::from(&controller.state).is_active);
+    }
+
+    #[test]
+    fn configuration_repair_never_clears_newer_or_unrelated_failures() {
+        let old = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+        let expected = Some((42, old.to_string()));
+        for (status, epoch) in [
+            (SessionStatus::Error(old.into()), 43),
+            (
+                SessionStatus::Error("audio3_error.setup.authentication.INVALID_API_KEY".into()),
+                42,
+            ),
+            (SessionStatus::Error("transport_error".into()), 42),
+            (SessionStatus::Listening, 42),
+            (SessionStatus::Connecting, 42),
+        ] {
+            let mut controller = TranslationSessionController::default();
+            controller.state.status = status.clone();
+            assert!(!clear_stale_configuration_error(
+                &mut controller,
+                expected.as_ref(),
+                epoch,
+                true
+            ));
+            assert_eq!(controller.state.status, status);
         }
     }
 
