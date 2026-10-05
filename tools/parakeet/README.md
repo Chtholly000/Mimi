@@ -109,7 +109,10 @@ socket cancels all three stages; an already running inference may finish
 internally, but its result cannot reach another source. A stalled worker fails
 requests and must be restarted explicitly. A valid setup that selects an
 unsupported language returns `UNSUPPORTED_LANGUAGE` / `unsupported_language`;
-malformed setup retains `CLIENT_ERROR` / `invalid_setup`.
+malformed setup retains `CLIENT_ERROR` / `invalid_setup`. Queue pressure uses
+`LOCAL_ASR_OVERLOADED` rather than a configuration error. A failed or unavailable
+model worker uses `SERVER_ERROR`; its current diagnostic does not distinguish
+an inference timeout from other worker failures.
 
 ## Reproducible checks
 

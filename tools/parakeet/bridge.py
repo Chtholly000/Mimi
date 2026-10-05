@@ -370,7 +370,14 @@ class Bridge:
             pass
         except Exception as error:
             code = str(error) if isinstance(error, BridgeError) else "session_failed"
-            wire_code = "UNSUPPORTED_LANGUAGE" if code == "unsupported_language" else "CLIENT_ERROR"
+            if code == "unsupported_language":
+                wire_code = "UNSUPPORTED_LANGUAGE"
+            elif code in {"audio_queue_full", "inference_queue_full", "final_queue_full"}:
+                wire_code = "LOCAL_ASR_OVERLOADED"
+            elif code in {"worker_failed", "worker_unavailable"}:
+                wire_code = "SERVER_ERROR"
+            else:
+                wire_code = "CLIENT_ERROR"
             with suppress(ConnectionClosed, TimeoutError):
                 await asyncio.wait_for(websocket.send(json.dumps({"header": {
                     "event": "task-failed", "task_id": task_id,

@@ -22,6 +22,9 @@
   `./scripts/check.sh` 通过：桌面 Rust 1088 passed / 2 ignored，前端
   110 files / 1444 tests，shared core 与实际 JNI、严格 Clippy、lint、
   typecheck 和 production build 均通过。复用了现有 Cargo 缓存。
+- 随后补固定 wire 分类：三种队列满返回 `LOCAL_ASR_OVERLOADED`，worker
+  failed/unavailable 返回既有 `SERVER_ERROR`，避免运行时负载被当成配置错误。
+  focused loopback 回归后 32 项通过；应用源码未变，此小增量未重复全库检查。
 - 本轮修复验证未启停 live 服务、模型或 dev；未采音或读取字幕正文。
   修复后的真实长会话、Index 并发负载及原生显示尚未复验，历史成功样本
   不能升级为本补丁验收。用户本轮选择日语；Parakeet 不支持日语，日语链路

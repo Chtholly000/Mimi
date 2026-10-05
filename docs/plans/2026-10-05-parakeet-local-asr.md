@@ -134,3 +134,11 @@ desktop Rust 1088 passed / 2 ignored; frontend 110 files / 1444 tests; shared
 core and actual JNI, strict Clippy, lint, typecheck and production build passed.
 Existing Cargo output was reused. This does not change the outstanding native
 long-session and concurrent-Index verification limits.
+
+A focused follow-up maps `audio_queue_full`, `inference_queue_full` and
+`final_queue_full` to fixed wire code `LOCAL_ASR_OVERLOADED`; `worker_failed`
+and `worker_unavailable` use the existing `SERVER_ERROR`. These runtime failures
+must not be mistaken for a configuration rejection. The worker's combined
+failure label cannot support a more specific timeout claim. All 32 bridge tests
+pass after this wire-only follow-up; the earlier canonical run covers the
+unchanged application source, and a new full canonical run was not repeated.

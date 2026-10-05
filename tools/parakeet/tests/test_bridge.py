@@ -413,6 +413,7 @@ class WebSocketTests(unittest.IsolatedAsyncioTestCase):
                     event = await receive(ws)
                     if event["header"]["event"] == "task-failed":
                         self.assertEqual(event["header"]["error_message"], "final_queue_full")
+                        self.assertEqual(event["header"]["error_code"], "LOCAL_ASR_OVERLOADED")
                         break
                 await asyncio.wait_for(worker.cancelled.wait(), 1)
             self.assertEqual(bridge.active, 0)
@@ -552,6 +553,30 @@ class WebSocketTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(event["header"]["error_code"], "CLIENT_ERROR")
                     self.assertEqual(event["header"]["error_message"], "invalid_setup")
 
+    async def test_runtime_failures_use_fixed_service_codes_instead_of_configuration_errors(self):
+        for code, wire_code in [
+            ("audio_queue_full", "LOCAL_ASR_OVERLOADED"),
+            ("inference_queue_full", "LOCAL_ASR_OVERLOADED"),
+            ("final_queue_full", "LOCAL_ASR_OVERLOADED"),
+            ("worker_failed", "SERVER_ERROR"),
+        ]:
+            with self.subTest(code=code):
+                class FailedWorker(FakeWorker):
+                    async def decode(self, pcm, *, final=False):
+                        raise BridgeError(code)
+                async with endpoint(FailedWorker()) as (url, _):
+                    async with connect(url) as ws:
+                        await ws.send(json.dumps(run_task("runtime-failure")))
+                        await receive(ws)
+                        await ws.send(VOICE * 40)
+                        while True:
+                            event = await receive(ws)
+                            if event["header"]["event"] == "task-failed":
+                                self.assertEqual(event["header"]["task_id"], "runtime-failure")
+                                self.assertEqual(event["header"]["error_code"], wire_code)
+                                self.assertEqual(event["header"]["error_message"], code)
+                                break
+
     async def test_connection_check_does_not_pass_after_worker_failure(self):
         worker = FakeWorker()
         worker.failed = True
@@ -561,6 +586,7 @@ class WebSocketTests(unittest.IsolatedAsyncioTestCase):
                 event = await receive(ws)
                 self.assertEqual(event["header"]["event"], "task-failed")
                 self.assertEqual(event["header"]["error_message"], "worker_unavailable")
+                self.assertEqual(event["header"]["error_code"], "SERVER_ERROR")
 
 
 if __name__ == "__main__":
