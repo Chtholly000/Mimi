@@ -36,10 +36,14 @@ is one source and one task. At most two connections share a single loaded model
 worker; they retain separate PCM, sentence IDs and draft state. Model inference
 is serialized. No source mixing, capture APIs or network inference exist.
 
-The protocol accepts 16 kHz mono PCM16LE, with a 32 KiB maximum frame, 64 KiB
+The protocol accepts 16 kHz mono PCM16LE, with a 32 KiB maximum frame, 64,000-byte
 per-session input queue, 8-second segment, 240 ms preroll, 480 ms silence final
 boundary and 800 ms draft cadence. A full queue fails explicitly. Fixed bounds
 also apply to JSON and result text. No finalized transcript collection exists.
+An explicit `--silence-ms` option permits 240/320 ms comparison without changing
+the default. Queued final inference takes priority over queued drafts, and a
+source skips stale previews while newer PCM or EOF is waiting. Neither rule
+drops audio or final work. In-flight inference cannot be preempted safely.
 
 The model worker is a separate process. Runtime uses the downloaded local path
 with offline mode enabled. Setup alone downloads pinned assets. Cancellation
@@ -57,3 +61,13 @@ the archived public synthetic English sample and the shared extended suite.
 Report model loading, process RSS, first nonempty draft, final/EOF latency, and
 normalized WER. Synthetic samples verify this narrow input and bridge boundary;
 they do not establish general ASR accuracy or native Mimi overlay acceptance.
+
+Completed: 21 deterministic/loopback tests, pinned setup and repeated startup,
+actual model replay of the 9.518-second synthetic English sample, the shared
+96.263-second continuous 24-sentence sample, and the 11-second JFK sample.
+Literal WER was respectively 1/30, 13/239, and 0/22. Default-endpoint simultaneous
+dual-source replay finished within 96/184 ms of EOF. The 320 ms candidate did not
+improve the short sample's first-final boundary, so the default stays 480 ms.
+See [measured boundaries and limitations](../../tools/parakeet/README.md#measured-on-2026-10-05).
+Native capture/overlay plus text-translation acceptance remains separate; this
+service was stopped after testing and did not change the running development app.

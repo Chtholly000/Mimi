@@ -73,6 +73,11 @@ Swedish, Russian and Ukrainian. **Chinese, Japanese and Korean are not supported
 This is short-segment recognition with replaceable previews. A simple energy
 gate retains 240 ms of preroll, finalizes after 480 ms of silence, and caps a
 segment at eight seconds. It re-decodes the current segment every 800 ms.
+To compare a shorter endpoint explicitly, stop and restart with
+`python3 tools/parakeet/control.py start --silence-ms 320` (240 is also accepted).
+The default remains 480 ms: shorter gaps can finalize earlier, but can also split
+an English phrase at a natural pause. A tested 320 ms candidate did not improve
+the short sample's eight-second forced boundary.
 Quiet speech can be missed; noise/music can open the gate; a forced boundary
 can split a word. These are quality tradeoffs, not native streaming guarantees.
 The upstream streaming implementation is intentionally not used unchanged: its
@@ -103,6 +108,43 @@ file, and prints only metrics. WER ignores case and punctuation; number spelling
 remains literal. A short synthetic sample is a plumbing and narrow accuracy
 check, not a general accuracy ranking. Native Mimi capture/overlay acceptance
 is a separate test.
+
+### Measured on 2026-10-05
+
+Apple M5, 16 GiB RAM, macOS 26.3.1(a), Python 3.12, pinned MLX 0.32.3 and model
+revision above. Baseline code `05a2423`, default 480 ms endpoint; WAVs were sent
+at real-time speed over the authenticated loopback WebSocket, without capture
+or a Mimi UI. These are individual runs, not latency percentiles or broad ASR
+accuracy estimates.
+
+| Sample | Duration | Final segments | First draft | First final | EOF to finished | Literal WER |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Synthetic English short | 9.518 s | 2 | 1.013 s | 8.229 s | 130 ms | 1/30 (3.33%) |
+| Synthetic English, 24 sentences | 96.263 s | 24 | 0.916 s | 2.975 s | 11 ms | 13/239 (5.44%) |
+| whisper.cpp JFK sample | 11.000 s | 2 | 1.025 s | 8.303 s | 137 ms | 0/22 |
+
+The extended sample uses original CC0 sentences, Samantha/Daniel synthetic
+voices at 160/190 words per minute, and one-second gaps. It is not a noisy or
+accent-diverse speech benchmark. WER uses `re.findall(r"[a-z0-9]+", text.casefold())`;
+number spelling differences count as errors. The 11-second JFK clip is a narrow
+human-speech check, not a representative real-world corpus.
+
+The first observed model load plus silent warmup took 7.992 s. Worker peak
+process RSS was 822 MB; that measurement does **not** include all Metal/unified
+memory allocation. Baseline decodes took 106–299 ms. On the 24-sentence sample,
+final delivery followed the segment endpoint by 115–231 ms (median 134 ms),
+in addition to the 480 ms silence wait. Both short samples reached the eight-second
+segment limit before their first final, so their roughly one-second previews
+must not be presented as one-second confirmed subtitles.
+
+Two simultaneous real-time short-sample replays started within 1 ms of each
+other and produced separate task IDs, two finals and WER 1/30 per source. At the
+default endpoint, their EOF waits were 96/184 ms. A separate 320 ms endpoint
+trial still reached its first final at 8.155 s, with WER 1/30; it does not justify
+changing the default. The endpoint option and its focused regression are in
+`24fb76f`. A slow or contended machine can exceed Mimi's one-second final grace;
+the bridge's longer internal failure deadline is not a promise that Mimi waits
+for it. Keep model concurrency and native acceptance as explicit follow-up checks.
 
 ## Source and attribution
 
