@@ -4,6 +4,70 @@
 实测范围和未解决项；条目是历史证据，后续任务仍须核对当前源码与设备。
 不写密钥、音频、字幕正文或个人目录，不把临时日志当作已持久归档的案例。
 
+## 2026-10-05：连续改名、字体方向键与服务身份
+
+- 基线 `51820ad` 加本轮修复及 v1.5.13 版本准备（验证时 dirty）。配置名和
+  翻译别名共用自动保存编辑器；别名/代理补丁不再携带旧配置名。已有名称
+  校验范围不变。测试覆盖连续输入、空白、Unicode、IME、迟到回执、并发
+  字段、保存失败/重试、卸载后最终草稿和同路线名称刷新。
+- 签名 canonical `local-dev` UI-only 原生验证：配置名、翻译别名粘贴中文、
+  空格及 emoji 后保存，保持同一焦点继续第二次编辑，上方标题/选择器同步；
+  手选字体后列表关闭，连续 ↓/↑ 直接切换且焦点保留。字幕字体位于显示
+  选项右侧，截图已目视检查。原生自动化键入 Unicode 不完整时改用粘贴；
+  IME 组合事件由组件回归覆盖，不宣称实际输入法人工打字验收。
+- 最终 v1.5.13 signed UI-only 包启动并核对唯一进程、稳定签名；合成会话
+  的空闲、识别中、暂停、浮动控制展开/收起通过原生操作。非激活字幕窗口
+  的截图工具选窗仍不稳定，完整原生字幕主体视觉不计为通过；服务组合和
+  字幕长短/单双路边界以真实浏览器组件检查为证。
+- 浏览器延迟保存夹具确认两次连续改名的最终值、尾部空格和焦点均保留。
+  新名称布局中/英/日 × 明/暗 × 520/680/760 px 共 18 项无溢出/换行；
+  既有完整设置矩阵 690 项通过，包含 Windows 控件、Linux 状态及窄窗。
+  平台夹具不是对应原生设备的视觉证据。
+- 最终 `./scripts/check.sh` 通过：桌面 Rust 1088 passed／2 ignored，前端
+  110 文件／1444 项通过，共享核心/JNI、lint/typecheck/生产构建通过。浮窗
+  216 组服务布局通过；360 px 日文及 552 px 的 23 组渲染边界复测通过。
+  Vite HMR 曾令无查询参数的动态 import 创建另一份 store；脚本改为加载
+  页面实际模块并核对真实 DOM，等待渲染帧后测量，不接受提前的定时器结果。
+- 服务身份按实际路线显示：8 种内置同服务商路线合并为一个标识，独立
+  翻译路线显示识别→翻译，仅原文时不声称使用翻译服务。用户别名或兼容
+  协议不能证明两个端点属于同一家，不据此猜测合并。测试不调用服务商、
+  不读取真实密钥、不采音或开启记录；Windows/Linux 原生外观、Intel Mac
+  运行及 Android 真机没有在本机复验。
+
+## 2026-10-05：字幕显示与字体并排
+
+- 基线 `9354819` 加本次布局及键盘回归测试改动；字幕显示在左、字体在右，
+  共用一行与分隔线。浏览器真实组件完成中/英/日 × 明/暗 × 520/680/760 px
+  共 18 组检查，选择框对齐且无溢出；默认和最小窗口代表截图已目视检查。
+- 完整 `./scripts/check.sh` 通过：桌面 Rust 1086 passed／2 ignored，前端
+  107 文件／1416 项通过。补齐本地缺失的锁定测试依赖后完成检查；修正新增
+  测试的异步 act 等待后，字体控件 7 项再次通过且无 act 警告。
+- 原生现有字体选择器已确认 ↓ 移动高亮、↑ 返回、Enter 确认；组件回归
+  另覆盖字体异步加载、方向键不提前保存、Enter 保存与 Esc 取消。
+  键盘逻辑沿用共享 Select，本次不改原生焦点或选择行为。
+- 包含布局改动的普通 signed `local-dev` 包已重新构建、安装并核对唯一
+  进程及稳定签名。用户正在操作设置，未继续切页干预；新布局的最终原生
+  目视确认留待用户查看。未启动采音、连接检查或录制；Windows/Linux
+  原生显示及字幕全部状态未复验。
+
+## 2026-10-05：桌面字幕字体选择
+
+- 基线 `6b83ca1` 加本次字体功能改动；签名 canonical `local-dev` UI-only
+  构建。设置页支持搜索本机字体、系统默认、静默保存和原文/译文共同预览。
+- `./scripts/check.sh` 通过：桌面 Rust 1068 passed／2 ignored，共享核心及
+  JNI 检查通过。复查修正异步列表的已选项键盘定位后，前端 103 文件／1296
+  项测试、lint/typecheck 与生产构建通过；最终长字体名换行修复已重新构建。
+  磁盘保存、重新加载、恢复默认、非法值回滚、不访问凭据都有针对性测试。
+- macOS 原生 UI-only 操作确认系统字体枚举、搜索 `Songti` 和选择
+  `Songti SC` 成功。最终开发包签名、安装通过；本轮未完成原生退出重开及
+  浮窗全部状态的目视验收。UI 测试没有真实采音、服务请求或录制。
+- 浏览器真实组件完成中/英/日 × 明/暗 × 520/952 px 共 12 组字体控件检查。
+  搜索 120 项列表、键盘选择、已选项定位、长名称换行、滚动到底及搜索框
+  保持可见通过，代表截图已目视检查。完整既有布局矩阵因浏览器工具单次
+  执行超时未完成，不计为通过；不改写仓库 fixture 来绕过该工具限制。
+- 普通/沉浸、双语/双音源及历史阅读的字体范围有组件测试覆盖；Windows/Linux
+  原生字体显示和真实字幕服务未复验。下一步由集成后的实际设备查看效果。
+
 ## 2026-10-05：v1.5.12 浮窗分句线同步
 
 - 基线 `ab71f95` 加分句线控件与版本准备改动；签名 canonical `local-dev`
@@ -727,6 +791,45 @@
   Browser fixtures are not native acceptance. No audio capture, credentials,
   provider requests, transcript retention or recording were initiated by this run;
   installed applications were not replaced. Windows/Linux UI was not revalidated.
+
+### 2026-10-05 — Editable configuration and independent translation names
+
+- Implementation revision: `e7a0b7b` (including `9a55349` independent names and
+  `ea56c46` saved-field integration). Desktop configuration changes only;
+  provider wire protocols, capture and shared subtitle behavior are unchanged.
+- `scripts/check.sh` passed: desktop Rust 1,075 passed / 2 ignored, frontend
+  1,365 passed across 101 files, shared core/JNI, strict lint/typecheck, production
+  build and development-mode launcher regressions.
+- Audited every product text-entry call site: settings contains persistent
+  configuration; tray/overlay share transient searchable pickers. All persistent
+  nonsecret text fields now support full wrapping edits. Search, color, range,
+  replay-number and diagnostic report controls retain their existing behavior.
+  Saved nonsecret metadata is an actual value; secrets use presence-driven masks
+  and explicit local reveal. Optional absent keys remain honestly empty.
+- Browser synthetic fixtures passed 690 existing settings layout cases before
+  the expansion change, then 36 targeted expansion cases across Chinese, English,
+  Japanese, light/dark and 520/952px widths. The targeted run verifies actual long
+  values, single textbox/focus, wrapping, collapse retention and secret exclusion.
+  A 760px screenshot was inspected. These are renderer checks, not native Windows
+  or Linux evidence.
+- Signed canonical macOS development app verified real saved endpoint/model
+  loading, masked saved-key presence, genuinely empty optional keys, full-address
+  expansion, editing an unsaved synthetic address, collapse retention, an enabled
+  draft-check action and cancellation restoring the saved address. No provider
+  request, audio capture, transcript retention or recording was started.
+- Real macOS mouse expansion of an invalid unsaved proxy draft exposed premature
+  blur validation. Shared focus handling was repaired and a WebKit-style null
+  related-target regression added. The final signed bundle was built, but final
+  native replay was interrupted by another development-app instance/relaunch.
+  The user chose to finish code/automated checks without coordinating or taking
+  over other active development sessions. Final native proxy replay, actual
+  provider checks and native name-save/relaunch remain unverified.
+- A normal dev launch was observed with a residual UI-test flag; the precise
+  relaunch source was not proven. The launcher now explicitly sets its mode and
+  disables automatic start for live mode. A subsequent ordinary signed launch
+  loaded real profiles. The formal app was quit with explicit user permission
+  and its installed bundle was not replaced. Temporary editor drafts were
+  cancelled/restored before releasing the development app to other work.
 
 ### 2026-10-05 — Standalone local English ASR, no translation
 

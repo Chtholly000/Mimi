@@ -18,8 +18,10 @@ use crate::core::models::{
 };
 use crate::core::network_proxy::ProxyConfig;
 use crate::core::provider::{
-    ProviderKind, ProviderPreferences, ServiceProfile, TextTranslation, DEFAULT_ALIBABA_PROFILE_ID,
+    ProviderKind, ProviderPreferences, ServiceProfile, TextTranslation, TextTranslationName,
+    DEFAULT_ALIBABA_PROFILE_ID,
 };
+use crate::core::subtitle_font::normalize_family_name;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 #[cfg(unix)]
@@ -58,6 +60,55 @@ const PREFERENCES_UNAVAILABLE: &str = "Settings could not be saved.";
 const PROFILE_NOT_FOUND: &str = "The service profile does not exist.";
 const LAST_PROFILE: &str = "At least one service profile is required.";
 
+/// Editor-local configuration and field availability, never a settings snapshot.
+/// Endpoints can include private path segments, so do not log this payload.
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialEditorState {
+    pub saved_fields: Vec<CredentialRevealField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcription_deployment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+}
+
+impl CredentialEditorState {
+    fn from_text_credentials(credentials: TextTranslationCredentials) -> Self {
+        let mut state = Self::default();
+        let token = match credentials {
+            TextTranslationCredentials::DeepL { api_key } => api_key,
+            TextTranslationCredentials::DeepLX { endpoint, token } => {
+                state.endpoint = Some(endpoint);
+                token
+            }
+            TextTranslationCredentials::OpenAICompatible {
+                endpoint,
+                model,
+                api_key,
+            }
+            | TextTranslationCredentials::ChatMock {
+                endpoint,
+                model,
+                api_key,
+            } => {
+                state.endpoint = Some(endpoint);
+                state.model = Some(model);
+                api_key
+            }
+        };
+        if !token.is_empty() {
+            state.saved_fields.push(CredentialRevealField::Token);
+        }
+        state
+    }
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TextTranslationDestination {
@@ -80,15 +131,6 @@ struct OpenAICompatibleDestination {
 }
 
 impl TextTranslationDestination {
-    fn chat_destination_mut(&mut self, route: TextTranslation) -> &mut OpenAICompatibleDestination {
-        let slot = match route {
-            TextTranslation::OpenAICompatible => &mut self.open_ai_compatible,
-            TextTranslation::ChatMock => &mut self.chat_mock,
-            _ => unreachable!("a chat-completions route is required"),
-        };
-        slot.get_or_insert_with(OpenAICompatibleDestination::default)
-    }
-
     fn credentials(&self, route: TextTranslation) -> Option<TextTranslationCredentials> {
         match route {
             TextTranslation::FollowService => None,
@@ -188,6 +230,8 @@ pub struct Preferences {
     pub target_language: TargetLanguage,
     pub translation_mode: TranslationMode,
     pub font_size: f64,
+    /// Empty follows the system font stack; otherwise one installed family name.
+    pub subtitle_font_family: String,
     /// Background opacity in percent; independent of subtitle text.
     pub subtitle_background_opacity: u8,
     pub subtitle_color: SubtitleColor,
@@ -227,6 +271,7 @@ impl Default for Preferences {
             target_language: TargetLanguage::SimplifiedChinese,
             translation_mode: TranslationMode::Turbo,
             font_size: DEFAULT_FONT_SIZE,
+            subtitle_font_family: String::new(),
             subtitle_background_opacity: 80,
             subtitle_color: SubtitleColor::White,
             microphone_subtitle_color: SubtitleColor::Yellow,
@@ -804,6 +849,9 @@ impl SettingsStore {
             .clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end());
         let prefs = Preferences {
             font_size,
+            subtitle_font_family: normalize_family_name(&prefs.subtitle_font_family)
+                .unwrap_or_default()
+                .to_owned(),
             subtitle_background_opacity: prefs.subtitle_background_opacity.min(100),
             ..prefs
         };
@@ -953,6 +1001,9 @@ impl SettingsStore {
             .clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end());
         *store.prefs.lock().unwrap() = Preferences {
             font_size,
+            subtitle_font_family: normalize_family_name(&prefs.subtitle_font_family)
+                .unwrap_or_default()
+                .to_owned(),
             subtitle_background_opacity: prefs.subtitle_background_opacity.min(100),
             ..prefs
         };
@@ -1003,6 +1054,7 @@ impl SettingsStore {
             .font_size
             .clamp(*FONT_SIZE_RANGE.start(), *FONT_SIZE_RANGE.end());
         next.subtitle_background_opacity = next.subtitle_background_opacity.min(100);
+        next.subtitle_font_family = normalize_family_name(&next.subtitle_font_family)?.to_owned();
         next.network_proxy = next
             .network_proxy
             .validate()
@@ -1101,16 +1153,20 @@ impl SettingsStore {
 
     #[cfg(test)]
     pub fn update_profile(&self, profile_id: &str, name: &str) -> Result<ServiceProfile, String> {
-        self.update_profile_options(profile_id, name, None, None)
+        self.update_profile_options(profile_id, Some(name), None, None, None)
     }
 
     pub fn update_profile_options(
         &self,
         profile_id: &str,
-        name: &str,
+        name: Option<&str>,
         speech_network_proxy: Option<ProxyConfig>,
         text_network_proxy: Option<ProxyConfig>,
+        text_translation_name: Option<TextTranslationName>,
     ) -> Result<ServiceProfile, String> {
+        if text_translation_name.is_some() {
+            self.require_writable_credentials(profile_id)?;
+        }
         self.mutate_catalog(|catalog| {
             let current = catalog
                 .profiles
@@ -1118,12 +1174,19 @@ impl SettingsStore {
                 .find(|profile| profile.id == profile_id)
                 .ok_or_else(|| PROFILE_NOT_FOUND.to_string())?;
             let mut updated = current.clone();
-            updated.name = name.trim().to_string();
+            if let Some(name) = name {
+                updated.name = name.trim().to_string();
+            }
             if let Some(proxy) = speech_network_proxy {
                 updated.speech_network_proxy = Some(proxy);
             }
             if let Some(proxy) = text_network_proxy {
                 updated.text_network_proxy = Some(proxy);
+            }
+            if let Some(patch) = text_translation_name {
+                updated
+                    .set_text_translation_name(patch.route, &patch.name)
+                    .map_err(|error| error.to_string())?;
             }
             let updated = updated.validated().map_err(|error| error.to_string())?;
             *current = updated.clone();
@@ -1480,8 +1543,106 @@ impl SettingsStore {
         result
     }
 
+    /// Hydrates only the selected editor's configuration and saved-field flags.
+    /// API keys remain native until a separate explicit reveal request.
+    pub fn credential_editor_state(
+        &self,
+        profile_id: &str,
+        text_translation: Option<TextTranslation>,
+    ) -> Result<CredentialEditorState, String> {
+        self.require_writable_credentials(profile_id)?;
+        let profile = self.profile(profile_id)?;
+        if let Some(route) = text_translation {
+            if !CredentialRevealField::Token.allowed_for(&profile, Some(route)) {
+                return Err("credential_reveal_field_mismatch".into());
+            }
+            if let Some(value) = self.destination_value(&profile)? {
+                let destination: TextTranslationDestination = serde_json::from_str(&value)
+                    .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+                let credentials = destination
+                    .credentials(route)
+                    .ok_or_else(|| CREDENTIAL_STORE_UNAVAILABLE.to_string())?
+                    .validated()
+                    .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+                return Ok(CredentialEditorState::from_text_credentials(credentials));
+            }
+            // Historical DeepLX profiles may keep both slots in one record.
+            // Other providers must never borrow their speech credentials here.
+            if profile.provider != ProviderKind::DeepLX {
+                return Ok(CredentialEditorState::default());
+            }
+        }
+        let Some(value) = self
+            .load_api_key_for_profile(&profile)
+            .map_err(SecretStoreError::public_error)?
+        else {
+            return Ok(CredentialEditorState::default());
+        };
+        let credentials = ProviderCredentials::decode_for_profile(&profile, &value)
+            .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?;
+        if let Some(route) = text_translation {
+            let text = match (route, credentials) {
+                (
+                    TextTranslation::DeepLX,
+                    ProviderCredentials::DeepLX {
+                        endpoint, token, ..
+                    },
+                ) => Some(TextTranslationCredentials::DeepLX { endpoint, token }),
+                (TextTranslation::DeepL, ProviderCredentials::DeepL { api_key, .. }) => {
+                    Some(TextTranslationCredentials::DeepL { api_key })
+                }
+                _ => None,
+            };
+            return Ok(text.map_or_else(
+                CredentialEditorState::default,
+                CredentialEditorState::from_text_credentials,
+            ));
+        }
+        let mut state = CredentialEditorState::default();
+        for field in [
+            CredentialRevealField::ApiKey,
+            CredentialRevealField::AsrApiKey,
+            CredentialRevealField::SecretId,
+            CredentialRevealField::SecretKey,
+            CredentialRevealField::AppKey,
+        ] {
+            if field.allowed_for(&profile, None)
+                && credentials
+                    .revealed_field(&profile, field, None)
+                    .map_err(|_| CREDENTIAL_STORE_UNAVAILABLE.to_string())?
+                    .is_some()
+            {
+                state.saved_fields.push(field);
+            }
+        }
+        match credentials {
+            ProviderCredentials::CustomSpeech {
+                endpoint, model, ..
+            } => {
+                state.endpoint = Some(endpoint);
+                state.model = Some(model);
+            }
+            ProviderCredentials::AzureOpenAI {
+                endpoint,
+                deployment,
+                transcription_deployment,
+                ..
+            } => {
+                state.endpoint = Some(endpoint);
+                state.deployment = Some(deployment);
+                state.transcription_deployment = Some(transcription_deployment);
+            }
+            ProviderCredentials::TencentCloud { app_id, .. }
+            | ProviderCredentials::BaiduTranslate { app_id, .. } => {
+                state.app_id = Some(app_id);
+            }
+            _ => {}
+        }
+        Ok(state)
+    }
+
     /// Explicit settings-window action only. Uses the existing profile-scoped
-    /// OS store/cache path and never changes preferences or emits a snapshot.
+    /// private store/cache path and never changes preferences or emits a snapshot.
     pub fn reveal_credential(
         &self,
         profile_id: &str,
@@ -1847,32 +2008,13 @@ impl SettingsStore {
             .map(|value| ProviderCredentials::decode_for_profile(profile, value))
             .transpose()
             .map_err(|error| error.to_string())?;
-        let (old_endpoint, old_model, old_key) = match previous_credentials.as_ref() {
-            Some(ProviderCredentials::CustomSpeech {
-                endpoint,
-                model,
-                api_key,
-            }) => (endpoint.as_str(), model.as_str(), api_key.as_str()),
-            None => ("", "", ""),
-            _ => return Err(Error::ProviderMismatch.to_string()),
-        };
-        let endpoint = entered_endpoint.as_deref().unwrap_or(old_endpoint);
-        let same_endpoint = endpoint == old_endpoint;
-        let model = entered_model
-            .as_deref()
-            .unwrap_or(if same_endpoint { old_model } else { "" });
-        // A key may be retained only for the same normalized service endpoint.
-        let key = if api_key.trim().is_empty() && same_endpoint {
-            old_key
-        } else {
-            api_key
-        };
         let value = ProviderCredentials::CustomSpeech {
-            endpoint: endpoint.into(),
-            model: model.into(),
-            api_key: key.into(),
+            endpoint: entered_endpoint.unwrap_or_default(),
+            model: entered_model.unwrap_or_default(),
+            api_key: api_key.into(),
         }
-        .encode_for_keychain(profile.provider)
+        .resolve_draft(profile.provider, previous_credentials.as_ref())
+        .and_then(|credentials| credentials.encode_for_keychain(profile.provider))
         .map_err(|error| error.to_string())?;
         if previous.as_deref() == Some(value.as_str()) {
             return Ok(());
@@ -1898,7 +2040,6 @@ impl SettingsStore {
         token_update: Option<&str>,
         model: &str,
     ) -> Result<(), String> {
-        let token = token_update.unwrap_or_default();
         use crate::core::credentials::ProviderCredentialsError as Error;
         if self.catalog_write_blocked {
             return Err(PROFILE_CATALOG_UNAVAILABLE.into());
@@ -1937,45 +2078,14 @@ impl SettingsStore {
             .map_err(|_| Error::InvalidStoredValue.to_string())?;
         if translation != TextTranslation::FollowService {
             let value = destination.get_or_insert_with(TextTranslationDestination::default);
-            match translation {
-                TextTranslation::DeepL => {
-                    if !token.trim().is_empty() {
-                        value.deep_l_api_key = Some(token.into());
-                    }
-                }
-                TextTranslation::DeepLX => {
-                    if let Some(endpoint) = entered_endpoint {
-                        if endpoint != value.endpoint {
-                            value.token = token.into();
-                        }
-                        value.endpoint = endpoint;
-                    }
-                    if !token.trim().is_empty() {
-                        value.token = token.into();
-                    }
-                }
-                TextTranslation::OpenAICompatible | TextTranslation::ChatMock => {
-                    let destination = value.chat_destination_mut(translation);
-                    if let Some(endpoint) = entered_endpoint {
-                        if endpoint != destination.endpoint {
-                            destination.api_key = token.into();
-                        }
-                        destination.endpoint = endpoint;
-                    }
-                    if token_update.is_some() {
-                        destination.api_key = token.into();
-                    }
-                    if let Some(model) = entered_model {
-                        destination.model = model;
-                    }
-                }
-                TextTranslation::FollowService => unreachable!(),
-            }
-            let credentials = value
-                .credentials(translation)
-                .unwrap()
-                .validated()
-                .map_err(|error| error.to_string())?;
+            let credentials = TextTranslationCredentials::resolve_update(
+                translation,
+                value.credentials(translation).as_ref(),
+                entered_endpoint.as_deref().unwrap_or_default(),
+                token_update,
+                entered_model.as_deref().unwrap_or_default(),
+            )
+            .map_err(|error| error.to_string())?;
             value.set_credentials(credentials);
         }
         let destination_value = destination
@@ -2035,7 +2145,6 @@ impl SettingsStore {
         token_update: Option<&str>,
         model: &str,
     ) -> Result<(), String> {
-        let token = token_update.unwrap_or_default();
         if profile.provider.is_custom_speech() {
             if !api_key.is_empty() {
                 return Err("custom_speech_text_update_contains_speech_key".into());
@@ -2128,92 +2237,17 @@ impl SettingsStore {
             .encode_for_keychain(ProviderKind::AlibabaCloud)
             .map_err(|error| error.to_string())?;
         let mut destination = retained;
-        match translation {
-            TextTranslation::DeepL => {
-                let value = destination.get_or_insert_with(TextTranslationDestination::default);
-                if !token.trim().is_empty() {
-                    value.deep_l_api_key = Some(token.trim().into());
-                }
-                let checked = ProviderCredentials::DeepL {
-                    asr_api_key: key.clone(),
-                    api_key: value.deep_l_api_key.clone().unwrap_or_default(),
-                }
-                .validated_for(ProviderKind::AlibabaCloud)
-                .map_err(|error| error.to_string())?;
-                let ProviderCredentials::DeepL { api_key, .. } = checked else {
-                    unreachable!()
-                };
-                value.deep_l_api_key = Some(api_key);
-            }
-            TextTranslation::DeepLX => {
-                let value = destination.get_or_insert_with(TextTranslationDestination::default);
-                if !endpoint.trim().is_empty() {
-                    value.endpoint = endpoint.into();
-                    value.token = token.into();
-                } else if !token.trim().is_empty() {
-                    value.token = token.into();
-                }
-                let checked = ProviderCredentials::DeepLX {
-                    asr_api_key: key.clone(),
-                    endpoint: value.endpoint.clone(),
-                    token: value.token.clone(),
-                }
-                .validated_for(ProviderKind::DeepLX)
-                .map_err(|error| error.to_string())?;
-                let ProviderCredentials::DeepLX {
-                    endpoint, token, ..
-                } = checked
-                else {
-                    unreachable!()
-                };
-                value.endpoint = endpoint;
-                value.token = token;
-            }
-            TextTranslation::OpenAICompatible | TextTranslation::ChatMock => {
-                let value = destination
-                    .get_or_insert_with(TextTranslationDestination::default)
-                    .chat_destination_mut(translation);
-                if !endpoint.trim().is_empty() {
-                    let endpoint = crate::core::protocols::openai_compatible::endpoint(endpoint)
-                        .map_err(|_| {
-                            crate::core::credentials::ProviderCredentialsError::InvalidOpenAICompatibleEndpoint
-                                .to_string()
-                        })?
-                        .to_string();
-                    // Never send a retained key to a newly entered service.
-                    if endpoint != value.endpoint {
-                        value.api_key = token.into();
-                    }
-                    value.endpoint = endpoint;
-                }
-                if token_update.is_some() {
-                    value.api_key = token.into();
-                }
-                if !model.trim().is_empty() {
-                    value.model = model.into();
-                }
-                let checked = ProviderCredentials::OpenAICompatible {
-                    asr_api_key: key.clone(),
-                    endpoint: value.endpoint.clone(),
-                    api_key: value.api_key.clone(),
-                    model: value.model.clone(),
-                }
-                .validated_for(ProviderKind::AlibabaCloud)
-                .map_err(|error| error.to_string())?;
-                let ProviderCredentials::OpenAICompatible {
-                    endpoint,
-                    api_key,
-                    model,
-                    ..
-                } = checked
-                else {
-                    unreachable!()
-                };
-                value.endpoint = endpoint;
-                value.api_key = api_key;
-                value.model = model;
-            }
-            TextTranslation::FollowService => {}
+        if translation != TextTranslation::FollowService {
+            let value = destination.get_or_insert_with(TextTranslationDestination::default);
+            let credentials = TextTranslationCredentials::resolve_update(
+                translation,
+                value.credentials(translation).as_ref(),
+                endpoint,
+                token_update,
+                model,
+            )
+            .map_err(|error| error.to_string())?;
+            value.set_credentials(credentials);
         }
         let destination_value = destination
             .as_ref()
@@ -2358,6 +2392,204 @@ impl SettingsStore {
         self.configuration_for_profile_options(profile, true)
     }
 
+    /// Build an ephemeral speech/integrated-service check. Complete drafts do
+    /// not need saved credentials; partial drafts resolve only the speech slot.
+    pub fn configuration_for_speech_draft_probe(
+        &self,
+        profile: &ServiceProfile,
+        draft: &ProviderCredentials,
+        speech_only: bool,
+    ) -> Result<LiveTranslationConfiguration, String> {
+        use crate::core::credentials::ProviderCredentialsError as Error;
+        self.require_writable_credentials(&profile.id)?;
+        if !speech_only && profile.provider.supports_text_translation() {
+            return Err("draft_connection_check_stage_required".into());
+        }
+        let provider = if profile.provider.supports_text_translation()
+            && !profile.provider.is_custom_speech()
+        {
+            ProviderKind::AlibabaCloud
+        } else {
+            profile.provider
+        };
+        let draft = match draft {
+            ProviderCredentials::AlibabaTranslation { api_key, .. }
+                if provider == ProviderKind::AlibabaCloud =>
+            {
+                ProviderCredentials::api_key(api_key)
+            }
+            ProviderCredentials::AlibabaTranslation { .. } => {
+                return Err(Error::ProviderMismatch.to_string())
+            }
+            other => other.clone(),
+        };
+        let credentials = match draft.validated_for(provider) {
+            Ok(complete) => complete,
+            Err(_) => {
+                self.retry_profile_credential_errors(profile, true, false);
+                let saved = self
+                    .load_api_key_for_profile(profile)
+                    .map_err(SecretStoreError::public_error)?
+                    .map(|value| ProviderCredentials::decode_for_profile(profile, &value))
+                    .transpose()
+                    .map_err(|error| error.to_string())?;
+                draft
+                    .resolve_draft(provider, saved.as_ref())
+                    .map_err(|error| error.to_string())?
+            }
+        };
+        let prefs = self.preferences();
+        let target_language = if speech_only && profile.provider.supports_text_translation() {
+            TargetLanguage::Original
+        } else {
+            prefs.target_language
+        };
+        let normalized = provider.capabilities().normalize(ProviderPreferences {
+            source_language: prefs.source_language,
+            target_language,
+            translation_mode: prefs.translation_mode,
+        });
+        LiveTranslationConfiguration::with_credentials(
+            provider,
+            credentials,
+            normalized.source_language,
+            normalized.target_language,
+            normalized.translation_mode,
+        )
+        .with_network_proxy(
+            profile
+                .speech_network_proxy
+                .clone()
+                .unwrap_or(prefs.network_proxy),
+        )
+        .validated()
+        .map_err(|error| error.to_string())
+    }
+
+    /// Draft text checks read only the requested route's saved destination.
+    /// No profile selection, preferences, catalog or credential data are written.
+    pub fn configuration_for_text_draft_probe(
+        &self,
+        profile: &ServiceProfile,
+        draft: &ProviderCredentials,
+    ) -> Result<crate::core::configuration::TextTranslationProbeConfiguration, String> {
+        use crate::core::configuration::TextTranslationProbeCredentials;
+        use crate::core::credentials::ProviderCredentialsError as Error;
+        self.require_writable_credentials(&profile.id)?;
+        if !profile.provider.supports_text_translation() {
+            return Err(Error::ProviderMismatch.to_string());
+        }
+        let (route, endpoint, token_update, model, speech_key) = match draft {
+            ProviderCredentials::AlibabaTranslation {
+                api_key,
+                text_translation,
+                endpoint,
+                token,
+                model,
+                clear_token,
+            } => {
+                if *clear_token
+                    && (!text_translation.uses_chat_completions() || !token.trim().is_empty())
+                {
+                    return Err(Error::InvalidField.to_string());
+                }
+                (
+                    *text_translation,
+                    endpoint.as_str(),
+                    (!token.trim().is_empty() || *clear_token).then_some(token.as_str()),
+                    model.as_str(),
+                    api_key.as_str(),
+                )
+            }
+            ProviderCredentials::OpenAICompatible {
+                asr_api_key,
+                endpoint,
+                api_key,
+                model,
+            } => (
+                TextTranslation::OpenAICompatible,
+                endpoint.as_str(),
+                (!api_key.trim().is_empty()).then_some(api_key.as_str()),
+                model.as_str(),
+                asr_api_key.as_str(),
+            ),
+            ProviderCredentials::ChatMock {
+                asr_api_key,
+                endpoint,
+                api_key,
+                model,
+            } => (
+                TextTranslation::ChatMock,
+                endpoint.as_str(),
+                (!api_key.trim().is_empty()).then_some(api_key.as_str()),
+                model.as_str(),
+                asr_api_key.as_str(),
+            ),
+            _ => return Err(Error::ProviderMismatch.to_string()),
+        };
+        let credentials = if route == TextTranslation::FollowService {
+            if profile.provider.is_custom_speech() {
+                return Err("text_translation_not_configured".into());
+            }
+            let speech = self.configuration_for_speech_draft_probe(
+                profile,
+                &ProviderCredentials::api_key(speech_key),
+                true,
+            )?;
+            TextTranslationProbeCredentials::Qwen {
+                api_key: speech.credentials.alibaba_key().unwrap_or_default().into(),
+            }
+        } else {
+            // Validate supplied addresses/models before any saved-value access.
+            if !endpoint.trim().is_empty() {
+                if route.uses_chat_completions() {
+                    crate::core::protocols::openai_compatible::endpoint(endpoint)
+                        .map_err(|_| Error::InvalidOpenAICompatibleEndpoint.to_string())?;
+                } else if route == TextTranslation::DeepLX {
+                    crate::core::protocols::deeplx::endpoint(endpoint)
+                        .map_err(|_| Error::InvalidDeepLXEndpoint.to_string())?;
+                }
+            }
+            if route.uses_chat_completions() && !model.trim().is_empty() {
+                crate::core::protocols::openai_compatible::validate_model(model)
+                    .map_err(|_| Error::InvalidOpenAICompatibleModel.to_string())?;
+            }
+            let complete = token_update.and_then(|_| {
+                TextTranslationCredentials::resolve_update(
+                    route,
+                    None,
+                    endpoint,
+                    token_update,
+                    model,
+                )
+                .ok()
+            });
+            let merged = if let Some(complete) = complete {
+                complete
+            } else {
+                self.retry_profile_credential_errors(profile, false, true);
+                let destination = self
+                    .destination_value(profile)?
+                    .map(|value| serde_json::from_str::<TextTranslationDestination>(&value))
+                    .transpose()
+                    .map_err(|_| Error::InvalidStoredValue.to_string())?;
+                let saved = destination.and_then(|value| value.credentials(route));
+                TextTranslationCredentials::resolve_update(
+                    route,
+                    saved.as_ref(),
+                    endpoint,
+                    token_update,
+                    model,
+                )
+                .map_err(|error| error.to_string())?
+            };
+            TextTranslationProbeCredentials::Independent(merged)
+        };
+        let mut temporary = profile.clone();
+        temporary.text_translation = Some(route);
+        self.text_probe_with_credentials(&temporary, credentials)
+    }
+
     /// Only the speech slot is read. Missing or inaccessible MT credentials
     /// must not prevent an explicit recognition setup check.
     pub fn configuration_for_speech_probe(
@@ -2416,9 +2648,7 @@ impl SettingsStore {
         &self,
         profile: &ServiceProfile,
     ) -> Result<crate::core::configuration::TextTranslationProbeConfiguration, String> {
-        use crate::core::configuration::{
-            TextTranslationProbeConfiguration, TextTranslationProbeCredentials,
-        };
+        use crate::core::configuration::TextTranslationProbeCredentials;
         if !profile.provider.supports_text_translation()
             || (profile.provider.is_custom_speech()
                 && profile.text_translation() == TextTranslation::FollowService)
@@ -2461,6 +2691,15 @@ impl SettingsStore {
             };
             TextTranslationProbeCredentials::Independent(credentials)
         };
+        self.text_probe_with_credentials(profile, credentials)
+    }
+
+    fn text_probe_with_credentials(
+        &self,
+        profile: &ServiceProfile,
+        credentials: crate::core::configuration::TextTranslationProbeCredentials,
+    ) -> Result<crate::core::configuration::TextTranslationProbeConfiguration, String> {
+        use crate::core::configuration::TextTranslationProbeConfiguration;
         let prefs = self.preferences();
         let target_language = if prefs.target_language == TargetLanguage::Original {
             TargetLanguage::SimplifiedChinese
@@ -3024,6 +3263,466 @@ mod animation_switch_tests {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn unsaved_text_probe_never_needs_asr_or_mutates_profile_preferences_or_secrets() {
+        use crate::core::configuration::TextTranslationProbeCredentials;
+        for provider in [ProviderKind::AlibabaCloud, ProviderKind::CustomOpenAIASR] {
+            let directory = tempfile::tempdir().unwrap();
+            let fake = FakeSecretStore::default();
+            let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+            let profile = store.create_profile(provider, "Draft only").unwrap();
+            let catalog = std::fs::read(&store.catalog_path).unwrap();
+            let preferences = store.preferences();
+            let active = store.active_profile().unwrap();
+            let speech_account = credential_account(&profile);
+            fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &speech_account);
+            let draft =
+                openai_compatible_request("", "https://draft.example/v1", "", "draft-model");
+            let probe = store
+                .configuration_for_text_draft_probe(&profile, &draft)
+                .unwrap();
+            assert!(
+                matches!(probe.credentials, TextTranslationProbeCredentials::Independent(
+                TextTranslationCredentials::OpenAICompatible { endpoint, model, api_key }
+            ) if endpoint == "https://draft.example/v1/chat/completions" && model == "draft-model" && api_key.is_empty())
+            );
+            assert_eq!(
+                fake.load_count(PROFILE_KEYCHAIN_SERVICE, &speech_account),
+                0
+            );
+            assert_eq!(store.active_profile().unwrap(), active);
+            assert_eq!(store.preferences(), preferences);
+            assert_eq!(store.profile(&profile.id).unwrap(), profile);
+            assert_eq!(std::fs::read(&store.catalog_path).unwrap(), catalog);
+            assert!(fake.state.lock().unwrap().values.is_empty());
+        }
+    }
+
+    #[test]
+    fn text_draft_probe_merges_saved_destination_without_persisting_or_reusing_other_routes() {
+        use crate::core::configuration::TextTranslationProbeCredentials;
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::CustomOpenAIASR, "Draft check")
+            .unwrap();
+        store
+            .save_credentials(
+                &profile.id,
+                &openai_compatible_request(
+                    "",
+                    "https://saved.example/v1",
+                    "synthetic-saved",
+                    "saved-model",
+                ),
+            )
+            .unwrap();
+        let profile = store.profile(&profile.id).unwrap();
+        let values = fake.state.lock().unwrap().values.clone();
+        let preferences = store.preferences();
+        for (endpoint, token, clear_token, route, expected_key) in [
+            (
+                "",
+                "",
+                false,
+                TextTranslation::OpenAICompatible,
+                "synthetic-saved",
+            ),
+            (
+                "https://saved.example/v1",
+                "",
+                false,
+                TextTranslation::OpenAICompatible,
+                "synthetic-saved",
+            ),
+            (
+                "https://changed.example/v1",
+                "",
+                false,
+                TextTranslation::OpenAICompatible,
+                "",
+            ),
+            ("", "", true, TextTranslation::OpenAICompatible, ""),
+            (
+                "",
+                "synthetic-draft",
+                false,
+                TextTranslation::OpenAICompatible,
+                "synthetic-draft",
+            ),
+            (
+                "https://saved.example/v1",
+                "",
+                false,
+                TextTranslation::ChatMock,
+                "",
+            ),
+        ] {
+            let draft = ProviderCredentials::AlibabaTranslation {
+                api_key: String::new(),
+                text_translation: route,
+                endpoint: endpoint.into(),
+                token: token.into(),
+                model: "draft-model".into(),
+                clear_token,
+            };
+            let probe = store
+                .configuration_for_text_draft_probe(&profile, &draft)
+                .unwrap();
+            let TextTranslationProbeCredentials::Independent(credentials) = probe.credentials
+            else {
+                panic!("independent route expected")
+            };
+            assert_eq!(credentials.translation(), route);
+            match credentials {
+                TextTranslationCredentials::OpenAICompatible { api_key, model, .. }
+                | TextTranslationCredentials::ChatMock { api_key, model, .. } => {
+                    assert_eq!(api_key, expected_key);
+                    assert_eq!(model, "draft-model");
+                }
+                _ => panic!("chat route expected"),
+            }
+            assert_eq!(store.profile(&profile.id).unwrap(), profile);
+            assert_eq!(store.preferences(), preferences);
+            assert_eq!(fake.state.lock().unwrap().values, values);
+        }
+    }
+
+    #[test]
+    fn complete_draft_probes_can_bypass_unavailable_saved_credentials() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::CustomOpenAIASR, "Unavailable saved fields")
+            .unwrap();
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &credential_account(&profile));
+        fake.make_unavailable(
+            PROFILE_KEYCHAIN_SERVICE,
+            &SettingsStore::destination_account(&profile),
+        );
+        let speech =
+            custom_speech_request("wss://draft.example/realtime", "speech-model", "synthetic");
+        assert!(store
+            .configuration_for_speech_draft_probe(&profile, &speech, true)
+            .is_ok());
+        let text = openai_compatible_request(
+            "",
+            "https://draft.example/v1",
+            "synthetic-text",
+            "text-model",
+        );
+        assert!(store
+            .configuration_for_text_draft_probe(&profile, &text)
+            .is_ok());
+        assert!(fake.state.lock().unwrap().loads.is_empty());
+        assert!(fake.state.lock().unwrap().values.is_empty());
+        let invalid = openai_compatible_request(
+            "",
+            "https://user:secret@invalid.example/v1",
+            "synthetic",
+            "model",
+        );
+        assert!(store
+            .configuration_for_text_draft_probe(&profile, &invalid)
+            .is_err());
+        assert!(fake.state.lock().unwrap().loads.is_empty());
+        assert!(store
+            .configuration_for_text_draft_probe(&profile, &speech)
+            .is_err());
+        assert!(store
+            .configuration_for_speech_draft_probe(&profile, &text, true)
+            .is_err());
+        assert_eq!(store.profile(&profile.id).unwrap(), profile);
+    }
+
+    #[test]
+    fn speech_draft_reuses_saved_key_and_checks_new_profile_without_persistence() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Integrated draft")
+            .unwrap();
+        let new = store
+            .configuration_for_speech_draft_probe(
+                &profile,
+                &ProviderCredentials::api_key("synthetic-new"),
+                false,
+            )
+            .unwrap();
+        assert_eq!(new.credentials.direct_api_key(), Some("synthetic-new"));
+        assert!(fake.state.lock().unwrap().values.is_empty());
+        store
+            .save_credentials(
+                &profile.id,
+                &ProviderCredentials::api_key("synthetic-saved"),
+            )
+            .unwrap();
+        let before = fake.state.lock().unwrap().values.clone();
+        let merged = store
+            .configuration_for_speech_draft_probe(
+                &profile,
+                &ProviderCredentials::api_key(""),
+                false,
+            )
+            .unwrap();
+        assert_eq!(merged.credentials.direct_api_key(), Some("synthetic-saved"));
+        assert_eq!(fake.state.lock().unwrap().values, before);
+    }
+
+    #[test]
+    fn profile_metadata_patches_preserve_independent_names_and_proxies() {
+        use crate::core::network_proxy::ProxyMode;
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        let profile = store.active_profile().unwrap();
+        let configuration_name = "B 站 · @home / (测试) 😀";
+        let translator_name = "翻译 & 字幕 + [本地] 🐱";
+        store
+            .update_profile(&profile.id, &format!("  {configuration_name}  "))
+            .unwrap();
+        let text_proxy = ProxyConfig {
+            mode: ProxyMode::Direct,
+            url: None,
+        };
+        store
+            .update_profile_options(
+                &profile.id,
+                None,
+                None,
+                Some(text_proxy.clone()),
+                Some(TextTranslationName {
+                    route: TextTranslation::OpenAICompatible,
+                    name: format!("  {translator_name}  "),
+                }),
+            )
+            .unwrap();
+        // An independently saved alias or proxy must not replay a name copied
+        // from an older snapshot. Renaming in turn preserves those fields.
+        assert_eq!(store.profile(&profile.id).unwrap().name, configuration_name);
+        let renamed = format!("{configuration_name} 2");
+        store.update_profile(&profile.id, &renamed).unwrap();
+        store
+            .update_profile_options(&profile.id, None, Some(ProxyConfig::default()), None, None)
+            .unwrap();
+        let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        let saved = reloaded.profile(&profile.id).unwrap();
+        assert_eq!(saved.name, renamed);
+        assert_eq!(saved.text_network_proxy, Some(text_proxy));
+        assert_eq!(saved.speech_network_proxy, Some(ProxyConfig::default()));
+        assert_eq!(
+            saved.text_translation_names[&TextTranslation::OpenAICompatible],
+            translator_name
+        );
+        let secrets = fake.state.lock().unwrap();
+        assert!(secrets.loads.is_empty());
+        assert!(secrets.values.is_empty());
+    }
+
+    #[test]
+    fn profile_name_patches_enforce_unicode_bounds_without_losing_saved_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SettingsStore::at_path(
+            directory.path().into(),
+            Box::new(FakeSecretStore::default()),
+        );
+        let profile = store.active_profile().unwrap();
+        let name = "😀".repeat(64);
+        let saved = store
+            .update_profile_options(
+                &profile.id,
+                Some(&name),
+                None,
+                None,
+                Some(TextTranslationName {
+                    route: TextTranslation::OpenAICompatible,
+                    name: name.clone(),
+                }),
+            )
+            .unwrap();
+        assert_eq!(saved.name, name);
+        for invalid in ["  ".to_string(), "😀".repeat(65)] {
+            assert!(store.update_profile(&profile.id, &invalid).is_err());
+            assert_eq!(store.profile(&profile.id).unwrap(), saved);
+        }
+        assert!(store
+            .update_profile_options(
+                &profile.id,
+                None,
+                None,
+                None,
+                Some(TextTranslationName {
+                    route: TextTranslation::OpenAICompatible,
+                    name: "😀".repeat(65),
+                }),
+            )
+            .is_err());
+        assert_eq!(store.profile(&profile.id).unwrap(), saved);
+    }
+
+    #[test]
+    fn translation_names_persist_independently_without_credential_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        let profile = store.active_profile().unwrap();
+        for (route, name) in [
+            (TextTranslation::OpenAICompatible, "  Work translator  "),
+            (TextTranslation::DeepLX, "Local translator"),
+        ] {
+            store
+                .update_profile_options(
+                    &profile.id,
+                    None,
+                    None,
+                    None,
+                    Some(TextTranslationName {
+                        route,
+                        name: name.into(),
+                    }),
+                )
+                .unwrap();
+        }
+        store
+            .update_profile(&profile.id, "Renamed profile")
+            .unwrap();
+        let other = store
+            .create_profile(ProviderKind::AlibabaCloud, "Other")
+            .unwrap();
+        assert!(other.text_translation_names.is_empty());
+        let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        let restored = reloaded.profile(&profile.id).unwrap();
+        assert_eq!(restored.name, "Renamed profile");
+        assert_eq!(
+            restored.text_translation_names[&TextTranslation::OpenAICompatible],
+            "Work translator"
+        );
+        assert_eq!(
+            restored.text_translation_names[&TextTranslation::DeepLX],
+            "Local translator"
+        );
+        assert_eq!(restored.text_translation(), TextTranslation::FollowService);
+        reloaded
+            .update_profile_options(
+                &profile.id,
+                None,
+                None,
+                None,
+                Some(TextTranslationName {
+                    route: TextTranslation::OpenAICompatible,
+                    name: "  ".into(),
+                }),
+            )
+            .unwrap();
+        let reopened = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        let names = reopened
+            .profile(&profile.id)
+            .unwrap()
+            .text_translation_names;
+        assert_eq!(names.len(), 1);
+        assert_eq!(names[&TextTranslation::DeepLX], "Local translator");
+        let secrets = fake.state.lock().unwrap();
+        assert!(secrets.loads.is_empty());
+        assert!(secrets.values.is_empty());
+    }
+
+    #[test]
+    fn translation_name_updates_reject_invalid_values_and_roll_back_failed_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let mut store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        let profile = store.active_profile().unwrap();
+        for (route, name) in [
+            (TextTranslation::OpenAICompatible, "x".repeat(65)),
+            (TextTranslation::FollowService, "Unsupported".into()),
+        ] {
+            assert!(store
+                .update_profile_options(
+                    &profile.id,
+                    Some("Unpersisted profile name"),
+                    None,
+                    None,
+                    Some(TextTranslationName { route, name }),
+                )
+                .is_err());
+            assert_eq!(store.active_profile().unwrap(), profile);
+        }
+        store.catalog_path = directory.path().join("blocked-catalog");
+        std::fs::create_dir(&store.catalog_path).unwrap();
+        assert!(store
+            .update_profile_options(
+                &profile.id,
+                None,
+                None,
+                None,
+                Some(TextTranslationName {
+                    route: TextTranslation::OpenAICompatible,
+                    name: "Unpersisted translator".into(),
+                }),
+            )
+            .is_err());
+        assert_eq!(store.active_profile().unwrap(), profile);
+        let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake));
+        assert_eq!(reloaded.active_profile().unwrap(), profile);
+    }
+
+    #[test]
+    fn translation_names_survive_route_saves_without_changing_saved_secrets() {
+        for provider in [ProviderKind::AlibabaCloud, ProviderKind::CustomOpenAIASR] {
+            let fake = FakeSecretStore::default();
+            let store = settings(&fake);
+            let profile = store.create_profile(provider, "Named translator").unwrap();
+            let speech = if provider.is_custom_speech() {
+                custom_speech_request("wss://speech.example/realtime", "speech-model", "synthetic")
+            } else {
+                ProviderCredentials::api_key("synthetic")
+            };
+            store.save_credentials(&profile.id, &speech).unwrap();
+            store
+                .save_credentials(
+                    &profile.id,
+                    &openai_compatible_request(
+                        "",
+                        "https://translation.example/v1",
+                        "synthetic-text-key",
+                        "text-model",
+                    ),
+                )
+                .unwrap();
+            let before = fake.state.lock().unwrap().values.clone();
+            fake.state.lock().unwrap().loads.clear();
+            let named = store
+                .update_profile_options(
+                    &profile.id,
+                    None,
+                    None,
+                    None,
+                    Some(TextTranslationName {
+                        route: TextTranslation::OpenAICompatible,
+                        name: "Work translator".into(),
+                    }),
+                )
+                .unwrap();
+            assert_eq!(fake.state.lock().unwrap().values, before);
+            assert!(fake.state.lock().unwrap().loads.is_empty());
+            for route in [
+                TextTranslation::FollowService,
+                TextTranslation::OpenAICompatible,
+            ] {
+                store
+                    .save_credentials(&profile.id, &translation_request(route, "", "", ""))
+                    .unwrap();
+                let switched = store.profile(&profile.id).unwrap();
+                assert_eq!(switched.text_translation(), route);
+                assert_eq!(
+                    switched.text_translation_names,
+                    named.text_translation_names
+                );
+            }
+            assert_eq!(fake.state.lock().unwrap().values, before);
+        }
+    }
+
+    #[test]
     fn profile_stage_proxies_persist_and_legacy_routes_remain_isolated() {
         use crate::core::network_proxy::ProxyMode;
         let directory = tempfile::tempdir().unwrap();
@@ -3044,7 +3743,7 @@ mod tests {
             url: None,
         };
         store
-            .update_profile_options(&profile.id, &profile.name, None, Some(text.clone()))
+            .update_profile_options(&profile.id, None, None, Some(text.clone()), None)
             .unwrap();
         let updated = store.active_profile().unwrap();
         assert_eq!(updated.speech_network_proxy, None);
@@ -3076,7 +3775,13 @@ mod tests {
             url: Some("socks5h://127.0.0.1:1080".into()),
         };
         store
-            .update_profile_options(&profile.id, "Renamed", Some(speech.clone()), None)
+            .update_profile_options(
+                &profile.id,
+                Some("Renamed"),
+                Some(speech.clone()),
+                None,
+                None,
+            )
             .unwrap();
         store.select_profile(&profile.id).unwrap();
         let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
@@ -3095,12 +3800,13 @@ mod tests {
         assert!(store
             .update_profile_options(
                 &profile.id,
-                "Rejected",
+                Some("Rejected"),
                 None,
                 Some(ProxyConfig {
                     mode: ProxyMode::Custom,
                     url: Some("http://user:private-value@localhost:7890".into())
-                })
+                }),
+                None
             )
             .is_err());
         assert_eq!(store.active_profile().unwrap(), before);
@@ -3110,8 +3816,9 @@ mod tests {
         assert!(store
             .update_profile_options(
                 &profile.id,
-                "Unpersisted",
+                Some("Unpersisted"),
                 Some(ProxyConfig::default()),
+                None,
                 None
             )
             .is_err());
@@ -4939,6 +5646,41 @@ mod tests {
         assert_eq!(preset.id, LOCAL_DEV_ALIBABA_PROFILE_ID);
         assert_eq!(store.credential_state(&preset), CredentialState::Present);
         assert_eq!(store.profile_credential_storage(&preset.id), "localDevFile");
+        let draft = openai_compatible_request("", "https://draft.example/v1", "synthetic", "model");
+        assert_eq!(
+            store
+                .configuration_for_text_draft_probe(&preset, &draft)
+                .unwrap_err(),
+            "local_dev_credentials_read_only"
+        );
+        assert_eq!(
+            store
+                .configuration_for_speech_draft_probe(
+                    &preset,
+                    &ProviderCredentials::api_key("synthetic"),
+                    true
+                )
+                .unwrap_err(),
+            "local_dev_credentials_read_only"
+        );
+        assert_eq!(
+            store.update_profile_options(
+                &preset.id,
+                None,
+                None,
+                None,
+                Some(TextTranslationName {
+                    route: TextTranslation::OpenAICompatible,
+                    name: "Read-only alias".into(),
+                }),
+            ),
+            Err("local_dev_credentials_read_only".into())
+        );
+        assert!(store
+            .profile(&preset.id)
+            .unwrap()
+            .text_translation_names
+            .is_empty());
         assert_eq!(
             store.save_credentials(
                 &preset.id,
@@ -5245,6 +5987,248 @@ mod tests {
             serde_json::to_string(&(store.profile_catalog().unwrap(), store.preferences()))
                 .unwrap();
         assert!(!snapshot.contains("synthetic-"));
+    }
+
+    #[test]
+    fn credential_editor_state_distinguishes_anonymous_text_from_saved_speech_key() {
+        for route in [TextTranslation::OpenAICompatible, TextTranslation::ChatMock] {
+            let fake = FakeSecretStore::default();
+            let store = settings(&fake);
+            let profile = ServiceProfile::alibaba_default();
+            store
+                .save_api_key(&profile.id, "synthetic-speech-secret")
+                .unwrap();
+            let request = ProviderCredentials::AlibabaTranslation {
+                api_key: String::new(),
+                text_translation: route,
+                endpoint: "http://127.0.0.1:8000/v1".into(),
+                token: String::new(),
+                model: "local-model".into(),
+                clear_token: false,
+            };
+            store.save_credentials(&profile.id, &request).unwrap();
+            let state = store
+                .credential_editor_state(&profile.id, Some(route))
+                .unwrap();
+            assert!(state.saved_fields.is_empty());
+            assert_eq!(
+                state.endpoint.as_deref(),
+                Some("http://127.0.0.1:8000/v1/chat/completions")
+            );
+            assert_eq!(state.model.as_deref(), Some("local-model"));
+            let speech = store.credential_editor_state(&profile.id, None).unwrap();
+            assert_eq!(
+                speech.saved_fields,
+                vec![
+                    CredentialRevealField::ApiKey,
+                    CredentialRevealField::AsrApiKey
+                ]
+            );
+            assert!(speech.endpoint.is_none());
+            assert!(speech.model.is_none());
+            assert!(!serde_json::to_string(&speech)
+                .unwrap()
+                .contains("synthetic-speech-secret"));
+
+            let mut authenticated = request.clone();
+            let ProviderCredentials::AlibabaTranslation { token, .. } = &mut authenticated else {
+                unreachable!()
+            };
+            *token = "synthetic-text-secret".into();
+            store.save_credentials(&profile.id, &authenticated).unwrap();
+            let state = store
+                .credential_editor_state(&profile.id, Some(route))
+                .unwrap();
+            assert_eq!(state.saved_fields, vec![CredentialRevealField::Token]);
+            let json = serde_json::to_string(&state).unwrap();
+            assert!(!json.contains("synthetic-speech-secret"));
+            assert!(!json.contains("synthetic-text-secret"));
+
+            let mut anonymous = request;
+            let ProviderCredentials::AlibabaTranslation { clear_token, .. } = &mut anonymous else {
+                unreachable!()
+            };
+            *clear_token = true;
+            store.save_credentials(&profile.id, &anonymous).unwrap();
+            assert!(store
+                .credential_editor_state(&profile.id, Some(route))
+                .unwrap()
+                .saved_fields
+                .is_empty());
+            let snapshot = serde_json::to_string(
+                &crate::commands::SettingsSnapshotPayload::from_store(&store),
+            )
+            .unwrap();
+            for private in [
+                "synthetic-speech-secret",
+                "synthetic-text-secret",
+                "127.0.0.1:8000",
+                "local-model",
+            ] {
+                assert!(!snapshot.contains(private));
+            }
+        }
+    }
+
+    #[test]
+    fn credential_editor_state_reads_only_requested_slot_and_rejects_stale_route() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = ServiceProfile::alibaba_default();
+        store
+            .save_credentials(
+                &profile.id,
+                &openai_compatible_request(
+                    "synthetic-speech-secret",
+                    "http://127.0.0.1:8000/v1",
+                    "",
+                    "local-model",
+                ),
+            )
+            .unwrap();
+        store.secret_cache.lock().unwrap().clear();
+        fake.state.lock().unwrap().loads.clear();
+        assert_eq!(
+            store
+                .credential_editor_state(&profile.id, Some(TextTranslation::DeepLX))
+                .err()
+                .as_deref(),
+            Some("credential_reveal_field_mismatch")
+        );
+        assert!(fake.state.lock().unwrap().loads.is_empty());
+        let speech_account = credential_account(&profile);
+        let text_account = SettingsStore::destination_account(&profile);
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &speech_account);
+        assert!(store
+            .credential_editor_state(&profile.id, Some(TextTranslation::OpenAICompatible))
+            .is_ok());
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &speech_account),
+            0
+        );
+        assert_eq!(fake.load_count(PROFILE_KEYCHAIN_SERVICE, &text_account), 1);
+        assert_eq!(
+            store
+                .credential_editor_state(&profile.id, None)
+                .err()
+                .as_deref(),
+            Some(CREDENTIAL_STORE_UNAVAILABLE)
+        );
+    }
+
+    #[test]
+    fn credential_editor_state_ui_fixtures_never_access_real_credentials() {
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::in_memory(Box::new(fake.clone()), true);
+        let profile = ServiceProfile::alibaba_default();
+        let speech = store.credential_editor_state(&profile.id, None).unwrap();
+        assert!(speech.saved_fields.contains(&CredentialRevealField::ApiKey));
+        assert_eq!(
+            store.reveal_credential(&profile.id, CredentialRevealField::ApiKey, None),
+            Ok(Some("sk-demo-not-a-real-key".into()))
+        );
+        store
+            .save_credentials(
+                &profile.id,
+                &openai_compatible_request("", "http://127.0.0.1:8000/v1", "", "local-model"),
+            )
+            .unwrap();
+        let text = store
+            .credential_editor_state(&profile.id, Some(TextTranslation::OpenAICompatible))
+            .unwrap();
+        assert!(text.saved_fields.is_empty());
+        assert_eq!(
+            text.endpoint.as_deref(),
+            Some("http://127.0.0.1:8000/v1/chat/completions")
+        );
+        assert_eq!(text.model.as_deref(), Some("local-model"));
+        let state = fake.state.lock().unwrap();
+        assert!(state.loads.is_empty());
+        assert!(state.values.is_empty());
+    }
+
+    #[test]
+    fn credential_editor_state_hydrates_provider_fields_without_secret_values() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        for (provider, credentials, expected) in [
+            (
+                ProviderKind::CustomOpenAIASR,
+                custom_speech_request(
+                    "wss://speech.example/realtime",
+                    "speech-model",
+                    "synthetic-speech-secret",
+                ),
+                serde_json::json!({"savedFields": ["apiKey", "asrApiKey"], "endpoint": "wss://speech.example/realtime", "model": "speech-model"}),
+            ),
+            (
+                ProviderKind::AzureOpenAIRealtime,
+                ProviderCredentials::AzureOpenAI {
+                    endpoint: "https://sample.openai.azure.com".into(),
+                    deployment: "realtime".into(),
+                    transcription_deployment: "transcribe".into(),
+                    api_key: "synthetic-azure-secret".into(),
+                },
+                serde_json::json!({"savedFields": ["apiKey"], "endpoint": "https://sample.openai.azure.com", "deployment": "realtime", "transcriptionDeployment": "transcribe"}),
+            ),
+            (
+                ProviderKind::TencentCloud,
+                ProviderCredentials::TencentCloud {
+                    app_id: "12345".into(),
+                    secret_id: "synthetic-tencent-id".into(),
+                    secret_key: "synthetic-tencent-secret".into(),
+                },
+                serde_json::json!({"savedFields": ["secretId", "secretKey"], "appId": "12345"}),
+            ),
+            (
+                ProviderKind::BaiduTranslate,
+                ProviderCredentials::BaiduTranslate {
+                    app_id: "67890".into(),
+                    app_key: "synthetic-baidu-secret".into(),
+                },
+                serde_json::json!({"savedFields": ["appKey"], "appId": "67890"}),
+            ),
+        ] {
+            let profile = store
+                .create_profile(provider, "Saved editor fields")
+                .unwrap();
+            store.save_credentials(&profile.id, &credentials).unwrap();
+            let state = store.credential_editor_state(&profile.id, None).unwrap();
+            assert_eq!(serde_json::to_value(state).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn credential_editor_state_supports_legacy_deeplx_and_keeps_private_paths_out_of_snapshots() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let profile = store
+            .create_profile(ProviderKind::DeepLX, "Legacy text destination")
+            .unwrap();
+        store
+            .save_credentials(
+                &profile.id,
+                &ProviderCredentials::DeepLX {
+                    asr_api_key: "synthetic-speech-secret".into(),
+                    endpoint: "https://example.com/private-path/translate".into(),
+                    token: String::new(),
+                },
+            )
+            .unwrap();
+        let state = store
+            .credential_editor_state(&profile.id, Some(TextTranslation::DeepLX))
+            .unwrap();
+        assert!(state.saved_fields.is_empty());
+        assert_eq!(
+            state.endpoint.as_deref(),
+            Some("https://example.com/private-path/translate")
+        );
+        let snapshot = serde_json::to_string(
+            &crate::commands::SettingsSnapshotPayload::from_store(&store),
+        )
+        .unwrap();
+        assert!(!snapshot.contains("private-path"));
+        assert!(!snapshot.contains("synthetic-speech-secret"));
     }
 
     #[test]
@@ -6736,6 +7720,7 @@ mod tests {
                 preferences.pulse_animation = Some(false);
                 preferences.subtitle_animation = Some(true);
                 preferences.ui_language = Some("ja".into());
+                preferences.subtitle_font_family = "Noto Sans CJK JP".into();
                 preferences.windows_audio_source = "safe-fixture-endpoint".into();
             })
             .unwrap();
@@ -7474,6 +8459,7 @@ mod tests {
     fn legacy_preferences_default_to_centered_card_presentation() {
         let preferences: Preferences = serde_json::from_str("{}").unwrap();
 
+        assert!(preferences.subtitle_font_family.is_empty());
         assert_eq!(preferences.subtitle_background_opacity, 80);
         assert_eq!(preferences.subtitle_color, SubtitleColor::White);
         assert_eq!(preferences.subtitle_alignment, SubtitleAlignment::Center);
@@ -7579,6 +8565,92 @@ mod tests {
             assert_eq!(prefs.font_size, 19.0);
             assert_eq!(prefs.pulse_animation, Some(false));
             assert_eq!(prefs.subtitle_animation, Some(true));
+        }
+        assert!(fake.state.lock().unwrap().loads.is_empty());
+    }
+
+    #[test]
+    fn subtitle_font_family_persists_and_resets_without_secret_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        let original_catalog = store.profile_catalog().unwrap();
+        for (input, expected) in [
+            ("  思源黑体  ", "思源黑体"),
+            (
+                "A Font Removed From This Computer",
+                "A Font Removed From This Computer",
+            ),
+            ("", ""),
+        ] {
+            store
+                .save_preferences_for_active_profile(|prefs| {
+                    prefs.subtitle_font_family = input.into();
+                })
+                .unwrap();
+            store
+                .save_preferences_for_active_profile(|prefs| prefs.font_size = 19.0)
+                .unwrap();
+            let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+            assert_eq!(reloaded.preferences().subtitle_font_family, expected);
+            assert_eq!(reloaded.preferences().font_size, 19.0);
+            assert_eq!(reloaded.profile_catalog().unwrap(), original_catalog);
+        }
+        let state = fake.state.lock().unwrap();
+        assert!(state.loads.is_empty());
+        assert!(state.values.is_empty());
+    }
+
+    #[test]
+    fn subtitle_font_invalid_save_rolls_back_all_preferences_and_disk() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        store
+            .save_preferences(|prefs| prefs.subtitle_font_family = "Noto Sans".into())
+            .unwrap();
+        let before = store.preferences();
+        let bytes = std::fs::read(directory.path().join("preferences.json")).unwrap();
+        for invalid in ["Font\nName".to_owned(), "字".repeat(257)] {
+            assert_eq!(
+                store.save_preferences_for_active_profile(|prefs| {
+                    prefs.font_size = 20.0;
+                    prefs.subtitle_font_family = invalid;
+                }),
+                Err(crate::core::subtitle_font::INVALID_FAMILY_NAME.into())
+            );
+            assert_eq!(store.preferences(), before);
+            assert_eq!(
+                std::fs::read(directory.path().join("preferences.json")).unwrap(),
+                bytes
+            );
+        }
+        assert!(fake.state.lock().unwrap().loads.is_empty());
+    }
+
+    #[test]
+    fn subtitle_font_load_sanitizes_invalid_names_without_resetting_other_preferences() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        for (input, expected) in [
+            ("  Noto Sans  ".to_owned(), "Noto Sans"),
+            ("Font\u{7f}".to_owned(), ""),
+            ("字".repeat(257), ""),
+        ] {
+            std::fs::write(
+                directory.path().join("preferences.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "subtitle_font_family": input,
+                    "font_size": 19,
+                    "show_in_dock": false
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+            assert_eq!(store.preferences().subtitle_font_family, expected);
+            assert_eq!(store.preferences().font_size, 19.0);
+            assert!(!store.preferences().show_in_dock);
         }
         assert!(fake.state.lock().unwrap().loads.is_empty());
     }

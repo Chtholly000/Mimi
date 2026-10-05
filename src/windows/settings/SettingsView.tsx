@@ -9,6 +9,8 @@ import type { SettingsDraft, SubtitleAlignment } from "../../lib/types";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import { subtitleBackgroundColor, subtitleColorHex } from "../../lib/subtitleColor";
 import type { SubtitleDisplayMode } from "../../lib/types";
+import { subtitleFontFamily } from "../../lib/subtitleFont";
+import { SubtitleFontControl } from "./SubtitleFontControl";
 import { SubtitleColorControl } from "./SubtitleColorControl";
 import { ServiceProfiles } from "./ServiceProfiles";
 import { SupportDiagnostics } from "./SupportDiagnostics";
@@ -51,6 +53,7 @@ const CATEGORY_SECTION_IDS: Record<SettingsCategory, string> = {
 export function SettingsView() {
   const { nativeShortcuts, commands: desktopShortcutCommands } = useDesktopShortcuts();
   const [showShortcutSetup, setShowShortcutSetup] = useState(false);
+  const [subtitleFontPreview, setSubtitleFontPreview] = useState<string | undefined>();
   const { theme, resolvedTheme, changeTheme } = useSettingsTheme();
   // Subscribe only to state rendered in this window. Subtitle text updates do
   // not re-render settings while a stream is active.
@@ -265,7 +268,7 @@ export function SettingsView() {
                       </div>
                       <div
                         className="subtitle-preview__text"
-                        style={{ fontSize: settings.fontSize, color: subtitleColorHex(settings.subtitleColor),
+                        style={{ fontSize: settings.fontSize, fontFamily: subtitleFontFamily(subtitleFontPreview ?? settings.subtitleFontFamily), color: subtitleColorHex(settings.subtitleColor),
                           background: settings.subtitleBlendsWithBackground ? "transparent" : subtitleBackgroundColor(settings.subtitleBackgroundOpacity) }}
                       >
                         {settings.subtitleDisplayMode !== "translation" && (
@@ -277,14 +280,19 @@ export function SettingsView() {
                       </div>
                     </div>
                     <div className="subtitle-preview__controls">
-                      <SettingsRow label={I18N.settings.subtitleDisplay} description={`${I18N.settings.subtitleDisplayHelp}${nativeShortcuts ? ` ${subtitleDisplayShortcut()}` : ""}`}>
-                        <SettingsSelect
-                          label={I18N.settings.subtitleDisplay}
-                          value={settings.subtitleDisplayMode}
-                          options={SUBTITLE_DISPLAY_OPTIONS}
-                          onChange={(value) => void savePreference({ subtitleDisplayMode: value as SubtitleDisplayMode }, I18N.settings.subtitleDisplay)}
-                        />
-                      </SettingsRow>
+                      <div className="subtitle-preview__selectors">
+                        <SettingsRow label={I18N.settings.subtitleDisplay} description={`${I18N.settings.subtitleDisplayHelp}${nativeShortcuts ? ` ${subtitleDisplayShortcut()}` : ""}`}>
+                          <SettingsSelect
+                            label={I18N.settings.subtitleDisplay}
+                            value={settings.subtitleDisplayMode}
+                            options={SUBTITLE_DISPLAY_OPTIONS}
+                            onChange={(value) => void savePreference({ subtitleDisplayMode: value as SubtitleDisplayMode }, I18N.settings.subtitleDisplay)}
+                          />
+                        </SettingsRow>
+                        <SubtitleFontControl value={settings.subtitleFontFamily ?? ""}
+                          onPreview={setSubtitleFontPreview}
+                          onChange={subtitleFontFamily => saveSettings({ subtitleFontFamily })} />
+                      </div>
                       <SettingsRow label={I18N.settings.showIntermediateSubtitles} description={I18N.settings.showIntermediateSubtitlesHelp}>
                         <Switch
                           checked={settings.showIntermediateSubtitles !== false}
@@ -494,7 +502,7 @@ export function SettingsView() {
 
                 <DockPreference />
 
-                <SoftwareUpdate />
+                <SoftwareUpdate active={activeCategory === "general"} />
               </SettingsSection>
             </div>
             <div

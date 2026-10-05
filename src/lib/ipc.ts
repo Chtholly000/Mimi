@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { observeSessionWireReceived } from "./developmentTrace";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
-  ProfileNetworkProxyDraft,
+  ProfileOptionsDraft,
   AudioInput,
   AudioSource,
   ProviderCredentialsInput,
@@ -81,6 +81,10 @@ export function sessionSwitchTranslationMode(
   return invoke("session_switch_translation_mode", { mode });
 }
 
+export function installedFontFamilies(): Promise<string[]> {
+  return isTauri ? invoke<string[]>("installed_font_families") : Promise.resolve([]);
+}
+
 export function settingsGet(): Promise<SettingsSnapshot> {
   return invoke<SettingsSnapshot>("settings_get");
 }
@@ -118,10 +122,10 @@ export function profileCreate(
 
 export function profileUpdate(
   profileId: string,
-  name: string,
-  proxies?: ProfileNetworkProxyDraft,
+  name: string | undefined,
+  options?: ProfileOptionsDraft,
 ): Promise<SettingsSnapshot> {
-  return invoke<SettingsSnapshot>("profile_update", { profileId, name, ...proxies });
+  return invoke<SettingsSnapshot>("profile_update", { profileId, name, ...options });
 }
 
 export function profileSelect(profileId: string): Promise<SettingsSnapshot> {
@@ -149,6 +153,24 @@ export function profileDeleteAPIKey(
 }
 
 export type StoredCredentialField = "apiKey" | "asrApiKey" | "token" | "secretId" | "secretKey" | "appKey";
+
+/** Editor-local configuration; endpoints may contain private path segments. */
+export interface CredentialEditorState {
+  savedFields: StoredCredentialField[];
+  endpoint?: string;
+  model?: string;
+  deployment?: string;
+  transcriptionDeployment?: string;
+  appId?: string;
+}
+
+/** Never retain this response in the shared settings store or diagnostics. */
+export function profileCredentialEditorState(request: {
+  profileId: string;
+  textTranslation?: Exclude<TextTranslation, "followService">;
+}): Promise<CredentialEditorState> {
+  return invoke<CredentialEditorState>("profile_credential_editor_state", request);
+}
 
 /** Settings-only, explicit user reveal. Never includes secrets in a snapshot. */
 export function profileRevealCredential(request: {
@@ -334,6 +356,6 @@ export interface ConnectionDiagnostic {
   elapsedMs?: number | null;
 }
 export type ConnectionCheckStage = "speech" | "text";
-export function testProfileConnection(profileId: string, stage?: ConnectionCheckStage): Promise<ConnectionDiagnostic> {
-  return invoke("profile_test_connection", stage ? { profileId, stage } : { profileId });
+export function testProfileConnection(profileId: string, stage?: ConnectionCheckStage, credentials?: ProviderCredentialsInput): Promise<ConnectionDiagnostic> {
+  return invoke("profile_test_connection", { profileId, ...(stage ? { stage } : {}), ...(credentials ? { credentials } : {}) });
 }

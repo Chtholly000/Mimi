@@ -8,7 +8,7 @@ window.__TAURI_INTERNALS__ = {
   metadata: { currentWindow: { label: "settings" }, currentWebview: { label: "settings" } },
   transformCallback: () => 0,
   unregisterCallback: () => {},
-  invoke: async command => {
+  invoke: async (command, args) => {
     if (command === "windows_audio_status") {
       if (fixture.platform !== "windows") return null;
       if (fixture.state === "failed") throw new Error("fixture_unavailable");
@@ -20,14 +20,37 @@ window.__TAURI_INTERNALS__ = {
       };
     }
     if (command === "app_desktop_shortcut_commands") return null;
+    if (command === "profile_update") {
+      if (fixture.nameSaveDelay) await new Promise(resolve => setTimeout(resolve, fixture.nameSaveDelay));
+      if (fixture.failNameSave) throw new Error("fixture_name_save_failed");
+      const current = useStore.getState().settings;
+      const snapshot = { ...current, profiles: current.profiles.map(profile => {
+        if (profile.id !== args.profileId) return profile;
+        const next = { ...profile, ...(args.name === undefined ? {} : { name: args.name.trim() }) };
+        if (args.textTranslationName) {
+          next.textTranslationNames = { ...profile.textTranslationNames };
+          const { route, name } = args.textTranslationName;
+          if (name.trim()) next.textTranslationNames[route] = name.trim();
+          else delete next.textTranslationNames[route];
+        }
+        return next;
+      }) };
+      // Stand in for the native settings event; this fixture never writes disk.
+      useStore.setState({ settings: snapshot });
+      return snapshot;
+    }
+    if (command === "profile_credential_editor_state") return args.textTranslation
+      ? { savedFields: fixture.keyless ? [] : ["token"], endpoint: "http://127.0.0.1:8080/v1", model: "fixture-model" }
+      : { savedFields: ["apiKey"], endpoint: "wss://speech.example/v1/realtime", model: "fixture-speech-model" };
     if (command === "profile_reveal_credential") return "fixture-saved-value";
     if (command === "plugin:event|listen") return 0;
     if (command === "plugin:event|unlisten") return;
     throw new Error("fixture_command_unavailable");
   },
 };
-const React = (await import("/node_modules/.vite/deps/react.js")).default;
-const { createRoot } = (await import("/node_modules/.vite/deps/react-dom_client.js")).default;
+const React = (await import("react")).default;
+const { createRoot } = (await import("react-dom/client")).default;
+const { flushSync } = (await import("react-dom")).default;
 const { useStore } = await import("/src/lib/store.ts");
 const { setStoredUiLanguage } = await import("/src/lib/i18n.ts");
 const { SettingsView } = await import("/src/windows/settings/SettingsView.tsx");
@@ -35,6 +58,7 @@ await import("/src/index.css");
 await import("/src/linux.css");
 const initial = useStore.getState();
 const root = createRoot(document.getElementById("root"));
+const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 let generation = 0;
 window.applyLayoutCase = async next => {
   fixture = next;
@@ -48,28 +72,28 @@ window.applyLayoutCase = async next => {
   useStore.setState({
     initializationStatus: "ready",
     settings: { ...initial.settings, uiLanguage: next.language, microphoneInputAvailable: next.platform === "macos", windowsAudioSource: next.state === "missing" ? "removed-output" : "fixture-output",
-      ...(next.editor ? { profiles: [{ id: "layout-custom", name: "Fixture configuration", provider: next.provider ?? "customDashScopeASR", credentialState: "present", speechCredentialState: "present", textCredentialState: "present", textTranslation: "chatMock" }], activeProfileId: "layout-custom" } : {}),
+      ...(next.editor ? { profiles: [{ id: "layout-custom", name: next.profileName ?? "Fixture configuration", provider: next.provider ?? "customDashScopeASR", credentialState: "present", speechCredentialState: "present", textCredentialState: "present", textTranslation: "chatMock", textTranslationNames: { chatMock: next.translationName ?? "" } }], activeProfileId: "layout-custom" } : {}),
     },
     session: { ...initial.session, isActive: active || next.state === "paused", isPaused: next.state === "paused", status: { kind: active ? "listening" : next.state === "paused" ? "paused" : "idle" } },
   });
-  root.render(React.createElement(SettingsView, { key: ++generation }));
-  await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  flushSync(() => root.render(React.createElement(SettingsView, { key: ++generation })));
+  await settle();
   if (next.editor) {
     document.querySelector(".service-row__edit").click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await settle();
     if (next.reveal) {
-      if (!document.querySelector(".stored-credential-reveal__toggle")) document.querySelector(".credential-panel__saved-actions button").click();
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      for (const button of document.querySelectorAll(".stored-credential-reveal__toggle")) button.click();
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      document.querySelector(".credential-panel__saved-actions button")?.click();
+      await settle();
+      for (const button of document.querySelectorAll(".saved-credential-input__toggle")) button.click();
+      await settle();
     }
   }
   if (next.providerPicker || next.providerConfirmation) {
     document.querySelector(".services-toolbar > button").click();
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await settle();
     if (next.providerConfirmation) {
       document.querySelector('.provider-option[data-provider="openAIRealtime"]').click();
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await settle();
     }
   }
 };

@@ -20,6 +20,7 @@ mod development_content;
 mod development_content;
 #[cfg(any(test, feature = "development-debugger"))]
 mod development_debugger;
+mod fonts;
 #[cfg(target_os = "linux")]
 mod linux_startup;
 #[cfg(any(target_os = "macos", test))]
@@ -343,6 +344,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::settings_get,
+            fonts::installed_font_families,
             commands::windows_audio_status,
             commands::audio_census,
             commands::support_diagnostics,
@@ -388,6 +390,7 @@ pub fn run() {
             commands::profile_test_connection,
             commands::profile_delete_api_key,
             commands::profile_reveal_credential,
+            commands::profile_credential_editor_state,
             crate::session_export::session_archive_state,
             crate::session_export::session_transcript_page,
             crate::session_export::session_history_list,

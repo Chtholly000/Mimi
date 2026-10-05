@@ -113,6 +113,8 @@ export interface SettingsSnapshot {
   translationMode: TranslationMode;
   /** 14..20 */
   fontSize: number;
+  /** Empty or omitted uses the language-aware system font stack. */
+  subtitleFontFamily?: string;
   /** 0..100, background only. */
   subtitleBackgroundOpacity: number;
   subtitleColor: SubtitleColor;
@@ -166,6 +168,7 @@ export interface SettingsDraft {
   targetLanguage?: TargetLanguage;
   translationMode?: TranslationMode;
   fontSize?: number;
+  subtitleFontFamily?: string;
   subtitleBackgroundOpacity?: number;
   subtitleColor?: SubtitleColor;
   microphoneSubtitleColor?: SubtitleColor;
@@ -233,6 +236,8 @@ export type ProviderCredentialsInput =
 export type CredentialState = "present" | "missing" | "unavailable";
 
 export type ProfileNetworkProxyDraft = Partial<Pick<ServiceProfile, "speechNetworkProxy" | "textNetworkProxy">>;
+export type TextTranslationNameDraft = { route: Exclude<TextTranslation, "followService">; name: string };
+export type ProfileOptionsDraft = ProfileNetworkProxyDraft & { textTranslationName?: TextTranslationNameDraft };
 
 export interface ServiceProfile {
   id: string;
@@ -246,6 +251,8 @@ export interface ServiceProfile {
   textCredentialState?: CredentialState;
   /** Optional for historical/native fixture snapshots; inferred from provider when absent. */
   textTranslation?: TextTranslation;
+  /** Display metadata only; names stay independent for each saved translation route. */
+  textTranslationNames?: Partial<Record<Exclude<TextTranslation, "followService">, string>>;
   /** Missing legacy fields inherit SettingsSnapshot.networkProxy. */
   speechNetworkProxy?: NetworkProxyConfig | null;
   textNetworkProxy?: NetworkProxyConfig | null;
