@@ -955,3 +955,88 @@
   session idle. Playback and content-free tracing were stopped. The formal
   application was not replaced. The sample and sanitized diagnostics remain
   in a private local regression directory; credentials remain in app storage.
+
+### 2026-10-05 — Volcano activation and retained four-window regression
+
+- The user completed account setup, activated simultaneous interpretation 2.0
+  as a formal service and entered the key in Mimi. The console initially showed
+  1,000,000 / 1,000,000 tokens remaining and expiry `-`; this does not mean the
+  allowance never expires. The agent did not perform those account/key actions.
+  See the [provider matrix](provider-regression-matrix.md) for API and billing
+  boundaries, including automatic postpaid charging after free resources run out.
+- Clean signed canonical build `5b29d05e` produced `en` → `zh` subtitles during
+  YouTube DevDay playback. Private trace counters for private events, replay
+  snapshots and content bytes were all zero; no media URL, subtitle content,
+  account identifier or credential is included here.
+- Trace-relative timestamps, not app uptime: pause at 123.991 s completed at
+  124.071 s (80 ms). Resume at 143.024 s reached listening at 143.502 s (478 ms);
+  generation 5's first
+  confirmed pair arrived at 145.165 s. The retained interval contains 15 final
+  pairs and no error events.
+- Across 88 snapshots numbered 123–210, all four windows agreed on receipt and
+  application, and the overlay rendered every snapshot. Application delay was
+  a median 53 ms and maximum 106 ms. These snapshot propagation and recovery
+  timings do not measure end-to-end subtitle latency.
+- The trace recorded 5,059 events, retained 2,048 and evicted 3,011. Analysis is
+  limited to trace-relative 119.122–180.540 s; `traceDropped`, `frontendDropped`
+  and `staleFrontendRejected` were zero, and `unflushedWindows` was empty. The
+  3,011 evictions reflect bounded retention; this is not a full-session trace.
+- Normal quit from the running state was confirmed with `isRunning: false`,
+  followed by reopening the canonical app. The active Volcano profile,
+  `en` → `zh` selection and saved credentials persisted; microphone capture
+  remained off. A real connection check succeeded in 375 ms.
+- After restart, YouTube playback produced four confirmed pairs. A subsequent
+  new session replayed the saved 15.091-second synthetic English sample in
+  QuickTime; the native overlay showed six source/translation groups through
+  the final sentence, with RTT 47 ms. This verifies configuration retention and
+  subtitle output after cold launch/new start; it does not establish sustained
+  stability. These timings do not measure end-to-end subtitle latency.
+- During later silence after audio completion, the UI showed temporary
+  translation failure with reconnect guidance. Support-journal timestamps:
+  `listening` 193,880 ms → reconnect 254,481 ms → `listening` 254,956 ms →
+  `OTHER` error 258,640 ms (3.684 s after reconnection completed). Manual start
+  266,856 ms → `listening` 267,292 ms → `OTHER` error 272,668 ms (5.376 s later).
+  No trace was active for these events; private events and recording remained
+  off. The cause remains unknown. Sustained stability did not pass, and no
+  silence timeout or root-cause fix is established.
+- The subsequent `support_diagnostics.rs` patch only adds safe numeric provider
+  status and fixed-label classification. The clean follow-up below ran the patch
+  natively without triggering its numeric failure path. Provider behavior,
+  protocol and automatic recovery are unchanged.
+
+- Earlier signed `6aa143dc` plus diagnostic/UI patch: silent listening lasted
+  166.585 s without a recorded failure. A later audio replay was interrupted by
+  another task installing UI-test mode at the canonical path and is excluded.
+- Automated follow-up: `scripts/check.sh` passed with 1,172 Rust tests / 2 ignored,
+  72 shared-core tests and JNI checks, and 1,730 frontend tests. After the
+  provider-picker Cancel/navigation fix, the complete frontend suite passed
+  1,736 tests across 119 files; lint, typecheck and production build also passed.
+
+### 2026-10-05 — Clean Volcano audio and sustained-silence follow-up
+
+- Signed canonical build from clean `82514e5d`, system audio on and microphone
+  off. The configured route was **`ja` → `zh`**, but the existing 15.091-second
+  synthetic sample was **English**. This run verifies transport/lifecycle and
+  output counts, not English language support or recognition/translation accuracy.
+- Support diagnostics remained `listening` from app uptime 138,481 to
+  346,969 ms (208.488 s), with six confirmed pairs and no error. The trace's
+  final pair was at 163,298 ms and last audible batch at 163,068 ms. Silent PCM
+  sends continued from 165,062 through 365,062 ms: at least 200 s, with 101
+  send-statistic observations at -96 dBFS and a maximum observation gap of
+  2,013 ms (not audio packet spacing). No provider error, recovery or
+  reconnection was recorded in this run.
+- Trace IDs 1–1,331 were contiguous, with no eviction, drops, cap hits or write
+  failures, and `unflushedWindows` was empty at stop. All 64 published snapshots
+  (IDs 1–64) reported successful delivery and reached `wireReceived`/`storeApplied`
+  in each of four windows. Source, translation, history and track counts had
+  zero mismatches; `overlayCommitted` covered all 64. Content, private-event and
+  replay counters were all zero.
+- Service-picker guidance and Cancel return were verified natively during an
+  active session. The diagnostic patch also ran natively, but the old `OTHER`
+  failure did not recur. Its cause remains unresolved; the safe numeric error
+  path still has automated coverage only. This is not evidence of a root-cause
+  fix or a general silence timeout rule. See the
+  [provider matrix](provider-regression-matrix.md) for earlier evidence and limits.
+- After integrating main's Tencent fixes, final `scripts/check.sh` at `5b689c78`
+  passed: Rust 1,177 / 2 ignored, shared core 72 plus JNI checks, frontend 1,743
+  across 120 files, formatting, Clippy, lint, typecheck, production build and diff.
