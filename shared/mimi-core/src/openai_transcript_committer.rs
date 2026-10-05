@@ -1,4 +1,4 @@
-//! Aligns append-only source and translation streams used by OpenAI and Gemini.
+//! Aligns OpenAI deltas and assembles Gemini's independent continuous transcripts.
 
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +32,8 @@ const SENTENCE_DELIMITERS: [char; 7] = ['.', '!', '?', '。', '！', '？', '\n'
 struct TimedTextBuffer {
     text: String,
     boundaries: Vec<TimedBoundary>,
+    #[serde(default)]
+    cumulative_snapshots: bool,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -60,6 +62,23 @@ impl TimedTextBuffer {
             character_count: self.character_count(),
             elapsed_ms,
         });
+    }
+
+    /// A strict extension of the whole pending buffer is a cumulative snapshot.
+    /// Otherwise preserve the fragment exactly, including subword boundaries and
+    /// whitespace. A matching tail alone cannot distinguish a resend from speech
+    /// repetition. Equal snapshots are ignored only after cumulative evidence.
+    fn merge_gemini(&mut self, chunk: &str) -> bool {
+        if !self.text.is_empty() && chunk.len() > self.text.len() && chunk.starts_with(&self.text) {
+            self.text.clear();
+            self.text.push_str(chunk);
+            self.cumulative_snapshots = true;
+        } else if self.cumulative_snapshots && chunk == self.text {
+            return false;
+        } else {
+            self.text.push_str(chunk);
+        }
+        true
     }
 
     fn aligned_prefixes(&self, other: &Self, maximum_skew_ms: u64) -> Option<(usize, usize)> {
@@ -115,6 +134,7 @@ impl TimedTextBuffer {
     fn reset(&mut self) {
         self.text.clear();
         self.boundaries.clear();
+        self.cumulative_snapshots = false;
     }
 }
 
@@ -144,6 +164,8 @@ impl OpenAITranscriptPairCommitter {
             let characters = buffer.character_count();
             crate::subtitle_text_within_limit(&buffer.text)
                 && characters <= buffer_limit
+                && (!buffer.cumulative_snapshots
+                    || (self.stable_block_mode && buffer.boundaries.is_empty()))
                 && buffer.boundaries.len() <= characters
                 && buffer.boundaries.iter().all(|boundary| {
                     boundary.character_count > 0 && boundary.character_count <= characters
@@ -185,7 +207,8 @@ impl OpenAITranscriptPairCommitter {
         }
     }
 
-    /// Gemini supplies append-only text without utterance IDs or audio timing.
+    /// Gemini supplies fragments or cumulative extensions without utterance IDs
+    /// or audio timing. Draft presentation is independent of local finalization.
     /// Keep whole blocks together: equal punctuation counts do not prove alignment.
     pub fn new_gemini() -> Self {
         Self {
@@ -199,8 +222,9 @@ impl OpenAITranscriptPairCommitter {
     }
 
     /// The caller supplies a monotonic receipt clock, never an audio timestamp.
-    /// Silence is a heuristic checkpoint, not a provider terminal event. Require
-    /// both complete buffers and retain unmatched/unpunctuated tails for a turn.
+    /// Silence is a heuristic caption checkpoint, not an aligned utterance or a
+    /// provider terminal event. Require both lanes; punctuation is not required.
+    /// Unmatched text remains live until its counterpart or an explicit boundary.
     pub fn settle(&mut self, now_ms: u64) -> Vec<TranscriptEvent> {
         let quiet_ms = if self.explicit_turn {
             GEMINI_TURN_TAIL_QUIET_MS
@@ -211,8 +235,8 @@ impl OpenAITranscriptPairCommitter {
             || self
                 .last_delta_ms
                 .is_none_or(|last| now_ms.saturating_sub(last) < quiet_ms)
-            || (!self.explicit_turn
-                && (!ends_complete(&self.source.text) || !ends_complete(&self.translation.text)))
+            || !is_meaningful(&self.source.text)
+            || !is_meaningful(&self.translation.text)
         {
             return Vec::new();
         }
@@ -226,15 +250,6 @@ impl OpenAITranscriptPairCommitter {
         }
     }
 
-    fn receipt_time(&mut self, elapsed_ms: Option<u64>) -> Option<u64> {
-        if self.stable_block_mode {
-            self.last_delta_ms = elapsed_ms;
-            None
-        } else {
-            elapsed_ms
-        }
-    }
-
     pub fn append_source_delta(
         &mut self,
         delta: &str,
@@ -243,8 +258,14 @@ impl OpenAITranscriptPairCommitter {
         if delta.is_empty() {
             return Vec::new();
         }
-        let timing = self.receipt_time(elapsed_ms);
-        self.source.append(delta, timing);
+        if self.stable_block_mode {
+            if !self.source.merge_gemini(delta) {
+                return Vec::new();
+            }
+            self.last_delta_ms = elapsed_ms;
+        } else {
+            self.source.append(delta, elapsed_ms);
+        }
         let preview = TranscriptEvent::SourceDraft {
             text: self.source.text.clone(),
             language: self.source_language.clone(),
@@ -260,8 +281,14 @@ impl OpenAITranscriptPairCommitter {
         if delta.is_empty() {
             return Vec::new();
         }
-        let timing = self.receipt_time(elapsed_ms);
-        self.translation.append(delta, timing);
+        if self.stable_block_mode {
+            if !self.translation.merge_gemini(delta) {
+                return Vec::new();
+            }
+            self.last_delta_ms = elapsed_ms;
+        } else {
+            self.translation.append(delta, elapsed_ms);
+        }
         let preview = TranscriptEvent::TranslationDraft(self.translation.text.clone());
         self.events_after_append(preview)
     }
@@ -430,13 +457,6 @@ impl Default for OpenAITranscriptPairCommitter {
     }
 }
 
-fn ends_complete(text: &str) -> bool {
-    text.trim_end()
-        .chars()
-        .next_back()
-        .is_some_and(|c| SENTENCE_DELIMITERS.contains(&c))
-}
-
 fn char_prefix(text: &str, count: usize) -> String {
     text.chars().take(count).collect()
 }
@@ -506,13 +526,108 @@ mod tests {
     }
 
     #[test]
-    fn gemini_quiet_does_not_commit_unmatched_or_incomplete_text() {
+    fn gemini_quiet_closes_paired_unpunctuated_text_but_retains_unmatched_text() {
         let mut stream = OpenAITranscriptPairCommitter::new_gemini();
         stream.append_source_delta("Complete.", Some(0));
         assert!(stream.settle(5_000).is_empty());
         stream.append_translation_delta("尚未完成", Some(5_100));
+        assert!(stream.settle(7_099).is_empty());
+        assert!(matches!(stream.settle(7_100).as_slice(),
+            [TranscriptEvent::SubtitleFinalPair { source, translation, .. }]
+            if source == "Complete." && translation == "尚未完成"));
+        assert!(!stream.has_pending());
+        stream.append_translation_delta("Translation only", Some(8_000));
         assert!(stream.settle(10_000).is_empty());
-        assert_eq!(stream.finish().len(), 1);
+        assert!(stream.has_pending());
+    }
+
+    #[test]
+    fn gemini_merges_fragments_and_cumulative_extensions_in_independent_lanes() {
+        let mut stream = OpenAITranscriptPairCommitter::new_gemini();
+        for (index, chunk) in ["我", "今天", "不想", "出去。"].iter().enumerate() {
+            stream.append_source_delta(chunk, Some(index as u64));
+        }
+        for (index, (chunk, expected)) in [
+            ("私", "私"),
+            ("私は今日", "私は今日"),
+            ("私は今日外に", "私は今日外に"),
+            ("出たくない。", "私は今日外に出たくない。"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert_eq!(
+                stream.append_translation_delta(chunk, Some(index as u64)),
+                vec![TranscriptEvent::TranslationDraft((*expected).into())]
+            );
+        }
+        assert!(matches!(stream.settle(2_003).as_slice(),
+            [TranscriptEvent::SubtitleFinalPair { source, translation, .. }]
+            if source == "我今天不想出去。" && translation == "私は今日外に出たくない。"));
+    }
+
+    #[test]
+    fn gemini_preserves_repetition_subwords_and_provider_whitespace() {
+        let mut stream = OpenAITranscriptPairCommitter::new_gemini();
+        for chunk in ["trans", "lation", " is very", " very", " good", "."] {
+            stream.append_source_delta(chunk, Some(0));
+        }
+        for chunk in ["哈", "哈", "！"] {
+            stream.append_translation_delta(chunk, Some(0));
+        }
+        assert!(matches!(stream.finish().as_slice(),
+            [TranscriptEvent::SubtitleFinalPair { source, translation, .. }]
+            if source == "translation is very very good." && translation == "哈哈！"));
+    }
+
+    #[test]
+    fn gemini_equal_cumulative_snapshots_do_not_postpone_quiet_or_cross_a_reset() {
+        let mut stream = OpenAITranscriptPairCommitter::new_gemini();
+        stream.append_source_delta("Hello", Some(0));
+        stream.append_source_delta("Hello world", Some(100));
+        stream.append_translation_delta("你好", Some(0));
+        stream.append_translation_delta("你好世界", Some(100));
+        assert!(stream
+            .append_source_delta("Hello world", Some(1_900))
+            .is_empty());
+        assert!(stream
+            .append_translation_delta("你好世界", Some(2_000))
+            .is_empty());
+        assert!(stream.settle(2_099).is_empty());
+        assert_eq!(stream.settle(2_100).len(), 1);
+        // A whole caption genuinely repeated after a checkpoint must survive.
+        assert_eq!(
+            stream.append_translation_delta("你好世界", Some(3_000)),
+            vec![TranscriptEvent::TranslationDraft("你好世界".into())]
+        );
+        stream.reset();
+        assert_eq!(
+            stream.append_translation_delta("你好世界", Some(4_000)),
+            vec![TranscriptEvent::TranslationDraft("你好世界".into())]
+        );
+    }
+
+    #[test]
+    fn gemini_cumulative_state_roundtrips_without_changing_openai_delta_semantics() {
+        let mut stream = OpenAITranscriptPairCommitter::new_gemini();
+        stream.append_translation_delta("合成", Some(0));
+        stream.append_translation_delta("合成文本", Some(1));
+        let state = serde_json::to_string(&stream).unwrap();
+        let mut restored: OpenAITranscriptPairCommitter = serde_json::from_str(&state).unwrap();
+        restored.validate_state(320).unwrap();
+        assert!(restored
+            .append_translation_delta("合成文本", Some(2))
+            .is_empty());
+        assert_eq!(
+            restored.append_translation_delta("后续", Some(3)),
+            vec![TranscriptEvent::TranslationDraft("合成文本后续".into())]
+        );
+        let mut openai = OpenAITranscriptPairCommitter::default();
+        openai.append_translation_delta("合成", None);
+        assert_eq!(
+            openai.append_translation_delta("合成文本", None),
+            vec![TranscriptEvent::TranslationDraft("合成合成文本".into())]
+        );
     }
 
     #[test]

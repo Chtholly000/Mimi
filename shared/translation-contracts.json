@@ -1767,6 +1767,182 @@
           "language": "en"
         }
       ]
+    },
+    {
+      "id": "gemini-cumulative-extensions-preview-before-unpunctuated-checkpoint",
+      "provider": "googleGeminiLive",
+      "frames": [
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"I\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"我\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"I do\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"我今天\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"I do not\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"我今天不\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"I do not want to leave\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"我今天不想出去。\"}}}"
+      ],
+      "settleAfterFrames": [
+        7
+      ],
+      "expected": [
+        {
+          "source": "I do not want to leave",
+          "translation": "我今天不想出去。",
+          "language": "en"
+        }
+      ],
+      "expectedDrafts": [
+        {
+          "kind": "source",
+          "text": "I"
+        },
+        {
+          "kind": "translation",
+          "text": "我"
+        },
+        {
+          "kind": "source",
+          "text": "I do"
+        },
+        {
+          "kind": "translation",
+          "text": "我今天"
+        },
+        {
+          "kind": "source",
+          "text": "I do not"
+        },
+        {
+          "kind": "translation",
+          "text": "我今天不"
+        },
+        {
+          "kind": "source",
+          "text": "I do not want to leave"
+        },
+        {
+          "kind": "translation",
+          "text": "我今天不想出去。"
+        }
+      ]
+    },
+    {
+      "id": "gemini-fragments-preserve-subwords-and-genuine-repetition",
+      "provider": "googleGeminiLive",
+      "frames": [
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"syn\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"合\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"thetic\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"成\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\" very\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"合\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\" very\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"成\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\".\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"。\"}}}"
+      ],
+      "settleAfterFrames": [
+        9
+      ],
+      "expected": [
+        {
+          "source": "synthetic very very.",
+          "translation": "合成合成。",
+          "language": "en"
+        }
+      ],
+      "expectedDrafts": [
+        {
+          "kind": "source",
+          "text": "syn"
+        },
+        {
+          "kind": "translation",
+          "text": "合"
+        },
+        {
+          "kind": "source",
+          "text": "synthetic"
+        },
+        {
+          "kind": "translation",
+          "text": "合成"
+        },
+        {
+          "kind": "source",
+          "text": "synthetic very"
+        },
+        {
+          "kind": "translation",
+          "text": "合成合"
+        },
+        {
+          "kind": "source",
+          "text": "synthetic very very"
+        },
+        {
+          "kind": "translation",
+          "text": "合成合成"
+        },
+        {
+          "kind": "source",
+          "text": "synthetic very very."
+        },
+        {
+          "kind": "translation",
+          "text": "合成合成。"
+        }
+      ]
+    },
+    {
+      "id": "gemini-mixed-stream-ignores-equal-observed-snapshots",
+      "provider": "googleGeminiLive",
+      "frames": [
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Synthetic\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"合\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Synthetic source\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"合成\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\" fragment\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"文本\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Synthetic source fragment\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"合成文本\"}}}"
+      ],
+      "settleAfterFrames": [
+        7
+      ],
+      "expected": [
+        {
+          "source": "Synthetic source fragment",
+          "translation": "合成文本",
+          "language": "en"
+        }
+      ],
+      "expectedDrafts": [
+        {
+          "kind": "source",
+          "text": "Synthetic"
+        },
+        {
+          "kind": "translation",
+          "text": "合"
+        },
+        {
+          "kind": "source",
+          "text": "Synthetic source"
+        },
+        {
+          "kind": "translation",
+          "text": "合成"
+        },
+        {
+          "kind": "source",
+          "text": "Synthetic source fragment"
+        },
+        {
+          "kind": "translation",
+          "text": "合成文本"
+        }
+      ]
     }
   ],
   "detectedSourceRequests": [
