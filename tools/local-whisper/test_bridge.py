@@ -137,7 +137,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bridge.connections, set())
 
     def connect(self, **kwargs):
-        return connect(self.url, additional_headers={"Authorization": "Bearer " + TOKEN}, **kwargs)
+        return connect(self.url, additional_headers={"Authorization": "Bearer " + TOKEN}, proxy=None, **kwargs)
 
     async def test_auth_origin_and_path_rejected(self):
         for url, headers, code in [
@@ -147,7 +147,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             (self.url + "?token=not-supported", {"Authorization": "Bearer " + TOKEN}, 404),
         ]:
             with self.assertRaises(InvalidStatus) as raised:
-                async with connect(url, additional_headers=headers):
+                async with connect(url, additional_headers=headers, proxy=None):
                     pass
             self.assertEqual(raised.exception.response.status_code, code)
 
@@ -303,7 +303,9 @@ class ControlIdentityTests(unittest.TestCase):
         elif args[0] == "/usr/sbin/lsof":
             value = "p123\nn127.0.0.1:18082\n"
         elif "-axo" in args:
-            value = f"123 {status.ROOT / 'mimi-whisper-worker'} {status.ROOT / 'ggml-large-v3-turbo-q5_0.bin'}\n"
+            value = "456 123\n"
+        elif "456" in args:
+            value = f"{status.ROOT / 'mimi-whisper-worker'} {status.ROOT / 'ggml-large-v3-turbo-q5_0.bin'}\n"
         else:
             value = " ".join(status.ARGS)
         return SimpleNamespace(returncode=0, stdout=value)

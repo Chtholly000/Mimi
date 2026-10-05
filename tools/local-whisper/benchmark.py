@@ -59,7 +59,7 @@ async def replay(url, token, wav, reference, *, task_id="benchmark", language="e
         pcm = audio.readframes(audio.getnframes())
     events = []
     async with connect(url, additional_headers={"Authorization": "Bearer " + token},
-                       compression=None, max_size=131072) as ws:
+                       compression=None, max_size=131072, proxy=None) as ws:
         await ws.send(json.dumps({"header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},
                                  "payload": {"task_group": "audio", "task": "asr", "function": "recognition",
                                              "model": MODEL, "parameters": {"format": "pcm", "sample_rate": 16000,

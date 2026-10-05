@@ -52,11 +52,14 @@ def listening(pid):
         line[1:] for line in value.stdout.splitlines() if line.startswith("n")
     } == {"127.0.0.1:18082"}
     # The bridge binds only after model-ready; also require its exact worker child.
-    processes = run(["/bin/ps", "-axo", "ppid=,command="])
-    worker = f"{ROOT / 'mimi-whisper-worker'} {ROOT / 'ggml-large-v3-turbo-q5_0.bin'}"
-    children = [line.strip().split(None, 1) for line in processes.stdout.splitlines() if line.strip()]
-    return listener_matches and any(len(parts) == 2 and parts[0] == str(pid)
-                                    and parts[1] == worker for parts in children)
+    processes = run(["/bin/ps", "-axo", "pid=,ppid="])
+    children = [parts[0] for line in processes.stdout.splitlines()
+                if len(parts := line.split()) == 2 and parts[1] == str(pid)]
+    if not listener_matches or processes.returncode or len(children) != 1:
+        return False
+    child = run(["/bin/ps", "-ww", "-p", children[0], "-o", "command="])
+    worker = [str(ROOT / "mimi-whisper-worker"), str(ROOT / "ggml-large-v3-turbo-q5_0.bin")]
+    return child.returncode == 0 and shlex.split(child.stdout.strip()) == worker
 
 
 def main():
