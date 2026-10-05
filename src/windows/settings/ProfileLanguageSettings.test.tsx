@@ -72,6 +72,42 @@ it.each(["fr", "zh_tw"])("saves a searched %s target with its exact wire key", a
   expect(save).toHaveBeenCalledExactlyOnceWith({ targetLanguage: code });
 });
 
+it.each(["zh", "en", "ja"] as const)("preserves an unready Apple choice and lets the user select the only ready language in %s", async locale => {
+  setStoredUiLanguage(locale);
+  const capabilities = { profileId: "apple", provider: "appleSpeech", textTranslation: "followService", targetLanguage: "original", targetLanguages: ["original"] } as const;
+  settings = { ...settings, sourceLanguage: "fr", targetLanguage: "original", activeProfileId: "apple",
+    profiles: [{ id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "missing" }],
+    languageCapabilities: { ...capabilities, sourceLanguages: [] } };
+  const picker = () => host.querySelector<HTMLButtonElement>(`[role="combobox"][aria-label="${I18N.settings.sourceLanguage}"]`)!;
+  await render();
+  expect(picker().textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+  expect(picker().disabled).toBe(true);
+  expect(host.querySelector(".recognition-language-notice")?.textContent).toBe(I18N.settings.appleSpeechNoReadyLanguages);
+  await act(async () => picker().click());
+  expect(document.querySelector('[role="option"]')).toBeNull();
+  expect(save).not.toHaveBeenCalled();
+
+  settings = { ...settings, languageCapabilities: { ...capabilities, sourceLanguages: ["en"] } };
+  await render();
+  expect(picker().textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+  expect(picker().disabled).toBe(false);
+  expect(host.querySelector(".recognition-language-notice")).toBeNull();
+  expect(save).not.toHaveBeenCalled();
+  await act(async () => picker().click());
+  const choices = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(choices.map(choice => choice.textContent)).toEqual([SOURCE_LANGUAGE_DISPLAY_NAMES.en]);
+  expect(choices[0].getAttribute("aria-selected")).toBe("false");
+  await act(async () => choices[0].click());
+  expect(save).toHaveBeenCalledExactlyOnceWith({ sourceLanguage: "en" });
+
+  settings = { ...settings, sourceLanguage: "en" };
+  await render();
+  const selected = host.querySelector<HTMLButtonElement>(`[role="group"][aria-label="${I18N.settings.sourceLanguage}"] button`)!;
+  expect(selected.textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.en);
+  expect(selected.getAttribute("aria-pressed")).toBe("true");
+  expect(selected.disabled).toBe(true);
+});
+
 it("uses the broader recognition list only for an original-only route", async () => {
   settings = { ...settings, targetLanguage: "original" };
   await render();

@@ -103,7 +103,8 @@ export function TrayPanel() {
   const sourcePickerDisabled =
     anyActionPending ||
     !presentation.canChangeSourceLanguage ||
-    sourceLanguages.length <= 1;
+    sourceLanguages.length === 0 ||
+    (sourceLanguages.length === 1 && sourceLanguages[0] === settings.sourceLanguage);
 
   const performAction = (
     name: PendingAction,
@@ -310,6 +311,7 @@ export function TrayPanel() {
           </span>
           <span className="tray-select-wrap">
             <LanguageSelect label={I18N.tray.sourceLanguage} value={settings.sourceLanguage}
+              valueLabel={speechLanguageGuidance(settings).optionLabel(settings.sourceLanguage)}
               disabled={sourcePickerDisabled}
               options={sourceLanguages.map((language) => ({ value: language, label: speechLanguageGuidance(settings).optionLabel(language) }))}
               onChange={(value) => performAction("language", () => switchSourceLanguage(value as SourceLanguage))} />

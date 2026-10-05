@@ -6,7 +6,7 @@ import { LanguageSelect } from "../../components/LanguageSelect";
 import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { I18N } from "../../lib/i18n";
 import { languageActionErrorMessage } from "../../lib/connectionDiagnostics";
-import { sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
+import { activeServiceProfile, sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import { useStore } from "../../lib/store";
 import { TARGET_LANGUAGE_DISPLAY_NAMES, type SettingsDraft, type SettingsSnapshot } from "../../lib/types";
 import { SettingsHelp } from "./SettingsHelp";
@@ -24,6 +24,9 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const guidance = speechLanguageGuidance(settings);
   const sources = sourceLanguagesForSettings(settings);
+  const appleSpeech = activeServiceProfile(settings)?.provider === "appleSpeech";
+  const sourceNotice = sources.length === 0 && appleSpeech
+    ? I18N.settings.appleSpeechNoReadyLanguages : guidance.notice;
   const targets = targetLanguagesForSettings(settings);
   const skipped = settings.targetLanguage === "original";
   const previousTarget = useRef(settings.targetLanguage);
@@ -48,8 +51,9 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
   };
   return <section id="translation-languages" className="profile-language-settings" aria-labelledby="translation-languages-title" aria-busy={busy}>
     <header className="profile-language-settings__heading"><h3 id="translation-languages-title">{I18N.settings.subtitleLanguages}</h3><SettingsHelp text={guidance.catalogHelp} label={I18N.settings.helpLabel} />{requiresStop && <SettingsHelp text={I18N.settings.languageChangeRequiresStop} label={I18N.settings.helpLabel} icon="lock" />}</header>
-    <SettingsRow label={I18N.settings.sourceLanguage} description={guidance.help} feedback={guidance.notice && <span className="recognition-language-notice">{guidance.notice}</span>} align="start">
-      <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} disabled={disabled || busy || sources.length <= 1}
+    <SettingsRow label={I18N.settings.sourceLanguage} description={guidance.help} feedback={sourceNotice && <span className="recognition-language-notice">{sourceNotice}</span>} align="start">
+      <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} valueLabel={appleSpeech ? guidance.optionLabel(settings.sourceLanguage) : undefined}
+        disabled={disabled || busy || sources.length === 0 || (sources.length === 1 && sources[0] === settings.sourceLanguage)}
         options={sources.map(value => ({ value, label: guidance.optionLabel(value) }))}
         onChange={value => { const sourceLanguage = sources.find(language => language === value); if (sourceLanguage) void save({ sourceLanguage }); }} />
     </SettingsRow>
@@ -69,10 +73,10 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
   </section>;
 }
 
-function LanguageChoices({ label, value, options, disabled, onChange }: {
-  label: string; value: string; options: readonly { value: string; label: string }[]; disabled: boolean; onChange: (value: string) => void;
+function LanguageChoices({ label, value, valueLabel, options, disabled, onChange }: {
+  label: string; value: string; valueLabel?: string; options: readonly { value: string; label: string }[]; disabled: boolean; onChange: (value: string) => void;
 }) {
-  if (options.length > 6) return <LanguageSelect label={label} value={value} options={options} disabled={disabled} onChange={onChange} />;
+  if (options.length > 6 || (valueLabel !== undefined && !options.some(option => option.value === value))) return <LanguageSelect label={label} value={value} valueLabel={valueLabel} options={options} disabled={disabled} onChange={onChange} />;
   return <div className="profile-language-choices" role="group" aria-label={label}>
     {options.map(option => <button key={option.value} type="button" className={`profile-language-choice${option.value === value ? " is-selected" : ""}`} aria-pressed={option.value === value}
       disabled={disabled} onClick={() => { if (option.value !== value) onChange(option.value); }}>

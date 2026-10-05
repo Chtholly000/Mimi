@@ -18,6 +18,42 @@ it.each(["zh", "en", "ja"] as const)("gives Apple resource and language recovery
   expect(profileErrorMessage("apple_speech_prepare_failed: private-native-path")).not.toContain("private-native-path");
 });
 
+
+it.each(["zh", "en", "ja"] as const)("keeps every Apple readiness failure specific across language, profile and session actions in %s", language => {
+  setStoredUiLanguage(language);
+  const messages = {
+    apple_speech_assets_missing: I18N.settings.appleSpeechAssetsMissing,
+    apple_speech_language_unsupported: I18N.settings.appleSpeechLanguageUnsupported,
+    apple_speech_translation_language_unsupported: I18N.settings.appleSpeechTranslationLanguageUnsupported,
+    apple_speech_unavailable: I18N.settings.appleSpeechUnavailable,
+    apple_speech_ui_test_unavailable: I18N.settings.appleSpeechUnavailable,
+    apple_speech_status_failed: I18N.settings.appleSpeechLoadFailed,
+    apple_speech_prepare_failed: I18N.settings.appleSpeechPrepareFailed,
+    apple_speech_preparing: I18N.settings.appleSpeechPreparationInProgress,
+  };
+  for (const [label, expected] of Object.entries(messages)) {
+    expect(credentialErrorMessage(label)).toBe(expected);
+    for (const error of [label, new Error(label)]) {
+      expect(languageActionErrorMessage(error, "fallback")).toBe(expected);
+      expect(profileErrorMessage(error)).toBe(expected);
+      expect(sessionActionErrorMessage(error, "fallback")).toBe(expected);
+    }
+    for (const privateError of [`${label}: private-native-path`, `private-provider-body ${label}`, `${label}_unknown`]) {
+      expect(credentialErrorMessage(privateError)).toBeNull();
+      expect(languageActionErrorMessage(new Error(privateError), "fallback")).toBe("fallback");
+      expect(profileErrorMessage(privateError)).toBe(I18N.settings.profileActionFailed);
+      expect(sessionActionErrorMessage(privateError, "fallback")).toBe("fallback");
+    }
+  }
+  for (const message of [I18N.settings.appleSpeechAssetsMissing, I18N.settings.appleSpeechLanguageUnsupported,
+    I18N.settings.appleSpeechTranslationLanguageUnsupported, I18N.settings.appleSpeechUnavailable,
+    I18N.settings.appleSpeechPrepareFailed, I18N.settings.appleSpeechPreparationInProgress]) {
+    expect(message).toContain(I18N.settings.serviceProfilesTitle);
+    expect(message).not.toBe(I18N.overlay.controlActionFailed);
+  }
+  expect(sessionActionErrorMessage({ message: "apple_speech_assets_missing" }, "fallback")).toBe("fallback");
+});
+
 it("localizes exhausted translation recovery without showing internal labels", () => {
   for (const language of ["zh", "en", "ja"] as const) {
     setStoredUiLanguage(language);

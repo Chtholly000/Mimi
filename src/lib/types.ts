@@ -285,6 +285,8 @@ export interface LanguageCapabilitiesSnapshot {
   targetLanguage: TargetLanguage;
   sourceLanguages: readonly SourceLanguage[];
   targetLanguages: readonly TargetLanguage[];
+  /** Complete Apple resource status, including languages excluded by this route. */
+  appleSpeechSupportRevision?: number;
 }
 
 // ---------------------------------------------------------------------------

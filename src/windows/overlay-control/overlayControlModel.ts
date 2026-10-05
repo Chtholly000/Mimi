@@ -21,8 +21,8 @@ export interface OverlayControlPanelModel {
 }
 
 /**
- * Provider-aware panel structure. Single-option groups are summarized in the
- * island header instead of filling the panel with disabled rows, and a
+ * Provider-aware panel structure. An already-selected single option is summarized
+ * in the island header; a different single option remains available for recovery. A
  * no-translation target never exposes an irrelevant translation-mode group.
  */
 export function overlayControlPanelModel(
@@ -31,7 +31,7 @@ export function overlayControlPanelModel(
   const sourceLanguages = sourceLanguagesForSettings(settings);
   const translationModes = translationModesForSettings(settings);
   return {
-    sourceOptions: sourceLanguages.length > 1 ? sourceLanguages : [],
+    sourceOptions: sourceLanguages.length === 1 && sourceLanguages[0] === settings.sourceLanguage ? [] : sourceLanguages,
     translationModeOptions:
       targetLanguageTranslatesAudio(settings.targetLanguage) &&
       translationModes.length > 1
