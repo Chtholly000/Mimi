@@ -162,10 +162,10 @@ class Worker:
             raise Failure("worker_protocol")
         return value
 
-    async def infer(self, pcm, language):
+    async def infer(self, pcm, language, *, is_current=lambda: True):
         if self.failed.is_set() or len(self.pending) >= 4:
             raise Failure("worker_busy")
-        task = asyncio.create_task(self.transaction(pcm, language))
+        task = asyncio.create_task(self.transaction(pcm, language, is_current))
         self.pending.add(task)
         def done(finished):
             self.pending.discard(finished)
@@ -174,8 +174,10 @@ class Worker:
         task.add_done_callback(done)
         return await asyncio.shield(task)
 
-    async def transaction(self, pcm, language):
+    async def transaction(self, pcm, language, is_current):
         async with self.lock:
+            if not is_current():
+                return None
             if self.failed.is_set():
                 raise Failure("worker_failed")
             try:
@@ -275,6 +277,7 @@ class Session:
         self.published_draft = None
         self.changed = asyncio.Event()
         self.ended = False
+        self.cancelled = False
         self.tasks = []
 
     async def send(self, event, sentence=None, error=False):
@@ -311,7 +314,11 @@ class Session:
                 self.changed.clear()
                 await self.changed.wait()
                 continue
-            text = await self.worker.infer(pcm, self.language)
+            text = await self.worker.infer(
+                pcm, self.language,
+                is_current=lambda: not self.cancelled and (final or sentence > self.finalized_through))
+            if text is None:
+                continue
             if not text:
                 # Mimi intentionally ignores empty provider results. Do not
                 # leave a published preview looking like a confirmed sentence.
@@ -381,6 +388,7 @@ class Session:
         await self.send("task-finished")
 
     async def close(self):
+        self.cancelled = True
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)

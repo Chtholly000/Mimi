@@ -38,7 +38,7 @@ class FakeWorker:
         self.delay = 0
         self.fail = False
 
-    async def infer(self, pcm, language):
+    async def infer(self, pcm, language, *, is_current=lambda: True):
         self.requests.append((len(pcm), language))
         await asyncio.sleep(self.delay)
         if self.fail:
@@ -219,7 +219,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_empty_final_cannot_leave_a_published_preview(self):
         calls = 0
-        async def infer(_pcm, _language):
+        async def infer(_pcm, _language, **_kwargs):
             nonlocal calls
             calls += 1
             return "Preview" if calls == 1 else ""
@@ -235,6 +235,18 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_retired_preview_waiting_for_lock_does_not_run_inference(self):
+        worker = Worker("unused", "unused")
+        current = True
+        await worker.lock.acquire()
+        request = asyncio.create_task(worker.infer(VOICE, "en", is_current=lambda: current))
+        await asyncio.sleep(0)
+        current = False
+        worker.lock.release()
+        # No process exists: touching its pipes would fail this regression.
+        self.assertIsNone(await request)
+        self.assertFalse(worker.failed.is_set())
+
     async def test_real_subprocess_idle_exit_is_detected_and_close_reaps(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "fake-worker"

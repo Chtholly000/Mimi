@@ -65,6 +65,9 @@ int main(int argc, char ** argv) {
         params.language = language.c_str();
         params.temperature_inc = 0.0f;
         params.max_tokens = 192;
+        // 512 encoder positions cover 10.24 seconds; every accepted request is
+        // <=8 seconds. Avoid encoding 30 seconds of padding for each preview.
+        params.audio_ctx = 512;
         started = Clock::now();
         if (whisper_full(ctx, params, samples.data(), int(samples.size())) != 0) { result = 5; break; }
         std::string text;
