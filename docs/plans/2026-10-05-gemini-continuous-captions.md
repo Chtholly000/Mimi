@@ -12,17 +12,23 @@ actual Android JNI adapter. Each nonempty changing chunk publishes its draft
 before any local confirmation. A strict extension of the entire pending lane
 is a cumulative snapshot; replace the lane. Otherwise append the fragment
 verbatim. Ignore an equal whole snapshot only after observing cumulative
-extensions in that lane. Matching tails alone do not prove duplication: genuine
-repetition, subword fragments and provider whitespace must survive. Source and
-translation keep independent buffers, and reset clears cumulative evidence.
-Arbitrary non-prefix revisions remain ambiguous without provider metadata;
-this heuristic does not claim to reconstruct all rewrites.
+extensions in that lane. Matching tails alone do not prove duplication; other
+fragments retain their repetition, subword boundaries and provider whitespace.
+Source and translation keep independent buffers. Without delta/snapshot metadata,
+a genuine fragment that strictly extends the whole pending text is also ambiguous
+and this heuristic can treat it as a cumulative extension. It does not guarantee
+all repetitions or reconstruct arbitrary non-prefix revisions.
 
 Two seconds without changing text can checkpoint meaningful paired lanes even
 without sentence punctuation. Unmatched text remains live. This is a local
-caption boundary, not provider-final or reliable utterance alignment. Explicit
-turns keep the existing 500 ms late-tail grace; interruptions discard buffers.
-The existing 5,120-character pending bound and OpenAI delta behavior remain.
+caption boundary, not provider-final or reliable utterance alignment. A local
+checkpoint retains the prefix of an observed cumulative lane so a later snapshot
+only publishes and confirms its new suffix; equal resends remain ignored. The
+retained prefix and pending text share the existing 5,120-character bound per
+lane. Explicit turns keep the existing 500 ms late-tail grace, then clear this
+baseline even when no text remains; finish, interruptions and reset also clear
+it, allowing genuine repeated captions in a new turn. OpenAI delta behavior
+remains unchanged.
 
 Gemini translation presentation coalesces for 100 ms with a non-resetting
 250 ms maximum; source keeps 180/750 ms. Other providers keep their existing
