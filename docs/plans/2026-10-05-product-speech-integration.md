@@ -12,6 +12,11 @@ and live saved-service switching (#163). This is not a UI redesign or release.
 - Retain source/target and saved-profile changes, pause/resume/stop cancellation,
   and stale-generation guards. A durable choice can survive reconnect failure;
   its initiating control must receive the failure and must not claim success.
+- A failed resume restores the existing paused state under the same lifecycle
+  lock used to validate ownership, then returns the error to its initiating
+  control. A newer stop wins; failure cannot revive a stopped session. Settings,
+  floating controls and tray show only allowlisted causes and ignore failures
+  superseded by a newer resume or stop.
 - Keep streaming drafts replaceable, confirmed pairs durable, HTTP previews
   paired, and the intermediate-subtitle toggle effective on all routes.
 - Keep persistent safe error causes, one canvas recovery action when controls
