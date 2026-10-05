@@ -267,6 +267,9 @@ impl Audio3ASRServerEventDecoder {
 fn safe_task_failure(code: &str, message: &str) -> (&'static str, &'static str) {
     let safe_code = match code {
         "CLIENT_ERROR" => "CLIENT_ERROR",
+        "UNSUPPORTED_LANGUAGE" => "UNSUPPORTED_LANGUAGE",
+        "LOCAL_ASR_OVERLOADED" => "LOCAL_ASR_OVERLOADED",
+        "LOCAL_ASR_TIMEOUT" => "LOCAL_ASR_TIMEOUT",
         "SERVER_ERROR" => "SERVER_ERROR",
         "InvalidApiKey" | "INVALID_API_KEY" | "invalid_api_key" => "INVALID_API_KEY",
         "Unauthorized" | "UNAUTHORIZED" | "unauthorized" | "authentication_error" => "UNAUTHORIZED",
@@ -285,6 +288,9 @@ fn safe_task_failure(code: &str, message: &str) -> (&'static str, &'static str) 
     let category = match safe_code {
         "INVALID_API_KEY" | "UNAUTHORIZED" => "authentication",
         "REQUEST_TIMEOUT" => "timeout",
+        "UNSUPPORTED_LANGUAGE" => "unsupported_language",
+        "LOCAL_ASR_OVERLOADED" => "local_overload",
+        "LOCAL_ASR_TIMEOUT" => "local_timeout",
         "CLIENT_ERROR" if request_timeout => "timeout",
         "CLIENT_ERROR" => "request",
         "SERVER_ERROR" => "service",
@@ -292,6 +298,25 @@ fn safe_task_failure(code: &str, message: &str) -> (&'static str, &'static str) 
         _ => "task_failed",
     };
     (safe_code, category)
+}
+
+/// Only exact content-free tokens may stop automatic reconnection for setup repair.
+pub fn failure_requires_configuration(token: &str) -> bool {
+    let Some(rest) = token.strip_prefix("audio3_error.") else {
+        return false;
+    };
+    let Some((phase, failure)) = rest.split_once('.') else {
+        return false;
+    };
+    (phase == "setup" && failure == "request.CLIENT_ERROR")
+        || matches!(phase, "setup" | "recognition" | "connection")
+            && matches!(
+                failure,
+                "unsupported_language.UNSUPPORTED_LANGUAGE"
+                    | "authentication.INVALID_API_KEY"
+                    | "authentication.UNAUTHORIZED"
+                    | "authentication.HTTP_AUTH"
+            )
 }
 
 /// Provider-facing recognition context hints. These strings are wire assets.
@@ -607,6 +632,68 @@ mod tests {
                 message: "task_failed".into()
             }
         );
+    }
+
+    #[test]
+    fn unsupported_language_is_whitelisted_without_echoing_service_text() {
+        let decoded = Audio3ASRServerEventDecoder::decode_for_task(
+            r#"{"header":{"event":"task-failed","task_id":"fixture","error_code":"UNSUPPORTED_LANGUAGE","error_message":"private text and credential"}}"#,
+            "fixture",
+        ).unwrap();
+        assert_eq!(
+            decoded,
+            Audio3ASRServerEvent::TaskFailed {
+                code: "UNSUPPORTED_LANGUAGE".into(),
+                message: "unsupported_language".into(),
+            }
+        );
+        assert_eq!(
+            safe_task_failure("UNSUPPORTED_LANGUAGE private", "unsupported_language"),
+            ("OTHER", "task_failed")
+        );
+        for phase in ["setup", "recognition", "connection"] {
+            assert!(failure_requires_configuration(&format!(
+                "audio3_error.{phase}.unsupported_language.UNSUPPORTED_LANGUAGE"
+            )));
+            assert_eq!(
+                failure_requires_configuration(&format!(
+                    "audio3_error.{phase}.request.CLIENT_ERROR"
+                )),
+                phase == "setup"
+            );
+        }
+        for token in [
+            "transport_error",
+            "audio3_error.setup.timeout.CLIENT_ERROR",
+            "audio3_error.recognition.service.SERVER_ERROR",
+            "audio3_error.setup.unsupported_language.OTHER",
+            "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE.private",
+        ] {
+            assert!(!failure_requires_configuration(token));
+        }
+    }
+
+    #[test]
+    fn local_asr_failures_are_exact_codes_and_remain_retryable() {
+        for (code, category) in [
+            ("LOCAL_ASR_OVERLOADED", "local_overload"),
+            ("LOCAL_ASR_TIMEOUT", "local_timeout"),
+        ] {
+            assert_eq!(
+                safe_task_failure(code, "private path and text"),
+                (code, category)
+            );
+            assert!(!failure_requires_configuration(&format!(
+                "audio3_error.recognition.{category}.{code}"
+            )));
+            assert_eq!(
+                safe_task_failure(&format!("{code} private"), "private"),
+                ("OTHER", "task_failed")
+            );
+        }
+        assert!(!failure_requires_configuration(
+            "audio3_error.recognition.request.CLIENT_ERROR"
+        ));
     }
 
     #[test]

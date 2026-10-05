@@ -206,14 +206,14 @@ describe("local preview store", () => {
       ...current,
       session: {
         ...current.session,
-        status: { kind: "error" as const, message: "first failure" },
+        status: { kind: "error" as const, message: "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE" },
       },
     };
     const replacement = {
       ...first,
       session: {
         ...first.session,
-        status: { kind: "error" as const, message: "second failure" },
+        status: { kind: "error" as const, message: "audio3_error.setup.timeout.CLIENT_ERROR" },
       },
     };
 
@@ -300,4 +300,12 @@ it.each([false, true])("quick-switches Original and translation while preserving
       profiles: [{ id: "ali", name: "OpenAI", provider: "openAIRealtime", credentialState: "present" }] } });
     await expect(useStore.getState().switchTargetLanguage("original")).rejects.toThrow("target_switch_unsupported");
   } finally { useStore.setState(original, true); }
+});
+
+it("never renders an arbitrary provider error body as a session reason", () => {
+  const state = useStore.getState();
+  const message = selectSessionErrorMessage({ session: { ...state.session, status: { kind: "error", message: "private provider content sk-example" } } });
+  expect(message).toBeTruthy();
+  expect(message).not.toContain("private");
+  expect(message).not.toContain("sk-example");
 });

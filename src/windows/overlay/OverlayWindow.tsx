@@ -2,9 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { subtitleBackgroundColor } from "../../lib/subtitleColor";
 import { I18N } from "../../lib/i18n";
 import { AudioInputIndicator } from "../../components/AudioInputIndicator";
+import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
+import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
 import { audioInputLabel } from "../../lib/audioInput";
 import { isTauri, listenOverlayPointerMotion } from "../../lib/ipc";
-import { useStore } from "../../lib/store";
+import { selectSessionErrorMessage, useStore } from "../../lib/store";
 import { DevelopmentOverlayTrace } from "./DevelopmentOverlayTrace";
 import { OVERLAY_ACTIVITY_PHASES, hexToRgba } from "../../lib/types";
 import { ControlButton } from "./ControlButton";
@@ -46,6 +48,9 @@ type ControlAction = "collapse" | "clear" | "immersive" | "lock" | "settings";
 export function OverlayWindow() {
   const subtitleRootRef = useRef<HTMLDivElement>(null);
   const session = useStore((state) => state.session);
+  const sessionErrorMessage = useStore(selectSessionErrorMessage);
+  const hasSessionError = session.status.kind === "error";
+  const errorRequiresConfiguration = session.status.kind === "error" && audio3ErrorRequiresConfiguration(session.status.message);
   const settings = useStore((state) => state.settings);
   const togglePaused = useStore((state) => state.togglePaused);
   const start = useStore((state) => state.start);
@@ -123,7 +128,9 @@ export function OverlayWindow() {
   const contentTopBandHeight = topChromeLayout.topBandHeight + (separateMetadataRow ? 20 : 0);
 
   const collapsed = session.isOverlayCollapsed;
-  const blendsWithBackground = settings.subtitleBlendsWithBackground;
+  // Native geometry temporarily expands an error surface too. Preserve both
+  // presentation preferences so recovery restores the user's reading mode.
+  const blendsWithBackground = settings.subtitleBlendsWithBackground && !hasSessionError;
   // Resolved once per render: an explicit switch overrides the system, and the
   // body class is what the CSS animations key off.
   const pulseOn = useResolvedMotion(settings.pulseAnimation);
@@ -132,7 +139,7 @@ export function OverlayWindow() {
     document.body.classList.toggle("motion-reduced", !motionOn);
     document.body.classList.toggle("pulse-off", !pulseOn);
   }, [motionOn, pulseOn]);
-  const presentationCollapsed = collapsed && !blendsWithBackground;
+  const presentationCollapsed = collapsed && !blendsWithBackground && !hasSessionError;
   const phase = computeActivityPhase(session, settings);
   const activeProvider = settings.profiles.find(profile => profile.id === settings.activeProfileId)?.provider;
   const atomicProvider = usesAtomicSubtitlePreview(activeProvider);
@@ -166,9 +173,14 @@ export function OverlayWindow() {
   const sessionActionBusy = sessionAction.pending || session.status.kind === "connecting" || session.status.kind === "stopping";
   const sessionActionLabel = sessionActionBusy
     ? session.status.kind === "stopping" ? I18N.overlay.stopping : I18N.overlay.connecting
-    : session.status.kind === "error" ? I18N.overlay.retry : pauseLabel;
+    : errorRequiresConfiguration ? I18N.settings.openSpeechSettings
+    : hasSessionError ? I18N.overlay.retry : pauseLabel;
   const runSessionAction = () => {
-    void sessionAction.run(session.status.kind === "error" ? start : togglePaused);
+    if (errorRequiresConfiguration) {
+      runControlAction("settings", () => showSettings("service"));
+    } else {
+      void sessionAction.run(hasSessionError ? start : togglePaused);
+    }
   };
 
   const toggleCollapsed = () => {
@@ -210,7 +222,7 @@ export function OverlayWindow() {
           {presentationCollapsed ? renderCompact() : renderExpanded()}
         </div>
       </div>
-      {!settings.isOverlayLocked && !presentationCollapsed && !blendsWithBackground && (
+      {!settings.isOverlayLocked && !presentationCollapsed && !blendsWithBackground && !hasSessionError && (
         <ResizeHandles disabled={false} onResize={handleResize} minimumHeight={minimumOverlayHeight(settings)} />
       )}
       {__MIMI_DEVELOPMENT_BUILD__ && <DevelopmentOverlayTrace
@@ -328,7 +340,7 @@ export function OverlayWindow() {
         className="relative h-full w-full overflow-hidden"
         style={{
           borderRadius: 16,
-          background: subtitleBackgroundColor(settings.subtitleBackgroundOpacity),
+          background: hasSessionError ? "rgba(16,16,16,0.96)" : subtitleBackgroundColor(settings.subtitleBackgroundOpacity),
           border: `${borderWidth}px solid ${borderColor}`,
         }}
         onMouseEnter={() => setIsHovering(true)}
@@ -365,7 +377,7 @@ export function OverlayWindow() {
               <DragHandle
                 onToggleCollapsed={toggleCollapsed}
                 width={topChromeLayout.dragHandleWidth}
-                disabled={controlAction.pending}
+                disabled={controlAction.pending || hasSessionError}
                 busy={pendingControl === "collapse"}
               />
             </div>
@@ -386,11 +398,11 @@ export function OverlayWindow() {
               }}
             >
               <ControlButton
-                icon={session.status.kind === "error" || session.isPaused ? "play" : "pause"}
+                icon={errorRequiresConfiguration ? "gear" : hasSessionError || session.isPaused ? "play" : "pause"}
                 label={sessionActionLabel}
                 onClick={runSessionAction}
-                busy={sessionActionBusy}
-                disabled={sessionActionBusy}
+                busy={sessionActionBusy || (errorRequiresConfiguration && controlAction.pending)}
+                disabled={sessionActionBusy || (errorRequiresConfiguration && controlAction.pending)}
               />
               {topChromeLayout.showActions && <>
               <ControlButton
@@ -398,7 +410,7 @@ export function OverlayWindow() {
                 label={I18N.overlay.collapseSubtitle}
                 onClick={() => runControlAction("collapse", () => setOverlayCollapsed(true))}
                 busy={pendingControl === "collapse"}
-                disabled={controlAction.pending}
+                disabled={controlAction.pending || hasSessionError}
                 data-testid="collapse-subtitles"
               />
               <ControlButton
@@ -438,7 +450,7 @@ export function OverlayWindow() {
           )}
 
           <div
-            className="flex min-h-0 flex-col"
+            className={`flex min-h-0 flex-col${hasSessionError ? " overlay-session-error-content" : ""}`}
             style={{
               // The top band floats over the canvas, so reserve its exact
               // height or subtitle rows will slide underneath the controls.
@@ -447,7 +459,13 @@ export function OverlayWindow() {
               height: "100%",
             }}
           >
-          {blocks.length === 0 ? (
+          {hasSessionError && <SessionErrorFeedback
+            message={sessionErrorMessage ?? I18N.settings.sessionError}
+            onConfigure={() => runControlAction("settings", () => showSettings("service"))}
+            onRetry={errorRequiresConfiguration ? undefined : runSessionAction}
+            disabled={sessionActionBusy || controlAction.pending}
+          />}
+          {blocks.length === 0 ? hasSessionError ? null : (
             <div
               className="flex flex-1 flex-col items-center justify-center"
               style={{ gap: emptyGap }}

@@ -1,4 +1,5 @@
 import { SettingsHelp } from "../settings/SettingsHelp";
+import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
 import { LanguageSelect } from "../../components/LanguageSelect";
@@ -47,6 +48,8 @@ interface OverlayControlPanelProps {
   isWaitingForFinalTranslation: boolean;
   isChangingSession: boolean;
   isStopping?: boolean;
+  sessionErrorMessage?: string | null;
+  onRetrySession?: () => Promise<void>;
   onDismiss: () => void;
   onTogglePaused: () => Promise<void>;
   onSwitchSourceLanguage: (language: SourceLanguage) => Promise<void>;
@@ -70,6 +73,8 @@ export function OverlayControlPanel({
   isWaitingForFinalTranslation,
   isChangingSession,
   isStopping = false,
+  sessionErrorMessage,
+  onRetrySession,
   onDismiss,
   onTogglePaused,
   onSwitchSourceLanguage,
@@ -177,7 +182,12 @@ export function OverlayControlPanel({
           onToggle={onDismiss}
         />
 
-        <button
+        {sessionErrorMessage ? <SessionErrorFeedback
+          message={sessionErrorMessage}
+          onConfigure={() => performAction("settings", () => onShowSettings("service"))}
+          onRetry={onRetrySession ? () => performAction("pause", onRetrySession, false) : undefined}
+          disabled={pendingAction !== null || isChangingSession}
+        /> : <button
           type="button"
           className="overlay-control-session-action"
           aria-label={isPaused ? I18N.overlay.resume : I18N.overlay.pause}
@@ -186,7 +196,7 @@ export function OverlayControlPanel({
         >
           <Icon name={isPaused ? "play" : "pause"} />
           <span>{isPaused ? I18N.overlay.resume : I18N.overlay.pause}</span>
-        </button>
+        </button>}
 
         <CaptureStatusRow
           disabled={pendingAction !== null}

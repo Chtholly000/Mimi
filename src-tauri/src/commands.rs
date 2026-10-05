@@ -1806,7 +1806,9 @@ pub fn overlay_move_start(
     window: tauri::WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    OverlayWindowManager::move_start(&app, &state.overlay);
+    if !OverlayWindowManager::move_start(&app, &state.overlay) {
+        return Ok(());
+    }
     if window.start_dragging().is_err() {
         OverlayWindowManager::move_cancel(&state.overlay);
         return Err("Could not start overlay drag.".to_string());

@@ -401,7 +401,7 @@ fn apply_establish_failure_state(
     error: String,
     is_recovering: bool,
 ) {
-    if is_recovering && !capture_error_requires_user_action(&error) {
+    if is_recovering && !session_error_requires_user_action(&error) {
         controller.begin_connecting();
     } else {
         controller.did_fail(error);
@@ -410,13 +410,16 @@ fn apply_establish_failure_state(
 
 /// These fixed application errors cannot improve through automatic reconnect.
 /// Starting again is an explicit user action after authorization or system stop.
-fn capture_error_requires_user_action(error: &str) -> bool {
-    matches!(
-        error,
-        "System audio capture permission was denied."
-            | "Microphone capture permission was denied."
-            | "System audio capture was stopped by the user."
-    )
+fn session_error_requires_user_action(error: &str) -> bool {
+    crate::core::protocols::audio3::failure_requires_configuration(error)
+        || matches!(
+            error,
+            "System audio capture permission was denied."
+                | "Microphone capture permission was denied."
+                | "System audio capture was stopped by the user."
+                | "credential_authentication_failed"
+                | "invalid_configuration"
+        )
 }
 
 fn source_switch_requires_reconnect(
@@ -3638,7 +3641,7 @@ impl SessionManager {
                         return;
                     }
                     recovery_epoch = failure_epoch;
-                    if capture_error_requires_user_action(&error) {
+                    if session_error_requires_user_action(&error) {
                         terminal_failure = Some(error);
                         break;
                     }
@@ -6431,17 +6434,20 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn recovery_permission_failures_keep_the_actual_error_and_require_manual_restart() {
+    fn recovery_configuration_and_permission_failures_keep_the_actual_error() {
         for error in [
             "System audio capture permission was denied.",
             "Microphone capture permission was denied.",
             "System audio capture was stopped by the user.",
+            "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE",
+            "audio3_error.setup.request.CLIENT_ERROR",
+            "audio3_error.setup.authentication.INVALID_API_KEY",
         ] {
             let mut controller = TranslationSessionController::default();
             controller.begin_connecting();
             apply_establish_failure_state(&mut controller, error.into(), true);
             assert_eq!(controller.state.status, SessionStatus::Error(error.into()));
-            assert!(capture_error_requires_user_action(error));
+            assert!(session_error_requires_user_action(error));
             assert!(!SessionStateEvent::from(&controller.state).is_active);
         }
         for error in [
@@ -6449,8 +6455,10 @@ mod lifecycle_tests {
             "System audio capture could not be started.",
             "transport_error",
             "Audio capture setup timed out.",
+            "audio3_error.setup.timeout.CLIENT_ERROR",
+            "audio3_error.recognition.service.SERVER_ERROR",
         ] {
-            assert!(!capture_error_requires_user_action(error));
+            assert!(!session_error_requires_user_action(error));
         }
     }
 

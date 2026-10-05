@@ -5,6 +5,9 @@ const copy = {
     setup: "While starting speech recognition: ", recognition: "While recognizing audio: ", connection: "While connecting: ",
     timeout: "the service timed out. Check the sound status and your connection, then restart subtitles.",
     authentication: "the service rejected access. Check the API key and permissions in Settings.",
+    local_overload: "local speech recognition could not keep up. Stop other local models or choose a smaller model, then retry.",
+    local_timeout: "local speech recognition timed out. Wait for the local service to be ready, then retry; use a smaller model if it keeps happening.",
+    unsupported_language: "this speech recognition service does not support the selected source language. Choose another source language or speech service.",
     request: "the service rejected this request. Check the service settings, then try again.",
     service: "the service reported an error. Try again later.",
     rate_limit: "the service is limiting requests. Wait a little before restarting subtitles.",
@@ -14,6 +17,9 @@ const copy = {
     setup: "启动语音识别时：", recognition: "识别声音时：", connection: "连接服务时：",
     timeout: "服务超时。请检查声音状态和网络连接，再重新开启字幕。",
     authentication: "服务拒绝了访问。请在设置中检查 API 密钥和访问权限。",
+    local_overload: "本地语音识别未能跟上。请停止其他本地模型或选择更小的模型后重试。",
+    local_timeout: "本地语音识别超时。请等待本地服务就绪后重试；若反复发生，可换用更小的模型。",
+    unsupported_language: "当前语音识别服务不支持所选源语言。请更换源语言或识别服务。",
     request: "服务拒绝了此次请求。请检查服务设置后重试。",
     service: "服务报告了错误，请稍后重试。",
     rate_limit: "服务正在限制请求，请稍等再重新开启字幕。",
@@ -23,6 +29,9 @@ const copy = {
     setup: "音声認識の開始時：", recognition: "音声認識中：", connection: "サービスへの接続時：",
     timeout: "サービスがタイムアウトしました。音声の状態とネットワークを確認して、字幕を再開してください。",
     authentication: "サービスがアクセスを拒否しました。設定で API キーとアクセス権限を確認してください。",
+    local_overload: "ローカル音声認識の処理が追いつきません。他のローカルモデルを停止するか、より小さいモデルを選んで再試行してください。",
+    local_timeout: "ローカル音声認識がタイムアウトしました。サービスの準備ができてから再試行し、繰り返す場合は小さいモデルをお試しください。",
+    unsupported_language: "この音声認識サービスは選択した入力言語に対応していません。入力言語または音声認識サービスを変更してください。",
     request: "サービスがリクエストを拒否しました。サービスの設定を確認して再試行してください。",
     service: "サービスがエラーを報告しました。後で再試行してください。",
     rate_limit: "サービスがリクエストを制限しています。少し待ってから字幕を再開してください。",
@@ -31,8 +40,13 @@ const copy = {
 };
 
 export function audio3ErrorMessage(message: string): string | null {
-  const match = /^audio3_error\.(setup|recognition|connection)\.(timeout|authentication|request|service|rate_limit|task_failed)\.(CLIENT_ERROR|SERVER_ERROR|INVALID_API_KEY|UNAUTHORIZED|REQUEST_TIMEOUT|THROTTLED|OTHER|LOCAL_TIMEOUT|HTTP_AUTH)$/.exec(message);
+  const match = /^audio3_error\.(setup|recognition|connection)\.(timeout|authentication|request|service|rate_limit|task_failed|unsupported_language|local_overload|local_timeout)\.(CLIENT_ERROR|SERVER_ERROR|INVALID_API_KEY|UNAUTHORIZED|REQUEST_TIMEOUT|THROTTLED|OTHER|LOCAL_TIMEOUT|HTTP_AUTH|UNSUPPORTED_LANGUAGE|LOCAL_ASR_OVERLOADED|LOCAL_ASR_TIMEOUT)$/.exec(message);
   if (!match) return null;
   const text = copy[effectiveUiLanguage()];
-  return text[match[1] as "setup" | "recognition" | "connection"] + text[match[2] as "timeout" | "authentication" | "request" | "service" | "rate_limit" | "task_failed"];
+  return text[match[1] as "setup" | "recognition" | "connection"] + text[match[2] as "timeout" | "authentication" | "request" | "service" | "rate_limit" | "task_failed" | "unsupported_language" | "local_overload" | "local_timeout"];
+}
+
+/** Exact sanitized setup errors need a configuration change, not blind retry. */
+export function audio3ErrorRequiresConfiguration(message: string): boolean {
+  return message === "audio3_error.setup.request.CLIENT_ERROR" || /^audio3_error\.(setup|recognition|connection)\.(unsupported_language\.UNSUPPORTED_LANGUAGE|authentication\.(INVALID_API_KEY|UNAUTHORIZED|HTTP_AUTH))$/.test(message);
 }

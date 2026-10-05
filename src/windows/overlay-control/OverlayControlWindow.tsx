@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { targetLanguagesForSettings } from "../../lib/providerCapabilities";
+import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
 import {
   isTauri,
   listenOverlayControlMode,
@@ -11,6 +12,7 @@ import {
 } from "../../lib/ipc";
 import {
   selectHasRecognizingSourceDraft,
+  selectSessionErrorMessage,
   selectSessionStatusKind,
   useStore,
 } from "../../lib/store";
@@ -28,6 +30,9 @@ import "./overlay-control.css";
 /** Child window that morphs between a compact status island and its panel. */
 export function OverlayControlWindow() {
   const sessionStatusKind = useStore(selectSessionStatusKind);
+  const sessionErrorMessage = useStore(selectSessionErrorMessage);
+  const errorRequiresConfiguration = useStore(state => state.session.status.kind === "error" && audio3ErrorRequiresConfiguration(state.session.status.message));
+  const start = useStore(state => state.start);
   const sessionIsPaused = useStore((state) => state.session.isPaused);
   const sessionIsActive = useStore((state) => state.session.isActive);
   const togglePaused = useStore((state) => state.togglePaused);
@@ -155,6 +160,8 @@ export function OverlayControlWindow() {
           isWaitingForFinalTranslation={isWaiting}
           isChangingSession={isChangingSession}
           isStopping={sessionStatusKind === "stopping"}
+          sessionErrorMessage={sessionErrorMessage}
+          onRetrySession={errorRequiresConfiguration ? undefined : start}
           onDismiss={dismiss}
           onTogglePaused={togglePaused}
           onSwitchSourceLanguage={switchSourceLanguage}

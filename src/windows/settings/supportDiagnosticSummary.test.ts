@@ -50,3 +50,7 @@ it("accepts lifecycle, recovery and failure facts but does not claim a retry wit
     { sequence: 1, elapsedMs: 0, kind: "translation_backoff", reason: "temporarilyUnavailable", retryScheduled: true },
   ]);
 });
+
+it("keeps unsupported language as a safe configuration failure", () => {
+  expect(supportDiagnosticSummary(report({ last_error: { classification: { category: "configuration", code: "UNSUPPORTED_LANGUAGE" } } }))?.lastError).toBe("configuration");
+});

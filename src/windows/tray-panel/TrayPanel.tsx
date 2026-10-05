@@ -1,4 +1,6 @@
 import { SettingsHelp } from "../settings/SettingsHelp";
+import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
+import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
 import { LanguageSelect } from "../../components/LanguageSelect";
@@ -61,6 +63,7 @@ export function TrayPanel() {
   // each selector returns only the primitive state rendered by the tray.
   const sessionStatusKind = useStore(selectSessionStatusKind);
   const sessionErrorMessage = useStore(selectSessionErrorMessage);
+  const errorRequiresConfiguration = useStore(state => state.session.status.kind === "error" && audio3ErrorRequiresConfiguration(state.session.status.message));
   const isPaused = useStore((state) => state.session.isPaused);
   const subtitleHasContent = useStore((state) =>
     hasSubtitleContent(state.session.subtitles),
@@ -109,7 +112,7 @@ export function TrayPanel() {
     setPendingAction(name);
     setOperationError(null);
     void operation()
-      .catch((error: unknown) => {
+      .catch(() => {
         setOperationError(
           name === "quit"
             ? I18N.tray.quitFailed
@@ -117,7 +120,7 @@ export function TrayPanel() {
               ? I18N.settings.dockSaveFailed
               : name === "intermediate"
                 ? I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles)
-                : actionErrorMessage(error, I18N.settings.profileActionFailed),
+                : I18N.settings.profileActionFailed,
         );
       })
       .finally(() => {
@@ -213,7 +216,7 @@ export function TrayPanel() {
           <span className="tray-status" aria-live="polite">
             <span className="tray-status__dot" aria-hidden="true" />
             <span>
-              {statusText(presentation.statusKind, sessionErrorMessage)}
+              {statusText(presentation.statusKind)}
             </span>
           </span>
         </span>
@@ -241,7 +244,13 @@ export function TrayPanel() {
         </span>
       </header>
 
-      <div
+      {sessionStatusKind === "error" && <SessionErrorFeedback
+        message={sessionErrorMessage ?? I18N.settings.sessionError}
+        onConfigure={() => performAction("settings", () => showSettings("service"))}
+        onRetry={errorRequiresConfiguration || presentation.primaryAction.action === "configure" ? undefined : () => runSessionAction("start")}
+        disabled={anyActionPending}
+      />}
+      {sessionStatusKind !== "error" && <div
         className="tray-session-actions"
         data-layout={presentation.secondaryAction ? "split" : "single"}
       >
@@ -260,7 +269,7 @@ export function TrayPanel() {
             secondary
           />
         )}
-      </div>
+      </div>}
 
       <div className="tray-card" aria-label={I18N.settings.subtitleTitle}>
         <div className="tray-setting-row tray-setting-row--language">
@@ -578,7 +587,6 @@ function ToolButton({
 
 function statusText(
   kind: TrayStatusKind,
-  sessionErrorMessage: string | null,
 ): string {
   switch (kind) {
     case "ready":
@@ -594,7 +602,7 @@ function statusText(
     case "stopping":
       return I18N.tray.stopping;
     case "error":
-      return sessionErrorMessage ?? I18N.settings.profileActionFailed;
+      return I18N.settings.sessionError;
   }
 }
 

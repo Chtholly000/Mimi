@@ -1,5 +1,5 @@
 const STATUSES = ["idle", "connecting", "stopping", "listening", "paused", "error"] as const;
-const FAILURE_CATEGORIES = ["unknown", "authentication", "credential_storage", "device_unavailable", "timeout", "request_rejected", "service_error", "rate_limit", "backlog", "transport", "stopped", "processing", "size_limit"] as const;
+const FAILURE_CATEGORIES = ["unknown", "configuration", "authentication", "credential_storage", "device_unavailable", "timeout", "request_rejected", "service_error", "rate_limit", "backlog", "transport", "stopped", "processing", "size_limit"] as const;
 const LIFECYCLE_ACTIONS = ["start_requested", "start_busy", "start_already_active", "start_superseded", "stop_requested", "pause_requested", "resume_requested"] as const;
 const RECOVERY_ACTIONS = ["retrying", "recovered", "retries_exhausted", "user_stopped"] as const;
 export type DiagnosticStatus = (typeof STATUSES)[number];

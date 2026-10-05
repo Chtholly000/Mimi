@@ -44,7 +44,7 @@ import {
   trayPanelHide,
   type SettingsNavigationTarget,
 } from "./ipc";
-import { setStoredUiLanguage } from "./i18n";
+import { I18N, setStoredUiLanguage } from "./i18n";
 import {
   capabilitiesForProvider,
   capabilitiesForProfile,
@@ -194,7 +194,7 @@ export function selectSessionStatusKind(state: SessionStoreSlice) {
 
 export function selectSessionErrorMessage(state: SessionStoreSlice) {
   return state.session.status.kind === "error"
-    ? credentialErrorMessage(state.session.status.message) ?? applicationAudioError(state.session.status.message) ?? audioInputErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? audio3ErrorMessage(state.session.status.message) ?? state.session.status.message
+    ? credentialErrorMessage(state.session.status.message) ?? applicationAudioError(state.session.status.message) ?? audioInputErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? audio3ErrorMessage(state.session.status.message) ?? I18N.settings.sessionError
     : null;
 }
 
