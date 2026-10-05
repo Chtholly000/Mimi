@@ -32,6 +32,7 @@ const RELEASES_LATEST_URL: &str = "https://github.com/yuxino/mimi/releases/lates
 pub enum SettingsNavigationTarget {
     Service,
     Export,
+    AppleSpeechResources,
 }
 
 pub struct AppState {
@@ -1077,6 +1078,10 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<SettingsNavigationTarget>(r#""export""#).unwrap(),
             SettingsNavigationTarget::Export
+        );
+        assert_eq!(
+            serde_json::from_str::<SettingsNavigationTarget>(r#""appleSpeechResources""#).unwrap(),
+            SettingsNavigationTarget::AppleSpeechResources
         );
         assert!(serde_json::from_str::<SettingsNavigationTarget>(r#""general""#).is_err());
     }

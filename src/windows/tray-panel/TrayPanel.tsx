@@ -1,7 +1,6 @@
 import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { SettingsHelp } from "../settings/SettingsHelp";
 import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
-import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
 import { LanguageSelect } from "../../components/LanguageSelect";
@@ -9,7 +8,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "../../components/Icon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
-import { languageActionErrorMessage, profileErrorMessage, sessionActionErrorMessage } from "../../lib/connectionDiagnostics";
+import { languageActionErrorMessage, profileErrorMessage, sessionActionErrorMessage, sessionErrorSettingsTarget } from "../../lib/connectionDiagnostics";
 import { isTauri } from "../../lib/ipc";
 import {
   activeServiceProfile,
@@ -64,7 +63,8 @@ export function TrayPanel() {
   // each selector returns only the primitive state rendered by the tray.
   const sessionStatusKind = useStore(selectSessionStatusKind);
   const sessionErrorMessage = useStore(selectSessionErrorMessage);
-  const errorRequiresConfiguration = useStore(state => state.session.status.kind === "error" && audio3ErrorRequiresConfiguration(state.session.status.message));
+  const errorSettingsTarget = useStore(state => state.session.status.kind === "error" ? sessionErrorSettingsTarget(state.session.status.message) : null);
+  const errorRequiresConfiguration = errorSettingsTarget !== null;
   const isPaused = useStore((state) => state.session.isPaused);
   const subtitleHasContent = useStore((state) =>
     hasSubtitleContent(state.session.subtitles),
@@ -255,7 +255,8 @@ export function TrayPanel() {
 
       {sessionStatusKind === "error" && <SessionErrorFeedback
         message={sessionErrorMessage ?? I18N.settings.sessionError}
-        onConfigure={() => performAction("settings", () => showSettings("service"))}
+        configureLabel={errorSettingsTarget === "appleSpeechResources" ? I18N.settings.appleSpeechOpenResources : undefined}
+        onConfigure={() => performAction("settings", () => showSettings(errorSettingsTarget ?? "service"))}
         onRetry={errorRequiresConfiguration || presentation.primaryAction.action === "configure" ? undefined : () => runSessionAction("start")}
         disabled={anyActionPending}
       />}
@@ -318,6 +319,12 @@ export function TrayPanel() {
           </span>
         </div>
 
+        {activeProfile?.provider === "appleSpeech" && <div className="speech-resources-actions">
+          <button type="button" className="speech-resources-link" disabled={anyActionPending}
+            onClick={() => performAction("settings", () => showSettings("appleSpeechResources"))}>
+            <Icon name="gear" />{I18N.settings.appleSpeechResources}
+          </button>
+        </div>}
         {speechLanguageGuidance(settings).notice && <div className="recognition-language-notice">{speechLanguageGuidance(settings).notice}</div>}
         <span className="tray-card__divider" />
 

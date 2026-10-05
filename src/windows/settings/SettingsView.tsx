@@ -3,7 +3,7 @@ import { SubtitleSessionControls } from "./SubtitleSessionControls";
 import { Icon } from "../../components/Icon";
 import { Switch } from "../../components/Switch";
 import { I18N, setStoredUiLanguage, type UiLanguage } from "../../lib/i18n";
-import { announceSettingsNavigationReady, isTauri, listenSettingsNavigation } from "../../lib/ipc";
+import { announceSettingsNavigationReady, isTauri, listenSettingsNavigation, type SettingsNavigationTarget } from "../../lib/ipc";
 import { selectSessionStatusKind, useStore } from "../../lib/store";
 import type { SettingsDraft, SubtitleAlignment } from "../../lib/types";
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
@@ -87,6 +87,8 @@ export function SettingsView() {
   );
   const locationSelectedCategory = useRef(locationCategory !== null);
   const contentScrollRef = useRef<HTMLDivElement>(null);
+  const [appleResourcesRequest, setAppleResourcesRequest] = useState(0);
+  const appleResourcesSequence = useRef(0);
   const initialCredentialState = useRef(activeProfile?.credentialState);
 
   // Native settings arrive after the first render. Resolve the initial
@@ -139,10 +141,24 @@ export function SettingsView() {
 
   const selectCategory = useCallback((category: SettingsCategory) => {
     locationSelectedCategory.current = true;
+    setAppleResourcesRequest(0);
     setActiveCategory(category);
     contentScrollRef.current?.scrollTo({ top: 0 });
     window.history.replaceState(null, "", `#${CATEGORY_SECTION_IDS[category]}`);
   }, []);
+
+  const navigateToSettings = useCallback((target: SettingsNavigationTarget = "service") => {
+    const category = target === "export" ? "export" : "service";
+    selectCategory(category);
+    if (target === "appleSpeechResources") {
+      appleResourcesSequence.current += 1;
+      setAppleResourcesRequest(appleResourcesSequence.current);
+    } else {
+      window.requestAnimationFrame(() => {
+        document.getElementById(`settings-category-${category}`)?.focus();
+      });
+    }
+  }, [selectCategory]);
 
   useEffect(() => {
     const navigateFromHash = () => {
@@ -159,13 +175,7 @@ export function SettingsView() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
 
-    void listenSettingsNavigation((target) => {
-      const category = target === "export" ? "export" : "service";
-      selectCategory(category);
-      window.requestAnimationFrame(() => {
-        document.getElementById(`settings-category-${category}`)?.focus();
-      });
-    })
+    void listenSettingsNavigation(navigateToSettings)
       .then(async (installedUnlisten) => {
         if (disposed) {
           installedUnlisten();
@@ -180,7 +190,7 @@ export function SettingsView() {
       disposed = true;
       unlisten?.();
     };
-  }, [selectCategory]);
+  }, [navigateToSettings]);
 
   return (
     <main className={`settings-console settings-console--${resolvedTheme}`}>
@@ -233,7 +243,7 @@ export function SettingsView() {
             <h1>{activeCategory === "guide" ? I18N.settings.quickStartTitle : categories.find((category) => category.id === activeCategory)?.label}</h1>
             <SettingsHelp text={pageDescriptions[activeCategory]} label={I18N.settings.helpLabel} />
           </header>
-          {initializationReady && <SubtitleSessionControls visible={activeCategory === "subtitles"} onConfigure={() => selectCategory("service")} />}
+          {initializationReady && <SubtitleSessionControls visible={activeCategory === "subtitles"} onConfigure={navigateToSettings} />}
           <div className="settings-layout">
             {!initializationReady ? <SettingsInitializationStatus status={initializationStatus} error={initializationError} onRetry={() => { void initialize(); }} /> : <>
             {activeCategory === "guide" && (
@@ -435,7 +445,7 @@ export function SettingsView() {
             )}
 
             <div id="service-profiles-panel" className={`settings-category-panel${activeCategory !== "service" ? " is-inactive" : ""}`}>
-                <ServiceProfiles settings={settings} sessionIsActive={sessionIsActive} sessionIsPaused={sessionIsPaused} sessionStatusKind={sessionStatusKind} visible={activeCategory === "service"} overview={<AudioInputSettings />} />
+                <ServiceProfiles settings={settings} appleResourcesRequest={appleResourcesRequest} sessionIsActive={sessionIsActive} sessionIsPaused={sessionIsPaused} sessionStatusKind={sessionStatusKind} visible={activeCategory === "service"} overview={<AudioInputSettings />} />
               </div>
 
             <div id="diagnostics-panel" className={`settings-category-panel${activeCategory !== "diagnostics" ? " is-inactive" : ""}`}>

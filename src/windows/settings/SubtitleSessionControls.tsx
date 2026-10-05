@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { SettingsNavigationTarget } from "../../lib/ipc";
 import { I18N } from "../../lib/i18n";
-import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
+import { sessionErrorSettingsTarget } from "../../lib/connectionDiagnostics";
 import { credentialStateForTarget } from "../../lib/providerCapabilities";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { selectSessionErrorMessage, selectSessionStatusKind, useStore } from "../../lib/store";
@@ -9,11 +10,12 @@ import { SettingsSessionControls } from "./SettingsSessionControls";
 import { useSettingsToast } from "./useSettingsToast";
 import { SettingsSessionActionCoordinator, settingsSessionControlState, type SettingsSessionPendingAction, type SettingsSessionVisibleStatus } from "./settingsSessionControlModel";
 
-export function SubtitleSessionControls({ visible = true, compact = false, onConfigure }: { visible?: boolean; compact?: boolean; onConfigure: () => void }) {
+export function SubtitleSessionControls({ visible = true, compact = false, onConfigure }: { visible?: boolean; compact?: boolean; onConfigure: (target?: SettingsNavigationTarget) => void }) {
   const { nativeShortcuts, commands } = useDesktopShortcuts();
   const sessionStatusKind = useStore(selectSessionStatusKind);
   const sessionErrorMessage = useStore(selectSessionErrorMessage);
-  const errorRequiresConfiguration = useStore(state => state.session.status.kind === "error" && audio3ErrorRequiresConfiguration(state.session.status.message));
+  const errorSettingsTarget = useStore(state => state.session.status.kind === "error" ? sessionErrorSettingsTarget(state.session.status.message) : null);
+  const errorRequiresConfiguration = errorSettingsTarget !== null;
   const sessionIsActive = useStore(state => state.session.isActive);
   const sessionIsPaused = useStore(state => state.session.isPaused);
   const translationRecoveryReason = useStore(state => state.session.translationRecovery?.reason);
@@ -122,7 +124,8 @@ export function SubtitleSessionControls({ visible = true, compact = false, onCon
               () => saveSettings({ subtitleBlendsWithBackground }),
               I18N.settings.settingSaveFailed(I18N.settings.blendBackground),
             )}
-            onConfigure={onConfigure}
+            configureLabel={errorSettingsTarget === "appleSpeechResources" ? I18N.settings.appleSpeechOpenResources : undefined}
+            onConfigure={() => onConfigure(errorSettingsTarget ?? "service")}
   /> : null;
 }
 

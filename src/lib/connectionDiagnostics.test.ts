@@ -1,7 +1,7 @@
 import { audio3ErrorMessage } from "./audio3Errors";
 import { afterEach, expect, it } from "vitest";
 import { I18N, setStoredUiLanguage } from "./i18n";
-import { sessionActionErrorMessage, languageActionErrorMessage, connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
+import { sessionErrorSettingsTarget, sessionActionErrorMessage, languageActionErrorMessage, connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
 
 it.each(["zh", "en", "ja"] as const)("gives Apple resource and language recovery in %s without exposing runtime labels", language => {
   setStoredUiLanguage(language);
@@ -9,8 +9,6 @@ it.each(["zh", "en", "ja"] as const)("gives Apple resource and language recovery
   expect(profileErrorMessage("apple_speech_language_unsupported")).toBe(I18N.settings.appleSpeechLanguageUnsupported);
   expect(profileErrorMessage("apple_speech_translation_language_unsupported")).toBe(I18N.settings.appleSpeechTranslationLanguageUnsupported);
   expect(I18N.settings.appleSpeechAssetsMissing).toContain(I18N.settings.appleSpeechResources);
-  expect(I18N.settings.appleSpeechAssetsMissing).toContain(I18N.settings.appleSpeechPrepare);
-  expect(I18N.settings.appleSpeechAssetsMissing).toContain(I18N.settings.sourceLanguage);
   expect(credentialErrorMessage("apple_speech_unavailable")).toBe(I18N.settings.appleSpeechUnavailable);
   for (const suffix of ["setup_timeout", "start_failed", "recognition_failed", "audio_failed", "not_connected", "result_backlog", "invalid_result", "finalize_timeout"]) {
     expect(credentialErrorMessage(`apple_speech_${suffix}`)).toBe(I18N.settings.appleSpeechRecognitionFailed);
@@ -45,7 +43,7 @@ it.each(["zh", "en", "ja"] as const)("keeps every Apple readiness failure specif
       expect(sessionActionErrorMessage(privateError, "fallback")).toBe("fallback");
     }
   }
-  for (const message of [I18N.settings.appleSpeechAssetsMissing, I18N.settings.appleSpeechLanguageUnsupported,
+  for (const message of [I18N.settings.appleSpeechLanguageUnsupported,
     I18N.settings.appleSpeechTranslationLanguageUnsupported, I18N.settings.appleSpeechUnavailable,
     I18N.settings.appleSpeechPrepareFailed, I18N.settings.appleSpeechPreparationInProgress]) {
     expect(message).toContain(I18N.settings.serviceProfilesTitle);
@@ -292,4 +290,19 @@ it.each(["en", "zh", "ja"] as const)("sanitizes paused-session recovery errors i
   expect(sessionActionErrorMessage("apple_speech_assets_missing", "fallback")).toBe(I18N.settings.appleSpeechAssetsMissing);
   expect(sessionActionErrorMessage(`${error}: private-provider-body`, "fallback")).toBe("fallback");
   expect(sessionActionErrorMessage(new Error("private-provider-body"), "fallback")).toBe("fallback");
+});
+
+
+it("routes only exact resource errors to Apple preparation and preserves other recovery behavior", () => {
+  for (const label of ["apple_speech_assets_missing", "apple_speech_preparing", "apple_speech_prepare_failed"]) {
+    expect(sessionErrorSettingsTarget(label)).toBe("appleSpeechResources");
+    expect(sessionErrorSettingsTarget(new Error(label))).toBe("appleSpeechResources");
+    expect(sessionErrorSettingsTarget(`${label}: private-runtime-detail`)).toBeNull();
+    expect(sessionErrorSettingsTarget(`prefix ${label}`)).toBeNull();
+    expect(sessionErrorSettingsTarget({ message: label })).toBeNull();
+  }
+  expect(sessionErrorSettingsTarget("audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE")).toBe("service");
+  for (const label of ["apple_speech_recognition_failed", "apple_speech_unavailable", "apple_speech_language_unsupported", "audio3_error.recognition.timeout.LOCAL_TIMEOUT", "unknown"]) {
+    expect(sessionErrorSettingsTarget(label)).toBeNull();
+  }
 });

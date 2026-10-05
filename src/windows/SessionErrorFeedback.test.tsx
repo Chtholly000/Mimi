@@ -88,7 +88,7 @@ async function mount(surface: Surface) {
   await act(async () => root.render(
     surface === "control" ? <OverlayControlWindow /> : surface === "tray" ? <TrayPanel />
       : surface === "settings" || surface === "compact-settings"
-        ? <SubtitleSessionControls compact={surface === "compact-settings"} onConfigure={() => void showSettings("service")} />
+        ? <SubtitleSessionControls compact={surface === "compact-settings"} onConfigure={target => void showSettings(target)} />
         : <OverlayWindow />,
   ));
 }
@@ -262,4 +262,82 @@ it.each(["zh", "en", "ja"] as const)("assigns detailed recovery to the open pane
   await act(async () => retry.click());
   expect(start).toHaveBeenCalledOnce();
   expect(showSettings).not.toHaveBeenCalled();
+});
+
+
+it.each(["zh", "en", "ja"] as const)("opens Apple resources instead of retrying missing resources across %s surfaces", async language => {
+  setStoredUiLanguage(language);
+  useStore.setState(state => ({
+    settings: { ...state.settings, activeProfileId: "apple", profiles: [{ id: "apple", provider: "appleSpeech", name: "Apple Speech", credentialState: "missing" }] },
+    session: { ...state.session, status: { kind: "error", message: "apple_speech_assets_missing" } },
+  }));
+  for (const surface of surfaces) {
+    await act(async () => root.render(null));
+    showSettings.mockClear();
+    await mount(surface);
+    expect(feedback().querySelector("p")?.textContent).toBe(isOverlaySurface(surface) ? localizedSessionErrorSummary(I18N.settings.appleSpeechAssetsMissing) : I18N.settings.appleSpeechAssetsMissing);
+    expect(configure().textContent).toBe(I18N.settings.appleSpeechOpenResources);
+    expect(feedback().querySelectorAll("button")).toHaveLength(1);
+    expect([...host.querySelectorAll("button")].some(button => button.textContent === I18N.settings.sessionRetry)).toBe(false);
+    expect(host.textContent).not.toContain("apple_speech_assets_missing");
+    await act(async () => configure().click());
+    expect(showSettings).toHaveBeenCalledExactlyOnceWith("appleSpeechResources");
+    expect(start).not.toHaveBeenCalled();
+  }
+});
+
+it.each(["apple_speech_preparing", "apple_speech_prepare_failed"])("opens the resource state for %s without starting subtitles", async message => {
+  useStore.setState(state => ({ session: { ...state.session, status: { kind: "error", message } } }));
+  await mount("settings");
+  expect(configure().textContent).toBe(I18N.settings.appleSpeechOpenResources);
+  await act(async () => host.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
+  expect(showSettings).toHaveBeenCalledExactlyOnceWith("appleSpeechResources");
+  expect(start).not.toHaveBeenCalled();
+});
+
+it.each(["control", "tray"] as const)("keeps Apple resources discoverable with zero or one ready language in %s", async surface => {
+  const stop = vi.fn().mockResolvedValue(undefined);
+  const switchSourceLanguage = vi.fn().mockResolvedValue(undefined);
+  const saveSettings = vi.fn().mockResolvedValue(undefined);
+  useStore.setState(state => ({ stop, switchSourceLanguage, saveSettings,
+    settings: { ...state.settings, sourceLanguage: "en", targetLanguage: "original", activeProfileId: "apple",
+      profiles: [{ id: "apple", provider: "appleSpeech", name: "Apple Speech", credentialState: "missing" }] },
+    session: { ...state.session, status: { kind: "listening" }, isActive: true, isPaused: true },
+  }));
+  for (const sourceLanguages of [[], ["en"]] as const) {
+    await act(async () => root.render(null));
+    useStore.setState(state => ({ settings: { ...state.settings,
+      languageCapabilities: { profileId: "apple", provider: "appleSpeech", textTranslation: "followService", targetLanguage: "original", sourceLanguages, targetLanguages: ["original"] },
+    } }));
+    showSettings.mockClear();
+    await mount(surface);
+    const button = host.querySelector<HTMLButtonElement>(".speech-resources-link")!;
+    expect(button.textContent).toBe(I18N.settings.appleSpeechResources);
+    expect(button.disabled).toBe(false);
+    if (surface === "control") expect(host.querySelector(`[role="combobox"][aria-label="${I18N.overlay.sourceLanguage}"]`)).toBeNull();
+    await act(async () => button.click());
+    expect(showSettings).toHaveBeenCalledExactlyOnceWith("appleSpeechResources");
+    expect(start).not.toHaveBeenCalled();
+    expect(stop).not.toHaveBeenCalled();
+    expect(switchSourceLanguage).not.toHaveBeenCalled();
+    expect(saveSettings).not.toHaveBeenCalled();
+  }
+});
+
+it.each(["control", "tray"] as const)("shows the compact resource entry only for Apple and handles a failed open in %s", async surface => {
+  await mount(surface);
+  expect(host.querySelector(".speech-resources-link")).toBeNull();
+  await act(async () => useStore.setState(state => ({ settings: { ...state.settings,
+    activeProfileId: "apple", profiles: [{ id: "apple", provider: "appleSpeech", name: "Apple Speech", credentialState: "missing" }],
+  } })));
+  let reject!: (error: Error) => void;
+  showSettings.mockImplementationOnce(() => new Promise<void>((_resolve, fail) => { reject = fail; }));
+  const button = host.querySelector<HTMLButtonElement>(".speech-resources-link")!;
+  await act(async () => { button.click(); button.click(); });
+  expect(showSettings).toHaveBeenCalledExactlyOnceWith("appleSpeechResources");
+  expect(button.disabled).toBe(true);
+  await act(async () => reject(new Error("private-resource-navigation-failure")));
+  expect(button.disabled).toBe(false);
+  expect(host.textContent).not.toContain("private-resource-navigation-failure");
+  expect(host.querySelectorAll('[role="alert"]').length).toBeGreaterThan(1);
 });
