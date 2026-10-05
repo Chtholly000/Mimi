@@ -14,7 +14,7 @@ import { SettingsRow } from "./SettingsPrimitives";
 import { useSettingsToast } from "./useSettingsToast";
 
 /** Explicit language preferences belong to the active service. */
-export function ProfileLanguageSettings({ settings, disabled, requiresStop = false }: { settings: SettingsSnapshot; disabled: boolean; requiresStop?: boolean }) {
+export function ProfileLanguageSettings({ settings, disabled, requiresStop = false, onOpenAppleResources }: { settings: SettingsSnapshot; disabled: boolean; requiresStop?: boolean; onOpenAppleResources?: () => void }) {
   const saveSettings = useStore(state => state.saveSettings);
   const [busy, setBusy] = useState(false);
   const { beginToast } = useSettingsToast();
@@ -51,7 +51,10 @@ export function ProfileLanguageSettings({ settings, disabled, requiresStop = fal
   };
   return <section id="translation-languages" className="profile-language-settings" aria-labelledby="translation-languages-title" aria-busy={busy}>
     <header className="profile-language-settings__heading"><h3 id="translation-languages-title">{I18N.settings.subtitleLanguages}</h3><SettingsHelp text={guidance.catalogHelp} label={I18N.settings.helpLabel} />{requiresStop && <SettingsHelp text={I18N.settings.languageChangeRequiresStop} label={I18N.settings.helpLabel} icon="lock" />}</header>
-    <SettingsRow label={I18N.settings.sourceLanguage} description={guidance.help} feedback={sourceNotice && <span className="recognition-language-notice">{sourceNotice}</span>} align="start">
+    <SettingsRow label={I18N.settings.sourceLanguage} description={guidance.help} feedback={(sourceNotice || (appleSpeech && onOpenAppleResources)) && <>
+      {sourceNotice && <span className="recognition-language-notice">{sourceNotice}</span>}
+      {appleSpeech && onOpenAppleResources && <button type="button" className="settings-link" onClick={onOpenAppleResources}>{I18N.settings.appleSpeechOpenResources}</button>}
+    </>} align="start">
       <LanguageChoices label={I18N.settings.sourceLanguage} value={settings.sourceLanguage} valueLabel={appleSpeech ? guidance.optionLabel(settings.sourceLanguage) : undefined}
         disabled={disabled || busy || sources.length === 0 || (sources.length === 1 && sources[0] === settings.sourceLanguage)}
         options={sources.map(value => ({ value, label: guidance.optionLabel(value) }))}

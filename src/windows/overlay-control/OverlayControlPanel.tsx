@@ -1,4 +1,5 @@
 import { SettingsToastRegion } from "../settings/SettingsToast";
+import { activeServiceProfile } from "../../lib/providerCapabilities";
 import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { SettingsHelp } from "../settings/SettingsHelp";
 import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
@@ -52,6 +53,7 @@ interface OverlayControlPanelProps {
   isChangingSession: boolean;
   isStopping?: boolean;
   sessionErrorMessage?: string | null;
+  errorSettingsTarget?: SettingsNavigationTarget | null;
   onRetrySession?: () => Promise<void>;
   onDismiss: () => void;
   onTogglePaused: () => Promise<void>;
@@ -78,6 +80,7 @@ export function OverlayControlPanel({
   isChangingSession,
   isStopping = false,
   sessionErrorMessage,
+  errorSettingsTarget,
   onRetrySession,
   onDismiss,
   onTogglePaused,
@@ -202,7 +205,8 @@ export function OverlayControlPanel({
 
         {sessionErrorMessage ? <SessionErrorFeedback
           message={sessionErrorMessage}
-          onConfigure={() => performAction("settings", () => onShowSettings("service"))}
+          configureLabel={errorSettingsTarget === "appleSpeechResources" ? I18N.settings.appleSpeechOpenResources : undefined}
+          onConfigure={() => performAction("settings", () => onShowSettings(errorSettingsTarget ?? "service"))}
           onRetry={onRetrySession ? () => performAction("pause", onRetrySession, false) : undefined}
           disabled={pendingAction !== null || isChangingSession}
         /> : <button
@@ -257,6 +261,12 @@ export function OverlayControlPanel({
           </div>
         )}
 
+        {activeServiceProfile(settings)?.provider === "appleSpeech" && <div className="speech-resources-actions">
+          <button type="button" className="speech-resources-link" disabled={pendingAction !== null}
+            onClick={() => performAction("settings", () => onShowSettings("appleSpeechResources"))}>
+            <Icon name="gear" />{I18N.settings.appleSpeechResources}
+          </button>
+        </div>}
         {speechLanguageGuidance(settings).notice && <div className="recognition-language-notice">{speechLanguageGuidance(settings).notice}</div>}
         <div className="overlay-control-divider" />
 

@@ -208,3 +208,16 @@ it("explains a native session lock after a language save race without announcing
   expect(host.querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.languageChangeRequiresStop);
   expect(host.textContent).not.toContain(I18N.settings.languageSaved);
 });
+
+it("keeps Apple resource navigation reachable when no language is ready or the session blocks editing", async () => {
+  settings = { ...settings, sourceLanguage: "en", targetLanguage: "original", activeProfileId: "apple",
+    profiles: [{ id: "apple", name: "Apple", provider: "appleSpeech", credentialState: "present" }],
+    languageCapabilities: { profileId: "apple", provider: "appleSpeech", textTranslation: "followService", targetLanguage: "original", sourceLanguages: [], targetLanguages: ["original"] } };
+  const open = vi.fn();
+  await act(async () => root.render(<ProfileLanguageSettings settings={settings} disabled requiresStop onOpenAppleResources={open} />));
+  const resources = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === I18N.settings.appleSpeechOpenResources)!;
+  expect(resources.disabled).toBe(false);
+  await act(async () => resources.click());
+  expect(open).toHaveBeenCalledOnce();
+  expect(save).not.toHaveBeenCalled();
+});

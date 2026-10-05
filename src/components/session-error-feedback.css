@@ -25,14 +25,16 @@
   overflow-wrap: anywhere;
 }
 
-.session-error-feedback__actions {
+.session-error-feedback__actions,
+.speech-resources-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
 }
 
-.session-error-feedback__action {
+.session-error-feedback__action,
+.speech-resources-link {
   display: inline-flex;
   min-height: 32px;
   max-width: 100%;
@@ -50,22 +52,26 @@
   cursor: pointer;
 }
 
-.session-error-feedback__action > svg {
+.session-error-feedback__action > svg,
+.speech-resources-link > svg {
   width: 14px;
   height: 14px;
   flex: 0 0 auto;
 }
 
-.session-error-feedback__action:hover:not(:disabled) {
+.session-error-feedback__action:hover:not(:disabled),
+.speech-resources-link:hover:not(:disabled) {
   background: var(--settings-selection-soft, var(--tray-surface-hover, var(--control-surface-hover, rgba(255, 255, 255, 0.14))));
 }
 
-.session-error-feedback__action:focus-visible {
+.session-error-feedback__action:focus-visible,
+.speech-resources-link:focus-visible {
   outline: 2px solid currentColor;
   outline-offset: 2px;
 }
 
-.session-error-feedback__action:disabled {
+.session-error-feedback__action:disabled,
+.speech-resources-link:disabled {
   opacity: 0.5;
   cursor: default;
 }

@@ -72,6 +72,7 @@ export function ServiceProfiles({
   sessionStatusKind = "idle",
   visible = true,
   overview,
+  appleResourcesRequest = 0,
 }: {
   settings: SettingsSnapshot;
   sessionIsActive: boolean;
@@ -79,6 +80,7 @@ export function ServiceProfiles({
   sessionStatusKind?: SessionStateEvent["status"]["kind"];
   visible?: boolean;
   overview?: ReactNode;
+  appleResourcesRequest?: number;
 }) {
   const createProfile = useStore((state) => state.createProfile);
   const updateProfile = useStore((state) => state.updateProfile);
@@ -101,6 +103,9 @@ export function ServiceProfiles({
     activeProfile?.id ?? settings.activeProfileId,
   );
   const [showsEditor, setShowsEditor] = useState(false);
+  const [handledAppleResourcesRequest, setHandledAppleResourcesRequest] = useState(0);
+  const focusedAppleResourcesRequest = useRef(0);
+  const [appleResourcesProfileId, setAppleResourcesProfileId] = useState<string | null>(null);
   const [showsProviderPicker, setShowsProviderPicker] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -179,6 +184,33 @@ export function ServiceProfiles({
     setFeedback(null);
     setPendingConfirmation(null);
   }
+
+  // A native resource action targets the current Apple profile, even when this
+  // window last showed another editor. Do not unmount a pending form operation.
+  if (visible && initializationStatus === "ready" && pendingAction === null
+    && appleResourcesRequest !== handledAppleResourcesRequest) {
+    setHandledAppleResourcesRequest(appleResourcesRequest);
+    setAppleResourcesProfileId(appleResourcesRequest > 0 && activeProfile?.provider === "appleSpeech" ? activeProfile.id : null);
+    if (appleResourcesRequest > 0 && activeProfile?.provider === "appleSpeech") {
+      setSelectedProfileId(activeProfile.id);
+      setShowsProviderPicker(false);
+      setShowsEditor(true);
+      setPendingConfirmation(null);
+    }
+  }
+
+  useEffect(() => {
+    if (!visible || !showsEditor || !appleResourcesProfileId || selectedProfile?.id !== appleResourcesProfileId
+      || selectedProfile.id !== settings.activeProfileId
+      || selectedProfile?.provider !== "appleSpeech" || pendingAction !== null
+      || appleResourcesRequest === 0 || handledAppleResourcesRequest !== appleResourcesRequest
+      || focusedAppleResourcesRequest.current === appleResourcesRequest) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (focusAppleSpeechResources()) focusedAppleResourcesRequest.current = appleResourcesRequest;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [appleResourcesRequest, appleResourcesProfileId, handledAppleResourcesRequest, pendingAction, selectedProfile?.id,
+    selectedProfile?.provider, settings.activeProfileId, showsEditor, visible]);
 
   const hasIndependentTextProxy = !!selectedProfile && (isStandaloneAsrProvider(selectedProfile.provider) || ["alibabaCloud", "deepLX"].includes(selectedProfile.provider));
 
@@ -485,7 +517,7 @@ export function ServiceProfiles({
           </div>
           <div className="service-detail__connection">
             <SelectedCredentialEditor
-              support={apple.support} loading={apple.loading} failed={apple.failed} sourceLanguage={settings.sourceLanguage}
+              support={apple.support} settings={settings} requiresStop={requiresStop} loading={apple.loading} failed={apple.failed} sourceLanguage={settings.sourceLanguage}
               onRetry={apple.refresh} onPrepared={apple.update} onBusyChange={busy => setPendingAction(busy ? "prepare-resource" : null)}
               connectionCheck={(draft: ProviderCredentialsInput | null | undefined) => renderConnectionCheck(selectedProfile, isStandaloneAsrProvider(selectedProfile.provider) || ["alibabaCloud", "deepLX"].includes(selectedProfile.provider) ? "speech" : undefined, draft)}
               textConnectionCheck={(draft) => renderConnectionCheck(selectedProfile, "text", draft)}
@@ -525,7 +557,7 @@ export function ServiceProfiles({
               onSave={config => handleSaveProxy(selectedProfile, "text", config)} />}
           </section>
           {selectedProfile.id === settings.activeProfileId
-            ? <ProfileLanguageSettings key={selectedProfile.id} settings={settings} disabled={mutationsDisabled} requiresStop={requiresStop} />
+            ? <ProfileLanguageSettings key={selectedProfile.id} settings={settings} disabled={mutationsDisabled} requiresStop={requiresStop} onOpenAppleResources={focusAppleSpeechResources} />
             : null}
           <div className="service-detail__actions">
             {canUseProfile(selectedProfile) &&
@@ -1072,4 +1104,12 @@ function credentialStateText(state: CredentialState, nativeSpeech = false): stri
     case "unavailable":
       return I18N.settings.credentialUnavailable;
   }
+}
+
+function focusAppleSpeechResources(): boolean {
+  const resources = document.getElementById("apple-speech-resources");
+  if (!resources) return false;
+  resources.scrollIntoView({ block: "start" });
+  resources.focus({ preventScroll: true });
+  return true;
 }

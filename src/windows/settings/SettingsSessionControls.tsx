@@ -27,6 +27,7 @@ interface SettingsSessionControlsProps {
   onResume: () => void;
   onImmersiveChange: (enabled: boolean) => void;
   onConfigure: () => void;
+  configureLabel?: string;
 }
 
 export function SettingsSessionControls(props: SettingsSessionControlsProps) {
@@ -55,7 +56,7 @@ export function SettingsSessionControls(props: SettingsSessionControlsProps) {
         <Switch checked={props.checked} disabled={props.disabled} aria-label={I18N.settings.liveSubtitles} aria-describedby="settings-session-status" onChange={enabled => enabled && props.errorRequiresConfiguration ? props.onConfigure() : props.onSessionChange(enabled)} />
       </div>
     </div>
-    {props.errorMessage && <SessionErrorFeedback message={props.errorMessage} onConfigure={props.onConfigure} disabled={props.isChanging} />}
+    {props.errorMessage && <SessionErrorFeedback message={props.errorMessage} onConfigure={props.onConfigure} configureLabel={props.configureLabel} disabled={props.isChanging} />}
     {!props.compact && <div className="settings-session-control">
       <div className="settings-session-control__copy">
         <div className="settings-session-control__heading">

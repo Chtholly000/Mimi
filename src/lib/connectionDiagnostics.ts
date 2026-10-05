@@ -1,6 +1,6 @@
-import { audio3ErrorMessage } from "./audio3Errors";
+import { audio3ErrorMessage, audio3ErrorRequiresConfiguration } from "./audio3Errors";
 import { effectiveUiLanguage, I18N } from "./i18n";
-import type { ConnectionDiagnostic } from "./ipc";
+import type { ConnectionDiagnostic, SettingsNavigationTarget } from "./ipc";
 
 export type DiagnosticPlatform = "macos" | "windows" | "linux";
 const copy = {
@@ -295,6 +295,15 @@ export function profileErrorMessage(error: unknown): string {
   if (label === "profile_switch_busy" || label === "profile_switch_superseded") return I18N.settings.profileSwitchBusy;
   if (typeof error === "string" && error.startsWith("Use an HTTPS DeepLX endpoint")) return I18N.settings.deepLXEndpointInvalid;
   return sessionActionErrorMessage(label, I18N.settings.profileActionFailed);
+}
+
+/** Exact safe labels only: navigation never starts capture or downloads resources. */
+export function sessionErrorSettingsTarget(error: unknown): SettingsNavigationTarget | null {
+  const label = error instanceof Error ? error.message : error;
+  if (label === "apple_speech_assets_missing" || label === "apple_speech_preparing" || label === "apple_speech_prepare_failed") {
+    return "appleSpeechResources";
+  }
+  return typeof label === "string" && audio3ErrorRequiresConfiguration(label) ? "service" : null;
 }
 
 /** Keep language failures actionable without exposing arbitrary IPC/provider text. */

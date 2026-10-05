@@ -2,7 +2,7 @@ import { useLanguageNormalizationToast } from "../settings/useLanguageNormalizat
 import { useCallback, useEffect, useRef } from "react";
 import { targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import { useOverlayControlMode } from "../../lib/useOverlayControlMode";
-import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
+import { sessionErrorSettingsTarget } from "../../lib/connectionDiagnostics";
 import {
   isTauri,
   overlayControlSetIslandWidth,
@@ -31,7 +31,8 @@ import "./overlay-control.css";
 export function OverlayControlWindow() {
   const sessionStatusKind = useStore(selectSessionStatusKind);
   const sessionErrorMessage = useStore(selectSessionErrorMessage);
-  const errorRequiresConfiguration = useStore(state => state.session.status.kind === "error" && audio3ErrorRequiresConfiguration(state.session.status.message));
+  const errorSettingsTarget = useStore(state => state.session.status.kind === "error" ? sessionErrorSettingsTarget(state.session.status.message) : null);
+  const errorRequiresConfiguration = errorSettingsTarget !== null;
   const start = useStore(state => state.start);
   const sessionIsPaused = useStore((state) => state.session.isPaused);
   const sessionIsActive = useStore((state) => state.session.isActive);
@@ -141,6 +142,7 @@ export function OverlayControlWindow() {
           isChangingSession={isChangingSession}
           isStopping={sessionStatusKind === "stopping"}
           sessionErrorMessage={sessionErrorMessage}
+          errorSettingsTarget={errorSettingsTarget}
           onRetrySession={errorRequiresConfiguration ? undefined : start}
           onDismiss={dismiss}
           onTogglePaused={togglePaused}

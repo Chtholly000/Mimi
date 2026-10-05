@@ -254,7 +254,7 @@ export function appQuit(): Promise<void> {
   return invoke("app_quit");
 }
 
-export type SettingsNavigationTarget = "service" | "export";
+export type SettingsNavigationTarget = "service" | "export" | "appleSpeechResources";
 
 export function appShowSettings(
   target?: SettingsNavigationTarget,

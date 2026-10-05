@@ -1368,3 +1368,77 @@ it("reports reconnect failure after the selected profile is already saved withou
   expect(host.textContent).not.toContain(error);
   expect(actions.selectProfile).toHaveBeenCalledExactlyOnceWith(other.id);
 });
+
+it("opens and focuses the active Apple resource editor from another profile without selecting or downloading anything", async () => {
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
+  vi.stubGlobal("cancelAnimationFrame", () => {});
+  vi.mocked(getAppleSpeechSupport).mockResolvedValue(appleSupport);
+  const snapshot = { ...appleSettings(), profiles: [profile, appleProfile] };
+  const show = async (request: number, visible = true) => act(async () => root.render(
+    <ServiceProfiles settings={snapshot} sessionIsActive={false} visible={visible} appleResourcesRequest={request} />,
+  ));
+  await show(0);
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  expect(host.querySelector(".service-detail__title")?.textContent).toContain(profile.name);
+  await show(1);
+  const resources = host.querySelector<HTMLElement>("#apple-speech-resources")!;
+  expect(resources).not.toBeNull();
+  expect(host.querySelector(".service-detail__title")?.textContent).toContain(appleProfile.name);
+  expect(document.activeElement).toBe(resources);
+  expect(resources.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+  await click(I18N.settings.backToServices);
+  await show(1);
+  expect(host.querySelector(".service-detail")).toBeNull();
+  await show(2, false);
+  expect(host.querySelector(".service-detail")).toBeNull();
+  await show(2);
+  expect(document.activeElement).toBe(host.querySelector("#apple-speech-resources"));
+  expect(actions.selectProfile).not.toHaveBeenCalled();
+  expect(actions.saveSettings).not.toHaveBeenCalled();
+  expect(prepareAppleSpeechLanguage).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("waits for preparation without reviving a cancelled resource intent (cancelled=%s)", async cancelled => {
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
+  vi.stubGlobal("cancelAnimationFrame", () => {});
+  vi.mocked(getAppleSpeechSupport).mockResolvedValue(appleSupport);
+  const otherApple = { ...appleProfile, id: "other-apple", name: "Other Apple" };
+  const snapshot = { ...appleSettings(), profiles: [appleProfile, otherApple] };
+  const show = async (request: number) => act(async () => root.render(
+    <ServiceProfiles settings={snapshot} sessionIsActive={false} appleResourcesRequest={request} />,
+  ));
+  let prepared!: (value: typeof appleSupport) => void;
+  vi.mocked(prepareAppleSpeechLanguage).mockReturnValue(new Promise(resolve => { prepared = resolve; }));
+  await show(0);
+  await act(async () => host.querySelectorAll<HTMLButtonElement>(".service-row__edit")[1].click());
+  await click(I18N.settings.appleSpeechPrepare);
+  await show(1);
+  expect(host.querySelector(".service-detail__title")?.textContent).toContain(otherApple.name);
+  if (cancelled) await show(0);
+  await act(async () => prepared({ ...appleSupport, languages: appleSupport.languages.map(item => ({ ...item, installed: true })) }));
+  expect(host.querySelector(".service-detail__title")?.textContent).toContain(cancelled ? otherApple.name : appleProfile.name);
+  if (!cancelled) expect(document.activeElement).toBe(host.querySelector("#apple-speech-resources"));
+  expect(prepareAppleSpeechLanguage).toHaveBeenCalledOnce();
+});
+
+it("waits for initialized Apple settings and does not revive a resource intent received for a non-Apple profile", async () => {
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
+  vi.stubGlobal("cancelAnimationFrame", () => {});
+  vi.mocked(getAppleSpeechSupport).mockResolvedValue(appleSupport);
+  const show = async (snapshot: SettingsSnapshot, request: number) => act(async () => root.render(
+    <ServiceProfiles settings={snapshot} sessionIsActive={false} appleResourcesRequest={request} />,
+  ));
+  boot.initializationStatus = "loading";
+  await show(settings, 1);
+  expect(host.querySelector("#apple-speech-resources")).toBeNull();
+  boot.initializationStatus = "ready";
+  await show(appleSettings(), 1);
+  expect(document.activeElement).toBe(host.querySelector("#apple-speech-resources"));
+  await show(settings, 2);
+  await show(appleSettings(), 2);
+  const scroller = vi.mocked(Element.prototype.scrollIntoView);
+  scroller.mockClear();
+  await act(async () => document.body.focus());
+  await show(appleSettings(), 2);
+  expect(scroller).not.toHaveBeenCalled();
+});

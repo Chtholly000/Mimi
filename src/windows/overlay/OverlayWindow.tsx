@@ -3,7 +3,7 @@ import { subtitleBackgroundColor } from "../../lib/subtitleColor";
 import { I18N } from "../../lib/i18n";
 import { AudioInputIndicator } from "../../components/AudioInputIndicator";
 import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
-import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
+import { sessionErrorSettingsTarget } from "../../lib/connectionDiagnostics";
 import { audioInputLabel } from "../../lib/audioInput";
 import { isTauri, listenOverlayPointerMotion } from "../../lib/ipc";
 import { useOverlayControlMode } from "../../lib/useOverlayControlMode";
@@ -53,7 +53,8 @@ export function OverlayWindow() {
   const sessionErrorSummary = useStore(selectSessionErrorSummary);
   const [controlMode] = useOverlayControlMode();
   const hasSessionError = session.status.kind === "error";
-  const errorRequiresConfiguration = session.status.kind === "error" && audio3ErrorRequiresConfiguration(session.status.message);
+  const errorSettingsTarget = session.status.kind === "error" ? sessionErrorSettingsTarget(session.status.message) : null;
+  const errorRequiresConfiguration = errorSettingsTarget !== null;
   const settings = useStore((state) => state.settings);
   const togglePaused = useStore((state) => state.togglePaused);
   const start = useStore((state) => state.start);
@@ -178,11 +179,11 @@ export function OverlayWindow() {
   const sessionActionBusy = sessionAction.pending || session.status.kind === "connecting" || session.status.kind === "stopping";
   const sessionActionLabel = sessionActionBusy
     ? session.status.kind === "stopping" ? I18N.overlay.stopping : I18N.overlay.connecting
-    : errorRequiresConfiguration ? I18N.settings.openSpeechSettings
+    : errorRequiresConfiguration ? errorSettingsTarget === "appleSpeechResources" ? I18N.settings.appleSpeechOpenResources : I18N.settings.openSpeechSettings
     : hasSessionError ? I18N.overlay.retry : pauseLabel;
   const runSessionAction = () => {
     if (errorRequiresConfiguration) {
-      runControlAction("settings", () => showSettings("service"));
+      runControlAction("settings", () => showSettings(errorSettingsTarget ?? "service"));
     } else {
       const resuming = !hasSessionError && session.isPaused;
       void sessionAction.run(async () => {
@@ -477,7 +478,8 @@ export function OverlayWindow() {
             message={sessionErrorMessage ?? I18N.settings.sessionError}
             summary={sessionErrorSummary ?? I18N.settings.sessionError}
             actionsHidden={controlMode === "panel"}
-            onConfigure={() => runControlAction("settings", () => showSettings("service"))}
+            configureLabel={errorSettingsTarget === "appleSpeechResources" ? I18N.settings.appleSpeechOpenResources : undefined}
+            onConfigure={() => runControlAction("settings", () => showSettings(errorSettingsTarget ?? "service"))}
             onRetry={errorRequiresConfiguration ? undefined : runSessionAction}
             disabled={sessionActionBusy || controlAction.pending}
           />}
