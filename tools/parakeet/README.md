@@ -128,6 +128,12 @@ voices at 160/190 words per minute, and one-second gaps. It is not a noisy or
 accent-diverse speech benchmark. WER uses `re.findall(r"[a-z0-9]+", text.casefold())`;
 number spelling differences count as errors. The 11-second JFK clip is a narrow
 human-speech check, not a representative real-world corpus.
+Inspection of the 24-sentence result attributed all 13 literal errors to equivalent
+number, currency, time or date formatting. The short sample instead repeated one
+word across its eight-second forced boundary; that is an observed recognition
+error, not a formatting difference. The 320 ms trial retained that
+repetition. Byte comparisons of the two segments confirmed that PCM was neither
+replayed nor dropped at the boundary, including with different packet sizes.
 
 The first observed model load plus silent warmup took 7.992 s. Worker peak
 process RSS was 822 MB; that measurement does **not** include all Metal/unified

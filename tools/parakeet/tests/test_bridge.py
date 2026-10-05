@@ -35,6 +35,20 @@ def run_task(task="fixture", language="en"):
 
 
 class SegmentTests(unittest.TestCase):
+    def test_forced_boundary_never_replays_or_drops_continuous_pcm(self):
+        # Distinct frame contents catch duplicate preroll, even when timestamps
+        # look adjacent. This fixture remains model- and recording-free.
+        pcm = b"".join(struct.pack("<h", 3000 + frame) * 320 for frame in range(450))
+        for chunk_size in (640, 246, 32768):
+            with self.subTest(chunk_size=chunk_size):
+                segmenter = Segmenter()
+                finals = []
+                for offset in range(0, len(pcm), chunk_size):
+                    finals.extend(value for value in segmenter.feed(pcm[offset:offset + chunk_size]) if value.final)
+                finals.extend(value for value in segmenter.finish() if value.final)
+                self.assertEqual([(value.start_ms, value.end_ms) for value in finals], [(0, 8000), (8000, 9000)])
+                self.assertEqual(b"".join(value.pcm for value in finals), pcm)
+
     def test_silence_candidate_changes_only_its_explicit_boundary(self):
         short = Segmenter(silence_ms=320)
         standard = Segmenter(silence_ms=480)

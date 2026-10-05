@@ -62,7 +62,7 @@ Report model loading, process RSS, first nonempty draft, final/EOF latency, and
 normalized WER. Synthetic samples verify this narrow input and bridge boundary;
 they do not establish general ASR accuracy or native Mimi overlay acceptance.
 
-Completed: 21 deterministic/loopback tests, pinned setup and repeated startup,
+Completed: 22 deterministic/loopback tests, pinned setup and repeated startup,
 actual model replay of the 9.518-second synthetic English sample, the shared
 96.263-second continuous 24-sentence sample, and the 11-second JFK sample.
 Literal WER was respectively 1/30, 13/239, and 0/22. Default-endpoint simultaneous

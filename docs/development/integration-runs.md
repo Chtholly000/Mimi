@@ -13,12 +13,17 @@
 - M5/16 GiB、macOS 26.3.1(a)、Python 3.12、MLX 0.32.3；模型 revision
   `ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15`，2.51 GB 权重。首次观测加载及
   静音预热 7.992 s，worker RSS 峰值 822 MB；RSS 不代表全部 Metal/统一内存。
-  鉴权后真实 loopback WebSocket 按 20 ms 实时发送 PCM，独立测试 21 项通过。
+  鉴权后真实 loopback WebSocket 按 20 ms 实时发送 PCM，独立测试 22 项通过。
 - 默认 480 ms 静音阈值：短合成样本 9.518 s，WER 1/30、首 draft 1.013 s、
   首 final 8.229 s、EOF 130 ms；连续 24 句合成样本 96.263 s，24 finals、
   WER 13/239、首 draft 0.916 s、首 final 2.975 s、EOF 11 ms；官方 whisper.cpp
   JFK 11 s 真人样本 WER 0/22、首 draft 1.025 s、首 final 8.303 s、EOF 137 ms。
   WER 固定 casefold + `[a-z0-9]+`，数字拼写不归一化；不据窄样本泛化准确率。
+  逐项核对：24 句的 13 词差异均为等值数字、金额、时间、日期写法；短样本
+  则在 8 s 分段边界重复了一个词，是实质识别错误，320 ms 候选仍存在。
+  对该 PCM 按 640/246/32768 字节分包逐字节复核，两段分别等于原始音频的
+  [0,8000) / [8000,9520) ms（尾部 56 字节零填充），没有重复 preroll 或丢帧；
+  新增不同内容帧的连续硬切回归保护，不凭输出重复做文本去重。
 - 24 句有 1 s 间隔；静音端点之后发送 final 用时 115–231 ms（中位 134 ms），
   还需加 480 ms 静音等待。两段短样本首 final 均由 8 s 上限触发。320 ms
   候选的短样本首 final 仍为 8.155 s，WER 1/30，未据此修改默认值。
