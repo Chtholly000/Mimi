@@ -254,6 +254,8 @@ page must include a review of other instances of the same pattern.
   and that window's permission scope, then rebuild and restart the signed app
   before exercising success and failure. Frontend reloads cannot update its
   compiled Tauri permissions; do not widen unrelated start/stop permissions.
+  UI tests with mocked IPC do not prove native capability access; error Retry
+  must be exercised in the signed app and shown to reach backend `session_start`.
 - Searchable popups must scroll their result list directly. `scrollIntoView`
   can scroll a clipped ancestor in WebKit and hide rows below the search field;
   pointer hover must not move the list. Check a long list and keyboard search.

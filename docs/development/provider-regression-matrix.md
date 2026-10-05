@@ -35,17 +35,37 @@ complete multiwindow snapshot trace or a complete stop/start/app-restart regress
 | --- | --- | --- |
 | Alibaba: default Audio 3.0 ASR (`qwen-audio-3.0-asr-flash-streaming`) → `qwen-mt-lite`; separate realtime adapter uses `qwen3.5-livetranslate-flash-realtime` | Existing profile connected and ran. | Observed RTT 46 ms, MT 446 ms; resume recovery about 0.5 s; latest ASR and MT reached the sample's final sentence. This does not certify every Alibaba route. Patched-build regression pending. |
 | Gemini Live: `BidiGenerateContent`, `gemini-3.5-live-translate-preview` | Existing profile. Earlier evidence remains in the [Gemini design record](../plans/2026-10-05-gemini-subtitle-progress.md). | Observed RTT 95 ms; resume recovery about 0.8 s; latest ASR and MT reached the final sentence. Patched-build regression pending. |
-| Baidu realtime speech translation | Existing profile connected in 744 ms. | Six confirmed subtitle groups were visible in the overlay. After about 73.7 s connected, the UI reported a generic startup failure/unclassified error. The specific cause is **unproven**; do not label it an authentication failure or infer it from the new classification patch. Remaining trial entitlement and patched-build regression pending. |
-| Apple Speech + DeepL independent text translation | Saved a new profile using the existing active DeepL API Developer account/key, with the 1,000,000-character total free plan; no new registration. | Connection 1,568 ms, MT 1,324 ms. Pause/resume and replay reached the final sentence, with latest ASR and MT present. This confirms an exercised translation route, not the account's remaining character balance. Patched-build regression pending. |
+| Baidu realtime speech translation | Existing profile connected in 744 ms on `d58f4bad`; six confirmed subtitle groups were visible in the overlay before a generic failure after about 73.7 s connected. | Clean `6ac14bde` identifies the later failure as `BAIDU_UNEXPECTED_SESSION_END`; see the follow-up evidence below. The underlying service cause and remaining trial entitlement are unproven; native Retry repair remains pending. |
+| Apple Speech + DeepL independent text translation | Saved a new profile using the existing active DeepL API Developer account/key, with the 1,000,000-character total free plan; no new registration. | On `d58f4bad`: connection 1,568 ms, MT 1,324 ms; pause/resume and replay reached the final sentence. Clean `6ac14bde` also retained a working key after app restart and reached the final sentence (connection 1,315 ms, MT 512 ms). These observations do not establish the account's remaining character balance. |
 | Apple Speech | This round's resource guidance was exercised on a signed build from clean `d58f4bad`: active-profile navigation from the overlay/settings, running-state locks, explicit prepared-language application, unprepared-language selection without download, and restoration of English. | Settings and overlay guidance verified; tray/error/empty/incompatible/pending-action cases have automated coverage only. No resource re-download or recognition-accuracy claim. See the separate [Apple validation record](../plans/2026-10-05-apple-speech-design.md). |
 | Whisper + Index text translation | Existing configured route; ASR check 67 ms, MT check 851 ms on `d58f4bad`. | The 15.091-second sample's final ASR and MT both reached the last sentence. Local ASR was observed to be slow, but end-to-end latency was not measured. Pause/resume was not exercised; this is not a latency or full lifecycle pass. |
 | Parakeet | On build `fbf3c06c`, the 16 ms availability check returned unavailable. | Capture was not started. This is an unavailable preflight result, not successful recognition or a native session pass. |
 | Volcano Engine | Signup required a phone number, SMS verification and agreement acceptance. The agreement was not accepted and registration was not completed. | No native test; resource `10053` trial eligibility remains unconfirmed. |
 | OpenAI / Azure OpenAI / Tencent Cloud / xAI | No confirmed free allowance for Mimi's exact API; Azure's general trial remains distinct from model eligibility. | No native test this round. |
 
-The final desktop canonical check is in progress; the final patched build and
-its native rerun remain pending. Focused automated results for the patch are
-recorded in the [recovery design](../plans/2026-10-05-provider-recovery-errors.md).
+### Clean `6ac14bde` follow-up
+
+The signed native build from clean `6ac14bde` contains the initial authentication
+and error-mapping repairs, but precedes the overlay Retry ACL repair.
+Apple Speech + DeepL remained usable after app restart, as recorded above.
+
+Baidu entered running at app uptime 180,569 ms and failed at 243,722 ms: **63.153 s**
+later, now classified as `BAIDU_UNEXPECTED_SESSION_END`. After the fixed sample
+finished, sent-audio evidence continued to report about 100 buffers / 64,000 bytes
+of silence every 2 seconds, with a send 1.146 s before failure. This does not match
+a 30-second gap without audio sends and must not be labeled an idle timeout. The
+reason the service ended the session is still unproven. The trace was exported
+privately; no audio, subtitle content or account identifiers are included here.
+
+The actual overlay Retry action failed. Source inspection identified missing
+`session_start` permission in `app-overlay-control`; the old permission regression
+also incorrectly forbade it. The ACL/test repair is in progress. Its final SHA,
+automated checks and signed native rerun must be recorded separately, including
+evidence that Retry actually reaches backend start. The classification improvement
+alone is not a successful recovery result.
+
+Focused automated results are recorded in the
+[recovery design](../plans/2026-10-05-provider-recovery-errors.md).
 The Android environment issue was resolved: `testDebugUnitTest` completed
 successfully with 19 suites / 129 tests and zero failures, errors or skips.
 Actual host JNI compilation passed; the run includes 2 shared-core JNI tests,

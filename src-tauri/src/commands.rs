@@ -591,13 +591,13 @@ mod tests {
     }
 
     #[test]
-    fn control_panel_can_pause_and_resume_without_session_start_or_stop_access() {
+    fn control_panel_can_retry_pause_and_resume_without_session_stop_access() {
         let permission = include_str!("../permissions/app.toml")
             .split("[[permission]]")
             .find(|entry| entry.contains("identifier = \"app-overlay-control\""))
             .unwrap();
         assert!(permission.contains("\"session_toggle_paused\""));
-        assert!(!permission.contains("\"session_start\""));
+        assert!(permission.contains("\"session_start\""));
         assert!(!permission.contains("\"session_stop\""));
         let capability: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/overlay-control.json")).unwrap();
@@ -611,6 +611,42 @@ mod tests {
             .iter()
             .any(|permission| permission == "app-overlay-control"));
         assert!(include_str!("lib.rs").contains("commands::session_toggle_paused,"));
+    }
+
+    #[test]
+    fn control_panel_retry_ipc_is_authorized_by_its_native_permission() {
+        // UI tests replace start with a mock. Check the real callback, store,
+        // IPC command and native ACL together so a visible retry can reach Rust.
+        let control_window =
+            include_str!("../../src/windows/overlay-control/OverlayControlWindow.tsx");
+        assert!(control_window
+            .contains("onRetrySession={errorRequiresConfiguration ? undefined : start}"));
+        assert!(include_str!("../../src/lib/store.ts")
+            .split("start: async () => {")
+            .nth(1)
+            .unwrap()
+            .split("return;")
+            .next()
+            .unwrap()
+            .contains("await sessionStart();"));
+        let ipc = include_str!("../../src/lib/ipc.ts");
+        let command = ipc
+            .split("export function sessionStart(): Promise<void> {")
+            .nth(1)
+            .unwrap()
+            .split("return invoke(\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        assert_eq!(command, "session_start");
+        let permission = include_str!("../permissions/app.toml")
+            .split("[[permission]]")
+            .find(|entry| entry.contains("identifier = \"app-overlay-control\""))
+            .unwrap();
+        assert!(permission.contains(&format!("\"{command}\"")));
+        assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
     }
 
     #[test]

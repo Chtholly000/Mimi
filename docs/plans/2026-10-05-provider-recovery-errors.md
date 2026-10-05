@@ -54,6 +54,15 @@ provider text because it contains a familiar fragment.
   errors retain generic feedback. Shared `translation-contracts.json` handshake
   fixtures define 401/403 versus transport behavior for Rust and Kotlin tests.
   No wire-protocol, shared reducer or JNI behavior is changed.
+- Give `app-overlay-control` the `session_start` permission used by its explicit
+  retry button. Keep `session_stop` unavailable to that window. On the installed
+  `6ac14bde` build, Baidu reported `BAIDU_UNEXPECTED_SESSION_END` after 63.153
+  seconds; clicking retry left the session in error with a generic action failure
+  and no `start_requested` diagnostic. The callback invoked `session_start`, but
+  the window's Tauri ACL omitted it, so the request never reached the lifecycle
+  handler. Cover the actual frontend callback/store/IPC/native permission contract
+  in addition to mocked UI clicks. This fixes retry dispatch, not the cause of
+  Baidu's end event; native acceptance follows the rebuilt bundle.
 - Preserve transcript pairing, provider prompts, language catalogs, capture and
   streaming-generation ownership.
 

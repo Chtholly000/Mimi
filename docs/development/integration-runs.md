@@ -879,3 +879,22 @@
   loaded real profiles. The formal app was quit with explicit user permission
   and its installed bundle was not replaced. Temporary editor drafts were
   cancelled/restored before releasing the development app to other work.
+
+### 2026-10-05 — Provider recovery classification and native Retry boundary
+
+- Signed canonical development app, clean build `6ac14bde`; fixed 15.091-second
+  synthetic English sample. See the [provider matrix](provider-regression-matrix.md)
+  for earlier-build coverage, exact API eligibility and remaining gaps.
+- After app restart, Apple Speech + DeepL reused its existing working key:
+  connection 1,315 ms, final sample sentence completed, MT 512 ms. These are
+  connection/request timings, not measured end-to-end subtitle latency.
+- Baidu running-to-failure interval was 63.153 s (app uptime 180,569–243,722 ms),
+  classified as `BAIDU_UNEXPECTED_SESSION_END`. After sample completion, sends
+  continued at about 100 buffers / 64,000 bytes of silence per 2 s, through
+  1.146 s before failure. A 30-second absence of audio sends is not supported;
+  do not attribute the event to idle timeout. The underlying service cause
+  remains unknown. Trace exported privately; this entry contains metadata only.
+- Native overlay Retry failed: `app-overlay-control` lacked `session_start`
+  permission, and its old regression test incorrectly prohibited it. Repair is
+  in progress; final SHA/checks and a signed native Retry reaching backend start
+  remain to be recorded. This run is not full multiwindow or recovery acceptance.
