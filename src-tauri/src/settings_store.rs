@@ -3493,41 +3493,51 @@ mod tests {
 
     #[test]
     fn profile_selection_configuration_matches_saved_selection_without_mutating_it() {
-        let directory = tempfile::tempdir().unwrap();
-        let fake = FakeSecretStore::default();
-        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake));
-        let next = store
-            .create_profile(ProviderKind::OpenAIRealtime, "Synthetic next")
-            .unwrap();
-        store.save_api_key(&next.id, "synthetic-next").unwrap();
-        store
-            .save_preferences_for_active_profile(|prefs| {
-                prefs.source_language = SourceLanguage::Japanese;
-                prefs.target_language = TargetLanguage::French;
-                prefs.audio_input = AudioInput::Both;
-                prefs.retain_session_history = true;
-                prefs.record_session_audio = true;
-            })
-            .unwrap();
-        let previous = store.preferences();
-        let active = store.active_profile().unwrap();
-        let catalog = std::fs::read(&store.catalog_path).unwrap();
-        let persisted = std::fs::read(&store.prefs_path).unwrap();
+        // Keep a target supported by the selected provider; normalize only
+        // targets outside its dedicated realtime translation catalog.
+        for (target, expected_target) in [
+            (TargetLanguage::French, TargetLanguage::French),
+            (
+                TargetLanguage::TraditionalChinese,
+                TargetLanguage::SimplifiedChinese,
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let fake = FakeSecretStore::default();
+            let store = SettingsStore::at_path(directory.path().into(), Box::new(fake));
+            let next = store
+                .create_profile(ProviderKind::OpenAIRealtime, "Synthetic next")
+                .unwrap();
+            store.save_api_key(&next.id, "synthetic-next").unwrap();
+            store
+                .save_preferences_for_active_profile(|prefs| {
+                    prefs.source_language = SourceLanguage::Japanese;
+                    prefs.target_language = target;
+                    prefs.audio_input = AudioInput::Both;
+                    prefs.retain_session_history = true;
+                    prefs.record_session_audio = true;
+                })
+                .unwrap();
+            let previous = store.preferences();
+            let active = store.active_profile().unwrap();
+            let catalog = std::fs::read(&store.catalog_path).unwrap();
+            let persisted = std::fs::read(&store.prefs_path).unwrap();
 
-        let proposed = store.configuration_for_profile_selection(&next).unwrap();
-        assert_eq!(proposed.source_language, SourceLanguage::Automatic);
-        assert_eq!(proposed.target_language, TargetLanguage::SimplifiedChinese);
-        assert_eq!(store.preferences(), previous);
-        assert_eq!(store.active_profile().unwrap(), active);
-        assert_eq!(std::fs::read(&store.catalog_path).unwrap(), catalog);
-        assert_eq!(std::fs::read(&store.prefs_path).unwrap(), persisted);
+            let proposed = store.configuration_for_profile_selection(&next).unwrap();
+            assert_eq!(proposed.source_language, SourceLanguage::Automatic);
+            assert_eq!(proposed.target_language, expected_target);
+            assert_eq!(store.preferences(), previous);
+            assert_eq!(store.active_profile().unwrap(), active);
+            assert_eq!(std::fs::read(&store.catalog_path).unwrap(), catalog);
+            assert_eq!(std::fs::read(&store.prefs_path).unwrap(), persisted);
 
-        store.select_profile(&next.id).unwrap();
-        assert_eq!(store.configuration().unwrap(), proposed);
-        let selected = store.preferences();
-        assert_eq!(selected.audio_input, AudioInput::Both);
-        assert!(selected.retain_session_history);
-        assert!(selected.record_session_audio);
+            store.select_profile(&next.id).unwrap();
+            assert_eq!(store.configuration().unwrap(), proposed);
+            let selected = store.preferences();
+            assert_eq!(selected.audio_input, AudioInput::Both);
+            assert!(selected.retain_session_history);
+            assert!(selected.record_session_audio);
+        }
     }
 
     #[test]
@@ -4286,7 +4296,15 @@ mod tests {
         let mut store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
         let built_in = store.active_profile().unwrap();
         assert!(store
-            .update_profile_options(&built_in.id, None, None, None, None, Some("Unsupported"), None)
+            .update_profile_options(
+                &built_in.id,
+                None,
+                None,
+                None,
+                None,
+                Some("Unsupported"),
+                None
+            )
             .is_err());
         assert_eq!(store.active_profile().unwrap(), built_in);
         let profile = store
@@ -4526,7 +4544,15 @@ mod tests {
             url: None,
         };
         store
-            .update_profile_options(&profile.id, None, None, Some(text.clone()), None, None, None)
+            .update_profile_options(
+                &profile.id,
+                None,
+                None,
+                Some(text.clone()),
+                None,
+                None,
+                None,
+            )
             .unwrap();
         let updated = store.active_profile().unwrap();
         assert_eq!(updated.speech_network_proxy, None);

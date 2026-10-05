@@ -728,9 +728,15 @@ mod tests {
         for route in [TextTranslation::DeepL, TextTranslation::DeepLX] {
             let translated =
                 ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::English);
-            assert!(translated.source_languages.contains(&SourceLanguage::English));
-            assert!(!translated.source_languages.contains(&SourceLanguage::French));
-            assert!(!translated.source_languages.contains(&SourceLanguage::Automatic));
+            assert!(translated
+                .source_languages
+                .contains(&SourceLanguage::English));
+            assert!(!translated
+                .source_languages
+                .contains(&SourceLanguage::French));
+            assert!(!translated
+                .source_languages
+                .contains(&SourceLanguage::Automatic));
             let original =
                 ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::Original);
             assert!(original.source_languages.contains(&SourceLanguage::French));
@@ -738,8 +744,12 @@ mod tests {
         for route in [TextTranslation::OpenAICompatible, TextTranslation::ChatMock] {
             let translated =
                 ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::English);
-            assert!(translated.source_languages.contains(&SourceLanguage::French));
-            assert!(!translated.source_languages.contains(&SourceLanguage::Automatic));
+            assert!(translated
+                .source_languages
+                .contains(&SourceLanguage::French));
+            assert!(!translated
+                .source_languages
+                .contains(&SourceLanguage::Automatic));
         }
     }
 

@@ -2937,10 +2937,7 @@ impl SessionManager {
 
     /// Profile and language controls need the actual reconnect outcome.
     /// Other lifecycle callers retain session-state-only error handling.
-    async fn try_reconnect_if_current(
-        self: &Arc<Self>,
-        expected_epoch: u64,
-    ) -> Result<(), String> {
+    async fn try_reconnect_if_current(self: &Arc<Self>, expected_epoch: u64) -> Result<(), String> {
         let _operation = self.begin_lifecycle_operation();
         let Some(reconnect_generation) = self.advance_lifecycle_request_if_current(expected_epoch)
         else {

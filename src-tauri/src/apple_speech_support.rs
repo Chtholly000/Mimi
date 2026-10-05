@@ -101,7 +101,11 @@ pub fn validate_profile_source<'a>(
     installed_required: bool,
 ) -> Result<&'a AppleSpeechLanguage, String> {
     let language = validate_source(support, source, installed_required)?;
-    if !profile.capabilities(target).source_languages.contains(&source) {
+    if !profile
+        .capabilities(target)
+        .source_languages
+        .contains(&source)
+    {
         return Err("apple_speech_translation_language_unsupported".into());
     }
     Ok(language)
@@ -182,8 +186,12 @@ mod tests {
             "apple_speech_language_unsupported"
         );
         assert_eq!(
-            validate_source(&AppleSpeechSupport::default(), SourceLanguage::English, true)
-                .unwrap_err(),
+            validate_source(
+                &AppleSpeechSupport::default(),
+                SourceLanguage::English,
+                true
+            )
+            .unwrap_err(),
             "apple_speech_unavailable"
         );
     }
