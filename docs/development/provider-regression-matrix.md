@@ -35,11 +35,12 @@ complete multiwindow snapshot trace or a complete stop/start/app-restart regress
 | --- | --- | --- |
 | Alibaba: default Audio 3.0 ASR (`qwen-audio-3.0-asr-flash-streaming`) → `qwen-mt-lite`; separate realtime adapter uses `qwen3.5-livetranslate-flash-realtime` | Existing profile connected and ran. | Observed RTT 46 ms, MT 446 ms; resume recovery about 0.5 s; latest ASR and MT reached the sample's final sentence. This does not certify every Alibaba route. Patched-build regression pending. |
 | Gemini Live: `BidiGenerateContent`, `gemini-3.5-live-translate-preview` | Existing profile. Earlier evidence remains in the [Gemini design record](../plans/2026-10-05-gemini-subtitle-progress.md). | Observed RTT 95 ms; resume recovery about 0.8 s; latest ASR and MT reached the final sentence. Patched-build regression pending. |
-| Baidu realtime speech translation | Existing profile connected in 744 ms on `d58f4bad`; six confirmed subtitle groups were visible in the overlay before a generic failure after about 73.7 s connected. | Clean `6ac14bde` identifies the later failure as `BAIDU_UNEXPECTED_SESSION_END`; see the follow-up evidence below. The underlying service cause and remaining trial entitlement are unproven; native Retry repair remains pending. |
+| Baidu realtime speech translation | Existing profile connected in 744 ms on `d58f4bad`; six confirmed subtitle groups were visible in the overlay before a generic failure after about 73.7 s connected. | Clean `6ac14bde` identifies the later failure as `BAIDU_UNEXPECTED_SESSION_END`. Clean `5b29d05e` verifies native overlay Retry and pause/resume, but the service still sends END after later silence; see the follow-up evidence below. The underlying service cause and remaining trial entitlement are unproven. |
 | Apple Speech + DeepL independent text translation | Saved a new profile using the existing active DeepL API Developer account/key, with the 1,000,000-character total free plan; no new registration. | On `d58f4bad`: connection 1,568 ms, MT 1,324 ms; pause/resume and replay reached the final sentence. Clean `6ac14bde` also retained a working key after app restart and reached the final sentence (connection 1,315 ms, MT 512 ms). These observations do not establish the account's remaining character balance. |
 | Apple Speech | This round's resource guidance was exercised on a signed build from clean `d58f4bad`: active-profile navigation from the overlay/settings, running-state locks, explicit prepared-language application, unprepared-language selection without download, and restoration of English. | Settings and overlay guidance verified; tray/error/empty/incompatible/pending-action cases have automated coverage only. No resource re-download or recognition-accuracy claim. See the separate [Apple validation record](../plans/2026-10-05-apple-speech-design.md). |
 | Whisper + Index text translation | Existing configured route; ASR check 67 ms, MT check 851 ms on `d58f4bad`. | The 15.091-second sample's final ASR and MT both reached the last sentence. Local ASR was observed to be slow, but end-to-end latency was not measured. Pause/resume was not exercised; this is not a latency or full lifecycle pass. |
 | Parakeet | On build `fbf3c06c`, the 16 ms availability check returned unavailable. | Capture was not started. This is an unavailable preflight result, not successful recognition or a native session pass. |
+| HyMT / TranslateGemma independent text translation | On build `fbf3c06c`, connection checks returned unavailable: HyMT 6 ms, TranslateGemma 0 ms. | Capture was not started. These are unavailable preflight results, not successful translation or native session passes. |
 | Volcano Engine | Signup required a phone number, SMS verification and agreement acceptance. The agreement was not accepted and registration was not completed. | No native test; resource `10053` trial eligibility remains unconfirmed. |
 | OpenAI / Azure OpenAI / Tencent Cloud / xAI | No confirmed free allowance for Mimi's exact API; Azure's general trial remains distinct from model eligibility. | No native test this round. |
 
@@ -59,18 +60,39 @@ privately; no audio, subtitle content or account identifiers are included here.
 
 The actual overlay Retry action failed. Source inspection identified missing
 `session_start` permission in `app-overlay-control`; the old permission regression
-also incorrectly forbade it. The ACL/test repair is in progress. Its final SHA,
-automated checks and signed native rerun must be recorded separately, including
-evidence that Retry actually reaches backend start. The classification improvement
-alone is not a successful recovery result.
+also incorrectly forbade it. The ACL/test repair and signed native rerun are
+recorded below; this earlier build established classification, not recovery.
+
+### Clean `5b29d05e` Retry verification
+
+The signed canonical native build from clean
+`5b29d05ecc75f416a4df5743662ad310879c718f` includes the overlay Retry ACL repair.
+After Baidu sent END following the sample, clicking Retry in the actual overlay
+reached backend `start_requested` at app uptime 144,584 ms and `listening` at
+145,513 ms: **929 ms**. Pause occurred at 153,986 ms; resume at 179,048 ms reached
+`listening` at 179,853 ms: **805 ms**. Replaying the same sample reached its final
+source and translated sentence in diagnostics. At 227,082 ms the session was
+still `listening`, with 11 cumulative `confirmed_pair_events`.
+
+The first session ended after 55.459 s (app uptime 30,408–85,867 ms).
+Later silence after recovery again led to END. The service's reason for ending the session
+remains unknown; the automatic recovery strategy was not changed. This verifies
+the native Retry action and the observed pause/resume path, not a fix for the
+service ending sessions or a complete multiwindow trace. Connection recovery
+times are not end-to-end subtitle latency.
+
+The final `scripts/check.sh` passed: Rust 1,168 passed / 2 ignored, 72 shared-core
+tests plus JNI checks, and 1,730 frontend tests across 119 files, with formatting,
+Clippy, lint, typecheck, build and diff checks passing.
 
 Focused automated results are recorded in the
 [recovery design](../plans/2026-10-05-provider-recovery-errors.md).
 The Android environment issue was resolved: `testDebugUnitTest` completed
 successfully with 19 suites / 129 tests and zero failures, errors or skips.
 Actual host JNI compilation passed; the run includes 2 shared-core JNI tests,
-11 shared translation tests and the 3 new handshake/feedback tests. Android
-physical-device and Release validation remain unverified.
+11 shared translation tests and the 3 new handshake/feedback tests. Android code
+was unchanged after that successful run. Android physical-device and Release
+validation remain unverified.
 
 Keep account identifiers, keys, provider bodies, recognized/translated text and
 private media out of this matrix. Add only observed revisions, route/language

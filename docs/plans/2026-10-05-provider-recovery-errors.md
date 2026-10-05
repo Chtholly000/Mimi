@@ -98,7 +98,22 @@ six confirmed groups, then a generic failure after about 73.7 seconds connected;
 its cause remains unproven. Whisper + Index also reached the final sentence, with
 no pause/resume case or measured end-to-end latency. Parakeet's separate
 `fbf3c06c` availability check returned unavailable without starting capture.
-These were not full multiwindow snapshot traces. The final desktop canonical check
-is in progress; the final patched build and native rerun remain pending. Loopback,
-frontend and pre-patch native results do not establish acceptance of the patched
-desktop application or Android physical-device/Release behavior.
+These were not full multiwindow snapshot traces.
+
+The final canonical desktop check passed: 1,168 Rust tests (2 ignored), the shared
+Rust/JNI checks, 1,730 frontend tests across 119 files, lint, typecheck, production
+build and diff checks. The signed canonical app was rebuilt from clean `5b29d05e`.
+After Baidu's real unexpected END, the overlay-control Retry now reached backend
+`start_requested` and returned to listening in 929 ms. Pause/resume also reached
+the backend, with resume returning to listening in 805 ms. After replaying the
+same sample, the latest source/translation reached its last sentence; the diagnostic
+snapshot was listening with 11 aggregate confirmed-pair events. The original ACL
+failure did not recur.
+
+Baidu still ends a session without a local FINISH; its service-side reason remains
+unknown. A prior trace showed successful silent PCM sends through 1.146 s before
+END, so a 30-second audio-send gap is not established. Do not add speculative
+keepalives or treat a successful manual retry as proof of long-session stability.
+Automatic END recovery was not added: the existing retry limit bounds consecutive
+connection failures, not repeated successful connections followed by END. Android
+physical-device/Release and Windows/Linux native behavior remain unverified.

@@ -895,6 +895,39 @@
   do not attribute the event to idle timeout. The underlying service cause
   remains unknown. Trace exported privately; this entry contains metadata only.
 - Native overlay Retry failed: `app-overlay-control` lacked `session_start`
-  permission, and its old regression test incorrectly prohibited it. Repair is
-  in progress; final SHA/checks and a signed native Retry reaching backend start
-  remain to be recorded. This run is not full multiwindow or recovery acceptance.
+  permission, and its old regression test incorrectly prohibited it. The repair
+  and native rerun are recorded below. This earlier run is not full multiwindow
+  or recovery acceptance.
+
+### 2026-10-05 — Native overlay Retry and pause/resume after ACL repair
+
+- Signed canonical development app, clean build `5b29d05e`
+  (`5b29d05ecc75f416a4df5743662ad310879c718f`), with the overlay Retry ACL repair.
+  Exact API eligibility and other provider coverage remain in the
+  [provider matrix](provider-regression-matrix.md).
+- After Baidu sent END following the same 15.091-second synthetic English
+  sample, real overlay Retry reached backend `start_requested` at app uptime
+  144,584 ms and `listening` at 145,513 ms: 929 ms. Pause occurred at 153,986 ms;
+  resume at 179,048 ms reached `listening` at 179,853 ms: 805 ms.
+- Replaying the sample reached its final source and translated sentence in
+  diagnostics. At app uptime 227,082 ms the session remained `listening`, with
+  11 cumulative `confirmed_pair_events`. No subtitle content is recorded here.
+- The first session ended after 55.459 s (app uptime 30,408–85,867 ms).
+  Later silence after recovery again led to END. The service's reason remains unknown,
+  and automatic recovery behavior was not changed. This proves native Retry
+  reaches backend start and verifies the observed pause/resume path; it does not
+  resolve the provider END cause or establish full multiwindow consistency.
+- Final `scripts/check.sh` passed: Rust 1,168 / 2 ignored, shared core 72 plus
+  JNI checks, frontend 1,730 across 119 files, and formatting, Clippy, lint,
+  typecheck, build and diff checks. The earlier Android Debug run passed all
+  129 tests in 19 suites, including actual host JNI compilation; Android code
+  has not changed since. Android physical-device and Release checks remain open.
+- Separate `fbf3c06c` preflight checks returned unavailable for HyMT (6 ms) and
+  TranslateGemma (0 ms). Capture was not started; neither is a successful
+  translation/session result. The connection, recovery and request timings
+  reported here do not measure end-to-end subtitle latency.
+- At handoff the same signed development build was restarted normally, with
+  Apple Speech + Index restored, English input and Chinese output, and the
+  session idle. Playback and content-free tracing were stopped. The formal
+  application was not replaced. The sample and sanitized diagnostics remain
+  in a private local regression directory; credentials remain in app storage.
