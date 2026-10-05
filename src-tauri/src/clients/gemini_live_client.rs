@@ -576,6 +576,9 @@ impl GeminiLiveClient {
         }
         self.send_text(GeminiLiveRequestEncoder::audio_stream_end().to_string())
             .await?;
+        // Audio is closed to new sends. Let a prepared replacement acquire the
+        // barrier, observe Stop, and return to receiving the old socket's tail.
+        drop(_send_guard);
         while self.is_current_generation(generation) {
             let completed = self.inner.final_turn_notify.notified();
             tokio::pin!(completed);
@@ -893,6 +896,9 @@ async fn rotate_connection(context: &mut ReceiveContext) -> Result<(), ()> {
     // staged audio; it must never send those buffers into the ended old stream.
     cancel_normal_turn_boundary(&inner);
     emit_all_if_current(context, inner.committer.lock().await.finish_turn());
+    // Stop may have observed the old socket's turnComplete during the drain.
+    // The replacement must acknowledge its own audioStreamEnd before closing.
+    inner.received_final_turn.store(false, Ordering::SeqCst);
     let old_sink = inner.sink.lock().await.replace(next_sink);
     context.stream = next_stream;
     drop(_content);
@@ -2015,6 +2021,242 @@ mod tests {
             .iter()
             .any(|event| matches!(event, LiveTranslateServerEvent::Error { .. })));
         assert!(!client.inner.rotating.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_old_tail_after_replacement_setup() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (replacement_setup, setup_received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut old = tokio_tungstenite::accept_async(stream).await.unwrap();
+            assert_setup(old.next().await.unwrap().unwrap());
+            old.send(Message::Text(r#"{"setupComplete":{}}"#.into()))
+                .await
+                .unwrap();
+            assert!(matches!(old.next().await, Some(Ok(Message::Text(_)))));
+            old.send(Message::Text(r#"{"goAway":{}}"#.into()))
+                .await
+                .unwrap();
+
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut replacement = tokio_tungstenite::accept_async(stream).await.unwrap();
+            assert_setup(replacement.next().await.unwrap().unwrap());
+            replacement_setup.send(()).unwrap();
+            let Message::Text(end) = old.next().await.unwrap().unwrap() else {
+                panic!("Stop must end the old audio stream");
+            };
+            assert_eq!(
+                serde_json::from_str::<Value>(&end).unwrap()["realtimeInput"]["audioStreamEnd"],
+                true
+            );
+            // Stop is now waiting for the old tail. Complete replacement setup
+            // first, and release that tail only after Stop rejects the replacement.
+            replacement
+                .send(Message::Text(r#"{"setupComplete":{}}"#.into()))
+                .await
+                .unwrap();
+            let replacement_closed =
+                matches!(replacement.next().await, Some(Ok(Message::Close(_))));
+            let tail_sent = old.send(Message::Text(r#"{"serverContent":{"inputTranscription":{"text":"Old closing source"},"outputTranscription":{"text":"Old closing translation"},"turnComplete":true}}"#.into())).await.is_ok();
+            while let Some(Ok(message)) = old.next().await {
+                if matches!(message, Message::Close(_)) {
+                    break;
+                }
+            }
+            (replacement_closed, tail_sent)
+        });
+        let (sender, mut events) = provider_event_channel();
+        let client = GeminiLiveClient::with_endpoint(
+            "gemini-test-key-not-real",
+            TargetLanguage::Japanese,
+            sender,
+            url::Url::parse(&format!("ws://{address}/live")).unwrap(),
+            false,
+        )
+        .unwrap();
+        client.connect().await.unwrap();
+        client
+            .send_audio(&vec![1; GeminiLiveEndpoint::AUDIO_FRAME_BYTE_COUNT])
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), setup_received)
+            .await
+            .unwrap()
+            .unwrap();
+        client.finish(Duration::from_secs(2)).await;
+        let (replacement_closed, tail_sent) = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut received = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            received.push(event);
+        }
+        assert!(
+            replacement_closed,
+            "replacement setup must not block behind Stop's final-turn wait"
+        );
+        assert!(tail_sent);
+        assert!(received.iter().any(|event| matches!(event, LiveTranslateServerEvent::SubtitleFinalPair { source, translation, .. } if source == "Old closing source" && translation == "Old closing translation")));
+        assert!(received
+            .iter()
+            .any(|event| matches!(event, LiveTranslateServerEvent::SessionFinished)));
+        assert!(!received
+            .iter()
+            .any(|event| matches!(event, LiveTranslateServerEvent::Error { .. })));
+        assert!(!client
+            .probe_connection_events()
+            .iter()
+            .any(|event| event.kind == "geminiConnectionRotated"));
+    }
+
+    #[tokio::test]
+    async fn stop_waits_for_replacement_tail_after_old_turn_complete() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (old_ended, old_end_received) = tokio::sync::oneshot::channel();
+        let (release_old_tail, old_tail_released) = tokio::sync::oneshot::channel();
+        let (replacement_ended, replacement_end_received) = tokio::sync::oneshot::channel();
+        let (release_replacement_tail, replacement_tail_released) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut old = tokio_tungstenite::accept_async(stream).await.unwrap();
+            assert_setup(old.next().await.unwrap().unwrap());
+            old.send(Message::Text(r#"{"setupComplete":{}}"#.into()))
+                .await
+                .unwrap();
+            assert!(matches!(old.next().await, Some(Ok(Message::Text(_)))));
+            old.send(Message::Text(r#"{"goAway":{}}"#.into()))
+                .await
+                .unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut replacement = tokio_tungstenite::accept_async(stream).await.unwrap();
+            assert_setup(replacement.next().await.unwrap().unwrap());
+            replacement
+                .send(Message::Text(r#"{"setupComplete":{}}"#.into()))
+                .await
+                .unwrap();
+            let Message::Text(end) = old.next().await.unwrap().unwrap() else {
+                panic!("Rotation must end the old audio stream");
+            };
+            assert_eq!(
+                serde_json::from_str::<Value>(&end).unwrap()["realtimeInput"]["audioStreamEnd"],
+                true
+            );
+            old_ended.send(()).unwrap();
+            old_tail_released.await.unwrap();
+            old.send(Message::Text(
+                r#"{"serverContent":{"turnComplete":true}}"#.into(),
+            ))
+            .await
+            .unwrap();
+            let Message::Text(audio) = replacement.next().await.unwrap().unwrap() else {
+                panic!("Replacement must receive staged audio before Stop");
+            };
+            let audio: Value = serde_json::from_str(&audio).unwrap();
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(audio["realtimeInput"]["audio"]["data"].as_str().unwrap())
+                    .unwrap(),
+                vec![2; GeminiLiveEndpoint::AUDIO_FRAME_BYTE_COUNT]
+            );
+            let Message::Text(end) = replacement.next().await.unwrap().unwrap() else {
+                panic!("Stop must end the replacement audio stream");
+            };
+            assert_eq!(
+                serde_json::from_str::<Value>(&end).unwrap()["realtimeInput"]["audioStreamEnd"],
+                true
+            );
+            replacement_ended.send(()).unwrap();
+            replacement_tail_released.await.unwrap();
+            let tail_sent = replacement.send(Message::Text(r#"{"serverContent":{"inputTranscription":{"text":"Replacement closing source"},"outputTranscription":{"text":"Replacement closing translation"},"turnComplete":true}}"#.into())).await.is_ok();
+            while let Some(Ok(message)) = replacement.next().await {
+                if matches!(message, Message::Close(_)) {
+                    break;
+                }
+            }
+            tail_sent
+        });
+        let (sender, mut events) = provider_event_channel();
+        let client = GeminiLiveClient::with_endpoint(
+            "gemini-test-key-not-real",
+            TargetLanguage::Japanese,
+            sender,
+            url::Url::parse(&format!("ws://{address}/live")).unwrap(),
+            false,
+        )
+        .unwrap();
+        client.connect().await.unwrap();
+        client
+            .send_audio(&vec![1; GeminiLiveEndpoint::AUDIO_FRAME_BYTE_COUNT])
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), old_end_received)
+            .await
+            .unwrap()
+            .unwrap();
+        wait_for_handoff(&client).await;
+        client
+            .send_audio(&vec![2; GeminiLiveEndpoint::AUDIO_FRAME_BYTE_COUNT])
+            .await
+            .unwrap();
+        let closing_client = client.clone();
+        let mut closing = tokio::spawn(async move {
+            closing_client.finish(Duration::from_secs(4)).await;
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !client.inner.is_closing.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Only the old socket acknowledges after Stop starts, so its boundary
+        // must not satisfy the replacement's final-turn wait.
+        release_old_tail.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), replacement_end_received)
+            .await
+            .unwrap()
+            .unwrap();
+        let finished_early =
+            tokio::time::timeout(TAIL_QUIET_PERIOD + Duration::from_millis(200), &mut closing)
+                .await;
+        release_replacement_tail.send(()).unwrap();
+        let finished_before_replacement_tail = match finished_early {
+            Ok(result) => {
+                result.unwrap();
+                true
+            }
+            Err(_) => {
+                tokio::time::timeout(Duration::from_secs(2), closing)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                false
+            }
+        };
+        let tail_sent = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut received = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            received.push(event);
+        }
+        assert!(
+            !finished_before_replacement_tail,
+            "old turnComplete must not finish the replacement before its own tail"
+        );
+        assert!(tail_sent);
+        assert!(received.iter().any(|event| matches!(event, LiveTranslateServerEvent::SubtitleFinalPair { source, translation, .. } if source == "Replacement closing source" && translation == "Replacement closing translation")));
+        assert!(received
+            .iter()
+            .any(|event| matches!(event, LiveTranslateServerEvent::SessionFinished)));
+        assert!(!received
+            .iter()
+            .any(|event| matches!(event, LiveTranslateServerEvent::Error { .. })));
     }
 
     #[tokio::test]

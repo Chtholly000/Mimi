@@ -1943,6 +1943,129 @@
           "text": "合成文本"
         }
       ]
+    },
+    {
+      "id": "gemini-cumulative-checkpoints-retain-prefix-until-explicit-turn",
+      "provider": "googleGeminiLive",
+      "frames": [
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"A\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"甲\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"AB\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"甲乙\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"AB\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"甲乙\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"ABC\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"甲乙丙\"}}}",
+        "{\"serverContent\":{\"turnComplete\":true}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"ABC\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"甲乙丙\"}}}"
+      ],
+      "settleAfterFrames": [
+        3,
+        7,
+        8,
+        10
+      ],
+      "expected": [
+        {
+          "source": "AB",
+          "translation": "甲乙",
+          "language": "en"
+        },
+        {
+          "source": "C",
+          "translation": "丙",
+          "language": "en"
+        },
+        {
+          "source": "ABC",
+          "translation": "甲乙丙",
+          "language": "en"
+        }
+      ],
+      "expectedDrafts": [
+        {
+          "kind": "source",
+          "text": "A"
+        },
+        {
+          "kind": "translation",
+          "text": "甲"
+        },
+        {
+          "kind": "source",
+          "text": "AB"
+        },
+        {
+          "kind": "translation",
+          "text": "甲乙"
+        },
+        {
+          "kind": "source",
+          "text": "C"
+        },
+        {
+          "kind": "translation",
+          "text": "丙"
+        },
+        {
+          "kind": "source",
+          "text": "ABC"
+        },
+        {
+          "kind": "translation",
+          "text": "甲乙丙"
+        }
+      ]
+    },
+    {
+      "id": "gemini-checkpoints-keep-delta-and-cumulative-lanes-independent",
+      "provider": "googleGeminiLive",
+      "frames": [
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Hello\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"你\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"你好\"}}}",
+        "{\"serverContent\":{\"inputTranscription\":{\"text\":\"Hello again\",\"languageCode\":\"en\"}}}",
+        "{\"serverContent\":{\"outputTranscription\":{\"text\":\"你好世界\"}}}"
+      ],
+      "settleAfterFrames": [
+        2,
+        4
+      ],
+      "expected": [
+        {
+          "source": "Hello",
+          "translation": "你好",
+          "language": "en"
+        },
+        {
+          "source": "Hello again",
+          "translation": "世界",
+          "language": "en"
+        }
+      ],
+      "expectedDrafts": [
+        {
+          "kind": "source",
+          "text": "Hello"
+        },
+        {
+          "kind": "translation",
+          "text": "你"
+        },
+        {
+          "kind": "translation",
+          "text": "你好"
+        },
+        {
+          "kind": "source",
+          "text": "Hello again"
+        },
+        {
+          "kind": "translation",
+          "text": "世界"
+        }
+      ]
     }
   ],
   "detectedSourceRequests": [
