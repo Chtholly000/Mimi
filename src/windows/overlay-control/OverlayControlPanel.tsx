@@ -106,7 +106,9 @@ export function OverlayControlPanel({
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const latestSession = useRef({ isPaused, canPauseSession });
-  latestSession.current = { isPaused, canPauseSession };
+  useLayoutEffect(() => {
+    latestSession.current = { isPaused, canPauseSession };
+  }, [isPaused, canPauseSession]);
   const canChangeSessionSettings = !isChangingSession && pendingAction === null;
 
   useLayoutEffect(() => {
