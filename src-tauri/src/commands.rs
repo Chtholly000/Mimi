@@ -1761,25 +1761,10 @@ pub async fn session_switch_source_language(
     state: State<'_, AppState>,
     language: SourceLanguage,
 ) -> Result<(), String> {
-    if state.settings.active_profile()?.provider == ProviderKind::AppleSpeech {
-        let support = crate::apple_speech_support::refresh().await?;
-        if !support.available {
-            return Err("apple_speech_unavailable".into());
-        }
-        let selected = support
-            .languages
-            .iter()
-            .find(|item| item.source_language == language)
-            .ok_or_else(|| "apple_speech_language_unsupported".to_string())?;
-        if state.session.has_active_session() && !selected.installed {
-            return Err("apple_speech_assets_missing".into());
-        }
-    }
     // The session manager broadcasts settings-changed immediately after the
     // preference write, so no window keeps a stale selection while the
     // reconnect (which this awaits) is still in flight.
-    state.session.switch_source_language(language).await;
-    Ok(())
+    state.session.switch_source_language(language).await
 }
 
 #[tauri::command]

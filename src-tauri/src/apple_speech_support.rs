@@ -54,10 +54,7 @@ pub async fn refresh() -> Result<AppleSpeechSupport, String> {
 
 pub async fn locale_for_source(source: SourceLanguage) -> Result<String, String> {
     let support = refresh().await?;
-    let language = require_language(&support, source)?;
-    if !language.installed {
-        return Err("apple_speech_assets_missing".into());
-    }
+    let language = validate_source(&support, source, true)?;
     Ok(language.locale.clone())
 }
 
@@ -77,6 +74,20 @@ pub async fn prepare_source(source: SourceLanguage) -> Result<AppleSpeechSupport
         return Err("apple_speech_assets_missing".into());
     }
     Ok(after)
+}
+
+/// A saved idle selection may precede an explicit download, but a live or
+/// paused session must have assets before its resumable language can change.
+pub fn validate_source(
+    support: &AppleSpeechSupport,
+    source: SourceLanguage,
+    installed_required: bool,
+) -> Result<&AppleSpeechLanguage, String> {
+    let language = require_language(support, source)?;
+    if installed_required && !language.installed {
+        return Err("apple_speech_assets_missing".into());
+    }
+    Ok(language)
 }
 
 fn require_language(
@@ -135,6 +146,29 @@ mod tests {
             identifier: identifier.into(),
             installed,
         }
+    }
+
+    #[test]
+    fn live_language_selection_distinguishes_missing_assets_from_unsupported_locales() {
+        let support = map_capabilities(AppleSpeechCapabilities {
+            available: true,
+            locales: vec![locale("en-US", true), locale("ja-JP", false)],
+        });
+        assert!(validate_source(&support, SourceLanguage::English, true).is_ok());
+        assert!(validate_source(&support, SourceLanguage::Japanese, false).is_ok());
+        assert_eq!(
+            validate_source(&support, SourceLanguage::Japanese, true).unwrap_err(),
+            "apple_speech_assets_missing"
+        );
+        assert_eq!(
+            validate_source(&support, SourceLanguage::French, true).unwrap_err(),
+            "apple_speech_language_unsupported"
+        );
+        assert_eq!(
+            validate_source(&AppleSpeechSupport::default(), SourceLanguage::English, true)
+                .unwrap_err(),
+            "apple_speech_unavailable"
+        );
     }
 
     #[test]

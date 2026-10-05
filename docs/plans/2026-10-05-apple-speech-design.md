@@ -49,3 +49,18 @@
 参考：[SpeechTranscriber](https://developer.apple.com/documentation/speech/speechtranscriber)、
 [SpeechAnalyzer](https://developer.apple.com/documentation/speech/speechanalyzer)、
 [AssetInventory](https://developer.apple.com/documentation/speech/assetinventory)。
+
+
+## 语言切换错误补充（仅修改，验证待用户授权）
+
+运行中的源语言切换在持有生命周期锁时只做一次 Apple 能力/资源检查。
+不可用设备、未支持语言、未安装资源保留各自的安全错误标签，不再在
+第二次检查失败后静默返回成功。运行中和暂停状态均要求目标语言资源
+已安装；空闲时仍可先选语言，再由用户点击准备资源。不会自动下载。
+
+资源缺失提示明确要求停止字幕，在 Apple Speech 配置选择切换目标语言、
+准备资源，再重新开始。通用语言控件的错误映射由独立语言配置 PR 162
+负责。两分支都需要源语言 Result 返回契约，以便独立检查；合并时保留
+Apple 校验与通用拒绝分支。保存失败不改当前字幕或启动重连；重连失败
+保留已选语言，并返回实际会话错误。截图是否确为资源缺失尚未运行确认。
+本轮仅补实现及回归源码，不运行测试、构建、UI 或 CI。
