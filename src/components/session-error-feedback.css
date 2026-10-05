@@ -11,6 +11,14 @@
   line-height: 1.5;
 }
 
+.session-error-feedback--summary {
+  gap: 8px;
+}
+
+.session-error-feedback--summary .session-error-feedback__message {
+  font-weight: 500;
+}
+
 .session-error-feedback__message {
   margin: 0;
   white-space: normal;

@@ -2,7 +2,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { audio3ErrorMessage } from "../lib/audio3Errors";
+import { audio3ErrorMessage, audio3ErrorSummary } from "../lib/audio3Errors";
+import type { OverlayControlMode } from "../lib/ipc";
+import { localizedSessionErrorSummary } from "../lib/sessionErrorPresentation";
 import { diagnosticCopy } from "../lib/connectionDiagnostics";
 import { I18N, setStoredUiLanguage } from "../lib/i18n";
 import { useStore } from "../lib/store";
@@ -11,8 +13,26 @@ import { OverlayControlWindow } from "./overlay-control/OverlayControlWindow";
 import { TrayPanel } from "./tray-panel/TrayPanel";
 import { SubtitleSessionControls } from "./settings/SubtitleSessionControls";
 
+const native = vi.hoisted(() => ({
+  enabled: false,
+  mode: "island" as OverlayControlMode,
+  listeners: new Set<(mode: OverlayControlMode) => void>(),
+}));
 vi.mock("../lib/ipc", async original => ({
-  ...await original<typeof import("../lib/ipc")>(), isTauri: false,
+  ...await original<typeof import("../lib/ipc")>(),
+  get isTauri() { return native.enabled; },
+  overlayControlGetState: async () => native.mode,
+  overlayControlSetIslandWidth: async () => {},
+  overlayControlSetPanelHeight: async () => {},
+  listenOverlayPointerMotion: async () => () => {},
+  listenOverlayControlMode: async (handler: (mode: OverlayControlMode) => void) => {
+    native.listeners.add(handler);
+    return () => { native.listeners.delete(handler); };
+  },
+}));
+vi.mock("@tauri-apps/api/window", async original => ({
+  ...await original<typeof import("@tauri-apps/api/window")>(),
+  getCurrentWindow: () => ({ setSize: async () => {} }),
 }));
 vi.mock("./overlay/PulseRing", () => ({ PulseRing: () => null }));
 vi.mock("./overlay/ResizeHandles", () => ({ ResizeHandles: () => null }));
@@ -26,10 +46,12 @@ const unsupportedLanguage = "audio3_error.setup.unsupported_language.UNSUPPORTED
 const timeout = "audio3_error.recognition.timeout.LOCAL_TIMEOUT";
 const surfaces = ["overlay", "history", "immersive", "collapsed", "locked", "control", "tray", "settings", "compact-settings"] as const;
 type Surface = typeof surfaces[number];
+const isOverlaySurface = (surface: Surface) => ["overlay", "history", "immersive", "collapsed", "locked"].includes(surface);
 let host: HTMLDivElement, root: Root;
 let start: ReturnType<typeof vi.fn>, showSettings: ReturnType<typeof vi.fn>, setOverlayCollapsed: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+  native.enabled = false; native.mode = "island"; native.listeners.clear();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener() {}, removeEventListener() {} }));
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
@@ -80,7 +102,7 @@ it.each(["zh", "en", "ja"] as const)("keeps localized unsupported-language cause
     await act(async () => root.render(null));
     await mount(surface);
     expect(feedback().getAttribute("role")).toBe("alert");
-    expect(feedback().querySelector("p")?.textContent).toBe(audio3ErrorMessage(unsupportedLanguage));
+    expect(feedback().querySelector("p")?.textContent).toBe(isOverlaySurface(surface) ? audio3ErrorSummary(unsupportedLanguage) : audio3ErrorMessage(unsupportedLanguage));
     expect(feedback().closest('[aria-hidden="true"], [role="tooltip"]')).toBeNull();
     expect(host.textContent).not.toContain(unsupportedLanguage);
     expect(configure().textContent).toBe(I18N.settings.openSpeechSettings);
@@ -119,7 +141,7 @@ it.each(["overlay", "control", "tray", "settings", "compact-settings"] as const)
   await mount(surface);
   const retry = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === I18N.settings.sessionRetry)!;
   expect(retry).toBeDefined();
-  expect(feedback().textContent).toContain(audio3ErrorMessage(timeout));
+  expect(feedback().querySelector("p")?.textContent).toBe(isOverlaySurface(surface) ? audio3ErrorSummary(timeout) : audio3ErrorMessage(timeout));
   await act(async () => retry.click());
   expect(start).toHaveBeenCalledOnce();
   expect(showSettings).not.toHaveBeenCalled();
@@ -135,7 +157,7 @@ it.each(["overlay", "control", "tray"] as const)("guards configuration actions a
   await act(async () => reject(new Error("private rejected settings action")));
   expect(configure().disabled).toBe(false);
   expect(host.textContent).not.toContain("private rejected settings action");
-  expect(feedback().querySelector("p")?.textContent).toBe(audio3ErrorMessage(unsupportedLanguage));
+  expect(feedback().querySelector("p")?.textContent).toBe(isOverlaySurface(surface) ? audio3ErrorSummary(unsupportedLanguage) : audio3ErrorMessage(unsupportedLanguage));
   await act(async () => configure().click());
   expect(showSettings).toHaveBeenCalledTimes(2);
 });
@@ -163,11 +185,11 @@ it.each(["zh", "en", "ja"] as const)("shows an Audio3 startup transport cause an
     await act(async () => root.render(null));
     start.mockClear();
     await mount(surface);
-    expect(feedback().querySelector("p")?.textContent).toBe(diagnosticCopy().speechUnreachable);
+    expect(feedback().querySelector("p")?.textContent).toBe(isOverlaySurface(surface) ? localizedSessionErrorSummary(diagnosticCopy().speechUnreachable) : diagnosticCopy().speechUnreachable);
     expect(feedback().closest('[aria-hidden="true"], [role="tooltip"]')).toBeNull();
     expect(host.textContent).not.toContain(error);
     expect(feedback().textContent).not.toContain(I18N.settings.sessionError);
-    expect(configure().textContent).toBe(I18N.settings.openSpeechSettings);
+    expect(configure().textContent).toBe(isOverlaySurface(surface) ? I18N.settings.sessionRetry : I18N.settings.openSpeechSettings);
     const retry = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === I18N.settings.sessionRetry)!;
     expect(retry).toBeDefined();
     await act(async () => retry.click());
@@ -203,4 +225,41 @@ it.each(["overlay", "history", "immersive", "collapsed", "locked"] as const)("ke
   } else {
     expect(host.querySelector<HTMLButtonElement>('[data-testid="collapse-subtitles"]')?.disabled).toBe(false);
   }
+});
+
+it.each(["zh", "en", "ja"] as const)("assigns detailed recovery to the open panel while keeping the %s tray independent", async language => {
+  setStoredUiLanguage(language);
+  native.enabled = true;
+  useStore.setState(state => ({ session: { ...state.session, status: { kind: "error", message: timeout } } }));
+  await mount("overlay");
+  const summary = audio3ErrorSummary(timeout);
+  const fullMessage = audio3ErrorMessage(timeout);
+  expect(feedback().querySelector("p")?.textContent).toBe(summary);
+  expect(feedback().querySelectorAll("button")).toHaveLength(1);
+  expect(feedback().querySelector("button")?.textContent).toBe(I18N.settings.sessionRetry);
+  expect(feedback().textContent).not.toContain(fullMessage);
+
+  native.mode = "panel";
+  await act(async () => { for (const listener of native.listeners) listener(native.mode); });
+  expect(feedback().querySelector("p")?.textContent).toBe(summary);
+  expect(feedback().querySelector("button")).toBeNull();
+  expect(host.querySelectorAll(".overlay-control-button")).toHaveLength(6);
+  expect(host.querySelector<HTMLButtonElement>('[data-testid="drag-handle"]')?.disabled).toBe(false);
+
+  await mount("control");
+  expect(feedback().querySelector("p")?.textContent).toBe(fullMessage);
+  expect(feedback().querySelectorAll("button")).toHaveLength(2);
+  await mount("tray");
+  expect(feedback().querySelector("p")?.textContent).toBe(fullMessage);
+  expect(feedback().querySelectorAll("button")).toHaveLength(2);
+
+  await mount("overlay");
+  expect(feedback().querySelector("button")).toBeNull();
+  native.mode = "island";
+  await act(async () => { for (const listener of native.listeners) listener(native.mode); });
+  const retry = feedback().querySelector<HTMLButtonElement>("button")!;
+  expect(retry.textContent).toBe(I18N.settings.sessionRetry);
+  await act(async () => retry.click());
+  expect(start).toHaveBeenCalledOnce();
+  expect(showSettings).not.toHaveBeenCalled();
 });

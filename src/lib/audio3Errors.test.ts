@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { setStoredUiLanguage } from "./i18n";
-import { audio3ErrorMessage, audio3ErrorRequiresConfiguration } from "./audio3Errors";
+import { audio3ErrorMessage, audio3ErrorRequiresConfiguration, audio3ErrorSummary } from "./audio3Errors";
 
 afterEach(() => setStoredUiLanguage("en"));
 
@@ -48,4 +48,17 @@ it("keeps runtime overload, timeout and generic request failure retryable", () =
     }
     expect(audio3ErrorRequiresConfiguration("audio3_error.recognition.request.CLIENT_ERROR")).toBe(false);
   }
+});
+
+it.each([
+  ["en", "The speech service does not support this source language."],
+  ["zh", "语音识别服务不支持所选源语言。"],
+  ["ja", "音声認識サービスがこの入力言語に対応していません。"],
+] as const)("keeps a separate short cause with the same safe allowlist in %s", (language, expected) => {
+  setStoredUiLanguage(language);
+  const token = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  expect(audio3ErrorSummary(token)).toBe(expected);
+  expect(audio3ErrorMessage(token)).not.toBe(expected);
+  expect(audio3ErrorSummary(token + " private provider text")).toBeNull();
+  expect(audio3ErrorSummary("audio3_error.setup.unsupported_language.PRIVATE_CODE")).toBeNull();
 });

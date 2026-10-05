@@ -6,7 +6,8 @@ import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
 import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
 import { audioInputLabel } from "../../lib/audioInput";
 import { isTauri, listenOverlayPointerMotion } from "../../lib/ipc";
-import { selectSessionErrorMessage, useStore } from "../../lib/store";
+import { useOverlayControlMode } from "../../lib/useOverlayControlMode";
+import { selectSessionErrorMessage, selectSessionErrorSummary, useStore } from "../../lib/store";
 import { DevelopmentOverlayTrace } from "./DevelopmentOverlayTrace";
 import { OVERLAY_ACTIVITY_PHASES, hexToRgba } from "../../lib/types";
 import { ControlButton } from "./ControlButton";
@@ -49,6 +50,8 @@ export function OverlayWindow() {
   const subtitleRootRef = useRef<HTMLDivElement>(null);
   const session = useStore((state) => state.session);
   const sessionErrorMessage = useStore(selectSessionErrorMessage);
+  const sessionErrorSummary = useStore(selectSessionErrorSummary);
+  const [controlMode] = useOverlayControlMode();
   const hasSessionError = session.status.kind === "error";
   const errorRequiresConfiguration = session.status.kind === "error" && audio3ErrorRequiresConfiguration(session.status.message);
   const settings = useStore((state) => state.settings);
@@ -463,6 +466,8 @@ export function OverlayWindow() {
           >
           {hasSessionError && <SessionErrorFeedback
             message={sessionErrorMessage ?? I18N.settings.sessionError}
+            summary={sessionErrorSummary ?? I18N.settings.sessionError}
+            actionsHidden={controlMode === "panel"}
             onConfigure={() => runControlAction("settings", () => showSettings("service"))}
             onRetry={errorRequiresConfiguration ? undefined : runSessionAction}
             disabled={sessionActionBusy || controlAction.pending}

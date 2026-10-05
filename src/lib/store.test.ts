@@ -3,6 +3,7 @@ import { isTauri } from "./ipc";
 import {
   selectHasRecognizingSourceDraft,
   selectSessionErrorMessage,
+  selectSessionErrorSummary,
   selectSessionStatusKind,
   useStore,
 } from "./store";
@@ -264,7 +265,6 @@ describe("local preview store", () => {
   });
 });
 
-
 it.each(["chatMock", "openAICompatible"] as const)("preview accepts keyless %s without changing speech credentials", async (textTranslation) => {
   const original = useStore.getState();
   const profile = { ...original.settings.profiles[0], provider: "alibabaCloud" as const, credentialState: "present" as const, textTranslation: "followService" as const };
@@ -308,4 +308,12 @@ it("never renders an arbitrary provider error body as a session reason", () => {
   expect(message).toBeTruthy();
   expect(message).not.toContain("private");
   expect(message).not.toContain("sk-example");
+});
+
+it("keeps arbitrary provider content out of the compact error cause", () => {
+  const state = useStore.getState();
+  const failed = { session: { ...state.session, status: { kind: "error" as const, message: "provider-private-content synthetic-key" } } };
+  expect(selectSessionErrorSummary(failed)).toBe(selectSessionErrorMessage(failed));
+  expect(selectSessionErrorSummary(failed)).not.toMatch(/provider-private-content|synthetic-key/);
+  expect(selectSessionErrorSummary({ session: { ...state.session, status: { kind: "listening" } } })).toBeNull();
 });

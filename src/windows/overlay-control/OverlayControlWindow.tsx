@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { targetLanguagesForSettings } from "../../lib/providerCapabilities";
+import { useOverlayControlMode } from "../../lib/useOverlayControlMode";
 import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
 import {
   isTauri,
-  listenOverlayControlMode,
-  overlayControlGetState,
   overlayControlSetIslandWidth,
   overlayPopoverHide,
   overlayPopoverToggle,
@@ -53,7 +52,7 @@ export function OverlayControlWindow() {
   const saveSettings = useStore((state) => state.saveSettings);
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
   const showSettings = useStore((state) => state.showSettings);
-  const [mode, setMode] = useState<OverlayControlMode>(initialPreviewMode);
+  const [mode, setMode] = useOverlayControlMode(initialPreviewMode);
   const translationTarget = useRef({ profileId: settings.activeProfileId, language: settings.targetLanguage });
   useEffect(() => {
     if (translationTarget.current.profileId !== settings.activeProfileId || settings.targetLanguage !== "original") {
@@ -73,7 +72,7 @@ export function OverlayControlWindow() {
     } else {
       setMode((current) => (current === "panel" ? "island" : "panel"));
     }
-  }, []);
+  }, [setMode]);
 
   const dismiss = useCallback(() => {
     if (isTauri) {
@@ -81,36 +80,10 @@ export function OverlayControlWindow() {
     } else {
       setMode("island");
     }
-  }, []);
+  }, [setMode]);
 
   const reportIslandWidth = useCallback((width: number) => {
     void overlayControlSetIslandWidth(width).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (!isTauri) return;
-    let disposed = false;
-    let eventSeen = false;
-    let removeListener: (() => void) | undefined;
-    void listenOverlayControlMode((nextMode) => {
-      eventSeen = true;
-      if (!disposed) setMode(nextMode);
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-        return;
-      }
-      removeListener = unlisten;
-      void overlayControlGetState()
-        .then((nextMode) => {
-          if (!disposed && !eventSeen) setMode(nextMode);
-        })
-        .catch(() => {});
-    });
-    return () => {
-      disposed = true;
-      removeListener?.();
-    };
   }, []);
 
   useEffect(() => {

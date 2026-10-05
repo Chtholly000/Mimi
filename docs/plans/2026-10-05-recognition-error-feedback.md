@@ -43,6 +43,28 @@ retry. This left a configuration failure looking like a transient connection fau
   error needs to be readable. Top actions use the same temporary unlocked state as
   the native window; saved reading-mode preferences remain unchanged.
 
+## Error ownership between overlay and controls
+
+The subtitle canvas shows a short localized cause. With the control panel closed,
+it offers one primary recovery action: settings for configuration failures, retry
+for transient failures. Opening the panel leaves the cause on the canvas and moves
+the prominent recovery controls to the panel, which retains the full explanation.
+No additional instructional line is added to the canvas. Existing top icons and
+error-state dragging remain available. Tray and settings are independent surfaces
+and always retain their full error explanation and recovery controls.
+
+Both overlay windows observe the existing native control-mode event. Register the
+listener before reading the current mode, and ignore a read if a newer event arrives
+while it is pending. Listener/read failures retain the canvas recovery entry rather
+than hiding it. Audio3 summaries use the same strict error-code allowlist as the
+full messages, with separate Chinese, English and Japanese short causes. Other
+adapters already supply safe localized prose: a shared helper uses its first complete
+sentence, never arbitrary provider text or character-count truncation.
+
+This presentation follow-up is source-only at the user's request. Regression sources
+cover open/closed panel ownership, independent tray feedback, mode-read ordering and
+localized safe summaries; no tests, build, native acceptance or CI have run for it.
+
 ## Scope and verification
 
 Desktop Audio3 decoding, session recovery and native presentation are affected.
