@@ -184,3 +184,11 @@ it.each(["en", "zh", "ja"] as const)("explains fixed Audio3 connection failures 
   }
   expect(credentialErrorMessage("IO error: connection refused at synthetic-private-endpoint")).toBeNull();
 });
+
+it.each(["en", "zh", "ja"] as const)("localizes profile switch restrictions without raw payloads in %s", language => {
+  setStoredUiLanguage(language);
+  expect(profileErrorMessage("profile_switch_recording_requires_stop")).toBe(I18N.settings.profileSwitchRecordingRequiresStop);
+  expect(profileErrorMessage(new Error("profile_switch_busy"))).toBe(I18N.settings.profileSwitchBusy);
+  expect(profileErrorMessage("profile_switch_superseded")).toBe(I18N.settings.profileSwitchBusy);
+  expect(profileErrorMessage("profile_switch_recording_requires_stop: private-value")).toBe(I18N.settings.profileActionFailed);
+});

@@ -67,3 +67,21 @@ it("shows only recognition for original mode and disables settings while an acti
   await act(async () => host.querySelector("button")!.click());
   expect(click).not.toHaveBeenCalled();
 });
+
+it.each(["customDashScopeASR", "customOpenAIASR"] as const)(
+  "shows the %s recognition alias in the capsule, tooltip and accessible label", async provider => {
+    const speechRecognitionName = "Whisper / 日本語 🌸 ".repeat(3).trim();
+    await render({
+      provider, name: "Whisper · Index", speechRecognitionName,
+      textTranslation: "openAICompatible", textTranslationNames: { openAICompatible: "Index · 本地" },
+    });
+    expect([...host.querySelectorAll(".overlay-service__name")].map(node => node.textContent))
+      .toEqual([speechRecognitionName, "Index · 本地"]);
+    expect(host.querySelector('[data-stage="recognition"] [data-provider]')?.getAttribute("data-provider")).toBe(provider);
+    const button = host.querySelector("button")!;
+    expect(button.getAttribute("aria-label")).toContain(`Speech recognition: ${speechRecognitionName}`);
+    expect(button.getAttribute("aria-label")).toContain("Current configuration: Whisper · Index");
+    await act(async () => { button.focus(); button.dispatchEvent(new MouseEvent("mousemove", { bubbles: true })); });
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain(`Speech recognition: ${speechRecognitionName}`);
+  },
+);

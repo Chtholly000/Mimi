@@ -44,6 +44,7 @@ import { SavedCredentialInput } from "./SavedCredentialInput";
 import { useCredentialEditorState } from "./useCredentialEditorState";
 import { SettingsInitializationStatus } from "./SettingsInitializationStatus";
 import { textTranslationDisplayName } from "../../lib/textTranslationName";
+import { speechRecognitionDisplayName } from "../../lib/speechRecognitionName";
 import { NetworkProxySettings } from "./NetworkProxySettings";
 import { ProfileLanguageSettings } from "./ProfileLanguageSettings";
 import { AutoSaveNameField } from "./AutoSaveNameField";
@@ -176,6 +177,7 @@ export function ServiceProfiles({
 
   const requiresStop = sessionIsActive || sessionIsPaused || sessionStatusKind === "connecting" || sessionStatusKind === "stopping";
   const mutationsDisabled = requiresStop || pendingAction !== null;
+  const selectionDisabled = sessionStatusKind === "connecting" || sessionStatusKind === "stopping" || pendingAction !== null;
   const atProfileLimit = settings.profiles.filter(profile => profile.credentialStorage !== "localDevFile").length >= 20;
 
   const perform = async (
@@ -251,7 +253,7 @@ export function ServiceProfiles({
   };
 
   const handleSelect = async (profileId: string) => {
-    if (profileId === settings.activeProfileId) return;
+    if (selectionDisabled || mutationInFlight.current || profileId === settings.activeProfileId) return;
     setPendingConfirmation(null);
     setSelectedProfileId(profileId);
     await perform(
@@ -399,11 +401,6 @@ export function ServiceProfiles({
     <>
     {!showsEditor && !showsProviderPicker && overview}
     <SettingsSection id="service-profiles" title={I18N.settings.serviceProfilesTitle} hideHeading>
-      {(sessionIsActive || sessionIsPaused) && (
-        <InlineFeedback tone="info" icon="lock">
-          {I18N.settings.profileMutationsLocked}
-        </InlineFeedback>
-      )}
       {showsProviderPicker ? (
         <ProviderPicker
           disabled={mutationsDisabled}
@@ -465,6 +462,7 @@ export function ServiceProfiles({
               visible={visible && pendingConfirmation === null}
               feedback={feedback}
               onSaveTranslationName={(route, name) => handleSaveTranslationName(selectedProfile, route, name)}
+              onSaveRecognitionName={(name: string) => updateProfile(selectedProfile.id, undefined, { speechRecognitionName: name })}
               onSave={(replacement) => handleSaveCredential(selectedProfile.id, replacement)}
               onRequestDelete={() => requestCredentialDelete(selectedProfile.id)}
               onConfirmDelete={() => confirmCredentialDelete(selectedProfile.id)}
@@ -497,13 +495,13 @@ export function ServiceProfiles({
                 <button
                   type="button"
                   className="settings-button settings-button--quiet settings-button--compact"
-                  disabled={mutationsDisabled}
+                  disabled={selectionDisabled}
                   onClick={() => void handleSelect(selectedProfile.id)}
                 >
                   <Icon name="checkmark" />
                   {I18N.settings.useProfile}
                 </button>
-                <SettingsHelp text={I18N.settings.useProfileForLanguages} label={I18N.settings.helpLabel} />
+                <SettingsHelp text={I18N.settings.profileSwitchHelp} label={I18N.settings.helpLabel} />
                 </span>
               )}
             {selectedProfileReadOnly ? <button type="button" className="settings-button settings-button--quiet settings-button--compact" disabled={mutationsDisabled || atProfileLimit} onClick={() => setShowsProviderPicker(true)}><Icon name="plus" />{I18N.settings.addProfile}</button> : <button
@@ -530,7 +528,7 @@ export function ServiceProfiles({
       ) : (
         <div className="services-home">
           <div className="services-toolbar">
-            <span className="services-toolbar__count">{I18N.settings.profileCount(settings.profiles.length)}<SettingsHelp label={I18N.settings.helpLabel} text={settings.profiles.some(profile => profile.credentialStorage === "localDevFile") ? diagnosticCopy().localDevReadOnly : I18N.settings.servicesHint} /></span>
+            <span className="services-toolbar__count">{I18N.settings.profileCount(settings.profiles.length)}<SettingsHelp label={I18N.settings.helpLabel} text={`${settings.profiles.some(profile => profile.credentialStorage === "localDevFile") ? diagnosticCopy().localDevReadOnly : I18N.settings.servicesHint}\n${I18N.settings.profileSwitchHelp}`} /></span>
             <button
               type="button"
               className="settings-button settings-button--compact settings-button--quiet"
@@ -551,7 +549,7 @@ export function ServiceProfiles({
                 <button
                   type="button"
                   className="service-row__main"
-                  disabled={mutationsDisabled}
+                  disabled={selectionDisabled}
                   onClick={() => {
                     if (
                       credentialStateForTarget(profile, settings.targetLanguage) === "present" &&
@@ -560,7 +558,7 @@ export function ServiceProfiles({
                       void handleSelect(profile.id);
                     else openEditor(profile.id);
                   }}
-                  aria-label={`${profile.name}, ${credentialStateText(credentialStateForTarget(profile, settings.targetLanguage))}${textTranslationForProfile(profile) !== "followService" ? `, ${I18N.settings.textTranslationLabel}: ${textTranslationDisplayName(profile)}` : ""}: ${credentialStateForTarget(profile, settings.targetLanguage) === "present" && profile.id !== settings.activeProfileId ? I18N.settings.useProfile : I18N.settings.editProfile}`}
+                  aria-label={`${profile.name}${isCustomSpeechProvider(profile.provider) && profile.speechRecognitionName?.trim() ? `, ${I18N.settings.speechRecognition}: ${speechRecognitionDisplayName(profile)}` : ""}, ${credentialStateText(credentialStateForTarget(profile, settings.targetLanguage))}${textTranslationForProfile(profile) !== "followService" ? `, ${I18N.settings.textTranslationLabel}: ${textTranslationDisplayName(profile)}` : ""}: ${credentialStateForTarget(profile, settings.targetLanguage) === "present" && profile.id !== settings.activeProfileId ? I18N.settings.useProfile : I18N.settings.editProfile}`}
                 >
                   <ProviderIcon provider={profile.provider === "deepLX" ? "alibabaCloud" : profile.provider} />
                   <span className="service-row__copy">
@@ -580,7 +578,7 @@ export function ServiceProfiles({
                 <button
                   type="button"
                   className="service-row__edit"
-                  disabled={mutationsDisabled}
+                  disabled={pendingAction !== null}
                   aria-label={`${I18N.settings.editProfile}: ${profile.name}`}
                   onClick={() => openEditor(profile.id)}
                 >
@@ -874,8 +872,8 @@ function profileDescription(profile: ServiceProfile): string {
 }
 
 function profileSecondaryLabel(profile: ServiceProfile): string | null {
-  if (textTranslationForProfile(profile) !== "followService") return `${I18N.settings.speechRecognition} · ${profileProviderName(profile)}`;
-  const provider = profileProviderName(profile);
+  if (textTranslationForProfile(profile) !== "followService") return `${I18N.settings.speechRecognition} · ${speechRecognitionDisplayName(profile)}`;
+  const provider = speechRecognitionDisplayName(profile);
   return profileTitle(profile).trim().toLowerCase() === provider.toLowerCase() ? null : provider;
 }
 

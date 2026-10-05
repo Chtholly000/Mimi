@@ -2931,13 +2931,13 @@
   transform: rotate(180deg);
 }
 
-.translation-name-field .settings-field__inline {
+.auto-save-name-field .settings-field__inline {
   display: flex;
   align-items: center;
   min-width: 0;
   gap: 8px;
 }
-.translation-name-field .settings-field__inline input { min-width: 0; flex: 1; }
+.auto-save-name-field .settings-field__inline input { min-width: 0; flex: 1; }
 .auto-save-name-field > label { white-space: nowrap; }
 .auto-save-name-field__error { grid-column: 2; min-width: 0; }
 .auto-save-name-field__error .settings-feedback { margin: 0; }

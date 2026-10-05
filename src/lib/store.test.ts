@@ -9,7 +9,7 @@ import {
 } from "./store";
 
 describe("local preview store", () => {
-  it("keeps profile names, translation aliases and proxies independent across repeated metadata patches", async () => {
+  it("keeps profile names, recognition and translation aliases, and proxies independent across repeated metadata patches", async () => {
     const original = useStore.getState();
     const profile = original.settings.profiles[0];
     const proxy = { mode: "direct" as const, url: null };
@@ -18,11 +18,17 @@ describe("local preview store", () => {
       await useStore.getState().updateProfile(profile.id, undefined, {
         textTranslationName: { route: "openAICompatible", name: "  翻译 & 字幕 + [本地] 🐱  " },
       });
+      await useStore.getState().updateProfile(profile.id, undefined, { speechRecognitionName: "  Whisper · 本地  " });
       await useStore.getState().updateProfile(profile.id, "B 站 2");
       await useStore.getState().updateProfile(profile.id, undefined, { textNetworkProxy: proxy });
       expect(useStore.getState().settings.profiles[0]).toMatchObject({
+        name: "B 站 2", speechRecognitionName: "Whisper · 本地", textTranslationNames: { openAICompatible: "翻译 & 字幕 + [本地] 🐱" }, textNetworkProxy: proxy,
+      });
+      await useStore.getState().updateProfile(profile.id, undefined, { speechRecognitionName: "  " });
+      expect(useStore.getState().settings.profiles[0]).toMatchObject({
         name: "B 站 2", textTranslationNames: { openAICompatible: "翻译 & 字幕 + [本地] 🐱" }, textNetworkProxy: proxy,
       });
+      expect(useStore.getState().settings.profiles[0].speechRecognitionName).toBeUndefined();
       await useStore.getState().updateProfile(profile.id, undefined, {
         textTranslationName: { route: "openAICompatible", name: "  " },
       });
@@ -316,4 +322,26 @@ it("keeps arbitrary provider content out of the compact error cause", () => {
   expect(selectSessionErrorSummary(failed)).toBe(selectSessionErrorMessage(failed));
   expect(selectSessionErrorSummary(failed)).not.toMatch(/provider-private-content|synthetic-key/);
   expect(selectSessionErrorSummary({ session: { ...state.session, status: { kind: "listening" } } })).toBeNull();
+});
+
+it.each([false, true])("selects a saved preview profile preserving subtitles, capture choice and pause=%s", async isPaused => {
+  const original = useStore.getState();
+  const other = { ...original.settings.profiles[0], id: "other" };
+  const session = { ...original.session, isActive: !isPaused, isPaused, status: { kind: "listening" as const } };
+  try {
+    useStore.setState({ session, settings: { ...original.settings, profiles: [...original.settings.profiles, other], audioInput: "both", recordSessionAudio: true } });
+    await useStore.getState().selectProfile(other.id);
+    expect(useStore.getState().settings).toMatchObject({ activeProfileId: other.id, audioInput: "both", recordSessionAudio: true });
+    expect(useStore.getState().session).toBe(session);
+    await expect(useStore.getState().updateProfile(other.id, "Change")).rejects.toThrow("session-active");
+  } finally { useStore.setState(original, true); }
+});
+
+it.each(["connecting", "stopping"] as const)("rejects preview profile selection while %s", async kind => {
+  const original = useStore.getState();
+  try {
+    useStore.setState({ session: { ...original.session, status: { kind } } });
+    await expect(useStore.getState().selectProfile("other")).rejects.toThrow("profile_switch_busy");
+    expect(useStore.getState().settings).toBe(original.settings);
+  } finally { useStore.setState(original, true); }
 });

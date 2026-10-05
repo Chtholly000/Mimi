@@ -85,6 +85,7 @@ commands.allow = [
 identifier = "app-overlay-control"
 description = "Allows the overlay control island to change live options and manage its panel."
 commands.allow = [
+  "profile_select",
   "session_toggle_paused",
   "capture_status",
   "audio_applications",
@@ -107,6 +108,7 @@ commands.allow = [
 identifier = "app-tray-panel"
 description = "Allows the tray panel to operate sessions, presentation preferences, and app actions."
 commands.allow = [
+  "profile_select",
   "session_start",
   "session_stop",
   "session_toggle_paused",

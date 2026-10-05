@@ -8,6 +8,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "../../components/Icon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
+import { profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { isTauri } from "../../lib/ipc";
 import {
   activeServiceProfile,
@@ -44,6 +45,7 @@ const TRAY_WINDOW_PADDING = 6;
 
 type PendingAction =
   | TraySessionAction
+  | "profile"
   | "language"
   | "display"
   | "intermediate"
@@ -72,6 +74,7 @@ export function TrayPanel() {
   const start = useStore((state) => state.start);
   const stop = useStore((state) => state.stop);
   const togglePaused = useStore((state) => state.togglePaused);
+  const selectProfile = useStore((state) => state.selectProfile);
   const switchSourceLanguage = useStore((state) => state.switchSourceLanguage);
   const saveSettings = useStore((state) => state.saveSettings);
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
@@ -112,15 +115,17 @@ export function TrayPanel() {
     setPendingAction(name);
     setOperationError(null);
     void operation()
-      .catch(() => {
+      .catch((error: unknown) => {
         setOperationError(
           name === "quit"
             ? I18N.tray.quitFailed
-            : name === "dock"
-              ? I18N.settings.dockSaveFailed
-              : name === "intermediate"
-                ? I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles)
-                : I18N.settings.profileActionFailed,
+            : name === "profile"
+              ? profileErrorMessage(error)
+              : name === "dock"
+                ? I18N.settings.dockSaveFailed
+                : name === "intermediate"
+                  ? I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles)
+                  : actionErrorMessage(error, I18N.settings.profileActionFailed),
         );
       })
       .finally(() => {
@@ -272,6 +277,26 @@ export function TrayPanel() {
       </div>}
 
       <div className="tray-card" aria-label={I18N.settings.subtitleTitle}>
+        <div className="tray-setting-row tray-setting-row--profile" aria-busy={pendingAction === "profile"}>
+          <span className="tray-setting-row__icon" aria-hidden="true"><Icon name="gear" /></span>
+          <span className="tray-setting-row__copy">
+            <span className="tray-setting-row__profile-label"><span>{I18N.settings.currentProfile}</span><SettingsHelp text={I18N.settings.profileSwitchHelp} label={I18N.settings.helpLabel} /></span>
+          </span>
+          <span className="tray-select-wrap" title={activeProfile?.name}>
+            <Select label={I18N.settings.currentProfile} value={settings.activeProfileId ?? ""}
+              valueLabel={I18N.settings.noActiveProfile}
+              options={settings.profiles.map((profile) => ({ value: profile.id, label: profile.name }))}
+              disabled={anyActionPending || sessionStatusKind === "connecting" || sessionStatusKind === "stopping"}
+              onChange={(profileId) => {
+                if (profileId !== settings.activeProfileId) {
+                  performAction("profile", async () => { await selectProfile(profileId); });
+                }
+              }} />
+          </span>
+        </div>
+
+        <span className="tray-card__divider" />
+
         <div className="tray-setting-row tray-setting-row--language">
           <span className="tray-setting-row__icon" aria-hidden="true">
             <Icon name="languages" />

@@ -70,13 +70,22 @@ localized safe summaries; no tests, build, native acceptance or CI have run for 
 Desktop Audio3 decoding, session recovery and native presentation are affected.
 Android currently uses the separate DashScope realtime `session.update` adapter,
 not Audio3 `run-task`/`task-failed`; no shared subtitle or text-translation contract
-changes. Tests cover safe code decoding, loopback setup rejection, recovery policy,
-three-language feedback across sibling surfaces, and temporary native geometry.
-The initial canonical repository check passed: 1095 desktop Rust tests (2 ignored),
-1474 frontend tests, shared-core/JNI crate checks, strict lint and production build.
-The follow-up transport-label mapping passed 75 focused frontend tests, typecheck
-and lint. Signed macOS acceptance confirmed unsupported-language feedback, settings
-navigation, idle recovery and preserved geometry in the local QA combination. The
-transport-label fix still needs native replay; pre-existing collapsed/immersive/content
-states remain unverified natively. See the integration run ledger for exact revisions
-and evidence boundaries.
+changes. Regression sources cover safe code decoding, loopback setup rejection,
+recovery policy, three-language feedback across sibling surfaces and temporary
+native geometry. Existing profile-selection regressions cover live/paused/idle
+selection, failed persistence and lifecycle supersession; error-retirement
+regressions preserve subtitles and reject changed epochs or unrelated failures.
+The latest presentation follow-up and integration have not been tested or built.
+Native error dragging, mode restoration and real service sessions remain pending
+until the user asks for the combined verification pass.
+
+## Integration with live profile selection
+
+The main branch now routes profile selection through `switch_profile` so a live
+session reconnects and a paused session keeps its resumable configuration. Keep
+that lifecycle path and retire an observed configuration error only after its
+new profile selection persists successfully under the same settings guard.
+Selecting the same profile, rejecting a missing profile, failed persistence and
+a newer lifecycle/error must leave the old error intact. Error recovery keeps
+confirmed subtitles and does not start audio. This source-only integration has
+not been tested, built, run natively or sent to CI at the user's request.

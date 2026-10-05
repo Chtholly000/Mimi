@@ -6,6 +6,7 @@ import { LanguageSelect } from "../../components/LanguageSelect";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
+import { profileErrorMessage } from "../../lib/connectionDiagnostics";
 import {
   isTauri,
   overlayControlSetPanelHeight,
@@ -28,6 +29,7 @@ import type { OverlayControlPanelModel } from "./overlayControlModel";
 
 type PendingAction =
   | "pause"
+  | "profile"
   | "display"
   | "source"
   | "translation"
@@ -52,6 +54,7 @@ interface OverlayControlPanelProps {
   onRetrySession?: () => Promise<void>;
   onDismiss: () => void;
   onTogglePaused: () => Promise<void>;
+  onSelectProfile: (profileId: string) => Promise<void>;
   onSwitchSourceLanguage: (language: SourceLanguage) => Promise<void>;
   onSetSkipTranslation: (enabled: boolean) => Promise<void>;
   onSetIntermediateSubtitles: (enabled: boolean) => Promise<void>;
@@ -77,6 +80,7 @@ export function OverlayControlPanel({
   onRetrySession,
   onDismiss,
   onTogglePaused,
+  onSelectProfile,
   onSwitchSourceLanguage,
   onSetSkipTranslation,
   onSetIntermediateSubtitles,
@@ -156,7 +160,7 @@ export function OverlayControlPanel({
       .then(() => {
         if (dismissAfter) onDismiss();
       })
-      .catch(() => setOperationError(failureMessage))
+      .catch((error: unknown) => setOperationError(name === "profile" ? profileErrorMessage(error) : failureMessage))
       .finally(() => { actionInFlight.current = false; setPendingAction(null); });
   };
 
@@ -201,6 +205,19 @@ export function OverlayControlPanel({
         <CaptureStatusRow
           disabled={pendingAction !== null}
         />
+
+        <div className="overlay-control-picker overlay-control-picker--profile" aria-busy={pendingAction === "profile"}>
+          <span className="overlay-control-picker__profile-label"><span>{I18N.settings.currentProfile}</span><SettingsHelp text={I18N.settings.profileSwitchHelp} label={I18N.settings.helpLabel} /></span>
+          <Select label={I18N.settings.currentProfile} value={settings.activeProfileId ?? ""}
+            valueLabel={I18N.settings.noActiveProfile}
+            options={settings.profiles.map((profile) => ({ value: profile.id, label: profile.name }))}
+            disabled={!canChangeSessionSettings}
+            onChange={(profileId) => {
+              if (profileId !== settings.activeProfileId) {
+                performAction("profile", () => onSelectProfile(profileId), false);
+              }
+            }} />
+        </div>
 
         <div ref={displayControlRef} className="overlay-control-picker" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>
           <span>{I18N.settings.subtitleDisplay}</span>

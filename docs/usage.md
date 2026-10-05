@@ -60,6 +60,15 @@ in Settings, the overlay control panel, or the tray. Switch instantly with
 without restarting translation. Bilingual mode pairs confirmed sentences and
 previews the recognized original while a translation is pending.
 
+## Recognition errors
+
+Recognition errors stay visible in the subtitle window alongside existing
+subtitles. Open the floating control panel for the full explanation and recovery
+actions. A recognized configuration error offers Speech & Translation settings;
+temporary connection or service errors offer Retry. Correcting or switching the
+affected configuration returns the failed session to idle without starting audio.
+Start Live Subtitles again when ready.
+
 ## More docs
 
 [Contributing](../CONTRIBUTING.md) · [Security & privacy](../SECURITY.md) · [Platform differences and verification](development/platform-parity.md)

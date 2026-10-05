@@ -158,3 +158,78 @@ it("does not leak inactive aliases into built-in or original-only translation", 
   expect(originalOnly?.detail).toContain(I18N.overlay.originalOnly);
   expect(originalOnly?.detail).not.toContain("Unused translator");
 });
+
+it.each(["customDashScopeASR", "customOpenAIASR"] as const)(
+  "uses an independent %s recognition name without borrowing the configuration or translator name", provider => {
+    const result = translationService(settings({
+      provider, name: "Whisper · Index", speechRecognitionName: "  Whisper / 日本語 🌸  ",
+      textTranslation: "openAICompatible", textTranslationNames: { openAICompatible: "Index · 本地" },
+    }));
+    expect(result?.stages).toEqual([
+      { role: "recognition", provider, label: "Whisper / 日本語 🌸" },
+      { role: "translation", provider: "openAICompatible", label: "Index · 本地" },
+    ]);
+    expect(result?.detail).toContain("Current configuration: Whisper · Index");
+    expect(result?.detail).toContain("Speech recognition: Whisper / 日本語 🌸");
+    expect(result?.detail).toContain("Text translation: Index · 本地");
+  },
+);
+
+it.each(["customDashScopeASR", "customOpenAIASR"] as const)(
+  "falls back to the localized %s protocol after clearing its recognition name", provider => {
+    for (const language of ["zh", "en", "ja"] as const) {
+      setStoredUiLanguage(language);
+      for (const speechRecognitionName of [undefined, "", "   "]) {
+        const result = translationService(settings({ provider, speechRecognitionName }));
+        expect(result?.stages).toEqual([{ role: "recognition", provider, label: providerDisplayName(provider) }]);
+        expect(result?.detail).toContain(`${I18N.settings.speechRecognition}: ${providerDisplayName(provider)}`);
+      }
+    }
+  },
+);
+
+it.each(["customDashScopeASR", "customOpenAIASR"] as const)(
+  "keeps the %s recognition alias in original-only and unconfigured translation modes", provider => {
+    for (const textTranslation of [undefined, "followService", "chatMock"] as const) {
+      const result = translationService({
+        ...settings({ provider, speechRecognitionName: "Whisper", textTranslation, textTranslationNames: { chatMock: "Unused translator" } }),
+        targetLanguage: textTranslation === "chatMock" ? "original" : "zh",
+      });
+      expect(result?.stages).toEqual([{ role: "recognition", provider, label: "Whisper" }]);
+      expect(result?.detail).toContain("Text translation: Original only");
+      expect(result?.detail).not.toContain("Unused translator");
+    }
+  },
+);
+
+it("refreshes the recognition alias on rename and profile selection without altering the translator", () => {
+  const first = settings({
+    provider: "customDashScopeASR", speechRecognitionName: "Office recognition", textTranslation: "chatMock",
+    textTranslationNames: { chatMock: "Shared translator" },
+  });
+  const second: ServiceProfile = { ...first.profiles[0], id: "second-profile", speechRecognitionName: "Home recognition" };
+  expect(translationService(first)?.stages.map(stage => stage.label)).toEqual(["Office recognition", "Shared translator"]);
+  expect(translationService({ ...first, profiles: [{ ...first.profiles[0], speechRecognitionName: "Renamed recognition" }] })?.stages.map(stage => stage.label))
+    .toEqual(["Renamed recognition", "Shared translator"]);
+  expect(translationService({ ...first, profiles: [...first.profiles, second], activeProfileId: second.id })?.stages.map(stage => stage.label))
+    .toEqual(["Home recognition", "Shared translator"]);
+});
+
+it.each(["alibabaCloud", "openAIRealtime", "deepLX"] as const)(
+  "ignores an unsupported recognition alias for %s", provider => {
+    const result = translationService(settings({ provider, speechRecognitionName: "Unused recognition name" }));
+    expect(result?.stages[0].label).toBe(providerDisplayName(provider === "deepLX" ? "alibabaCloud" : provider));
+    expect(result?.detail).not.toContain("Unused recognition name");
+  },
+);
+
+it("keeps separate custom recognition and translation stages when their aliases match", () => {
+  const result = translationService(settings({
+    provider: "customOpenAIASR", speechRecognitionName: "My service", textTranslation: "openAICompatible",
+    textTranslationNames: { openAICompatible: "My service" },
+  }));
+  expect(result?.stages).toEqual([
+    { role: "recognition", provider: "customOpenAIASR", label: "My service" },
+    { role: "translation", provider: "openAICompatible", label: "My service" },
+  ]);
+});
