@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { I18N, setStoredUiLanguage } from "./i18n";
-import { connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
+import { languageActionErrorMessage, connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
 
 it("localizes exhausted translation recovery without showing internal labels", () => {
   for (const language of ["zh", "en", "ja"] as const) {
@@ -183,6 +183,27 @@ it.each(["en", "zh", "ja"] as const)("explains fixed Audio3 connection failures 
     expect(credentialErrorMessage(`${error} ws://synthetic-private-endpoint`)).toBeNull();
   }
   expect(credentialErrorMessage("IO error: connection refused at synthetic-private-endpoint")).toBeNull();
+});
+
+it.each(["zh", "en", "ja"] as const)("explains known language failures without exposing arbitrary IPC text in %s", locale => {
+  setStoredUiLanguage(locale);
+  const messages = {
+    source_switch_busy: I18N.settings.languageSwitchBusy,
+    target_switch_busy: I18N.settings.languageSwitchBusy,
+    source_switch_superseded: I18N.settings.languageSwitchSuperseded,
+    language_switch_superseded: I18N.settings.languageSwitchSuperseded,
+    source_switch_unsupported: I18N.settings.languageSwitchUnsupported,
+    target_switch_unsupported: I18N.settings.languageSwitchUnsupported,
+    source_switch_save_failed: I18N.settings.languageSaveFailed,
+    source_switch_profile: I18N.settings.languageSwitchProfileUnavailable,
+  };
+  for (const [label, expected] of Object.entries(messages)) {
+    expect(languageActionErrorMessage(label, "fallback")).toBe(expected);
+    expect(languageActionErrorMessage(new Error(label), "fallback")).toBe(expected);
+  }
+  expect(languageActionErrorMessage("Listening settings cannot be changed while a session is active.", "fallback")).toBe(I18N.settings.languageChangeRequiresStop);
+  expect(languageActionErrorMessage(new Error("custom_speech_unreachable"), "fallback")).toBe(I18N.settings.customSpeechUnreachable);
+  expect(languageActionErrorMessage("synthetic-private-provider-body", "fallback")).toBe("fallback");
 });
 
 it.each(["en", "zh", "ja"] as const)("localizes profile switch restrictions without raw payloads in %s", language => {

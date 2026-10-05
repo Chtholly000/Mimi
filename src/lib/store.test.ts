@@ -323,6 +323,43 @@ it("keeps arbitrary provider content out of the compact error cause", () => {
   expect(selectSessionErrorSummary(failed)).not.toMatch(/provider-private-content|synthetic-key/);
   expect(selectSessionErrorSummary({ session: { ...state.session, status: { kind: "listening" } } })).toBeNull();
 });
+it("keeps custom declarations independent and normalizes only the active source in the browser preview", async () => {
+  const original = useStore.getState();
+  const profile = { id: "custom", name: "Custom", provider: "customDashScopeASR" as const, credentialState: "missing" as const, textTranslation: "openAICompatible" as const };
+  try {
+    useStore.setState({ settings: { ...original.settings, profiles: [profile], activeProfileId: profile.id, sourceLanguage: "fr", targetLanguage: "zh" } });
+    const narrowed = await useStore.getState().updateProfile(profile.id, undefined, { customSpeechSourceLanguages: ["en", "en"] });
+    expect(narrowed.sourceLanguage).toBe("auto");
+    expect(narrowed.profiles[0].customSpeechSourceLanguages).toEqual(["en"]);
+    await useStore.getState().updateProfile(profile.id, "Renamed");
+    expect(useStore.getState().settings.profiles[0].customSpeechSourceLanguages).toEqual(["en"]);
+    const cleared = await useStore.getState().updateProfile(profile.id, undefined, { customSpeechSourceLanguages: null });
+    expect(cleared.profiles[0].customSpeechSourceLanguages).toBeNull();
+    useStore.setState({ settings: original.settings });
+    await expect(useStore.getState().updateProfile(original.settings.activeProfileId, undefined, { customSpeechSourceLanguages: [] })).rejects.toThrow("provider-mismatch");
+  } finally { useStore.setState(original, true); }
+});
+
+
+it("rejects stale or busy recognition choices without changing preferences or subtitle state", async () => {
+  const original = useStore.getState();
+  try {
+    const settings = { ...original.settings, sourceLanguage: "auto" as const, languageCapabilities: undefined,
+      profiles: [{ id: "test", name: "Test", provider: "openAIRealtime" as const, credentialState: "present" as const }], activeProfileId: "test" };
+    useStore.setState({ settings, session: original.session });
+    await expect(useStore.getState().switchSourceLanguage("fr")).rejects.toThrow("source_switch_unsupported");
+    expect(useStore.getState().settings).toBe(settings);
+    expect(useStore.getState().session).toBe(original.session);
+    for (const kind of ["connecting", "stopping"] as const) {
+      const session = { ...original.session, status: { kind } };
+      useStore.setState({ session });
+      await expect(useStore.getState().switchSourceLanguage("auto")).rejects.toThrow("source_switch_busy");
+      expect(useStore.getState().settings).toBe(settings);
+      expect(useStore.getState().session).toBe(session);
+    }
+  } finally { useStore.setState(original, true); }
+});
+
 
 it.each([false, true])("selects a saved preview profile preserving subtitles, capture choice and pause=%s", async isPaused => {
   const original = useStore.getState();

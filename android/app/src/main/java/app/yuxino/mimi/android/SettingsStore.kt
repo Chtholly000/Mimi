@@ -167,7 +167,7 @@ object SettingsStore {
 
     fun activateProvider(context: Context, provider: app.yuxino.mimi.android.provider.ServiceProvider): Boolean {
         if (!isConfigured(context, provider)) return false
-        val (source, target) = provider.normalize(sourceLang(context), targetLang(context))
+        val (source, target) = provider.normalize(sourceLang(context), targetLang(context), textTranslationProvider(context))
         return get(context).edit().putString(KEY_PROVIDER, provider.id)
             .putString(KEY_SOURCE_LANG, source).putString(KEY_TARGET_LANG, target).commit()
     }

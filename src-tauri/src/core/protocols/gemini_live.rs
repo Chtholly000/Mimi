@@ -96,14 +96,17 @@ impl GeminiLiveRequestEncoder {
     }
 }
 
-fn target_language_code(
+pub fn target_language_code(
     target_language: TargetLanguage,
 ) -> Result<&'static str, GeminiLiveProtocolError> {
     match target_language {
+        TargetLanguage::Original | TargetLanguage::Portuguese => {
+            Err(GeminiLiveProtocolError::InvalidTargetLanguage)
+        }
         TargetLanguage::SimplifiedChinese => Ok("zh-Hans"),
-        TargetLanguage::English => Ok("en"),
-        TargetLanguage::Japanese => Ok("ja"),
-        _ => Err(GeminiLiveProtocolError::InvalidTargetLanguage),
+        TargetLanguage::TraditionalChinese => Ok("zh-Hant"),
+        TargetLanguage::Tagalog => Ok("fil"),
+        _ => Ok(target_language.raw_value()),
     }
 }
 
@@ -302,11 +305,9 @@ mod tests {
     #[test]
     fn expanded_app_targets_do_not_expand_this_wire_contract() {
         for target in TargetLanguage::ALL.into_iter().filter(|target| {
-            !matches!(
+            matches!(
                 target,
-                TargetLanguage::SimplifiedChinese
-                    | TargetLanguage::English
-                    | TargetLanguage::Japanese
+                TargetLanguage::Original | TargetLanguage::Portuguese
             )
         }) {
             assert_eq!(

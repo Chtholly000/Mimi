@@ -1,3 +1,4 @@
+import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { SettingsHelp } from "../settings/SettingsHelp";
 import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
 import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
@@ -8,7 +9,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "../../components/Icon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
-import { profileErrorMessage } from "../../lib/connectionDiagnostics";
+import { languageActionErrorMessage, profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { isTauri } from "../../lib/ipc";
 import {
   activeServiceProfile,
@@ -21,7 +22,6 @@ import {
   useStore,
 } from "../../lib/store";
 import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
   TARGET_LANGUAGE_DISPLAY_NAMES,
   targetLanguageTranslatesAudio,
   type SettingsSnapshot,
@@ -119,8 +119,10 @@ export function TrayPanel() {
         setOperationError(
           name === "quit"
             ? I18N.tray.quitFailed
-            : name === "profile"
-              ? profileErrorMessage(error)
+            : name === "language"
+              ? languageActionErrorMessage(error, I18N.settings.profileActionFailed)
+              : name === "profile"
+                ? profileErrorMessage(error)
               : name === "dock"
                 ? I18N.settings.dockSaveFailed
                 : name === "intermediate"
@@ -302,17 +304,18 @@ export function TrayPanel() {
             <Icon name="languages" />
           </span>
           <span className="tray-setting-row__copy">
-            <span>{I18N.tray.sourceLanguage} <SettingsHelp text={I18N.settings.recognitionLanguageHelp} label={I18N.settings.helpLabel} /></span>
+            <span>{I18N.tray.sourceLanguage} <SettingsHelp text={speechLanguageGuidance(settings).help} label={I18N.settings.helpLabel} /></span>
             <small>{translationSummary(settings)}</small>
           </span>
           <span className="tray-select-wrap">
             <LanguageSelect label={I18N.tray.sourceLanguage} value={settings.sourceLanguage}
               disabled={sourcePickerDisabled}
-              options={sourceLanguages.map((language) => ({ value: language, label: SOURCE_LANGUAGE_DISPLAY_NAMES[language] }))}
+              options={sourceLanguages.map((language) => ({ value: language, label: speechLanguageGuidance(settings).optionLabel(language) }))}
               onChange={(value) => performAction("language", () => switchSourceLanguage(value as SourceLanguage))} />
           </span>
         </div>
 
+        {speechLanguageGuidance(settings).notice && <div className="recognition-language-notice">{speechLanguageGuidance(settings).notice}</div>}
         <span className="tray-card__divider" />
 
         <div className="tray-setting-row tray-setting-row--display" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>

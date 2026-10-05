@@ -52,7 +52,7 @@ impl DeepLXClient {
         text: &str,
         source: Option<SourceLanguage>,
     ) -> Result<String, DeepLXError> {
-        let body = deeplx::request(text, source.unwrap_or(self.source), self.target)?;
+        let body = deeplx::request_with_detected_source(text, self.source, source, self.target)?;
         tokio::time::timeout(self.timeout, async {
             crate::development_content::request(
                 crate::development_content::RequestProtocol::DeepLX,
@@ -178,6 +178,22 @@ mod tests {
             );
         }
     }
+    #[tokio::test]
+    async fn automatic_source_keeps_detection_for_unmapped_reports() {
+        for source in [SourceLanguage::French, SourceLanguage::German] {
+            let (client, server) =
+                fixture(200, r#"{"code":200,"data":"synthetic result"}"#, "", false).await;
+            client.translate("synthetic", Some(source)).await.unwrap();
+            let request = server.await.unwrap();
+            let body: serde_json::Value =
+                serde_json::from_str(request.split_once("\r\n\r\n").unwrap().1).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({"text":"synthetic","source_lang":"auto","target_lang":"JA"})
+            );
+        }
+    }
+
     #[tokio::test]
     async fn rejects_http_and_application_errors_without_disclosing_body() {
         for (status, body, expected) in [

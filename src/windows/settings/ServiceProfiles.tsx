@@ -23,6 +23,7 @@ import type {
   CredentialState,
   ProviderCredentialsInput,
   ServiceProfile,
+  SourceLanguage,
   ServiceProvider,
   SessionStateEvent,
   SettingsSnapshot,
@@ -47,12 +48,14 @@ import { textTranslationDisplayName } from "../../lib/textTranslationName";
 import { speechRecognitionDisplayName } from "../../lib/speechRecognitionName";
 import { NetworkProxySettings } from "./NetworkProxySettings";
 import { ProfileLanguageSettings } from "./ProfileLanguageSettings";
+import { CustomSpeechLanguageSettings } from "./CustomSpeechLanguageSettings";
+import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { AutoSaveNameField } from "./AutoSaveNameField";
 
 const CONNECTION_CHECK_TIMEOUT_MS = 30_000;
 
 type Feedback = { tone: "success" | "error" | "info"; message: string };
-type PendingAction = "create" | "select" | "delete" | "save-key" | "delete-key" | "test-connection" | "save-proxy" | null;
+type PendingAction = "create" | "select" | "delete" | "save-key" | "delete-key" | "test-connection" | "save-proxy" | "save-languages" | null;
 type CheckStage = ConnectionCheckStage | "combined";
 type CheckOutcome = { profileId: string; input: symbol; result: ConnectionDiagnostic | null; error: string | null };
 type PendingConfirmation =
@@ -249,6 +252,29 @@ export function ServiceProfiles({
     } finally {
       mutationInFlight.current = false;
       setPendingAction(null);
+    }
+  };
+
+  const handleSaveSpeechLanguages = async (profile: ServiceProfile, languages: SourceLanguage[] | null) => {
+    if (mutationInFlight.current || mutationsDisabled || selectedProfileReadOnly) throw new Error("profile-change-requires-stop");
+    mutationInFlight.current = true;
+    setPendingAction("save-languages");
+    const before = settings;
+    const notify = beginToast();
+    try {
+      // The command response acknowledges this exact save even if its settings
+      // event arrives first. Never infer normalization from an unrelated event.
+      const after = await updateProfile(profile.id, undefined, { customSpeechSourceLanguages: languages });
+      if (mounted.current) {
+        invalidateProfileCheck(profile.id);
+        notify(profile.id === before.activeProfileId && after.activeProfileId === before.activeProfileId && after.sourceLanguage !== before.sourceLanguage
+          ? I18N.settings.recognitionLanguageAdjusted(speechLanguageGuidance(before).optionLabel(before.sourceLanguage), speechLanguageGuidance(after).optionLabel(after.sourceLanguage))
+          : I18N.settings.customSpeechLanguagesSaved);
+      }
+      return after;
+    } finally {
+      mutationInFlight.current = false;
+      if (mounted.current) setPendingAction(null);
     }
   };
 
@@ -473,6 +499,9 @@ export function ServiceProfiles({
               onCancelDelete={() => setPendingConfirmation(null)}
             />
           </div>
+          {isCustomSpeechProvider(selectedProfile.provider) && <CustomSpeechLanguageSettings key={`${selectedProfile.id}-languages`}
+            profile={selectedProfile} disabled={mutationsDisabled || selectedProfileReadOnly}
+            onSave={languages => handleSaveSpeechLanguages(selectedProfile, languages)} />}
           <section className="service-proxies" aria-label={I18N.settings.networkProxyTitle}>
             <h3>{I18N.settings.networkProxyTitle}</h3>
             <NetworkProxySettings key={`${selectedProfile.id}-speech-proxy`} embedded
@@ -504,7 +533,7 @@ export function ServiceProfiles({
                 <SettingsHelp text={I18N.settings.profileSwitchHelp} label={I18N.settings.helpLabel} />
                 </span>
               )}
-            {selectedProfileReadOnly ? <button type="button" className="settings-button settings-button--quiet settings-button--compact" disabled={mutationsDisabled || atProfileLimit} onClick={() => setShowsProviderPicker(true)}><Icon name="plus" />{I18N.settings.addProfile}</button> : <button
+            {!selectedProfileReadOnly && <button
               type="button"
               className="settings-button settings-button--danger settings-button--compact"
               disabled={mutationsDisabled || settings.profiles.length <= 1}

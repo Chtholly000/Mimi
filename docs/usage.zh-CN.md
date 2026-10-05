@@ -14,6 +14,8 @@ macOS、Windows 安装版和 Linux AppImage 更新时，打开 设置 → 通用
 Windows 安装完成后会重新打开 Mimi；macOS 和 Linux AppImage 可点击 重新启动并完成更新。
 早于 v1.3.8 的旧版本需要先手动安装一次，之后即可在应用内更新。
 
+三方识别怎么填、该选自动还是具体语言，请看[语音服务配置与语言参数](speech-language-setup.md#中文)：包含 WebSocket 示例、参数含义和各接入的当前范围。
+
 ### 平台支持
 
 - macOS 13+（Apple 芯片和 Intel）：Apple 芯片选择 `_aarch64.dmg`，Intel 选择 `_x64.dmg`。从 v1.4.4 起提供 Intel 包，已通过构建和签名检查，Intel 实机采集和权限行为仍待验证。提供未经 Apple 公证的 DMG；若首次打开被拦截，请在「系统设置 → 隐私与安全性」中选择「仍要打开」。从旧版本升级时，请留意下方的权限说明。

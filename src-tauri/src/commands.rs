@@ -7,7 +7,9 @@ use crate::core::models::{
     SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
 };
 use crate::core::network_proxy::ProxyConfig;
-use crate::core::provider::{ProviderKind, ServiceProfile, TextTranslation, TextTranslationName};
+use crate::core::provider::{
+    CustomSpeechLanguagesPatch, ProviderKind, ServiceProfile, TextTranslation, TextTranslationName,
+};
 use crate::session_manager::{SessionManager, SessionStateEvent};
 use crate::settings_store::{CredentialState, PulseStyle, SettingsStore, SubtitleAlignment};
 use crate::windows::{
@@ -63,6 +65,7 @@ pub struct ServiceProfilePayload {
     pub text_translation_names: std::collections::BTreeMap<TextTranslation, String>,
     pub speech_network_proxy: Option<ProxyConfig>,
     pub text_network_proxy: Option<ProxyConfig>,
+    pub custom_speech_source_languages: Option<Vec<SourceLanguage>>,
 }
 
 impl ServiceProfilePayload {
@@ -77,6 +80,7 @@ impl ServiceProfilePayload {
         Self {
             speech_network_proxy: profile.speech_network_proxy,
             text_network_proxy: profile.text_network_proxy,
+            custom_speech_source_languages: profile.custom_speech_source_languages,
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
@@ -95,6 +99,7 @@ impl ServiceProfilePayload {
         Self {
             speech_network_proxy: profile.speech_network_proxy,
             text_network_proxy: profile.text_network_proxy,
+            custom_speech_source_languages: profile.custom_speech_source_languages,
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
@@ -233,6 +238,41 @@ mod tests {
     }
 
     #[test]
+    fn custom_language_metadata_and_filtered_snapshot_survive_unavailable_credentials() {
+        let store = SettingsStore::in_memory(Box::new(PartiallyUnavailableSecretStore), false);
+        let mut profile =
+            ServiceProfile::new("custom", "Synthetic", ProviderKind::CustomOpenAIASR).unwrap();
+        profile
+            .set_custom_speech_source_languages(Some(vec![SourceLanguage::French]))
+            .unwrap();
+        profile.text_translation = Some(TextTranslation::OpenAICompatible);
+        let capabilities =
+            LanguageCapabilitiesPayload::from_profile(&profile, TargetLanguage::German);
+        assert_eq!(
+            capabilities.source_languages,
+            vec![SourceLanguage::Automatic, SourceLanguage::French]
+        );
+        assert_eq!(capabilities.target_languages, TargetLanguage::ALL);
+        for payload in [
+            ServiceProfilePayload::from_profile(&store, profile.clone()),
+            ServiceProfilePayload::unavailable(profile),
+        ] {
+            let json = serde_json::to_value(payload).unwrap();
+            assert_eq!(
+                json["customSpeechSourceLanguages"],
+                serde_json::json!(["fr"])
+            );
+            for secret_field in ["endpoint", "apiKey", "token", "model"] {
+                assert!(json.get(secret_field).is_none());
+            }
+        }
+        let unknown = ServiceProfilePayload::unavailable(
+            ServiceProfile::new("old", "Legacy", ProviderKind::CustomDashScopeASR).unwrap(),
+        );
+        assert!(serde_json::to_value(unknown).unwrap()["customSpeechSourceLanguages"].is_null());
+    }
+
+    #[test]
     fn language_capability_snapshot_is_stamped_and_tracks_the_atomic_profile_route() {
         let store = SettingsStore::in_memory(Box::new(PartiallyUnavailableSecretStore), false);
         store
@@ -272,8 +312,8 @@ mod tests {
         assert_eq!(deep_l.target_languages.len(), 4);
         profile.text_translation = Some(TextTranslation::OpenAICompatible);
         let custom = LanguageCapabilitiesPayload::from_profile(&profile, TargetLanguage::Original);
-        assert_eq!(custom.source_languages.len(), 5);
-        assert_eq!(custom.target_languages.len(), 4);
+        assert_eq!(custom.source_languages, SourceLanguage::ALL);
+        assert_eq!(custom.target_languages, TargetLanguage::ALL);
         let custom = serde_json::to_value(custom).unwrap();
         assert_eq!(custom["provider"], "alibabaCloud");
         assert_eq!(custom["textTranslation"], "openAICompatible");
@@ -622,6 +662,7 @@ mod tests {
             profiles: vec![ServiceProfilePayload {
                 speech_network_proxy: None,
                 text_network_proxy: None,
+                custom_speech_source_languages: None,
                 id: "alibaba-default".into(),
                 name: "Alibaba Cloud".into(),
                 provider: ProviderKind::AlibabaCloud,
@@ -1536,6 +1577,7 @@ pub async fn profile_update(
     text_network_proxy: Option<ProxyConfig>,
     text_translation_name: Option<TextTranslationName>,
     speech_recognition_name: Option<String>,
+    custom_speech_languages_patch: Option<CustomSpeechLanguagesPatch>,
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
@@ -1552,6 +1594,7 @@ pub async fn profile_update(
         text_network_proxy,
         text_translation_name,
         speech_recognition_name.as_deref(),
+        custom_speech_languages_patch,
     )?;
     state
         .session
@@ -1727,8 +1770,7 @@ pub async fn session_switch_source_language(
     // The session manager broadcasts settings-changed immediately after the
     // preference write, so no window keeps a stale selection while the
     // reconnect (which this awaits) is still in flight.
-    state.session.switch_source_language(language).await;
-    Ok(())
+    state.session.switch_source_language(language).await
 }
 
 #[tauri::command]

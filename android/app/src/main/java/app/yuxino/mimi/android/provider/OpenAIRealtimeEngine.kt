@@ -17,7 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Wire protocol mirrors mimi's src-tauri/src/core/protocols/openai_realtime.rs:
  *   up   session.update { session.audio.input.transcription.model = gpt-realtime-whisper,
- *                         session.audio.output.language = zh|en|ja }
+ *                         session.audio.output.language = one of the dedicated translation model languages }
  *   up   session.input_audio_buffer.append { audio: base64(pcm16le mono 24k, 200 ms frames) }
  *   up   session.close
  *   down session.created/updated/closed,
@@ -161,16 +161,7 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
         }
     }
 
-    private fun buildSessionUpdate(): JSONObject {
-        val input = JSONObject()
-            .put("transcription", JSONObject().put("model", SOURCE_TRANSCRIPTION_MODEL))
-        val output = JSONObject().put("language", targetLang)
-        val audio = JSONObject().put("input", input).put("output", output)
-        val session = JSONObject().put("audio", audio)
-        return JSONObject()
-            .put("type", "session.update")
-            .put("session", session)
-    }
+    private fun buildSessionUpdate(): JSONObject = openAITranslationSetup(targetLang)
 
     private fun encodeAudioAppend(pcm: ByteArray): JSONObject {
         val audio = Base64.encodeToString(pcm, Base64.NO_WRAP)
@@ -235,4 +226,11 @@ class OpenAIRealtimeEngine(private val listener: EngineListener) : ProviderEngin
         const val MODEL = "gpt-realtime-translate"
         const val SOURCE_TRANSCRIPTION_MODEL = "gpt-realtime-whisper"
     }
+}
+
+internal fun openAITranslationSetup(target: String): JSONObject {
+    require(target in ServiceProvider.OPENAI.targets) { "unsupported_language" }
+    val input = JSONObject().put("transcription", JSONObject().put("model", OpenAIRealtimeEngine.SOURCE_TRANSCRIPTION_MODEL))
+    return JSONObject().put("type", "session.update").put("session", JSONObject().put("audio",
+        JSONObject().put("input", input).put("output", JSONObject().put("language", target))))
 }

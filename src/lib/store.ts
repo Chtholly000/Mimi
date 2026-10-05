@@ -65,6 +65,7 @@ import {
   SnapshotBootstrapTimeoutError,
   SnapshotResponseGate,
 } from "./settingsState";
+import { AUDIO3_RECOGNITION_LANGUAGE_CODES } from "./types";
 import type {
   ProfileOptionsDraft,
   AudioInput,
@@ -387,12 +388,8 @@ export const useStore = create<StoreState>()((set, get) => ({
 
   switchSourceLanguage: async (language) => {
     const current = get();
-    if (
-      sessionSettingsAreChanging(current.session) ||
-      !sourceLanguagesForSettings(current.settings).includes(language)
-    ) {
-      return;
-    }
+    if (sessionSettingsAreChanging(current.session)) throw new Error("source_switch_busy");
+    if (!sourceLanguagesForSettings(current.settings).includes(language)) throw new Error("source_switch_unsupported");
     if (isTauri) {
       await sessionSwitchSourceLanguage(language);
       return;
@@ -482,7 +479,12 @@ export const useStore = create<StoreState>()((set, get) => ({
           throw new Error(label);
         }
       }
-      set({ settings: mergeSettingsSnapshot(previous, draft) });
+      const settings = mergeSettingsSnapshot(previous, draft);
+      if (draft.targetLanguage !== undefined) {
+        const sources = sourceLanguagesForSettings(settings);
+        if (!sources.includes(settings.sourceLanguage)) settings.sourceLanguage = sources[0] ?? settings.sourceLanguage;
+      }
+      set({ settings });
       return;
     }
     await settingsSaveCoordinator.save(previous, draft, settingsSave, (settings) =>
@@ -534,6 +536,13 @@ export const useStore = create<StoreState>()((set, get) => ({
       return snapshot;
     }
     const current = get().settings;
+    const hasDeclaration = options !== undefined && Object.hasOwn(options, "customSpeechSourceLanguages");
+    const declaration = options?.customSpeechSourceLanguages ?? null;
+    if (hasDeclaration) {
+      const profile = current.profiles.find(profile => profile.id === profileId);
+      if (!profile || !isCustomSpeechProvider(profile.provider)) throw new Error("provider-mismatch");
+      if (declaration !== null && (declaration.length > 30 || declaration.includes("auto"))) throw new Error("custom-speech-languages-invalid");
+    }
     const snapshot: SettingsSnapshot = {
       ...current,
       profiles: current.profiles.map((profile) =>
@@ -546,10 +555,15 @@ export const useStore = create<StoreState>()((set, get) => ({
             else delete textTranslationNames[textTranslationName.route];
           }
           return { ...profile, ...(name === undefined ? {} : { name: name.trim() }), ...proxies, textTranslationNames,
+            ...(hasDeclaration ? { customSpeechSourceLanguages: declaration === null ? null : AUDIO3_RECOGNITION_LANGUAGE_CODES.filter(code => declaration.includes(code)) } : {}),
             ...(speechRecognitionName === undefined ? {} : { speechRecognitionName: speechRecognitionName.trim() || undefined }) };
         })() : profile,
       ),
     };
+    if (hasDeclaration && current.activeProfileId === profileId) {
+      const sources = sourceLanguagesForSettings(snapshot);
+      if (!sources.includes(snapshot.sourceLanguage)) snapshot.sourceLanguage = sources[0]!;
+    }
     set({ settings: snapshot });
     return snapshot;
   },

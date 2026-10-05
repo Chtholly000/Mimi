@@ -8,7 +8,7 @@ import { useStore } from "../../lib/store";
 import { OverlayControlPanel } from "./OverlayControlPanel";
 import { overlayControlPanelModel } from "./overlayControlModel";
 import { sourceLanguagesForSettings } from "../../lib/providerCapabilities";
-import { SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
+import { AUDIO3_RECOGNITION_LANGUAGE_CODES, SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -237,7 +237,7 @@ it("offers all Original-mode recognition hints including searchable Norwegian", 
   expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("no");
 });
 
-it.each(["deepL", "deepLX", "openAICompatible"] as const)("keeps the %s small route list non-searchable and matches settings language labels", async route => {
+it.each(["deepL", "deepLX"] as const)("keeps the %s small route list non-searchable and matches settings language labels", async route => {
   configure({ profiles: [{ ...props.settings.profiles[0], textTranslation: route }] });
   await mount();
   await act(async () => picker(I18N.overlay.sourceLanguage).click());
@@ -249,6 +249,28 @@ it.each(["deepL", "deepLX", "openAICompatible"] as const)("keeps the %s small ro
   const chinese = options.find(option => option.textContent === SOURCE_LANGUAGE_DISPLAY_NAMES.zh)!;
   await act(async () => chinese.click());
   expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("zh");
+});
+
+it.each(["openAICompatible", "chatMock"] as const)("searches all 31 sources with the %s text route and sends the selected code", async route => {
+  configure({ profiles: [{ ...props.settings.profiles[0], textTranslation: route }] });
+  await mount();
+  await act(async () => picker(I18N.overlay.sourceLanguage).click());
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(options).toHaveLength(31);
+  expect(options.map(option => option.textContent)).toEqual(["auto" as const, ...AUDIO3_RECOGNITION_LANGUAGE_CODES]
+    .map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]));
+  const search = document.querySelector<HTMLInputElement>("input.mimi-select__search")!;
+  expect(search.getAttribute("aria-label")).toBe(I18N.settings.searchLanguages);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "Norwegian");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const filtered = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(filtered.map(option => option.textContent)).toEqual([SOURCE_LANGUAGE_DISPLAY_NAMES.no]);
+  await act(async () => filtered[0].click());
+  expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("no");
+  expect(props.onDismiss).toHaveBeenCalledOnce();
+  expect(document.querySelector('[role="listbox"]')).toBeNull();
 });
 
 it("uses native source choices without search for six options and ignores a stale route stamp", async () => {
@@ -344,6 +366,26 @@ it("retains the saved subtitle preference after failure, blocks duplicate saves 
   expect(props.onDismiss).not.toHaveBeenCalled();
 });
 
+it("keeps custom service-default semantics and scope visible in overlay controls", async () => {
+  configure({ targetLanguage: "original", sourceLanguage: "auto", profiles: [{ ...props.settings.profiles[0], provider: "customDashScopeASR" }] });
+  await mount();
+  expect(picker(I18N.overlay.sourceLanguage).textContent).toContain(I18N.settings.recognitionServiceDefault);
+  expect(host.querySelector('.recognition-language-notice')?.textContent).toBe(I18N.settings.recognitionCustomNotice);
+  expect(host.textContent).toContain(I18N.settings.recognitionDashScopeParameter);
+});
+
+
+it("keeps the panel and current language after a rejected source switch and shows its safe reason", async () => {
+  props.onSwitchSourceLanguage = vi.fn().mockRejectedValue("source_switch_unsupported");
+  await mount();
+  await searchSource("fr");
+  await act(async () => document.querySelector<HTMLElement>('[role="option"]')!.click());
+  expect(props.onSwitchSourceLanguage).toHaveBeenCalledExactlyOnceWith("fr");
+  expect(props.onDismiss).not.toHaveBeenCalled();
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.languageSwitchUnsupported);
+  expect(picker(I18N.overlay.sourceLanguage).textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.auto);
+});
+
 function configureProfiles() {
   configure({ profiles: [
     { id: "ali", name: "Alibaba Cloud", provider: "alibabaCloud", credentialState: "present" },
@@ -400,4 +442,18 @@ it("blocks profile changes during transitions, retains the saved profile on fail
   expect(props.onSelectProfile).toHaveBeenCalledTimes(2);
   expect(host.querySelector('[role="alert"]')).toBeNull();
   expect(props.onDismiss).not.toHaveBeenCalled();
+});
+
+
+it.each(["language_switch_superseded", "custom_speech_unreachable"])("keeps skip-translation failures visible for %s", async error => {
+  props.onSetSkipTranslation = vi.fn().mockRejectedValue(error);
+  await mount();
+  const toggle = host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${I18N.settings.skipTranslation}"]`)!;
+  await act(async () => toggle.click());
+  expect(props.onSetSkipTranslation).toHaveBeenCalledExactlyOnceWith(true);
+  expect(props.onDismiss).not.toHaveBeenCalled();
+  expect(toggle.getAttribute("aria-checked")).toBe("false");
+  expect(toggle.disabled).toBe(false);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(error === "language_switch_superseded" ? I18N.settings.languageSwitchSuperseded : I18N.settings.customSpeechUnreachable);
+  expect(host.textContent).not.toContain(error);
 });

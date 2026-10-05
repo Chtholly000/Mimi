@@ -48,7 +48,8 @@ export function LanguageStatusCapsule({
   const compact = capsuleLabels(settings, transientPhase);
   const sources = audioInputLabel(settings.audioInput, settings.systemAudioTarget);
   const phaseLabel = isStopping ? I18N.overlay.stopping : OVERLAY_ACTIVITY_PHASES[phase].accessibilityLabel;
-  const fullLabel = `${sources} · ${phaseLabel} · ${status.source} ${status.separator} ${status.target}`;
+  const sourceLabel = compact.source === I18N.settings.recognitionServiceDefault ? compact.source : status.source;
+  const fullLabel = `${sources} · ${phaseLabel} · ${sourceLabel} ${status.separator} ${status.target}`;
 
   useLayoutEffect(() => {
     const capsule = capsuleRef.current;
@@ -75,7 +76,7 @@ export function LanguageStatusCapsule({
       className={expanded ? "overlay-control-header" : "overlay-control-island"}
       onClick={onToggle}
       title={`${fullLabel}. ${actionLabel}`}
-      aria-label={`${sources} · ${phaseLabel}${I18N.overlay.accessibilityCurrentLanguagePrefix}${status.source} ${status.separator} ${status.target}. ${actionLabel}`}
+      aria-label={`${sources} · ${phaseLabel}${I18N.overlay.accessibilityCurrentLanguagePrefix}${sourceLabel} ${status.separator} ${status.target}. ${actionLabel}`}
       aria-haspopup={expanded ? undefined : "dialog"}
       aria-expanded={expanded ? undefined : false}
       aria-controls={expanded ? undefined : "overlay-control-panel"}

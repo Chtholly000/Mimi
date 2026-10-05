@@ -2600,32 +2600,35 @@ impl SessionManager {
 
     /// Quick-switches the source language, reconnecting when needed.
     /// Source changes preserve the single Turbo path for every provider.
-    pub async fn switch_source_language(self: &Arc<Self>, language: SourceLanguage) {
+    pub async fn switch_source_language(
+        self: &Arc<Self>,
+        language: SourceLanguage,
+    ) -> Result<(), String> {
         let switch_epoch = self.lifecycle_sequence.load(Ordering::SeqCst);
-        let lifecycle = match self.settings_mutation_guard(false).await {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
+        let lifecycle = self
+            .settings_mutation_guard(false)
+            .await
+            .map_err(|_| "source_switch_busy".to_string())?;
         if !self.is_lifecycle_request_current(switch_epoch) {
-            return;
+            return Err("source_switch_superseded".into());
         }
         let status = self.controller.lock().unwrap().state.status.clone();
         if !pipeline_settings_mutation_is_allowed(
             &status,
             self.lifecycle_operations.load(Ordering::SeqCst),
         ) {
-            return;
+            return Err("source_switch_busy".into());
         }
         let configuration_failure = self.configuration_failure_snapshot();
-        let profile = match self.settings.active_profile() {
-            Ok(profile) => profile,
-            Err(_) => return,
-        };
+        let profile = self
+            .settings
+            .active_profile()
+            .map_err(|_| "source_switch_profile".to_string())?;
         let provider = profile.effective_provider();
         let prefs = self.settings.preferences();
         let capabilities = profile.capabilities(prefs.target_language);
         if !capabilities.source_languages.contains(&language) {
-            return;
+            return Err("source_switch_unsupported".into());
         }
         let (target_language, next_mode, needs_reconnect) = {
             // Menus and settings share explicit source-selection semantics:
@@ -2637,7 +2640,7 @@ impl SessionManager {
                 .source_languages
                 .contains(&language)
             {
-                return;
+                return Err("source_switch_unsupported".into());
             }
             let mode =
                 translation_mode_after_source_switch(provider, language, prefs.translation_mode);
@@ -2662,7 +2665,7 @@ impl SessionManager {
             .is_err()
         {
             pipeline_log!("preferences unavailable label=source_switch_write_failed");
-            return;
+            return Err("source_switch_save_failed".into());
         }
         self.configuration_saved(configuration_failure, prefs.source_language != language);
         // A pause/stop can claim a newer lifecycle epoch while waiting for
@@ -2683,11 +2686,8 @@ impl SessionManager {
         // every window (including the overlay control) must see the new
         // selection right away.
         self.publish_settings();
-        if self.is_paused() {
-            return;
-        }
-        if !needs_reconnect {
-            return;
+        if self.is_paused() || !needs_reconnect {
+            return Ok(());
         }
 
         pipeline_log!(
@@ -2696,7 +2696,9 @@ impl SessionManager {
             target_language.raw_value()
         );
         drop(lifecycle);
-        self.reconnect_if_current(switch_epoch).await;
+        // Preferences already identify the selected language. A reconnect
+        // failure remains a session error and is also returned to its control.
+        self.try_reconnect_if_current(switch_epoch).await
     }
 
     /// Switches between recognition-only and a supported translation target.
@@ -2782,8 +2784,7 @@ impl SessionManager {
             return Ok(());
         }
         drop(lifecycle);
-        self.reconnect_if_current(switch_epoch).await;
-        Ok(())
+        self.try_reconnect_if_current(switch_epoch).await
     }
 
     /// Quick-switches the translation mode, reconnecting when needed.
@@ -2845,14 +2846,23 @@ impl SessionManager {
 
     /// Tears down and re-establishes the session, keeping subtitles.
     async fn reconnect_if_current(self: &Arc<Self>, expected_epoch: u64) {
+        let _ = self.try_reconnect_if_current(expected_epoch).await;
+    }
+
+    /// The language control needs the actual reconnect outcome. Existing
+    /// lifecycle callers retain their session-state-only error handling.
+    async fn try_reconnect_if_current(
+        self: &Arc<Self>,
+        expected_epoch: u64,
+    ) -> Result<(), String> {
         let _operation = self.begin_lifecycle_operation();
         let Some(reconnect_generation) = self.advance_lifecycle_request_if_current(expected_epoch)
         else {
-            return;
+            return Err("language_switch_superseded".into());
         };
         let lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
         if !self.is_lifecycle_request_current(reconnect_generation) {
-            return;
+            return Err("language_switch_superseded".into());
         }
         let old_generation = self.active_generation.swap(NO_GENERATION, Ordering::SeqCst);
         self.stop_health_checks().await;
@@ -2865,13 +2875,21 @@ impl SessionManager {
         }
         let lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
         if !self.is_lifecycle_request_current(reconnect_generation) {
-            return;
+            return Err("language_switch_superseded".into());
         }
         self.active_generation
             .store(reconnect_generation, Ordering::SeqCst);
         self.retag_active_settings(reconnect_generation);
         drop(lifecycle);
-        let _ = self.establish_session(reconnect_generation).await;
+        self.establish_session(reconnect_generation)
+            .await
+            .map_err(|error| {
+                if error == SESSION_START_CANCELLED {
+                    "language_switch_superseded".into()
+                } else {
+                    error
+                }
+            })
     }
 
     /// Machine-readable status kind for the global shortcut gate.

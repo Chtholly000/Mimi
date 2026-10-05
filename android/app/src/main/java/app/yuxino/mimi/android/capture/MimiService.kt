@@ -922,13 +922,7 @@ class MimiService : Service() {
         isFocusable = true
     }
 
-    private fun languageName(code: String): String = getString(when (code) {
-        "zh" -> R.string.lang_zh
-        "en" -> R.string.lang_en
-        "ja" -> R.string.lang_ja
-        "ko" -> R.string.lang_ko
-        else -> R.string.lang_auto
-    })
+    private fun languageName(code: String): String = app.yuxino.mimi.android.languageDisplayName(this, code)
 
     private fun updateOverlayFontSize() {
         val size = SettingsStore.fontSize(this).toFloat()

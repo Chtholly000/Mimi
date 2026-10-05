@@ -24,12 +24,23 @@ enum class ServiceProvider(
         listOf(CredentialField("appId", "AppID", false), CredentialField("secretId", "SecretID"), CredentialField("secretKey", "SecretKey"))),
     BAIDU("baidu", "百度翻译", "实时语音翻译", 16000, listOf("ja", "en", "ko", "zh"),
         listOf(CredentialField("appId", "AppID", false), CredentialField("appKey", "AppKey"))),
-    XAI("xai", "xAI Grok", "Grok Voice · 按语音轮次翻译", 24000, listOf("auto"),
+    XAI("xai", "xAI Grok", "Grok Voice · 按语音轮次翻译", 24000, listOf("auto", "zh", "en", "ja", "ko", "vi", "id", "hi", "fr", "de", "ru", "it"),
         listOf(CredentialField("apiKey", "API Key")), "wss://api.x.ai/v1/realtime", "grok-voice-latest");
 
-    val targets: List<String> get() = listOf("zh", "en", "ja")
+    val targets: List<String> get() = when (this) {
+        OPENAI -> listOf("zh", "en", "ja", "ko", "ru", "es", "fr", "pt", "de", "it", "vi", "id", "hi")
+        GEMINI -> listOf("zh", "en", "ja", "zh_tw", "ko", "ru", "es", "fr", "de", "it", "th", "vi", "id", "ms", "ar", "hi", "he", "ur", "bn", "pl", "nl", "tr", "km", "cs", "sv", "hu", "da", "fi", "tl", "fa")
+        else -> listOf("zh", "en", "ja")
+    }
     val hasAdvanced: Boolean get() = endpoint.isNotEmpty()
-    fun normalize(source: String, target: String): Pair<String, String> {
+    // Independent text translation is currently available only with DashScope ASR.
+    // Other speech providers keep their own model's translation catalog.
+    fun targetsForTranslation(translation: TextTranslationProvider): List<String> =
+        if (this == DASHSCOPE && translation.usesOpenAIProtocol) OPENAI_COMPATIBLE_TARGET_LANGUAGE_NAMES.keys.toList()
+        else targets
+
+    fun normalize(source: String, target: String, translation: TextTranslationProvider = TextTranslationProvider.BUILTIN): Pair<String, String> {
+        val targets = targetsForTranslation(translation)
         val normalizedSource = source.takeIf { it in sources }
             ?: sources.firstOrNull { it != target } ?: sources.first()
         val normalizedTarget = target.takeIf { it in targets && it != normalizedSource }

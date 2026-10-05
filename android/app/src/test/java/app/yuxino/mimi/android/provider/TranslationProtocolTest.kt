@@ -89,6 +89,12 @@ class TranslationProtocolTest {
         rejects("translation_empty_response") { decodeTranslationResponse(response(" ")) }
     }
 
+    @Test fun targetCodesMustBeConfigurableTranslationLanguages() {
+        for (target in listOf("auto", "original", "unknown", "fr-unsupported")) {
+            rejects("translation_language") { buildTranslationRequest("model", "Synthetic source.", "en", target) }
+        }
+    }
+
     @Test fun sourceAndResponseSizesAreBounded() {
         rejects("translation_too_large") { buildTranslationRequest("model", "a".repeat(MAX_TRANSLATION_TEXT_CHARS + 1), "en", "zh") }
         rejects("translation_too_large") { decodeTranslationResponse(response("a".repeat(MAX_TRANSLATION_TEXT_CHARS + 1))) }

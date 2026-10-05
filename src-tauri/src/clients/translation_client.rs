@@ -125,7 +125,9 @@ impl TranslationClient {
                     configuration.target_language,
                     events,
                 )
-                .map(Self::XaiRealtime)
+                .map(|client| {
+                    Self::XaiRealtime(client.with_source_language(configuration.source_language))
+                })
                 .map_err(TranslationClientError::Xai);
             }
             ProviderKind::VolcanoEngine => {
@@ -682,7 +684,12 @@ mod tests {
     }
 
     fn assert_compatible_factory(chatmock: bool) {
-        for target in [TargetLanguage::Japanese, TargetLanguage::Original] {
+        for target in [
+            TargetLanguage::Japanese,
+            TargetLanguage::Original,
+            TargetLanguage::German,
+            TargetLanguage::TraditionalChinese,
+        ] {
             let configuration = LiveTranslationConfiguration::with_credentials(
                 ProviderKind::AlibabaCloud,
                 if chatmock {
@@ -706,16 +713,27 @@ mod tests {
             )
             .validated()
             .unwrap();
-            assert_eq!(configuration.capabilities().source_languages.len(), 5);
-            assert_eq!(configuration.capabilities().target_languages.len(), 4);
+            assert_eq!(
+                configuration.capabilities().source_languages,
+                SourceLanguage::ALL
+            );
+            assert_eq!(
+                configuration.capabilities().target_languages,
+                TargetLanguage::ALL
+            );
             let (events, _receiver) = provider_event_channel();
             assert!(matches!(
                 TranslationClient::new(&configuration, events).unwrap(),
                 TranslationClient::HighQuality(_)
             ));
-            let mut unsupported = configuration;
-            unsupported.source_language = SourceLanguage::French;
-            assert!(matches!(unsupported.validated(), Err(crate::core::configuration::LiveTranslationConfigurationError::UnsupportedSourceLanguage)));
+            let mut french = configuration;
+            french.source_language = SourceLanguage::French;
+            let french = french.validated().unwrap();
+            let (events, _receiver) = provider_event_channel();
+            assert!(matches!(
+                TranslationClient::new(&french, events).unwrap(),
+                TranslationClient::HighQuality(_)
+            ));
         }
     }
 
