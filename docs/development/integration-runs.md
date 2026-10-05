@@ -4,6 +4,26 @@
 实测范围和未解决项；条目是历史证据，后续任务仍须核对当前源码与设备。
 不写密钥、音频、字幕正文或个人目录，不把临时日志当作已持久归档的案例。
 
+## 2026-10-05：Whisper 日语直连与错误分类
+
+- 基线 `3fcf2af` 加 `feat/local-whisper-asr` 本次 Python/docs 改动；模型、
+  Metal worker、分段参数、有界队列与收尾期限不变。PR #157 保持 draft/未合并。
+- 复用 Kyoko 合成日语样本 `index-ja-system-smoke-20261005`（9.2485 s）；
+  16 kHz mono PCM16 非零验证通过。首轮 generic 失败缺少原始分类，原因未知；
+  未隔离复放完成但 EOF 收尾 10183.0 ms，不可宣称达到实时可用标准。
+- Parakeet 正常停止、Mimi 字幕 off 后，仅重启 Whisper 进行同样本直连：
+  4 final/1 draft，首 final 2698.1 ms、总 10023.3 ms、收尾 773.8 ms。
+  仍有其他 Rust 编译负载，单轮对照不证明早先失败由资源争用导致。
+- 保存的 4 final 分别送 Index 日→简中，均 HTTP 200/stop/非空，132.5–390.3 ms；
+  中途话题片段译文有残句感。无文字 reference，不报准确率；未做本轮原生播放、
+  捕获或浮窗验收。音频/正文只在 Git 外 0600 临时证据，未持久归档。
+- 增加固定 overload/timeout wire code、白名单错误正文与失败前事件保留；
+  未知异常继续隐藏。另修复空 final 在已有 preview 后错误中止会话：用既有
+  空 sentence-begin 撤回预览并继续，下一真实句复用 ID，不伪造 final。
+  33 项适配器测试、Python 编译与 diff 检查通过。
+  同次修复没有重复完整 Rust/前端检查，复用 PR 既有全量基线；下一项是当前
+  Mimi 的日语原生字幕链路和完整可见浮窗。详见本地 Whisper measurements。
+
 ## 2026-10-05：独立 Whisper Metal 本地识别桥接
 
 - 推理修订 `9dfde94`（clean），M5 / 16 GB，固定 whisper.cpp / turbo Q5_0

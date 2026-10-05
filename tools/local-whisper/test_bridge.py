@@ -7,6 +7,7 @@ import struct
 import tempfile
 from types import SimpleNamespace
 import unittest
+import wave
 from unittest.mock import AsyncMock, patch
 
 from websockets.asyncio.client import connect
@@ -15,6 +16,7 @@ from websockets.exceptions import InvalidStatus
 
 from bridge import Bridge, Failure, FRAME, MAX_SEGMENT, MODEL, Segmenter, Session, Worker, load_token
 import bridge
+from benchmark import ReplayFailure, failure_record, replay
 import status
 
 TOKEN = "synthetic-test-token-not-a-real-credential"
@@ -166,7 +168,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_mimi_audio3_encoder_context_and_automatic_language(self):
         # Exact wire shape from Audio3ASRRequestEncoder::run_task_for_model,
         # including context always supplied by audio3_client::connect_with_heartbeat.
-        for language in ("en", "auto"):
+        for language in ("en", "auto", "ja"):
             payload = json.loads(start(language=language))
             parameters = payload["payload"]["parameters"]
             parameters.update(semantic_punctuation_enabled=True, heartbeat=True)
@@ -188,7 +190,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["payload"]["output"]["sentence"]["text"],
                                  f"Synthetic {language} result")
                 self.assertEqual(json.loads(await ws.recv())["header"]["event"], "task-finished")
-        self.assertEqual([language for _, language in self.worker.requests], ["en", "auto"])
+        self.assertEqual([language for _, language in self.worker.requests], ["en", "auto", "ja"])
 
     async def test_two_sessions_are_isolated_and_third_is_busy(self):
         async with self.connect() as first, self.connect() as second:
@@ -209,8 +211,11 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(json.loads(await ws.recv())["header"]["event"], "task-finished")
 
     async def test_invalid_language_configuration_and_odd_pcm_fail_safely(self):
-        for raw, pcm in [(start(language="xx"), None), (start().replace(MODEL, "wrong"), None),
-                         (start(), b"x")]:
+        for raw, pcm, label in [
+            (start(language="xx"), None, "language_unsupported"),
+            (start().replace(MODEL, "wrong"), None, "configuration_invalid"),
+            (start(), b"x", "audio_invalid"),
+        ]:
             async with self.connect() as ws:
                 await ws.send(raw)
                 value = json.loads(await ws.recv())
@@ -218,7 +223,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                     await ws.send(pcm)
                     value = json.loads(await ws.recv())
                 self.assertEqual(value["header"]["event"], "task-failed")
-                self.assertEqual(value["header"]["error_message"], "local_asr_failed")
+                self.assertEqual(value["header"]["error_message"], "local_asr_" + label)
 
     async def test_disconnect_discards_inflight_result_and_releases_slot(self):
         self.worker.delay = 0.05
@@ -246,24 +251,129 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("secret", result)
             self.assertEqual(json.loads(result)["header"]["event"], "task-failed")
 
-    async def test_empty_final_cannot_leave_a_published_preview(self):
-        calls = 0
+    async def test_slow_worker_reports_bounded_final_backlog(self):
+        self.worker.delay = 0.2
+        async with self.connect() as ws:
+            await ws.send(start(language="ja"))
+            await ws.recv()
+            # Four short complete segments arrive while one is decoding. The
+            # two-final queue fails explicitly rather than losing an old final.
+            for _ in range(4):
+                await ws.send(VOICE + QUIET * 10)
+            header = json.loads(await ws.recv())["header"]
+            self.assertEqual(header["event"], "task-failed")
+            self.assertEqual(header["error_code"], "LOCAL_ASR_OVERLOADED")
+            self.assertEqual(header["error_message"], "local_asr_final_backlog")
+
+    async def test_empty_finals_retract_previews_and_next_sentence_continues(self):
+        outputs = iter(["Preview one", "", "Preview two", "", "Confirmed third"])
         async def infer(_pcm, _language, **_kwargs):
-            nonlocal calls
-            calls += 1
-            return "Preview" if calls == 1 else ""
+            return next(outputs)
         self.worker.infer = infer
         async with self.connect() as ws:
-            await ws.send(start())
+            await ws.send(start(language="ja"))
             await ws.recv()
-            await ws.send(VOICE * 100)
-            draft = json.loads(await ws.recv())["payload"]["output"]["sentence"]
-            self.assertFalse(draft["sentence_end"])
+            for sentence_id in (1, 2):
+                await ws.send(VOICE * 100)
+                draft = json.loads(await ws.recv())["payload"]["output"]["sentence"]
+                self.assertFalse(draft["sentence_end"])
+                self.assertEqual(draft["sentence_id"], sentence_id)
+                await ws.send(QUIET * 10)
+                final = json.loads(await ws.recv())["payload"]["output"]["sentence"]
+                self.assertEqual(final, {"sentence_id": sentence_id, "sentence_end": True, "text": ""})
+                boundary = json.loads(await ws.recv())["payload"]["output"]["sentence"]
+                self.assertEqual(boundary, {"sentence_id": sentence_id + 1, "sentence_begin": True,
+                                            "sentence_end": False, "text": ""})
+            await ws.send(VOICE)
             await ws.send(finish())
-            self.assertEqual(json.loads(await ws.recv())["header"]["event"], "task-failed")
+            final = json.loads(await ws.recv())["payload"]["output"]["sentence"]
+            self.assertEqual(final, {"sentence_id": 3, "sentence_end": True, "text": "Confirmed third"})
+            self.assertEqual(json.loads(await ws.recv())["header"]["event"], "task-finished")
+
+    async def test_empty_final_without_preview_finishes_normally(self):
+        self.worker.infer = AsyncMock(return_value="")
+        async with self.connect() as ws:
+            await ws.send(start(language="ja"))
+            await ws.recv()
+            await ws.send(VOICE)
+            await ws.send(finish())
+            self.assertEqual(json.loads(await ws.recv())["header"]["event"], "task-finished")
+
+
+class FailureEvidenceTests(unittest.TestCase):
+    def test_unknown_exception_cannot_leak_and_known_boundary_is_preserved(self):
+        self.assertEqual(bridge.failure_message(Failure("private secret")), "local_asr_failed")
+        self.assertEqual(bridge.failure_message(RuntimeError("private secret")), "local_asr_failed")
+        self.assertEqual(bridge.failure_message(Failure("final_backlog")), "local_asr_final_backlog")
+        self.assertEqual(bridge.failure_message(TimeoutError()), "local_asr_timeout")
+
+    def test_only_exact_local_boundaries_get_actionable_codes(self):
+        for label in ("final_backlog", "worker_busy"):
+            self.assertEqual(bridge.failure_code(bridge.failure_message(Failure(label))),
+                             "LOCAL_ASR_OVERLOADED")
+        for error in (Failure("worker_timeout"), Failure("finish_timeout"), TimeoutError()):
+            self.assertEqual(bridge.failure_code(bridge.failure_message(error)), "LOCAL_ASR_TIMEOUT")
+        self.assertEqual(bridge.failure_code(bridge.failure_message(Failure("language_unsupported"))),
+                         "UNSUPPORTED_LANGUAGE")
+        self.assertEqual(bridge.failure_code("local_asr_final_backlog private secret"), "SERVER_ERROR")
+
+    def test_replay_failure_keeps_preceding_fixture_events_and_sanitizes_header(self):
+        events = [{"text": "explicit synthetic fixture", "sentence_end": True}]
+        error = ReplayFailure("recognition_failed", {
+            "error_code": "SERVER_ERROR", "error_message": "local_asr_final_backlog"}, events)
+        record = failure_record(error, sample="synthetic.wav")
+        self.assertEqual(record["error_message"], "local_asr_final_backlog")
+        self.assertEqual(record["events"], events)
+        events.clear()
+        self.assertEqual(len(record["events"]), 1)
+        untrusted = ReplayFailure("recognition_failed", {
+            "error_code": "private secret", "error_message": "private secret"}, [])
+        self.assertEqual(failure_record(untrusted)["error_message"], "local_asr_failed")
+        self.assertIsNone(untrusted.error_code)
+
+
+class ReplayEvidenceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_closed_failed_replay_preserves_safe_code_and_earlier_final(self):
+        async def handler(ws):
+            request = json.loads(await ws.recv())
+            task = request["header"]["task_id"]
+            await ws.send(json.dumps({"header": {"event": "task-started", "task_id": task}}))
+            await ws.recv()
+            await ws.send(json.dumps({"header": {"event": "result-generated", "task_id": task},
+                                      "payload": {"output": {"sentence": {
+                                          "sentence_id": 1, "sentence_end": True,
+                                          "text": "Synthetic public fixture"}}}}))
+            await ws.send(json.dumps({"header": {"event": "task-failed", "task_id": task,
+                                      "error_code": "LOCAL_ASR_OVERLOADED",
+                                      "error_message": "local_asr_final_backlog"}}))
+            await ws.close()
+        with tempfile.TemporaryDirectory() as directory:
+            wav = Path(directory) / "fixture.wav"
+            reference = Path(directory) / "fixture.txt"
+            reference.write_text("Synthetic public fixture")
+            with wave.open(str(wav), "wb") as audio:
+                audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+                audio.writeframes(VOICE * 10)
+            async with serve(handler, "127.0.0.1", 0) as server:
+                port = server.sockets[0].getsockname()[1]
+                with self.assertRaises(ReplayFailure) as raised:
+                    await replay(f"ws://127.0.0.1:{port}/asr", TOKEN, wav, reference, language="ja")
+            record = failure_record(raised.exception)
+            self.assertEqual(record["error_code"], "LOCAL_ASR_OVERLOADED")
+            self.assertEqual(record["error_message"], "local_asr_final_backlog")
+            self.assertEqual(len(record["events"]), 1)
+            self.assertTrue(record["events"][0]["sentence_end"])
 
 
 class WorkerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_timeout_is_a_static_failure_and_retires_worker(self):
+        worker = Worker("unused", "unused")
+        worker.proc = SimpleNamespace(stdin=SimpleNamespace(write=lambda _: None, drain=AsyncMock()))
+        worker.read = AsyncMock(side_effect=TimeoutError())
+        with self.assertRaisesRegex(Failure, "^worker_timeout$"):
+            await worker.infer(VOICE, "ja")
+        self.assertTrue(worker.failed.is_set())
+
     async def test_retired_preview_waiting_for_lock_does_not_run_inference(self):
         worker = Worker("unused", "unused")
         current = True

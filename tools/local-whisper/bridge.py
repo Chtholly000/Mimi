@@ -38,6 +38,44 @@ class Failure(Exception):
     """Internal static label; never forward arbitrary exception descriptions."""
 
 
+# Only these source-owned labels may cross the service boundary. Never expose
+# arbitrary exception descriptions, recognized text, credentials or paths.
+FAILURE_LABELS = frozenset({
+    "audio_invalid", "command_invalid", "configuration_invalid", "run_invalid",
+    "language_unsupported", "finish_invalid", "finish_timeout", "final_backlog",
+    "worker_busy", "worker_failed", "worker_ended", "worker_protocol",
+    "worker_result_invalid", "worker_timeout",
+    "consumer_ended",
+})
+PUBLIC_FAILURE_MESSAGES = frozenset("local_asr_" + label for label in FAILURE_LABELS) | {
+    "local_asr_failed", "local_asr_timeout",
+}
+
+
+def failure_message(error):
+    if isinstance(error, Failure) and str(error) in FAILURE_LABELS:
+        return "local_asr_" + str(error)
+    if isinstance(error, TimeoutError):
+        return "local_asr_timeout"
+    return "local_asr_failed"
+
+
+PUBLIC_FAILURE_CODES = frozenset({
+    "SERVER_ERROR", "LOCAL_ASR_OVERLOADED", "LOCAL_ASR_TIMEOUT", "UNSUPPORTED_LANGUAGE",
+})
+
+
+def failure_code(message):
+    return {
+        "local_asr_final_backlog": "LOCAL_ASR_OVERLOADED",
+        "local_asr_worker_busy": "LOCAL_ASR_OVERLOADED",
+        "local_asr_worker_timeout": "LOCAL_ASR_TIMEOUT",
+        "local_asr_finish_timeout": "LOCAL_ASR_TIMEOUT",
+        "local_asr_timeout": "LOCAL_ASR_TIMEOUT",
+        "local_asr_language_unsupported": "UNSUPPORTED_LANGUAGE",
+    }.get(message, "SERVER_ERROR")
+
+
 def load_token(path):
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
@@ -191,6 +229,9 @@ class Worker:
                             or len(text.encode("utf-8")) > MAX_TEXT):
                         raise Failure("worker_result_invalid")
                     return text.strip()
+            except TimeoutError:
+                self.failed.set()
+                raise Failure("worker_timeout") from None
             except BaseException:
                 self.failed.set()
                 raise
@@ -253,10 +294,10 @@ class Bridge:
             await session.run()
         except (ConnectionClosed, asyncio.CancelledError):
             pass
-        except Exception:
+        except Exception as error:
             if session.task_id is not None:
                 with contextlib.suppress(Exception):
-                    await session.send("task-failed", error=True)
+                    await session.send("task-failed", error=failure_message(error))
         finally:
             await session.close()
             self.handling.discard(websocket)
@@ -280,12 +321,13 @@ class Session:
         self.cancelled = False
         self.tasks = []
 
-    async def send(self, event, sentence=None, error=False):
+    async def send(self, event, sentence=None, error=None):
         value = {"header": {"event": event, "task_id": self.task_id}}
         if sentence is not None:
             value["payload"] = {"output": {"sentence": sentence}}
         if error:
-            value["header"].update(error_code="SERVER_ERROR", error_message="local_asr_failed")
+            message = error if error in PUBLIC_FAILURE_MESSAGES else "local_asr_failed"
+            value["header"].update(error_code=failure_code(message), error_message=message)
         await asyncio.wait_for(self.ws.send(json.dumps(value, ensure_ascii=False)), 1)
 
     def enqueue(self, value):
@@ -320,10 +362,16 @@ class Session:
             if text is None:
                 continue
             if not text:
-                # Mimi intentionally ignores empty provider results. Do not
-                # leave a published preview looking like a confirmed sentence.
                 if final and self.published_draft == sentence:
-                    raise Failure("empty_final_after_preview")
+                    # Mimi ignores empty finals. Its existing empty-begin
+                    # boundary retracts this preview without confirming it;
+                    # the next actual segment reuses this next sentence ID.
+                    await self.send("result-generated", {
+                        "sentence_id": sentence, "sentence_end": True, "text": ""})
+                    await self.send("result-generated", {
+                        "sentence_id": sentence + 1, "sentence_begin": True,
+                        "sentence_end": False, "text": ""})
+                    self.published_draft = None
                 continue
             if final or sentence > self.finalized_through:
                 await self.send("result-generated", {

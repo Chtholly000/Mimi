@@ -15,8 +15,30 @@ import wave
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
+from websockets.exceptions import ConnectionClosed
 
-from bridge import Bridge, MODEL, Worker
+from bridge import Bridge, MODEL, PUBLIC_FAILURE_CODES, PUBLIC_FAILURE_MESSAGES, Worker
+
+
+class ReplayFailure(RuntimeError):
+    """Keep safe protocol labels and preceding public-fixture events on failure."""
+    def __init__(self, label, header, events):
+        super().__init__(label)
+        self.label = label
+        code = header.get("error_code")
+        self.error_code = code if isinstance(code, str) and code in PUBLIC_FAILURE_CODES else None
+        message = header.get("error_message")
+        self.error_message = (message if isinstance(message, str) and message in PUBLIC_FAILURE_MESSAGES
+                              else "local_asr_failed")
+        self.events = list(events)
+
+
+def failure_record(error, **context):
+    value = {**context, "error_type": type(error).__name__}
+    if isinstance(error, ReplayFailure):
+        value.update(label=error.label, error_code=error.error_code,
+                     error_message=error.error_message, events=error.events)
+    return value
 
 
 def provenance(root):
@@ -64,8 +86,9 @@ async def replay(url, token, wav, reference, *, task_id="benchmark", language="e
                                  "payload": {"task_group": "audio", "task": "asr", "function": "recognition",
                                              "model": MODEL, "parameters": {"format": "pcm", "sample_rate": 16000,
                                                                              "language_hints": [language]}}}))
-        if json.loads(await ws.recv())["header"]["event"] != "task-started":
-            raise RuntimeError("task_not_started")
+        initial = json.loads(await ws.recv())["header"]
+        if initial["event"] != "task-started":
+            raise ReplayFailure("task_not_started", initial, events)
         began = time.perf_counter()
         finish_sent = None
         async def receive():
@@ -73,7 +96,7 @@ async def replay(url, token, wav, reference, *, task_id="benchmark", language="e
                 value = json.loads(raw)
                 name = value["header"]["event"]
                 if name == "task-failed":
-                    raise RuntimeError("recognition_failed")
+                    raise ReplayFailure("recognition_failed", value["header"], events)
                 if name == "task-finished":
                     return
                 if name == "result-generated":
@@ -83,10 +106,16 @@ async def replay(url, token, wav, reference, *, task_id="benchmark", language="e
         try:
             for offset in range(0, len(pcm), 640):
                 await asyncio.sleep(max(0, began + offset / 32000 - time.perf_counter()))
-                await ws.send(pcm[offset:offset + 640])
+                try:
+                    await ws.send(pcm[offset:offset + 640])
+                except ConnectionClosed:
+                    # The server may close immediately after task-failed. Keep
+                    # that earlier protocol cause instead of a send/close error.
+                    await reader
+                    raise
                 if reader.done():
                     reader.result()
-                    raise RuntimeError("early_finish")
+                    raise ReplayFailure("early_finish", {}, events)
             await asyncio.sleep(max(0, began + len(pcm) / 32000 - time.perf_counter()))
             finish_sent = time.perf_counter()
             await ws.send(json.dumps({"header": {"action": "finish-task", "task_id": task_id, "streaming": "duplex"}}))
@@ -140,7 +169,7 @@ async def main(args):
                 try:
                     result = await replay(url, token, Path(wav), Path(reference))
                 except Exception as error:
-                    failure = {"sample": Path(wav).name, "error_type": type(error).__name__}
+                    failure = failure_record(error, sample=Path(wav).name)
                     break
                 results.append(result)
                 print(json.dumps({key: value for key, value in result.items()
@@ -153,13 +182,13 @@ async def main(args):
                     replay(url, token, second_wav, second_reference, task_id="microphone"), return_exceptions=True)
                 for index, result in enumerate(simultaneous):
                     if isinstance(result, BaseException):
-                        failure = {"mode": "dual", "source": index, "error_type": type(result).__name__}
+                        failure = failure_record(result, mode="dual", source=index)
                         continue
                     result["mode"] = "two simultaneous fixture sources"
                     result["source"] = index
                     results.append(result)
     except Exception as error:
-        failure = {"phase": "setup_or_transport", "error_type": type(error).__name__}
+        failure = failure_record(error, phase="setup_or_transport")
     finally:
         if sampler:
             sampler.cancel()
@@ -178,7 +207,10 @@ async def main(args):
     with args.output.open("x") as stream:
         json.dump(output, stream, indent=2)
         stream.write("\n")
-    print(json.dumps({key: value for key, value in output.items() if key != "results"}))
+    summary = {key: value for key, value in output.items() if key != "results"}
+    if failure:
+        summary["failure"] = {key: value for key, value in failure.items() if key != "events"}
+    print(json.dumps(summary))
     if failure:
         raise SystemExit(1)
 

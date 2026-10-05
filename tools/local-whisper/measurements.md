@@ -169,3 +169,76 @@ multilingual quality, continuous hard cuts, long sessions and sustained dual-sou
 use under simultaneous translation-model load are also unverified. This short
 successful transport case does not overturn the independently observed segmented
 negation translation failure.
+
+
+## Japanese direct chain and failure diagnostics — 2026-10-05
+
+One existing macOS Kyoko synthetic Japanese fixture was reused without playback
+or capture. Source ID `index-ja-system-smoke-20261005`, 9.248481 s, AIFF SHA-256
+`c3966ab0eed4ef55dc03a550ab1900e617439b095677b6fd86c117711d5a2ddb`.
+macOS afconvert produced 16 kHz mono PCM16 WAV, 9.2485 s, SHA-256
+`9fae54b074b31f84e9c07ec4dcf89e65b71cecec893bcddf5464c0c39ea9f4a9`;
+RMS 1881.497 PCM16 and 144221 nonzero samples established actual non-silent input.
+The original metadata did not retain a text reference, so no accuracy score is
+reported. This is the existing same fixture, not a replacement selected after failure.
+
+The first direct replay failed with a generic RuntimeError; the old wrapper did
+not preserve a more specific cause. The installed service remained alive. The
+old bridge collapsed all session exceptions to `SERVER_ERROR/local_asr_failed`,
+so this event cannot now be relabeled as a proven queue or inference failure.
+A subsequent replay completed while an unrelated Parakeet service was resident
+and the Mimi capture/test state was not isolated. Four finals arrived, first at
+5051.1 ms, total 19431.8 ms, EOF flush 10183.0 ms: far beyond Mimi's 1 s finish
+budget. Those timing boundaries are from first PCM and finish-task respectively.
+
+After Parakeet was normally stopped, Mimi's caption session was verified off,
+and only the Whisper service was restarted with safe failure diagnostics, the
+same paced Japanese replay produced four finals and one draft: first final
+2698.1 ms, total 10023.3 ms, EOF flush 773.8 ms. Automatic-language and explicit
+Japanese empty sessions, including nonempty Audio3 input context, both completed
+setup/finish. Empty setup is not an automatic-language recognition test.
+The isolated run used the unchanged worker `5fccfe83…1964`, model and decoding
+settings; the diagnostic bridge hash was
+`04e23330d57db64d04c5d1b153a509bccf508caa0f19ffef4ed9b6d276209987`.
+These were single runs with changed contention, restart and warm state, not a
+controlled causal comparison. Another Rust build was still active; system swap
+was about 5.76 GB. No other process was stopped by the Whisper diagnostic task.
+
+The four saved finals were then sent separately to the existing Index service
+using Mimi's exact Japanese → Simplified Chinese generic request shape. All four
+returned HTTP 200 / stop / nonempty responses in 390.3, 212.0, 132.5 and 199.4 ms.
+ASR and these translations were sequential phases, not native end-to-end timing.
+The translated fragments retained the intended overall meaning in this synthetic
+case, but a mid-sentence topic fragment became an awkward standalone Chinese
+fragment. This does not establish reliable segmentation or broad Japanese quality.
+Native Japanese system capture, full subtitle rendering and sustained use still
+need separate verification; the earlier English negation defect remains relevant.
+
+Code review also found an independent deterministic defect: an empty final
+following a published preview raised a fatal session error. It now emits the
+empty final and the existing empty sentence-begin boundary at the next ID to
+retract the preview, then continues; the next real segment reuses that ID.
+Two consecutive empty finals followed by a real final and empty EOF are covered
+through the actual WebSocket protocol. This is not a proven explanation for the
+first generic Japanese failure, and no draft is promoted into confirmed text.
+
+The follow-up patch exposes only exact source-owned failure categories:
+`final_backlog/worker_busy` → `LOCAL_ASR_OVERLOADED`;
+`worker_timeout/finish_timeout/TimeoutError` → `LOCAL_ASR_TIMEOUT`;
+`language_unsupported` → `UNSUPPORTED_LANGUAGE`. Unknown exceptions remain
+`SERVER_ERROR/local_asr_failed`. No model parameter, queue bound or deadline was
+relaxed. Failed fixture replay now retains safe provider labels and preceding
+fixture events in the explicitly requested private file, including when the
+server closes immediately after task-failed; stdout omits those text events.
+
+Validation: 33 adapter tests, Python compilation and diff checks. New tests cover
+Japanese/context acceptance, deterministic bounded final backlog, timeout worker
+retirement, exact code mapping, unknown-message filtering, and real WebSocket
+failure/close ordering. This Python/docs-only follow-up reuses the prior full
+application/Metal baseline; it does not claim a new full native application run.
+Private evidence SHA-256: slow replay
+`5236ca2721330c08f15c617a2f0634d6984be1950da95e9a8b039ba0a90e3265`,
+isolated replay `ec1be776afc8df274b338f426f2eb3aad5e709c29b0a4f2c201c684d4a67d775`,
+Index finals `b4885e62a1f3746c0f83180bad077d7f0f3b3d590931b61c5a35b1b04f0f5cd2`.
+Audio, fixture text and results remain outside Git in mode-0600 temporary evidence;
+this follow-up has not yet been archived as a durable reusable baseline.
