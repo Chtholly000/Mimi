@@ -1,14 +1,14 @@
 // Browser harness for the actual overlay components. Start Vite on port 1420,
 // then pass this complete function to the project's supported browser page API.
 // Synthetic state only; this does not verify native window or capture behavior.
-async (page, { baseUrl = "http://127.0.0.1:1420", widths = [360, 420, 552, 640], languages = ["zh", "en", "ja"], themes = ["dark", "light"] } = {}) => {
+async (page, { baseUrl = "http://127.0.0.1:1420", widths = [360, 420, 552, 640], languages = ["zh", "en", "ja"], themes = ["dark", "light"], serviceCases, checkSubtitleLanes = true } = {}) => {
   await page.goto(`${baseUrl}/?window=overlay`);
   await page.cdp("Emulation.setFocusEmulationEnabled", { enabled: true });
   await page.waitForSelector(".overlay-service__button");
 
-  async function configure({ language = "en", route = "deepL", audioInput = "system", timestamps = false, provider, alias, theme = "dark" }) {
+  async function configure({ language = "en", route = "deepL", audioInput = "system", timestamps = false, provider, alias, speechRecognitionName, theme = "dark" }) {
     await page.cdp("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: theme }] });
-    return page.evaluate(async ({ language, route, audioInput, timestamps, provider, alias }) => {
+    return page.evaluate(async ({ language, route, audioInput, timestamps, provider, alias, speechRecognitionName }) => {
       if (typeof window.__TAURI_INTERNALS__ !== "undefined") throw new Error("Memory-only browser preview required");
       // Vite may keep timestamped dependency imports even after page reload.
       // Import the actual module already loaded by the mounted UI; importing
@@ -51,6 +51,7 @@ async (page, { baseUrl = "http://127.0.0.1:1420", widths = [360, 420, 552, 640],
             provider: provider ?? (route === "followService" ? "openAIRealtime" : "alibabaCloud"),
             textTranslation: route === "original" ? "deepL" : route, credentialState: "present",
             textTranslationNames: alias ? { [route]: alias } : undefined,
+            speechRecognitionName,
           }],
         },
         session: {
@@ -88,7 +89,7 @@ async (page, { baseUrl = "http://127.0.0.1:1420", widths = [360, 420, 552, 640],
         }
       }
       throw new Error(`Overlay fixture did not reach the mounted UI. Restart Vite and reload after HMR/rebase changes before retrying. ${JSON.stringify({ language, route, audioInput, timestamps, ...fixtureState })}`);
-    }, { language, route, audioInput, timestamps, provider, alias });
+    }, { language, route, audioInput, timestamps, provider, alias, speechRecognitionName });
   }
 
   async function resize(width, height) {
@@ -120,11 +121,13 @@ async (page, { baseUrl = "http://127.0.0.1:1420", widths = [360, 420, 552, 640],
   for (const width of widths) {
     for (const language of languages) {
       for (const theme of themes) {
-        for (const candidate of [
+        for (const candidate of serviceCases ?? [
           ...["followService", "deepL", "deepLX", "chatMock", "openAICompatible", "original"].map(route => ({ route })),
           { route: "openAICompatible", alias: "B 站 / long translator name with spaces 日本語 🌸 ".repeat(2) },
           { route: "deepL", provider: "customOpenAIASR" },
           { route: "followService", provider: "customDashScopeASR" },
+          { route: "openAICompatible", provider: "customDashScopeASR", speechRecognitionName: "Whisper", alias: "Index · 本地" },
+          { route: "chatMock", provider: "customOpenAIASR", speechRecognitionName: "会議の音声認識 / 长中文识别服务名称 🌸 ".repeat(2), alias: "Local translator" },
         ]) {
           const minimumHeight = await configure({ language, theme, ...candidate });
           await resize(width, minimumHeight);
@@ -166,7 +169,7 @@ async (page, { baseUrl = "http://127.0.0.1:1420", widths = [360, 420, 552, 640],
     console.log(JSON.stringify({ progress: "chrome width complete", width, chromeChecked, failures: failures.length }));
   }
 
-  for (const width of widths.filter(width => width < 552)) {
+  for (const width of widths.filter(width => checkSubtitleLanes && width < 552)) {
     for (const language of languages) {
       for (const { audioInput, timestamps } of [
         { audioInput: "system", timestamps: false },
