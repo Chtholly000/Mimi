@@ -119,11 +119,28 @@ post-hoc replacements, ASR input or domain hint was added.
 [categorical review](local-mt/translategemma-review.json) contain only the public synthetic
 cases. Setup/start/stop, model hash, actual inference and the adapter HTTP shape
 were exercised locally. Fake tests cover limits, cancellation and identity.
-The subsequent hardening of controller ownership was retested with fake processes;
-a fresh real/native run of that final controller remains a separate check.
+The final controller at `d564431` was subsequently exercised with real weights:
+start returned ready and a separate status check verified readiness. After the
+native test, stop reported its owned backend reaped; a separate status check was
+stopped/unavailable and neither adapter nor backend port retained a listener.
 
-Native Mimi Settings connection checking and rendered Apple-ASR → this-model
-subtitles were **not yet tested for this candidate** at this report revision.
-No claim is made about real video dialogue, overlapping sources, long sessions,
-other languages, Linux inference, Windows launchers or Android native acceptance.
-The ASR choice must remain explicit; this tool alone only makes MT local.
+The coordinated native check used signed canonical `mimi-dev`, Apple integration
+revision `301cfb3`, live binary SHA256
+`58554a67033a6ff8fb497202ed8560d156c0dcd5e78967f8af03cbecc7738c4e`.
+Mimi's independent text-translation connection check passed in 212 ms. The same
+9.518-second public synthetic English sample was played through `afplay`, captured
+by ScreenCaptureKit as system audio, recognized by Apple, and translated by
+TranslateGemma. Native diagnostic state showed paired current source/Chinese
+subtitles, including the final two-shields/three-healing-potions quantity. The
+latest translation request was 470 ms; neither measurement is capture-to-visible
+subtitle latency. Cloud services, audio recording and retained history were off,
+and the tester stopped the session through the UI before the controller was stopped.
+
+This verifies that connection/capture/recognition/translation path for one sample.
+Only the control window was selected during computer-use inspection; the rendered
+overlay was **not visually inspected**, so full native UI acceptance is still
+pending. The successful short case does not overturn the negative 28-case quality
+comparison above. No claim is made about real video dialogue, overlapping sources,
+long sessions, other languages, Linux inference, Windows launchers or Android
+native acceptance. The ASR choice must remain explicit; this tool alone only makes
+MT local.

@@ -835,6 +835,14 @@
 
 Base `51820ad` plus isolated Python adapter; M5/16 GB, llama.cpp b11146.
 Same 28 public synthetic English texts as Index, no ASR/capture; 28 complete HTTP
-responses, but no semantic-accuracy improvement established. Native Settings/overlay
-acceptance remains pending. Model hashes, timings, prompt controls and failure cases
-are in [the report](../research/2026-10-05-local-translategemma.md).
+responses, but no semantic-accuracy improvement established. Final controller
+`d564431` then passed real start/status/stop with owned-backend reaping and no
+remaining listeners. Signed canonical Apple dev `301cfb3` (binary SHA256 in the
+report) passed the native translation check (212 ms) and public 9.518 s `afplay` →
+ScreenCaptureKit system audio → Apple → TranslateGemma chain: native diagnostics
+showed paired current English/Chinese subtitles and correct final two-shields/
+three-potions quantities. Latest MT request was 470 ms, not end-to-end latency.
+Cloud processing, recording and history were off; the session stopped through the
+UI. Only the control window was selected, so rendered-overlay visual acceptance
+remains pending. Model hashes, timings, prompt controls and failure cases are in
+[the report](../research/2026-10-05-local-translategemma.md).
