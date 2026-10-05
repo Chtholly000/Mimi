@@ -428,7 +428,14 @@ export function sessionErrorSettingsTarget(error: unknown): SettingsNavigationTa
     return "appleSpeechResources";
   }
   if (typeof label !== "string") return null;
-  if (label === "credential_authentication_failed" || builtinServiceErrors.missing.has(label) ||
+  if ([
+    "credential_authentication_failed",
+    "custom_speech_authentication_failed",
+    "custom_speech_credentials_missing",
+    "custom_speech_endpoint_invalid",
+    "custom_speech_model_invalid",
+    "text_translation_credentials_missing",
+  ].includes(label) || builtinServiceErrors.missing.has(label) ||
     builtinServiceErrors.invalidConfiguration.has(label) || builtinServiceErrors.unsupportedLanguage.has(label)) return "service";
   return audio3ErrorRequiresConfiguration(label) ? "service" : null;
 }

@@ -308,7 +308,7 @@ it("routes only exact resource errors to Apple preparation and preserves other r
 });
 
 
-it.each(["en", "zh", "ja"] as const)("keeps built-in provider failures actionable across session, language and profile actions in %s", language => {
+it.each(["en", "zh", "ja"] as const)("keeps safe provider failures actionable across session, language and profile actions in %s", language => {
   setStoredUiLanguage(language);
   const labels = diagnosticCopy();
   const rejected = `${labels.reasons.serviceRejected} ${labels.reasons.invalidConfiguration}`;
@@ -354,6 +354,11 @@ it.each(["en", "zh", "ja"] as const)("keeps built-in provider failures actionabl
     ["xAI Grok Voice did not finish the final turn in time.", labels.timeout],
     ["xAI Grok Voice did not complete the current turn.", labels.translationTemporary],
     ["credential_authentication_failed", labels.auth],
+    ["custom_speech_authentication_failed", labels.auth],
+    ["custom_speech_credentials_missing", labels.missing],
+    ["custom_speech_endpoint_invalid", I18N.settings.customSpeechEndpointInvalid],
+    ["custom_speech_model_invalid", I18N.settings.customSpeechModelInvalid],
+    ["text_translation_credentials_missing", labels.missing],
   );
   for (const error of [
     "Add an Alibaba Cloud Model Studio API key in Settings.",
@@ -373,7 +378,7 @@ it.each(["en", "zh", "ja"] as const)("keeps built-in provider failures actionabl
   ]) cases.push([error, labels.reasons.invalidConfiguration]);
   for (const [label, expected] of cases) {
     expect(credentialErrorMessage(label), label).toBe(expected);
-    const target = [labels.auth, labels.missing, labels.reasons.invalidConfiguration, I18N.settings.languageSwitchUnsupported].includes(expected) ? "service" : null;
+    const target = [labels.auth, labels.missing, labels.reasons.invalidConfiguration, I18N.settings.languageSwitchUnsupported, I18N.settings.customSpeechEndpointInvalid, I18N.settings.customSpeechModelInvalid].includes(expected) ? "service" : null;
     for (const error of [label, new Error(label)]) {
       expect(sessionErrorSettingsTarget(error), label).toBe(target);
       expect(languageActionErrorMessage(error, "fallback"), label).toBe(expected);

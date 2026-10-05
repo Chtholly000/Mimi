@@ -475,6 +475,11 @@ fn session_error_requires_user_action(error: &str) -> bool {
                 | "Microphone capture permission was denied."
                 | "System audio capture was stopped by the user."
                 | "credential_authentication_failed"
+                | "custom_speech_authentication_failed"
+                | "custom_speech_credentials_missing"
+                | "custom_speech_endpoint_invalid"
+                | "custom_speech_model_invalid"
+                | "text_translation_credentials_missing"
                 | "invalid_configuration"
         )
 }
@@ -6938,6 +6943,12 @@ mod lifecycle_tests {
             "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE",
             "audio3_error.setup.request.CLIENT_ERROR",
             "audio3_error.setup.authentication.INVALID_API_KEY",
+            "credential_authentication_failed",
+            "custom_speech_authentication_failed",
+            "custom_speech_credentials_missing",
+            "custom_speech_endpoint_invalid",
+            "custom_speech_model_invalid",
+            "text_translation_credentials_missing",
         ] {
             let mut controller = TranslationSessionController::default();
             controller.begin_connecting();
@@ -6953,6 +6964,9 @@ mod lifecycle_tests {
             "Audio capture setup timed out.",
             "audio3_error.setup.timeout.CLIENT_ERROR",
             "audio3_error.recognition.service.SERVER_ERROR",
+            "custom_speech_unreachable",
+            "custom_speech_setup_timeout",
+            "custom_speech_authentication_failed: private-detail",
         ] {
             assert!(!session_error_requires_user_action(error));
         }

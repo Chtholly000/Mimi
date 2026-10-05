@@ -348,6 +348,11 @@ it.each(["en", "zh", "ja"] as const)("opens service settings for fixed authentic
   const labels = diagnosticCopy();
   for (const [error, message] of [
     ["credential_authentication_failed", labels.auth],
+    ["custom_speech_authentication_failed", labels.auth],
+    ["custom_speech_credentials_missing", labels.missing],
+    ["custom_speech_endpoint_invalid", I18N.settings.customSpeechEndpointInvalid],
+    ["custom_speech_model_invalid", I18N.settings.customSpeechModelInvalid],
+    ["text_translation_credentials_missing", labels.missing],
     ["Add a Google Gemini API key in Settings.", labels.missing],
     ["Enter a valid Azure OpenAI resource endpoint in Settings.", labels.reasons.invalidConfiguration],
     ["Baidu realtime translation requires an explicit supported source language.", I18N.settings.languageSwitchUnsupported],

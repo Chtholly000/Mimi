@@ -39,7 +39,12 @@ provider text because it contains a familiar fragment.
   consistent. Exact authentication, missing-credential, invalid-configuration and
   unsupported-language labels open service settings and hide blind retry. Timeout
   and unclassified rejection errors, including Baidu's numeric setup codes, retain
-  retry. The compact overlay must not lose the settings recovery entry.
+  retry. The compact overlay must not lose the settings recovery entry. Include
+  the exact custom-ASR authentication, missing-credential, invalid-endpoint and
+  invalid-model labels, plus independent translation's missing-credential label,
+  in the same settings route; timeout and generic rejection labels remain retryable.
+  The session recovery guard also stops automatic retries on those five exact
+  custom/independent labels and preserves the actionable failure for repair.
 - Classify the exact `baidu_unexpected_session_end` code and its fixed native
   message in content-free support diagnostics; private suffixes remain unknown.
   This closes a metadata gap and does not establish why a real Baidu session ended.
@@ -48,7 +53,7 @@ provider text because it contains a familiar fragment.
   Chinese/English/Japanese settings-led credential/permission message; other
   errors retain generic feedback. Shared `translation-contracts.json` handshake
   fixtures define 401/403 versus transport behavior for Rust and Kotlin tests.
-  No reconnect, wire-protocol, shared reducer or JNI behavior is changed.
+  No wire-protocol, shared reducer or JNI behavior is changed.
 - Preserve transcript pairing, provider prompts, language catalogs, capture and
   streaming-generation ownership.
 
@@ -62,25 +67,29 @@ label, readiness remaining false and no response-body leakage. They use syntheti
 credentials and do not contact cloud services.
 
 Support-diagnostic Rust tests passed 13 cases, including exact Baidu code/message
-classification and rejection of private suffixes. The latest frontend focused run
+classification and rejection of private suffixes. A frontend focused run
 passed 141 tests for diagnostics, shared feedback and tray behavior, including
 three-language recovery actions, settings navigation, strict label rejection and
 Baidu integer bounds. ESLint, TypeScript and diff checks passed for those changes.
 A separate 191-test baseline covered overlay projection, timeline scrolling and
 streaming, snapshots, bootstrap and shared error feedback.
 
-Three focused Android regression cases were added. The attempted
-`./gradlew --offline --no-daemon testDebugUnitTest` stopped before running tests
-with `Unable to locate a Java Runtime`; no JDK/Android SDK was installed for this
-attempt. XML and shared JSON parsing passed, but Android unit tests, Gradle/JNI
-validation and device acceptance remain pending. No failing Android test assertion
-was observed.
+The initial missing-Java environment issue was resolved using temporary official
+tooling. Android `testDebugUnitTest` finished with `BUILD SUCCESSFUL`: 19 suites /
+129 tests, zero failures, errors or skips. The new handshake test and 2 feedback
+tests passed, along with 2 `SharedSubtitleCoreJni` tests and 11 shared translation
+tests. The host JNI library was actually rebuilt successfully. XML and shared JSON
+parsing also passed. Reusable tool caches remain available. Android physical-device
+and Release validation have not been performed.
 
 The [native observations](../development/provider-regression-matrix.md) used
 `d58f4bad`, before these patches: Alibaba, Gemini and Apple Speech + DeepL produced
 fresh ASR/MT through the final sample sentence after resume/replay. Baidu displayed
 six confirmed groups, then a generic failure after about 73.7 seconds connected;
-its cause remains unproven. These were not full multiwindow snapshot traces.
-The final desktop canonical check and patched-build native rerun remain pending;
-loopback, frontend and pre-patch native results do not establish acceptance of the
-patched application or Android behavior.
+its cause remains unproven. Whisper + Index also reached the final sentence, with
+no pause/resume case or measured end-to-end latency. Parakeet's separate
+`fbf3c06c` availability check returned unavailable without starting capture.
+These were not full multiwindow snapshot traces. The final desktop canonical check
+is in progress; the final patched build and native rerun remain pending. Loopback,
+frontend and pre-patch native results do not establish acceptance of the patched
+desktop application or Android physical-device/Release behavior.
