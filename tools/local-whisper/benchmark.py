@@ -105,6 +105,7 @@ async def replay(url, token, wav, reference, *, task_id="benchmark", language="e
     return {"sample": wav.name, "sha256": hashlib.sha256(wav.read_bytes()).hexdigest(),
             "audio_seconds": len(pcm) / 32000, "source_language": language,
             "finish_sent_monotonic_s": finish_sent,
+            "first_result_ms": events[0]["received_ms"] if events else None,
             "first_draft_ms": drafts[0]["received_ms"] if drafts else None,
             "first_final_ms": finals[0]["received_ms"] if finals else None,
             "final_flush_ms": (ended - finish_sent) * 1000, "total_ms": (ended - began) * 1000,

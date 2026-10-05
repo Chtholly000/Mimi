@@ -81,6 +81,16 @@ class SegmentationTests(unittest.TestCase):
             with self.assertRaises(Failure):
                 list(Segmenter().push(pcm))
 
+    def test_short_sentence_gaps_finalize_before_the_eight_second_cut(self):
+        gate = Segmenter()
+        events = []
+        for voiced, silence in [(90, 15), (114, 11), (117, 12), (100, 10)]:
+            for _ in range(voiced):
+                events.extend(gate.push(VOICE))
+            for _ in range(silence):
+                events.extend(gate.push(QUIET))
+        self.assertEqual([event[0] for event in events if event[2]], [1, 2, 3, 4])
+
     def test_pending_finals_fail_instead_of_dropping(self):
         session = Session(None, None)
         session.enqueue((1, VOICE, True))

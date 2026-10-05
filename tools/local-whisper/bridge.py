@@ -24,6 +24,7 @@ MAX_FRAME = 128 * 1024
 MAX_TEXT = 65536
 FRAME = 640  # 20 ms, 16 kHz, mono signed little-endian PCM16.
 MAX_SEGMENT = 256000  # 8 seconds; includes bounded preroll/trailing silence.
+SILENCE_FRAMES = 10  # 200 ms; avoid forcing ordinary short sentence gaps into an 8 s cut.
 # Match Mimi's existing Custom DashScope selector; do not claim every Whisper
 # language is exposed by the application's current provider catalog.
 LANGUAGES = {"en", "zh", "ja", "ko", "auto"}
@@ -105,7 +106,7 @@ class Segmenter:
         else:
             self.pcm.extend(frame)
         self.silence = 0 if voiced else self.silence + 1
-        if self.silence >= 30 or len(self.pcm) >= MAX_SEGMENT:
+        if self.silence >= SILENCE_FRAMES or len(self.pcm) >= MAX_SEGMENT:
             yield self.final()
         elif len(self.pcm) >= self.next_draft:
             self.next_draft += 64000
