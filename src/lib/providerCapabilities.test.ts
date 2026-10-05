@@ -77,6 +77,14 @@ it("uses only this Mac's stamped Apple languages without inventing automatic det
   expect(credentialStateForTarget(apple, "zh")).toBe("missing");
 });
 
+it.each(["deepL", "deepLX"] as const)("intersects Apple sources with the %s text encoder while keeping original-only choices", route => {
+  const profile = { id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "present", textTranslation: route } as const;
+  const languageCapabilities = { profileId: profile.id, provider: profile.provider, textTranslation: route, targetLanguage: "en", sourceLanguages: ["en", "fr"], targetLanguages: ["original", "zh", "en", "ja"] } as const;
+  const settings = { ...BASE_SETTINGS, profiles: [profile], activeProfileId: profile.id, targetLanguage: "en" as const, languageCapabilities };
+  expect(sourceLanguagesForSettings(settings)).toEqual(["en"]);
+  expect(sourceLanguagesForSettings({ ...settings, targetLanguage: "original", languageCapabilities: { ...languageCapabilities, targetLanguage: "original" } })).toEqual(["en", "fr"]);
+});
+
 describe("provider capabilities", () => {
   it("keeps language controls and only Turbo for manual Alibaba input", () => {
     const settings = { ...BASE_SETTINGS, sourceLanguage: "ja" as const };

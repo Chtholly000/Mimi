@@ -1153,7 +1153,7 @@ impl SettingsStore {
 
     #[cfg(test)]
     pub fn update_profile(&self, profile_id: &str, name: &str) -> Result<ServiceProfile, String> {
-        self.update_profile_options(profile_id, Some(name), None, None, None)
+        self.update_profile_options(profile_id, Some(name), None, None, None, None)
     }
 
     pub fn update_profile_options(
@@ -1163,8 +1163,9 @@ impl SettingsStore {
         speech_network_proxy: Option<ProxyConfig>,
         text_network_proxy: Option<ProxyConfig>,
         text_translation_name: Option<TextTranslationName>,
+        speech_recognition_name: Option<&str>,
     ) -> Result<ServiceProfile, String> {
-        if text_translation_name.is_some() {
+        if text_translation_name.is_some() || speech_recognition_name.is_some() {
             self.require_writable_credentials(profile_id)?;
         }
         self.mutate_catalog(|catalog| {
@@ -1186,6 +1187,11 @@ impl SettingsStore {
             if let Some(patch) = text_translation_name {
                 updated
                     .set_text_translation_name(patch.route, &patch.name)
+                    .map_err(|error| error.to_string())?;
+            }
+            if let Some(name) = speech_recognition_name {
+                updated
+                    .set_speech_recognition_name(name)
                     .map_err(|error| error.to_string())?;
             }
             let updated = updated.validated().map_err(|error| error.to_string())?;
@@ -2381,7 +2387,7 @@ impl SettingsStore {
         self.configuration_for_profile(&profile)
     }
 
-    /// Reads only the requested profile's Keychain credentials. A connection
+    /// Reads only the requested profile's private credentials. A connection
     /// check must not select it or change the current listening session.
     pub fn configuration_for_profile(
         &self,
@@ -2397,6 +2403,18 @@ impl SettingsStore {
         profile: &ServiceProfile,
     ) -> Result<LiveTranslationConfiguration, String> {
         self.configuration_for_profile_options(profile, true)
+    }
+
+    /// Resolves the exact listening configuration that selecting this profile
+    /// would save, without selecting it. Unlike a connection probe, Original
+    /// remains recognition-only and does not require text credentials.
+    pub fn configuration_for_profile_selection(
+        &self,
+        profile: &ServiceProfile,
+    ) -> Result<LiveTranslationConfiguration, String> {
+        let mut prefs = self.preferences();
+        normalize_preferences_value(&mut prefs, profile);
+        self.configuration_with_profile_preferences(profile, prefs)
     }
 
     /// Build an ephemeral speech/integrated-service check. Complete drafts do
@@ -2776,6 +2794,14 @@ impl SettingsStore {
             prefs.target_language = normalized.target_language;
             prefs.translation_mode = normalized.translation_mode;
         }
+        self.configuration_with_profile_preferences(profile, prefs)
+    }
+
+    fn configuration_with_profile_preferences(
+        &self,
+        profile: &ServiceProfile,
+        prefs: Preferences,
+    ) -> Result<LiveTranslationConfiguration, String> {
         let credentials = self.credentials_for_profile(profile)?.ok_or_else(|| {
             crate::core::credentials::ProviderCredentialsError::Missing(
                 profile.effective_provider(),
@@ -3412,6 +3438,126 @@ mod tests {
     }
 
     #[test]
+    fn profile_selection_configuration_matches_saved_selection_without_mutating_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake));
+        let next = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Synthetic next")
+            .unwrap();
+        store.save_api_key(&next.id, "synthetic-next").unwrap();
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.source_language = SourceLanguage::Japanese;
+                prefs.target_language = TargetLanguage::French;
+                prefs.audio_input = AudioInput::Both;
+                prefs.retain_session_history = true;
+                prefs.record_session_audio = true;
+            })
+            .unwrap();
+        let previous = store.preferences();
+        let active = store.active_profile().unwrap();
+        let catalog = std::fs::read(&store.catalog_path).unwrap();
+        let persisted = std::fs::read(&store.prefs_path).unwrap();
+
+        let proposed = store.configuration_for_profile_selection(&next).unwrap();
+        assert_eq!(proposed.source_language, SourceLanguage::Automatic);
+        assert_eq!(proposed.target_language, TargetLanguage::SimplifiedChinese);
+        assert_eq!(store.preferences(), previous);
+        assert_eq!(store.active_profile().unwrap(), active);
+        assert_eq!(std::fs::read(&store.catalog_path).unwrap(), catalog);
+        assert_eq!(std::fs::read(&store.prefs_path).unwrap(), persisted);
+
+        store.select_profile(&next.id).unwrap();
+        assert_eq!(store.configuration().unwrap(), proposed);
+        let selected = store.preferences();
+        assert_eq!(selected.audio_input, AudioInput::Both);
+        assert!(selected.retain_session_history);
+        assert!(selected.record_session_audio);
+    }
+
+    #[test]
+    fn incomplete_profile_selection_leaves_current_preferences_and_catalog_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake));
+        store
+            .save_api_key(DEFAULT_ALIBABA_PROFILE_ID, "synthetic-current")
+            .unwrap();
+        let next = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Unconfigured")
+            .unwrap();
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.source_language = SourceLanguage::Japanese
+            })
+            .unwrap();
+        let current_configuration = store.configuration().unwrap();
+        let previous = store.preferences();
+        let active = store.active_profile().unwrap();
+        let catalog = std::fs::read(&store.catalog_path).unwrap();
+        let persisted = std::fs::read(&store.prefs_path).unwrap();
+
+        assert!(store.configuration_for_profile_selection(&next).is_err());
+        assert_eq!(store.configuration().unwrap(), current_configuration);
+        assert_eq!(store.preferences(), previous);
+        assert_eq!(store.active_profile().unwrap(), active);
+        assert_eq!(std::fs::read(&store.catalog_path).unwrap(), catalog);
+        assert_eq!(std::fs::read(&store.prefs_path).unwrap(), persisted);
+    }
+
+    #[test]
+    fn profile_selection_preserves_original_without_reading_custom_text_credentials() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let next = store
+            .create_profile(ProviderKind::CustomOpenAIASR, "Recognition only")
+            .unwrap();
+        store
+            .save_credentials(
+                &next.id,
+                &custom_speech_request(
+                    "wss://speech.example/realtime",
+                    "synthetic-model",
+                    "synthetic-key",
+                ),
+            )
+            .unwrap();
+        store
+            .save_credentials(
+                &next.id,
+                &translation_request(TextTranslation::DeepL, "", "", "synthetic-text:fx"),
+            )
+            .unwrap();
+        let next = store.profile(&next.id).unwrap();
+        let destination = SettingsStore::destination_account(&next);
+        store
+            .secret_cache
+            .lock()
+            .unwrap()
+            .remove(&cache_key(PROFILE_KEYCHAIN_SERVICE, &destination));
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &destination);
+        let previous_reads = fake.load_count(PROFILE_KEYCHAIN_SERVICE, &destination);
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.target_language = TargetLanguage::Original
+            })
+            .unwrap();
+
+        let proposed = store.configuration_for_profile_selection(&next).unwrap();
+        assert_eq!(proposed.target_language, TargetLanguage::Original);
+        assert_eq!(proposed.text_credentials, None);
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &destination),
+            previous_reads
+        );
+        assert_eq!(
+            store.active_profile().unwrap().id,
+            DEFAULT_ALIBABA_PROFILE_ID
+        );
+    }
+
+    #[test]
     fn unsaved_text_probe_never_needs_asr_or_mutates_profile_preferences_or_secrets() {
         use crate::core::configuration::TextTranslationProbeCredentials;
         for provider in [ProviderKind::AlibabaCloud, ProviderKind::CustomOpenAIASR] {
@@ -3643,6 +3789,7 @@ mod tests {
                     route: TextTranslation::OpenAICompatible,
                     name: format!("  {translator_name}  "),
                 }),
+                None,
             )
             .unwrap();
         // An independently saved alias or proxy must not replay a name copied
@@ -3651,7 +3798,14 @@ mod tests {
         let renamed = format!("{configuration_name} 2");
         store.update_profile(&profile.id, &renamed).unwrap();
         store
-            .update_profile_options(&profile.id, None, Some(ProxyConfig::default()), None, None)
+            .update_profile_options(
+                &profile.id,
+                None,
+                Some(ProxyConfig::default()),
+                None,
+                None,
+                None,
+            )
             .unwrap();
         let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
         let saved = reloaded.profile(&profile.id).unwrap();
@@ -3686,6 +3840,7 @@ mod tests {
                     route: TextTranslation::OpenAICompatible,
                     name: name.clone(),
                 }),
+                None,
             )
             .unwrap();
         assert_eq!(saved.name, name);
@@ -3703,9 +3858,124 @@ mod tests {
                     route: TextTranslation::OpenAICompatible,
                     name: "😀".repeat(65),
                 }),
+                None,
             )
             .is_err());
         assert_eq!(store.profile(&profile.id).unwrap(), saved);
+    }
+
+    #[test]
+    fn speech_name_patches_persist_independently_without_credential_access() {
+        for provider in [
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let fake = FakeSecretStore::default();
+            let store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+            let profile = store
+                .create_profile(provider, "Original configuration")
+                .unwrap();
+            store
+                .update_profile_options(
+                    &profile.id,
+                    None,
+                    Some(ProxyConfig::default()),
+                    None,
+                    Some(TextTranslationName {
+                        route: TextTranslation::OpenAICompatible,
+                        name: "Independent translator".into(),
+                    }),
+                    None,
+                )
+                .unwrap();
+            store
+                .update_profile(&profile.id, "Renamed configuration")
+                .unwrap();
+            let named = store
+                .update_profile_options(
+                    &profile.id,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some("  Whisper · 本地  "),
+                )
+                .unwrap();
+            assert_eq!(named.name, "Renamed configuration");
+            assert_eq!(
+                named.speech_recognition_name.as_deref(),
+                Some("Whisper · 本地")
+            );
+            assert_eq!(named.speech_network_proxy, Some(ProxyConfig::default()));
+            assert_eq!(
+                named.text_translation_names[&TextTranslation::OpenAICompatible],
+                "Independent translator"
+            );
+            let other = store.create_profile(provider, "Other").unwrap();
+            assert!(other.speech_recognition_name.is_none());
+            let reloaded = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+            assert_eq!(reloaded.profile(&profile.id).unwrap(), named);
+            let cleared = reloaded
+                .update_profile_options(&profile.id, None, None, None, None, Some("  "))
+                .unwrap();
+            assert!(cleared.speech_recognition_name.is_none());
+            assert_eq!(cleared.name, named.name);
+            assert_eq!(cleared.text_translation_names, named.text_translation_names);
+            assert_eq!(cleared.speech_network_proxy, named.speech_network_proxy);
+            let reopened = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+            assert_eq!(reopened.profile(&profile.id).unwrap(), cleared);
+            let secrets = fake.state.lock().unwrap();
+            assert!(secrets.loads.is_empty());
+            assert!(secrets.values.is_empty());
+        }
+    }
+
+    #[test]
+    fn speech_name_updates_validate_and_roll_back_failed_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let mut store = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
+        let built_in = store.active_profile().unwrap();
+        assert!(store
+            .update_profile_options(&built_in.id, None, None, None, None, Some("Unsupported"))
+            .is_err());
+        assert_eq!(store.active_profile().unwrap(), built_in);
+        let profile = store
+            .create_profile(ProviderKind::CustomOpenAIASR, "Custom")
+            .unwrap();
+        for invalid in [
+            "😀".repeat(65),
+            "line\nbreak".into(),
+            "control\u{0000}".into(),
+        ] {
+            assert!(store
+                .update_profile_options(
+                    &profile.id,
+                    Some("Unpersisted configuration"),
+                    None,
+                    None,
+                    None,
+                    Some(&invalid),
+                )
+                .is_err());
+            assert_eq!(store.profile(&profile.id).unwrap(), profile);
+        }
+        store.catalog_path = directory.path().join("blocked-catalog");
+        std::fs::create_dir(&store.catalog_path).unwrap();
+        assert!(store
+            .update_profile_options(
+                &profile.id,
+                None,
+                None,
+                None,
+                None,
+                Some("Unpersisted recognition")
+            )
+            .is_err());
+        assert_eq!(store.profile(&profile.id).unwrap(), profile);
+        let reopened = SettingsStore::at_path(directory.path().into(), Box::new(fake));
+        assert_eq!(reopened.profile(&profile.id).unwrap(), profile);
     }
 
     #[test]
@@ -3728,6 +3998,7 @@ mod tests {
                         route,
                         name: name.into(),
                     }),
+                    None,
                 )
                 .unwrap();
         }
@@ -3760,6 +4031,7 @@ mod tests {
                     route: TextTranslation::OpenAICompatible,
                     name: "  ".into(),
                 }),
+                None,
             )
             .unwrap();
         let reopened = SettingsStore::at_path(directory.path().into(), Box::new(fake.clone()));
@@ -3791,6 +4063,7 @@ mod tests {
                     None,
                     None,
                     Some(TextTranslationName { route, name }),
+                    None,
                 )
                 .is_err());
             assert_eq!(store.active_profile().unwrap(), profile);
@@ -3807,6 +4080,7 @@ mod tests {
                     route: TextTranslation::OpenAICompatible,
                     name: "Unpersisted translator".into(),
                 }),
+                None,
             )
             .is_err());
         assert_eq!(store.active_profile().unwrap(), profile);
@@ -3849,6 +4123,7 @@ mod tests {
                         route: TextTranslation::OpenAICompatible,
                         name: "Work translator".into(),
                     }),
+                    provider.is_custom_speech().then_some("My recognition"),
                 )
                 .unwrap();
             assert_eq!(fake.state.lock().unwrap().values, before);
@@ -3865,6 +4140,10 @@ mod tests {
                 assert_eq!(
                     switched.text_translation_names,
                     named.text_translation_names
+                );
+                assert_eq!(
+                    switched.speech_recognition_name,
+                    named.speech_recognition_name
                 );
             }
             assert_eq!(fake.state.lock().unwrap().values, before);
@@ -3892,7 +4171,7 @@ mod tests {
             url: None,
         };
         store
-            .update_profile_options(&profile.id, None, None, Some(text.clone()), None)
+            .update_profile_options(&profile.id, None, None, Some(text.clone()), None, None)
             .unwrap();
         let updated = store.active_profile().unwrap();
         assert_eq!(updated.speech_network_proxy, None);
@@ -3930,6 +4209,7 @@ mod tests {
                 Some(speech.clone()),
                 None,
                 None,
+                None,
             )
             .unwrap();
         store.select_profile(&profile.id).unwrap();
@@ -3955,7 +4235,8 @@ mod tests {
                     mode: ProxyMode::Custom,
                     url: Some("http://user:private-value@localhost:7890".into())
                 }),
-                None
+                None,
+                None,
             )
             .is_err());
         assert_eq!(store.active_profile().unwrap(), before);
@@ -3968,7 +4249,8 @@ mod tests {
                 Some("Unpersisted"),
                 Some(ProxyConfig::default()),
                 None,
-                None
+                None,
+                None,
             )
             .is_err());
         assert_eq!(store.active_profile().unwrap(), before);
@@ -5822,6 +6104,7 @@ mod tests {
                     route: TextTranslation::OpenAICompatible,
                     name: "Read-only alias".into(),
                 }),
+                None,
             ),
             Err("local_dev_credentials_read_only".into())
         );
@@ -5830,6 +6113,22 @@ mod tests {
             .unwrap()
             .text_translation_names
             .is_empty());
+        assert_eq!(
+            store.update_profile_options(
+                &preset.id,
+                None,
+                None,
+                None,
+                None,
+                Some("Read-only recognition"),
+            ),
+            Err("local_dev_credentials_read_only".into())
+        );
+        assert!(store
+            .profile(&preset.id)
+            .unwrap()
+            .speech_recognition_name
+            .is_none());
         assert_eq!(
             store.save_credentials(
                 &preset.id,

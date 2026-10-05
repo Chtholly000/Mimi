@@ -50,7 +50,7 @@ impl ProviderKind {
         target: TargetLanguage,
     ) -> ProviderCapabilities {
         if self.is_standalone_asr() {
-            custom_speech_capabilities(self, route)
+            custom_speech_capabilities(self, route, target)
         } else if self == Self::AlibabaCloud {
             alibaba_capabilities(route, target)
         } else {
@@ -132,7 +132,11 @@ impl ProviderKind {
                 16_000,
             ),
             Self::CustomDashScopeASR | Self::CustomOpenAIASR | Self::AppleSpeech => {
-                custom_speech_capabilities(self, TextTranslation::FollowService)
+                custom_speech_capabilities(
+                    self,
+                    TextTranslation::FollowService,
+                    TargetLanguage::Original,
+                )
             }
         }
     }
@@ -164,6 +168,7 @@ impl ProviderKind {
 fn custom_speech_capabilities(
     provider: ProviderKind,
     route: TextTranslation,
+    target: TargetLanguage,
 ) -> ProviderCapabilities {
     let mut target_languages = vec![TargetLanguage::Original];
     if route != TextTranslation::FollowService {
@@ -174,8 +179,12 @@ fn custom_speech_capabilities(
         ]);
     }
     ProviderCapabilities {
-        // The native adapter validates this representable catalog against the OS inventory.
-        source_languages: if provider == ProviderKind::AppleSpeech {
+        // Native recognition may support more sources than the text encoder.
+        // The app layer also intersects this catalog with the OS inventory.
+        source_languages: if provider == ProviderKind::AppleSpeech
+            && (target == TargetLanguage::Original
+                || !matches!(route, TextTranslation::DeepL | TextTranslation::DeepLX))
+        {
             SourceLanguage::ALL
                 .into_iter()
                 .filter(|language| *language != SourceLanguage::Automatic)
@@ -188,6 +197,11 @@ fn custom_speech_capabilities(
                 SourceLanguage::Japanese,
                 SourceLanguage::Korean,
             ]
+            .into_iter()
+            .filter(|language| {
+                provider != ProviderKind::AppleSpeech || *language != SourceLanguage::Automatic
+            })
+            .collect()
         },
         target_languages,
         translation_modes: vec![TranslationMode::Turbo],
@@ -386,6 +400,10 @@ pub enum ServiceProfileError {
     NameTooLong,
     #[error("The text translation service name is invalid.")]
     InvalidTextTranslationName,
+    #[error("Only custom speech services support a recognition display name.")]
+    UnsupportedSpeechRecognitionName,
+    #[error("The speech recognition service name is invalid.")]
+    InvalidSpeechRecognitionName,
 }
 
 /// Independent text translation for supported speech-recognition chains.
@@ -424,6 +442,9 @@ pub struct ServiceProfile {
     pub id: String,
     pub name: String,
     pub provider: ProviderKind,
+    /// Optional non-secret display name for custom speech recognition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speech_recognition_name: Option<String>,
     /// None preserves historical behavior, including legacy DeepLX profiles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text_translation: Option<TextTranslation>,
@@ -466,6 +487,7 @@ impl ServiceProfile {
             id,
             name,
             provider,
+            speech_recognition_name: None,
             text_translation: None,
             text_translation_names: BTreeMap::new(),
             speech_network_proxy: None,
@@ -478,6 +500,7 @@ impl ServiceProfile {
             id: DEFAULT_ALIBABA_PROFILE_ID.to_string(),
             name: ProviderKind::AlibabaCloud.display_name().to_string(),
             provider: ProviderKind::AlibabaCloud,
+            speech_recognition_name: None,
             text_translation: None,
             text_translation_names: BTreeMap::new(),
             speech_network_proxy: None,
@@ -499,6 +522,9 @@ impl ServiceProfile {
         {
             return Err(ServiceProfileError::UnsupportedTextTranslation);
         }
+        if let Some(name) = &self.speech_recognition_name {
+            profile.set_speech_recognition_name(name)?;
+        }
         profile.text_translation = self.text_translation;
         for (&route, name) in &self.text_translation_names {
             profile.set_text_translation_name(route, name)?;
@@ -514,6 +540,18 @@ impl ServiceProfile {
             .map(ProxyConfig::validate)
             .transpose()?;
         Ok(profile)
+    }
+
+    pub fn set_speech_recognition_name(&mut self, name: &str) -> Result<(), ServiceProfileError> {
+        if !self.provider.is_custom_speech() {
+            return Err(ServiceProfileError::UnsupportedSpeechRecognitionName);
+        }
+        let name = name.trim();
+        if name.chars().count() > Self::MAXIMUM_NAME_LENGTH || name.chars().any(char::is_control) {
+            return Err(ServiceProfileError::InvalidSpeechRecognitionName);
+        }
+        self.speech_recognition_name = (!name.is_empty()).then(|| name.to_string());
+        Ok(())
     }
 
     pub fn set_text_translation_name(
@@ -547,7 +585,7 @@ impl ServiceProfile {
 
     pub fn capabilities(&self, target: TargetLanguage) -> ProviderCapabilities {
         if self.provider.is_standalone_asr() {
-            custom_speech_capabilities(self.provider, self.text_translation())
+            custom_speech_capabilities(self.provider, self.text_translation(), target)
         } else if self.effective_provider() == ProviderKind::AlibabaCloud {
             alibaba_capabilities(self.text_translation(), target)
         } else {
@@ -588,6 +626,26 @@ impl Default for ServiceProfile {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn apple_source_catalog_respects_the_selected_text_encoder() {
+        for route in [TextTranslation::DeepL, TextTranslation::DeepLX] {
+            let translated =
+                ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::English);
+            assert!(translated.source_languages.contains(&SourceLanguage::English));
+            assert!(!translated.source_languages.contains(&SourceLanguage::French));
+            assert!(!translated.source_languages.contains(&SourceLanguage::Automatic));
+            let original =
+                ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::Original);
+            assert!(original.source_languages.contains(&SourceLanguage::French));
+        }
+        for route in [TextTranslation::OpenAICompatible, TextTranslation::ChatMock] {
+            let translated =
+                ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::English);
+            assert!(translated.source_languages.contains(&SourceLanguage::French));
+            assert!(!translated.source_languages.contains(&SourceLanguage::Automatic));
+        }
+    }
+
     #[test]
     fn profile_proxy_fields_read_legacy_and_normalize_without_losing_preferences() {
         use crate::core::network_proxy::ProxyMode;
@@ -1069,6 +1127,66 @@ mod tests {
         assert_eq!(json["provider"], "openAIRealtime");
         assert!(json.get("apiKey").is_none());
         assert!(json.get("credential").is_none());
+    }
+
+    #[test]
+    fn speech_recognition_names_are_optional_trimmed_custom_metadata() {
+        for provider in [
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let mut profile: ServiceProfile = serde_json::from_value(serde_json::json!({
+                "id": "legacy", "name": "Legacy", "provider": provider
+            }))
+            .unwrap();
+            assert!(profile.speech_recognition_name.is_none());
+            profile
+                .set_speech_recognition_name("  Whisper · 本地  ")
+                .unwrap();
+            let restored = profile.validated().unwrap();
+            assert_eq!(restored, profile);
+            assert_eq!(restored.name, "Legacy");
+            assert_eq!(
+                serde_json::to_value(&restored).unwrap()["speechRecognitionName"],
+                "Whisper · 本地"
+            );
+            profile.set_speech_recognition_name("  ").unwrap();
+            assert!(profile.speech_recognition_name.is_none());
+            assert!(serde_json::to_value(&profile)
+                .unwrap()
+                .get("speechRecognitionName")
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn speech_recognition_names_reject_built_in_providers_and_invalid_names() {
+        let mut profile =
+            ServiceProfile::new("custom", "Custom", ProviderKind::CustomOpenAIASR).unwrap();
+        profile
+            .set_speech_recognition_name(&"😀".repeat(64))
+            .unwrap();
+        let saved = profile.clone();
+        for name in [
+            "😀".repeat(65),
+            "line\nbreak".into(),
+            "control\u{0000}".into(),
+        ] {
+            assert_eq!(
+                profile.set_speech_recognition_name(&name),
+                Err(ServiceProfileError::InvalidSpeechRecognitionName)
+            );
+            assert_eq!(profile, saved);
+        }
+        profile.provider = ProviderKind::AlibabaCloud;
+        assert_eq!(
+            profile.set_speech_recognition_name("Alias"),
+            Err(ServiceProfileError::UnsupportedSpeechRecognitionName)
+        );
+        assert_eq!(
+            profile.validated(),
+            Err(ServiceProfileError::UnsupportedSpeechRecognitionName)
+        );
     }
 
     #[test]

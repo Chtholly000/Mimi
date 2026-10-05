@@ -2,7 +2,8 @@
 //! Queries are read-only; only `prepare_source` can request language assets.
 
 use crate::apple_speech::{self, AppleSpeechCapabilities};
-use crate::core::models::SourceLanguage;
+use crate::core::models::{SourceLanguage, TargetLanguage};
+use crate::core::provider::ServiceProfile;
 use serde::Serialize;
 use std::sync::{Mutex, OnceLock};
 
@@ -90,6 +91,22 @@ pub fn validate_source(
     Ok(language)
 }
 
+/// Runtime support and the chosen text encoder must both accept the source.
+/// Refuse a route change before normalization can select a different OS locale.
+pub fn validate_profile_source<'a>(
+    support: &'a AppleSpeechSupport,
+    profile: &ServiceProfile,
+    source: SourceLanguage,
+    target: TargetLanguage,
+    installed_required: bool,
+) -> Result<&'a AppleSpeechLanguage, String> {
+    let language = validate_source(support, source, installed_required)?;
+    if !profile.capabilities(target).source_languages.contains(&source) {
+        return Err("apple_speech_translation_language_unsupported".into());
+    }
+    Ok(language)
+}
+
 fn require_language(
     support: &AppleSpeechSupport,
     source: SourceLanguage,
@@ -169,6 +186,58 @@ mod tests {
                 .unwrap_err(),
             "apple_speech_unavailable"
         );
+    }
+
+    #[test]
+    fn rejects_incompatible_text_routes_without_inventing_an_os_language() {
+        use crate::core::provider::{ProviderKind, TextTranslation};
+        let support = map_capabilities(AppleSpeechCapabilities {
+            available: true,
+            locales: vec![locale("en-US", true), locale("fr-FR", true)],
+        });
+        for route in [TextTranslation::DeepL, TextTranslation::DeepLX] {
+            let mut profile =
+                ServiceProfile::new("synthetic", "Synthetic", ProviderKind::AppleSpeech).unwrap();
+            profile.text_translation = Some(route);
+            assert!(validate_profile_source(
+                &support,
+                &profile,
+                SourceLanguage::French,
+                TargetLanguage::Original,
+                true,
+            )
+            .is_ok());
+            assert_eq!(
+                validate_profile_source(
+                    &support,
+                    &profile,
+                    SourceLanguage::French,
+                    TargetLanguage::English,
+                    true,
+                )
+                .unwrap_err(),
+                "apple_speech_translation_language_unsupported"
+            );
+            assert!(validate_profile_source(
+                &support,
+                &profile,
+                SourceLanguage::English,
+                TargetLanguage::English,
+                true,
+            )
+            .is_ok());
+            assert_eq!(
+                validate_profile_source(
+                    &support,
+                    &profile,
+                    SourceLanguage::Chinese,
+                    TargetLanguage::English,
+                    true,
+                )
+                .unwrap_err(),
+                "apple_speech_language_unsupported"
+            );
+        }
     }
 
     #[test]

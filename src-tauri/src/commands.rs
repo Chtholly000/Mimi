@@ -51,6 +51,8 @@ pub struct ServiceProfilePayload {
     pub id: String,
     pub name: String,
     pub provider: ProviderKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speech_recognition_name: Option<String>,
     pub credential_state: CredentialState,
     pub credential_storage: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,6 +80,7 @@ impl ServiceProfilePayload {
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
+            speech_recognition_name: profile.speech_recognition_name,
             credential_state,
             credential_storage,
             speech_credential_state: states.map(|(speech, _)| speech),
@@ -95,6 +98,7 @@ impl ServiceProfilePayload {
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
+            speech_recognition_name: profile.speech_recognition_name,
             credential_state: CredentialState::Unavailable,
             credential_storage: "keychain",
             speech_credential_state: profile
@@ -126,11 +130,13 @@ impl LanguageCapabilitiesPayload {
     fn from_profile(profile: &ServiceProfile, target: TargetLanguage) -> Self {
         let mut capabilities = profile.capabilities(target);
         if profile.provider == ProviderKind::AppleSpeech {
-            capabilities.source_languages = crate::apple_speech_support::cached()
-                .languages
-                .into_iter()
-                .map(|language| language.source_language)
-                .collect();
+            let support = crate::apple_speech_support::cached();
+            capabilities.source_languages.retain(|source| {
+                support
+                    .languages
+                    .iter()
+                    .any(|language| language.source_language == *source)
+            });
         }
         Self {
             profile_id: profile.id.clone(),
@@ -186,6 +192,27 @@ pub struct SettingsSnapshotPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_snapshots_keep_speech_names_when_credentials_are_unavailable() {
+        let store = SettingsStore::in_memory(Box::new(PartiallyUnavailableSecretStore), false);
+        let mut profile =
+            ServiceProfile::new("custom", "Configuration", ProviderKind::CustomOpenAIASR).unwrap();
+        profile
+            .set_speech_recognition_name("Whisper · 本地")
+            .unwrap();
+        for payload in [
+            ServiceProfilePayload::from_profile(&store, profile.clone()),
+            ServiceProfilePayload::unavailable(profile),
+        ] {
+            let json = serde_json::to_value(payload).unwrap();
+            assert_eq!(json["speechRecognitionName"], "Whisper · 本地");
+            assert_eq!(json["name"], "Configuration");
+            for field in ["endpoint", "apiKey", "token", "model"] {
+                assert!(json.get(field).is_none());
+            }
+        }
+    }
 
     #[test]
     fn profile_snapshots_keep_translation_names_when_credentials_are_unavailable() {
@@ -621,6 +648,7 @@ mod tests {
                 id: "alibaba-default".into(),
                 name: "Alibaba Cloud".into(),
                 provider: ProviderKind::AlibabaCloud,
+                speech_recognition_name: None,
                 credential_state: CredentialState::Present,
                 credential_storage: "keychain",
                 speech_credential_state: None,
@@ -1240,19 +1268,18 @@ async fn apply_settings_draft(
                 error
             }
         })?;
-    if let Some(source) = draft.source_language {
-        if state.settings.active_profile()?.provider == ProviderKind::AppleSpeech {
+    if draft.source_language.is_some() || draft.target_language.is_some() {
+        let profile = state.settings.active_profile()?;
+        if profile.provider == ProviderKind::AppleSpeech {
+            let prefs = state.settings.preferences();
             let support = crate::apple_speech_support::refresh().await?;
-            if !support.available {
-                return Err("apple_speech_unavailable".into());
-            }
-            if !support
-                .languages
-                .iter()
-                .any(|language| language.source_language == source)
-            {
-                return Err("apple_speech_language_unsupported".into());
-            }
+            crate::apple_speech_support::validate_profile_source(
+                &support,
+                &profile,
+                draft.source_language.unwrap_or(prefs.source_language),
+                draft.target_language.unwrap_or(prefs.target_language),
+                false,
+            )?;
         }
     }
     apply_settings_draft_guarded(app, state, draft)
@@ -1581,6 +1608,7 @@ pub async fn profile_create(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Preserve the existing optional IPC patch fields.
 pub async fn profile_update(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1589,6 +1617,7 @@ pub async fn profile_update(
     speech_network_proxy: Option<ProxyConfig>,
     text_network_proxy: Option<ProxyConfig>,
     text_translation_name: Option<TextTranslationName>,
+    speech_recognition_name: Option<String>,
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
@@ -1598,6 +1627,7 @@ pub async fn profile_update(
         speech_network_proxy,
         text_network_proxy,
         text_translation_name,
+        speech_recognition_name.as_deref(),
     )?;
     emit_settings_snapshot(&app, &state.settings)
 }
@@ -1608,13 +1638,7 @@ pub async fn profile_select(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<SettingsSnapshotPayload, String> {
-    let _lifecycle = state.session.settings_mutation_guard(true).await?;
-    ensure_profile_mutation_allowed(state.session.has_active_session())?;
-    let (_, profiles) = state.settings.profile_catalog()?;
-    if let Some(profile) = profiles.iter().find(|profile| profile.id == profile_id) {
-        ensure_apple_provider_available(profile.provider).await?;
-    }
-    state.settings.select_profile(&profile_id)?;
+    state.session.switch_profile(&profile_id).await?;
     emit_settings_snapshot(&app, &state.settings)
 }
 
@@ -1639,6 +1663,23 @@ pub async fn profile_save_credentials(
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    let mut profile = state.settings.active_profile()?;
+    if profile.provider == ProviderKind::AppleSpeech && profile.id == profile_id {
+        if let ProviderCredentials::AlibabaTranslation {
+            text_translation, ..
+        } = &credentials
+        {
+            let prefs = state.settings.preferences();
+            profile.text_translation = Some(*text_translation);
+            if !profile
+                .capabilities(prefs.target_language)
+                .source_languages
+                .contains(&prefs.source_language)
+            {
+                return Err("apple_speech_translation_language_unsupported".into());
+            }
+        }
+    }
     state.settings.save_credentials(&profile_id, &credentials)?;
     emit_settings_snapshot(&app, &state.settings)
 }

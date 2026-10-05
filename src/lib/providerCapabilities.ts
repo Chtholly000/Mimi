@@ -181,7 +181,10 @@ function capabilitiesForSettings(
     native.targetLanguages.every((code) => TARGET_CODES.has(code))
   ) {
     return {
-      sourceLanguages: [...new Set(native.sourceLanguages)],
+      sourceLanguages: [...new Set(native.sourceLanguages)].filter(source =>
+        profile.provider !== "appleSpeech" || target === "original"
+        || !["deepL", "deepLX"].includes(textTranslationForProfile(profile))
+        || LEGACY_SOURCE_LANGUAGE_CASES.includes(source)),
       targetLanguages: [...new Set(native.targetLanguages)],
       translationModes: fallback.translationModes,
     };

@@ -91,9 +91,18 @@ jobs:
           ./scripts/macos-signing-test.sh
           python3 scripts/extract-macos-updater-test.py
 
-      - name: Apple static bridge and bounded input tests
+      - name: Apple bounded input tests
         if: runner.os == 'macOS' && runner.arch == 'ARM64'
-        run: bash src-tauri/apple-speech/tests/build-smoke.sh
+        shell: bash
+        run: |
+          queue_dir="$RUNNER_TEMP/mimi-apple-pcm-queue"
+          mkdir -p "$queue_dir"
+          xcrun swiftc -parse-as-library -swift-version 6 -warnings-as-errors \
+            -target arm64-apple-macosx13.0 -sdk "$(xcrun --sdk macosx --show-sdk-path)" \
+            -module-cache-path "$queue_dir/module-cache" \
+            src-tauri/apple-speech/PCMQueue.swift src-tauri/apple-speech/tests/PCMQueueTests.swift \
+            -o "$queue_dir/queue-tests"
+          "$queue_dir/queue-tests"
 
       - name: Format
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check

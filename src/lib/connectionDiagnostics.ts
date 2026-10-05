@@ -214,6 +214,7 @@ export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlat
   if (typeof error !== "string") return null;
   if (error === "apple_speech_assets_missing") return I18N.settings.appleSpeechAssetsMissing;
   if (error === "apple_speech_language_unsupported") return I18N.settings.appleSpeechLanguageUnsupported;
+  if (error === "apple_speech_translation_language_unsupported") return I18N.settings.appleSpeechTranslationLanguageUnsupported;
   if (error === "apple_speech_unavailable" || error === "apple_speech_ui_test_unavailable") return I18N.settings.appleSpeechUnavailable;
   if (error === "apple_speech_status_failed") return I18N.settings.appleSpeechLoadFailed;
   if (error === "apple_speech_prepare_failed") return I18N.settings.appleSpeechPrepareFailed;
@@ -269,6 +270,9 @@ export function credentialErrorMessage(error: unknown, platform?: DiagnosticPlat
   return null;
 }
 export function profileErrorMessage(error: unknown): string {
+  const label = error instanceof Error ? error.message : error;
+  if (label === "profile_switch_recording_requires_stop") return I18N.settings.profileSwitchRecordingRequiresStop;
+  if (label === "profile_switch_busy" || label === "profile_switch_superseded") return I18N.settings.profileSwitchBusy;
   if (typeof error === "string" && error.startsWith("Use an HTTPS DeepLX endpoint")) return I18N.settings.deepLXEndpointInvalid;
   return credentialErrorMessage(error) ?? I18N.settings.profileActionFailed;
 }

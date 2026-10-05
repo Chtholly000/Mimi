@@ -1,5 +1,6 @@
 import { textTranslationDisplayName } from "../../lib/textTranslationName";
-import { I18N, providerDisplayName } from "../../lib/i18n";
+import { speechRecognitionDisplayName } from "../../lib/speechRecognitionName";
+import { I18N } from "../../lib/i18n";
 import {
   activeServiceProfile,
   isStandaloneAsrProvider,
@@ -29,7 +30,7 @@ export function translationService(
   // Legacy DeepLX profiles use Alibaba recognition plus independent DeepLX
   // translation; DeepLX must never be presented as a speech recognizer.
   const speechProvider = profile.provider === "deepLX" ? "alibabaCloud" : profile.provider;
-  const speechLabel = providerDisplayName(speechProvider);
+  const speechLabel = speechRecognitionDisplayName(profile);
   const originalOnly = settings.targetLanguage === "original"
     || (isStandaloneAsrProvider(profile.provider) && route === "followService");
   const translationLabel = originalOnly ? I18N.overlay.originalOnly : textTranslationDisplayName(profile);

@@ -113,7 +113,10 @@ it("keeps the service settings header passive when the session has failed", asyn
   expect(start).not.toHaveBeenCalled();
   await act(() => useStore.setState({ session: { ...initial.session, status: { kind: "listening" }, isActive: true } }));
   expect(host.querySelector(".settings-session-card, #settings-session-status")).toBeNull();
-  expect(host.querySelector<HTMLButtonElement>(".service-row__edit")!.disabled).toBe(true);
+  const details = host.querySelector<HTMLButtonElement>(".service-row__edit")!;
+  expect(details.disabled).toBe(false);
+  await act(async () => details.click());
+  expect(host.querySelector<HTMLInputElement>('[id^="profile-name-"]')?.disabled).toBe(true);
   expect(start).not.toHaveBeenCalled();
 });
 
