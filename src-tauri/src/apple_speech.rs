@@ -1,0 +1,211 @@
+//! Platform adapter for Apple's on-device SpeechAnalyzer. No Tauri, credentials,
+//! network clients, or capture APIs belong here. Each handle is one audio source.
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppleSpeechCapabilities {
+    pub available: bool,
+    pub locales: Vec<AppleSpeechLocale>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppleSpeechLocale {
+    pub identifier: String,
+    /// Ready for Mimi's actual module configuration and app identity. The OS's
+    /// broader installedLocales list alone does not establish this readiness.
+    pub installed: bool,
+}
+
+#[derive(Clone)]
+pub struct AppleSpeechEvent {
+    pub text: String,
+    pub start_ms: f64,
+    pub end_ms: f64,
+    pub is_final: bool,
+}
+
+// Deliberately omit transcript content from diagnostic formatting.
+impl std::fmt::Debug for AppleSpeechEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppleSpeechEvent")
+            .field("text_bytes", &self.text.len())
+            .field("start_ms", &self.start_ms)
+            .field("end_ms", &self.end_ms)
+            .field("is_final", &self.is_final)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, thiserror::Error)]
+// Other platforms only construct Unavailable, while sharing this adapter API.
+#[cfg_attr(
+    not(all(target_os = "macos", target_arch = "aarch64")),
+    allow(dead_code)
+)]
+pub enum AppleSpeechError {
+    #[error("Apple Speech is unavailable on this device")]
+    Unavailable,
+    #[error("Download the selected Apple speech language before starting")]
+    AssetsNotInstalled,
+    #[error("Apple Speech does not support the selected language")]
+    InvalidLocale,
+    #[error("Apple Speech cannot accept the required audio format")]
+    IncompatibleFormat,
+    #[error("Apple Speech received invalid PCM audio")]
+    InvalidPcm,
+    #[error("Apple Speech cannot keep up with the audio or result queue")]
+    QueueOverflow,
+    #[error("Apple Speech session is closed")]
+    Closed,
+    #[error("Apple Speech returned an invalid result")]
+    InvalidResult,
+    #[error("Apple Speech operation timed out")]
+    Timeout,
+    #[error("Apple Speech failed ({domain}, {code})")]
+    Native { domain: String, code: i64 },
+}
+
+/// Resolve an explicit source language against the dynamically supported list.
+/// This is a preference order, not a hard-coded support list or auto detection.
+pub fn preferred_locale<'a>(
+    language_code: &str,
+    locales: &'a [AppleSpeechLocale],
+) -> Option<&'a str> {
+    let requested = language_code.replace('_', "-").to_ascii_lowercase();
+    if requested.is_empty() || requested == "auto" {
+        return None;
+    }
+    if let Some(exact) = locales.iter().find(|locale| {
+        locale
+            .identifier
+            .replace('_', "-")
+            .eq_ignore_ascii_case(&requested)
+    }) {
+        return Some(&exact.identifier);
+    }
+    let preferred = match requested.as_str() {
+        "en" => "en-US",
+        "zh" => "zh-CN",
+        "yue" => "yue-CN",
+        "ja" => "ja-JP",
+        "ko" => "ko-KR",
+        "de" => "de-DE",
+        "fr" => "fr-FR",
+        "es" => "es-ES",
+        "it" => "it-IT",
+        "pt" => "pt-BR",
+        _ => "",
+    };
+    if let Some(exact) = locales.iter().find(|locale| {
+        locale
+            .identifier
+            .replace('_', "-")
+            .eq_ignore_ascii_case(preferred)
+    }) {
+        return Some(&exact.identifier);
+    }
+    // Never turn a requested region/script into a different one silently.
+    if requested.contains('-') {
+        return None;
+    }
+    locales
+        .iter()
+        .filter(|locale| {
+            locale
+                .identifier
+                .split(['-', '_'])
+                .next()
+                .is_some_and(|language| language.eq_ignore_ascii_case(&requested))
+        })
+        .min_by(|a, b| a.identifier.cmp(&b.identifier))
+        .map(|locale| locale.identifier.as_str())
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod native;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use native::{capabilities, prepare, start, AppleSpeechEvents, AppleSpeechSession};
+
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+mod unsupported {
+    use super::{AppleSpeechCapabilities, AppleSpeechError, AppleSpeechEvent};
+
+    pub async fn capabilities() -> Result<AppleSpeechCapabilities, AppleSpeechError> {
+        Ok(AppleSpeechCapabilities::default())
+    }
+    pub async fn prepare(_: &str) -> Result<(), AppleSpeechError> {
+        Err(AppleSpeechError::Unavailable)
+    }
+    pub async fn start(
+        _: &str,
+    ) -> Result<(AppleSpeechSession, AppleSpeechEvents), AppleSpeechError> {
+        Err(AppleSpeechError::Unavailable)
+    }
+    pub struct AppleSpeechSession;
+    impl AppleSpeechSession {
+        pub fn send_pcm(&self, _: &[u8]) -> Result<(), AppleSpeechError> {
+            Err(AppleSpeechError::Unavailable)
+        }
+        pub async fn finish(&mut self) -> Result<(), AppleSpeechError> {
+            Err(AppleSpeechError::Unavailable)
+        }
+        pub fn cancel(&mut self) {}
+    }
+    pub struct AppleSpeechEvents;
+    impl AppleSpeechEvents {
+        pub async fn recv(&mut self) -> Result<Option<AppleSpeechEvent>, AppleSpeechError> {
+            Err(AppleSpeechError::Unavailable)
+        }
+    }
+}
+#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+pub use unsupported::{capabilities, prepare, start, AppleSpeechEvents, AppleSpeechSession};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn locales(names: &[&str]) -> Vec<AppleSpeechLocale> {
+        names
+            .iter()
+            .map(|name| AppleSpeechLocale {
+                identifier: (*name).to_owned(),
+                installed: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn selects_only_dynamic_languages_and_preserves_explicit_regions() {
+        let available = locales(&["en-GB", "en-US", "zh-TW", "ja-JP"]);
+        assert_eq!(preferred_locale("en", &available), Some("en-US"));
+        assert_eq!(preferred_locale("EN_gb", &available), Some("en-GB"));
+        assert_eq!(preferred_locale("zh", &available), Some("zh-TW"));
+        assert_eq!(preferred_locale("zh-CN", &available), None);
+        assert_eq!(preferred_locale("auto", &available), None);
+        assert_eq!(preferred_locale("ko", &available), None);
+    }
+
+    #[test]
+    fn diagnostics_never_include_recognized_text() {
+        let event = AppleSpeechEvent {
+            text: "private recognized content".into(),
+            start_ms: 0.0,
+            end_ms: 10.0,
+            is_final: false,
+        };
+        assert!(!format!("{event:?}").contains("private recognized content"));
+    }
+
+    #[test]
+    fn normalizes_native_locale_separators_before_region_preference() {
+        let available = locales(&["en_AU", "en_US", "en_GB", "zh_CN"]);
+        assert_eq!(preferred_locale("en", &available), Some("en_US"));
+        assert_eq!(preferred_locale("EN_gb", &available), Some("en_GB"));
+        assert_eq!(preferred_locale("zh-CN", &available), Some("zh_CN"));
+        assert_eq!(preferred_locale("en-CA", &available), None);
+    }
+}

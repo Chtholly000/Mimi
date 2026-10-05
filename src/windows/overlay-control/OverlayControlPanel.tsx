@@ -1,11 +1,14 @@
+import { SettingsToastRegion } from "../settings/SettingsToast";
+import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { SettingsHelp } from "../settings/SettingsHelp";
+import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
 import { LanguageSelect } from "../../components/LanguageSelect";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { I18N } from "../../lib/i18n";
-import { profileErrorMessage } from "../../lib/connectionDiagnostics";
+import { languageActionErrorMessage, profileErrorMessage, sessionActionErrorMessage } from "../../lib/connectionDiagnostics";
 import {
   isTauri,
   overlayControlSetPanelHeight,
@@ -14,7 +17,6 @@ import {
 import { SUBTITLE_DISPLAY_OPTIONS, subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import type { SubtitleDisplayMode } from "../../lib/types";
 import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
   type OverlayActivityPhaseKind,
   type SettingsSnapshot,
   type SourceLanguage,
@@ -49,6 +51,8 @@ interface OverlayControlPanelProps {
   isWaitingForFinalTranslation: boolean;
   isChangingSession: boolean;
   isStopping?: boolean;
+  sessionErrorMessage?: string | null;
+  onRetrySession?: () => Promise<void>;
   onDismiss: () => void;
   onTogglePaused: () => Promise<void>;
   onSelectProfile: (profileId: string) => Promise<void>;
@@ -73,6 +77,8 @@ export function OverlayControlPanel({
   isWaitingForFinalTranslation,
   isChangingSession,
   isStopping = false,
+  sessionErrorMessage,
+  onRetrySession,
   onDismiss,
   onTogglePaused,
   onSelectProfile,
@@ -99,6 +105,10 @@ export function OverlayControlPanel({
   const actionInFlight = useRef(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
+  const latestSession = useRef({ isPaused, canPauseSession });
+  useLayoutEffect(() => {
+    latestSession.current = { isPaused, canPauseSession };
+  }, [isPaused, canPauseSession]);
   const canChangeSessionSettings = !isChangingSession && pendingAction === null;
 
   useLayoutEffect(() => {
@@ -151,11 +161,19 @@ export function OverlayControlPanel({
     actionInFlight.current = true;
     setPendingAction(name);
     setOperationError(null);
+    const resuming = name === "pause" && isPaused;
     void operation()
       .then(() => {
         if (dismissAfter) onDismiss();
       })
-      .catch((error: unknown) => setOperationError(name === "profile" ? profileErrorMessage(error) : failureMessage))
+      .catch((error: unknown) => {
+        if (resuming && (!latestSession.current.isPaused || !latestSession.current.canPauseSession)) return;
+        setOperationError(
+          name === "profile" ? profileErrorMessage(error)
+            : name === "source" || name === "translation" ? languageActionErrorMessage(error, failureMessage)
+              : name === "pause" ? sessionActionErrorMessage(error, failureMessage) : failureMessage,
+        );
+      })
       .finally(() => { actionInFlight.current = false; setPendingAction(null); });
   };
 
@@ -169,6 +187,7 @@ export function OverlayControlPanel({
       aria-label={I18N.overlay.controlPanel}
       aria-busy={pendingAction !== null}
     >
+      <SettingsToastRegion />
       <div ref={contentRef} className="overlay-control-panel__content">
         <LanguageStatusCapsule
           phase={phase}
@@ -181,7 +200,12 @@ export function OverlayControlPanel({
           onToggle={onDismiss}
         />
 
-        <button
+        {sessionErrorMessage ? <SessionErrorFeedback
+          message={sessionErrorMessage}
+          onConfigure={() => performAction("settings", () => onShowSettings("service"))}
+          onRetry={onRetrySession ? () => performAction("pause", onRetrySession, false) : undefined}
+          disabled={pendingAction !== null || isChangingSession}
+        /> : <button
           type="button"
           className="overlay-control-session-action"
           aria-label={isPaused ? I18N.overlay.resume : I18N.overlay.pause}
@@ -190,7 +214,7 @@ export function OverlayControlPanel({
         >
           <Icon name={isPaused ? "play" : "pause"} />
           <span>{isPaused ? I18N.overlay.resume : I18N.overlay.pause}</span>
-        </button>
+        </button>}
 
         <CaptureStatusRow
           disabled={pendingAction !== null}
@@ -218,13 +242,13 @@ export function OverlayControlPanel({
 
         {model.sourceOptions.length > 0 && (
           <div ref={sourceControlRef} className="overlay-control-picker">
-            <span>{I18N.overlay.sourceLanguage} <SettingsHelp text={I18N.settings.recognitionLanguageHelp} label={I18N.settings.helpLabel} /></span>
+            <span>{I18N.overlay.sourceLanguage} <SettingsHelp text={speechLanguageGuidance(settings).help} label={I18N.settings.helpLabel} /></span>
             <LanguageSelect
               label={I18N.overlay.sourceLanguage}
               value={settings.sourceLanguage}
               options={model.sourceOptions.map((language) => ({
                 value: language,
-                label: SOURCE_LANGUAGE_DISPLAY_NAMES[language],
+                label: speechLanguageGuidance(settings).optionLabel(language),
               }))}
               disabled={!canChangeSessionSettings}
               onChange={(value) => performAction("source", () => onSwitchSourceLanguage(value as SourceLanguage))}
@@ -232,6 +256,7 @@ export function OverlayControlPanel({
           </div>
         )}
 
+        {speechLanguageGuidance(settings).notice && <div className="recognition-language-notice">{speechLanguageGuidance(settings).notice}</div>}
         <div className="overlay-control-divider" />
 
         {model.canSkipTranslation && <button
@@ -311,7 +336,7 @@ export function OverlayControlPanel({
           aria-checked={model.immersiveModeEnabled}
           aria-label={I18N.overlay.immersiveMode}
           className={`overlay-control-setting${model.immersiveModeEnabled ? " is-on" : ""}`}
-          disabled={pendingAction !== null}
+          disabled={pendingAction !== null || Boolean(sessionErrorMessage)}
           onClick={() =>
             performAction("immersive", () =>
               onSetImmersiveMode(!model.immersiveModeEnabled),
@@ -336,7 +361,7 @@ export function OverlayControlPanel({
           aria-checked={model.overlayLocked}
           aria-label={I18N.overlay.lockPosition}
           className={`overlay-control-setting${model.overlayLocked ? " is-on" : ""}`}
-          disabled={pendingAction !== null}
+          disabled={pendingAction !== null || Boolean(sessionErrorMessage)}
           onClick={() =>
             performAction("lock", () =>
               onSetOverlayLocked(!model.overlayLocked),

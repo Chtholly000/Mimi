@@ -4,7 +4,7 @@ import type {
   TextTranslation,
   ServiceProvider,
 } from "./types";
-import { isChatCompletionsTranslation, isCustomSpeechProvider } from "./providerCapabilities";
+import { isChatCompletionsTranslation, isCustomSpeechProvider, isStandaloneAsrProvider } from "./providerCapabilities";
 
 export type CredentialFieldName =
   | "asrApiKey"
@@ -58,6 +58,8 @@ export function credentialFieldsForProvider(
   provider: ServiceProvider,
 ): readonly CredentialFieldName[] {
   switch (provider) {
+    case "appleSpeech":
+      return [];
     case "customDashScopeASR":
     case "customOpenAIASR":
       return ["endpoint", "model", "apiKey"];
@@ -96,6 +98,7 @@ export function buildProviderProbeCredentials(
 }
 
 function buildProviderInput(provider: ServiceProvider, draft: CredentialDraft, savedFields: readonly string[]): ProviderCredentialsInput | null {
+  if (provider === "appleSpeech") return null;
   const values = Object.fromEntries(
     Object.entries(draft).map(([key, value]) => [key, value.trim()]),
   ) as CredentialDraft;
@@ -141,7 +144,7 @@ export const CHATMOCK_DEFAULT_ENDPOINT = "http://127.0.0.1:8000/v1";
 
 /** Alibaba retains its profile-scoped key; an empty replacement reuses it natively. */
 export function buildAlibabaTranslationCredentials(profile: ServiceProfile, draft: CredentialDraft, translation: TextTranslation, clearToken = false): ProviderCredentialsInput | null {
-  const custom = isCustomSpeechProvider(profile.provider);
+  const custom = isStandaloneAsrProvider(profile.provider);
   if (!custom && profile.provider !== "alibabaCloud" && profile.provider !== "deepLX") return null;
   if (!custom && !draft.apiKey.trim() && profile.credentialState !== "present") return null;
   const savedTranslation = profile.textTranslation ?? (profile.provider === "deepLX" ? "deepLX" : "followService");

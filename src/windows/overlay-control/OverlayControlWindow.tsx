@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useLanguageNormalizationToast } from "../settings/useLanguageNormalizationToast";
+import { useCallback, useEffect, useRef } from "react";
 import { targetLanguagesForSettings } from "../../lib/providerCapabilities";
+import { useOverlayControlMode } from "../../lib/useOverlayControlMode";
+import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
 import {
   isTauri,
-  listenOverlayControlMode,
-  overlayControlGetState,
   overlayControlSetIslandWidth,
   overlayPopoverHide,
   overlayPopoverToggle,
@@ -11,6 +12,7 @@ import {
 } from "../../lib/ipc";
 import {
   selectHasRecognizingSourceDraft,
+  selectSessionErrorMessage,
   selectSessionStatusKind,
   useStore,
 } from "../../lib/store";
@@ -28,6 +30,9 @@ import "./overlay-control.css";
 /** Child window that morphs between a compact status island and its panel. */
 export function OverlayControlWindow() {
   const sessionStatusKind = useStore(selectSessionStatusKind);
+  const sessionErrorMessage = useStore(selectSessionErrorMessage);
+  const errorRequiresConfiguration = useStore(state => state.session.status.kind === "error" && audio3ErrorRequiresConfiguration(state.session.status.message));
+  const start = useStore(state => state.start);
   const sessionIsPaused = useStore((state) => state.session.isPaused);
   const sessionIsActive = useStore((state) => state.session.isActive);
   const togglePaused = useStore((state) => state.togglePaused);
@@ -43,13 +48,14 @@ export function OverlayControlWindow() {
     selectHasRecognizingSourceDraft,
   );
   const settings = useStore((state) => state.settings);
+  const trackLanguageChange = useLanguageNormalizationToast(settings);
   const selectProfile = useStore((state) => state.selectProfile);
   const switchSourceLanguage = useStore((state) => state.switchSourceLanguage);
   const switchTargetLanguage = useStore((state) => state.switchTargetLanguage);
   const saveSettings = useStore((state) => state.saveSettings);
   const setOverlayLocked = useStore((state) => state.setOverlayLocked);
   const showSettings = useStore((state) => state.showSettings);
-  const [mode, setMode] = useState<OverlayControlMode>(initialPreviewMode);
+  const [mode, setMode] = useOverlayControlMode(initialPreviewMode);
   const translationTarget = useRef({ profileId: settings.activeProfileId, language: settings.targetLanguage });
   useEffect(() => {
     if (translationTarget.current.profileId !== settings.activeProfileId || settings.targetLanguage !== "original") {
@@ -60,7 +66,11 @@ export function OverlayControlWindow() {
     const targets = targetLanguagesForSettings(settings);
     const previous = translationTarget.current.profileId === settings.activeProfileId ? translationTarget.current.language : "original";
     const target = enabled ? "original" : previous !== "original" && targets.includes(previous) ? previous : targets.find(language => language !== "original");
-    if (target) await switchTargetLanguage(target);
+    if (target) {
+      const finishLanguageChange = trackLanguageChange(target);
+      try { await switchTargetLanguage(target); finishLanguageChange(true); }
+      catch (error) { finishLanguageChange(false); throw error; }
+    }
   };
 
   const toggle = useCallback(() => {
@@ -69,7 +79,7 @@ export function OverlayControlWindow() {
     } else {
       setMode((current) => (current === "panel" ? "island" : "panel"));
     }
-  }, []);
+  }, [setMode]);
 
   const dismiss = useCallback(() => {
     if (isTauri) {
@@ -77,36 +87,10 @@ export function OverlayControlWindow() {
     } else {
       setMode("island");
     }
-  }, []);
+  }, [setMode]);
 
   const reportIslandWidth = useCallback((width: number) => {
     void overlayControlSetIslandWidth(width).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (!isTauri) return;
-    let disposed = false;
-    let eventSeen = false;
-    let removeListener: (() => void) | undefined;
-    void listenOverlayControlMode((nextMode) => {
-      eventSeen = true;
-      if (!disposed) setMode(nextMode);
-    }).then((unlisten) => {
-      if (disposed) {
-        unlisten();
-        return;
-      }
-      removeListener = unlisten;
-      void overlayControlGetState()
-        .then((nextMode) => {
-          if (!disposed && !eventSeen) setMode(nextMode);
-        })
-        .catch(() => {});
-    });
-    return () => {
-      disposed = true;
-      removeListener?.();
-    };
   }, []);
 
   useEffect(() => {
@@ -156,6 +140,8 @@ export function OverlayControlWindow() {
           isWaitingForFinalTranslation={isWaiting}
           isChangingSession={isChangingSession}
           isStopping={sessionStatusKind === "stopping"}
+          sessionErrorMessage={sessionErrorMessage}
+          onRetrySession={errorRequiresConfiguration ? undefined : start}
           onDismiss={dismiss}
           onTogglePaused={togglePaused}
           onSelectProfile={async (profileId) => { await selectProfile(profileId); }}

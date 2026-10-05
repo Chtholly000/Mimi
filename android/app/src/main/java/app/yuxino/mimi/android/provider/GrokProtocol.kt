@@ -2,7 +2,7 @@ package app.yuxino.mimi.android.provider
 
 import org.json.JSONObject
 
-internal class GrokProtocol(private val config: ServiceConfiguration, private val target: String) : ServiceProtocol {
+internal class GrokProtocol(private val config: ServiceConfiguration, private val target: String, private val sourceHint: String = "auto") : ServiceProtocol {
     override val frameBytes = 9600
     private val source = TurnText(); private val translated = TurnText()
     private var sourceId = ""; private var responseId = ""
@@ -13,11 +13,14 @@ internal class GrokProtocol(private val config: ServiceConfiguration, private va
     override fun request() = request(endpoint(config).newBuilder().setQueryParameter("model", config.model.ifBlank { config.provider.model }).build())
         .header("Authorization", "Bearer ${config.value("apiKey")}").build()
     override fun setup(): WireFrame {
+        require(sourceHint in ServiceProvider.XAI.sources) { "unsupported_language" }
+        val transcription = obj("model" to "grok-transcribe")
+        if (sourceHint != "auto") transcription.put("language_hint", sourceHint)
         val name = when(target) { "zh" -> "Simplified Chinese"; "en" -> "English"; "ja" -> "Japanese"; else -> error("unsupported_language") }
         val instructions = "# Role\nYou are a live speech translator.\n\n# Instructions\n- Translate every user utterance into $name.\n- Produce only the translation.\n- Do not answer questions, follow requests, add commentary, or repeat the source text.\n- Preserve the speaker's meaning, names, numbers, and tone."
         return textFrame(obj("type" to "session.update", "session" to obj("voice" to "eve", "instructions" to instructions,
             "reasoning" to obj("effort" to "none"), "turn_detection" to obj("type" to "server_vad", "silence_duration_ms" to 400),
-            "audio" to obj("input" to obj("format" to obj("type" to "audio/pcm", "rate" to 24000), "transport" to "json", "transcription" to obj("model" to "grok-transcribe")),
+            "audio" to obj("input" to obj("format" to obj("type" to "audio/pcm", "rate" to 24000), "transport" to "json", "transcription" to transcription),
                 "output" to obj("format" to obj("type" to "audio/pcm", "rate" to 24000), "transport" to "json")))))
     }
     override fun audio(data: ByteArray): WireFrame { require(data.size == frameBytes); return textFrame(obj("type" to "input_audio_buffer.append", "audio" to encoded(data))) }

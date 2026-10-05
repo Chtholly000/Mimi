@@ -1062,6 +1062,56 @@ mod streaming_tests {
     }
 
     #[tokio::test]
+    async fn custom_unsupported_language_remains_terminal_and_content_free() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = accept_async(stream).await.unwrap();
+            let run = socket.next().await.unwrap().unwrap().into_text().unwrap();
+            let run: serde_json::Value = serde_json::from_str(&run).unwrap();
+            assert_eq!(
+                run["payload"]["parameters"]["language_hints"],
+                serde_json::json!(["ja"])
+            );
+            socket.send(Message::Text(serde_json::json!({"header": {
+                "event":"task-failed", "task_id":run["header"]["task_id"],
+                "error_code":"UNSUPPORTED_LANGUAGE", "error_message":"synthetic-private-response"
+            }}).to_string().into())).await.unwrap();
+            let next = tokio::time::timeout(Duration::from_secs(2), socket.next())
+                .await
+                .unwrap();
+            assert!(matches!(next, None | Some(Ok(Message::Close(_)))));
+        });
+        let client = Audio3ASRClient::new_custom(
+            &format!("ws://{address}/asr"),
+            "fixture",
+            "fixture-key",
+            SourceLanguage::Japanese,
+        )
+        .unwrap();
+        let (sender, mut events) = provider_event_channel();
+        client.set_event_sender(sender).await;
+        let token = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+        assert_eq!(
+            client
+                .connect("fixture-task")
+                .await
+                .unwrap_err()
+                .to_string(),
+            token
+        );
+        assert_eq!(
+            events.recv().await,
+            Some(LiveTranslateServerEvent::Error {
+                code: token.into(),
+                message: token.into()
+            })
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn setup_authentication_failure_remains_terminal_and_safe() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

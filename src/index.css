@@ -289,3 +289,13 @@ input:focus-visible,
 .settings-panel {
   animation: settings-panel-enter 160ms ease-out;
 }
+
+/* A custom endpoint's unknown language scope is an essential configuration limit. */
+.recognition-language-notice {
+  color: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.tray-card > .recognition-language-notice { padding: 0 12px 10px; }
+.overlay-control-panel .recognition-language-notice { padding: 4px 0; }

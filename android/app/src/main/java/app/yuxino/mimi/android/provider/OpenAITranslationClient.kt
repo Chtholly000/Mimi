@@ -157,13 +157,54 @@ internal fun buildTranslationRequest(model: String, input: String, sourceLanguag
         .put(JSONObject().put("role", "user").put("content", text)))
 }
 
-private fun translationLanguage(code: String, allowAuto: Boolean): String = when (code) {
-    "auto" -> if (allowAuto) "the automatically detected source language" else throw IllegalArgumentException("translation_language")
-    "zh", "zh-CN", "zh-Hans" -> if (allowAuto) "Chinese" else "Simplified Chinese"
-    "en" -> "English"
-    "ja" -> "Japanese"
-    "ko" -> "Korean"
-    else -> code.also { require(it.matches(Regex("[a-zA-Z]{2,8}(-[a-zA-Z0-9]{2,8}){0,2}"))) { "translation_language" } }
+/** Names this adapter can encode; actual support is determined by the configured model. */
+internal val OPENAI_COMPATIBLE_TARGET_LANGUAGE_NAMES: Map<String, String> = linkedMapOf(
+    "zh" to "Simplified Chinese",
+    "en" to "English",
+    "ja" to "Japanese",
+    "zh_tw" to "Traditional Chinese",
+    "ko" to "Korean",
+    "ru" to "Russian",
+    "es" to "Spanish",
+    "fr" to "French",
+    "pt" to "Portuguese",
+    "de" to "German",
+    "it" to "Italian",
+    "th" to "Thai",
+    "vi" to "Vietnamese",
+    "id" to "Indonesian",
+    "ms" to "Malay",
+    "ar" to "Arabic",
+    "hi" to "Hindi",
+    "he" to "Hebrew",
+    "ur" to "Urdu",
+    "bn" to "Bengali",
+    "pl" to "Polish",
+    "nl" to "Dutch",
+    "tr" to "Turkish",
+    "km" to "Khmer",
+    "cs" to "Czech",
+    "sv" to "Swedish",
+    "hu" to "Hungarian",
+    "da" to "Danish",
+    "fi" to "Finnish",
+    "tl" to "Tagalog",
+    "fa" to "Persian",
+)
+
+private fun translationLanguage(code: String, allowAuto: Boolean): String {
+    if (!allowAuto) return OPENAI_COMPATIBLE_TARGET_LANGUAGE_NAMES[code] ?: when (code) {
+        "zh-CN", "zh-Hans" -> "Simplified Chinese"
+        else -> throw IllegalArgumentException("translation_language")
+    }
+    return when (code) {
+        "auto" -> "the automatically detected source language"
+        "zh", "zh-CN", "zh-Hans" -> "Chinese"
+        "en" -> "English"
+        "ja" -> "Japanese"
+        "ko" -> "Korean"
+        else -> code.also { require(it.matches(Regex("[a-zA-Z]{2,8}(-[a-zA-Z0-9]{2,8}){0,2}"))) { "translation_language" } }
+    }
 }
 
 /** Only the final assistant content is displayable; ChatMock may prepend complete reasoning blocks. */

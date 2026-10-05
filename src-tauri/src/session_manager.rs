@@ -156,7 +156,7 @@ impl MTBudgetScope {
         profile_id: String,
         configuration: &LiveTranslationConfiguration,
     ) -> Option<Self> {
-        let route = if configuration.provider.is_custom_speech() {
+        let route = if configuration.provider.is_standalone_asr() {
             if !configuration.target_language.translates_audio() {
                 return None;
             }
@@ -458,7 +458,7 @@ fn apply_establish_failure_state(
     error: String,
     is_recovering: bool,
 ) {
-    if is_recovering && !capture_error_requires_user_action(&error) {
+    if is_recovering && !session_error_requires_user_action(&error) {
         controller.begin_connecting();
     } else {
         controller.did_fail(error);
@@ -467,13 +467,37 @@ fn apply_establish_failure_state(
 
 /// These fixed application errors cannot improve through automatic reconnect.
 /// Starting again is an explicit user action after authorization or system stop.
-fn capture_error_requires_user_action(error: &str) -> bool {
-    matches!(
-        error,
-        "System audio capture permission was denied."
-            | "Microphone capture permission was denied."
-            | "System audio capture was stopped by the user."
-    )
+fn session_error_requires_user_action(error: &str) -> bool {
+    crate::core::protocols::audio3::failure_requires_configuration(error)
+        || matches!(
+            error,
+            "System audio capture permission was denied."
+                | "Microphone capture permission was denied."
+                | "System audio capture was stopped by the user."
+                | "credential_authentication_failed"
+                | "invalid_configuration"
+        )
+}
+
+/// A successful repair may retire only the error observed before that write.
+fn clear_stale_configuration_error(
+    controller: &mut TranslationSessionController,
+    expected: Option<&(u64, String)>,
+    current_epoch: u64,
+    changed: bool,
+) -> bool {
+    let Some((epoch, error)) = expected else {
+        return false;
+    };
+    if !changed
+        || *epoch != current_epoch
+        || !crate::core::protocols::audio3::failure_requires_configuration(error)
+        || controller.state.status != SessionStatus::Error(error.clone())
+    {
+        return false;
+    }
+    controller.did_stop();
+    true
 }
 
 fn source_switch_requires_reconnect(
@@ -609,6 +633,22 @@ fn resume_failure_is_still_owned(
         && failure_epoch == current_epoch
         && matches!(status, SessionStatus::Error(message) if message == error)
         && active_generation == NO_GENERATION
+}
+
+/// Ownership validation and paused-state restoration share the lifecycle gate.
+/// Stop may claim a newer epoch immediately, but its final state must run after
+/// this restoration or make the ownership check fail before any state is changed.
+async fn restore_failed_resume(
+    lifecycle_lock: Arc<TokioMutex<()>>,
+    owns_failure: impl FnOnce() -> bool,
+    restore: impl FnOnce(),
+) -> bool {
+    let _lifecycle = lifecycle_lock.lock_owned().await;
+    if !owns_failure() {
+        return false;
+    }
+    restore();
+    true
 }
 
 fn cancelled_recovery_attempt_is_retryable(
@@ -1155,6 +1195,39 @@ impl SessionManager {
             Err("Listening settings cannot be changed while a session is active.".into())
         } else {
             Ok(guard)
+        }
+    }
+
+    /// Called under the settings mutation guard before a persisted repair.
+    pub fn configuration_failure_snapshot(&self) -> Option<(u64, String)> {
+        let controller = self.controller.lock().unwrap();
+        match &controller.state.status {
+            SessionStatus::Error(error)
+                if crate::core::protocols::audio3::failure_requires_configuration(error)
+                    && self.active_generation.load(Ordering::SeqCst) == NO_GENERATION =>
+            {
+                Some((
+                    self.lifecycle_sequence.load(Ordering::SeqCst),
+                    error.clone(),
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Does not start capture, erase subtitles or clear a newer session's error.
+    pub fn configuration_saved(self: &Arc<Self>, expected: Option<(u64, String)>, changed: bool) {
+        if self.active_generation.load(Ordering::SeqCst) != NO_GENERATION {
+            return;
+        }
+        let cleared = clear_stale_configuration_error(
+            &mut self.controller.lock().unwrap(),
+            expected.as_ref(),
+            self.lifecycle_sequence.load(Ordering::SeqCst),
+            changed,
+        );
+        if cleared {
+            self.publish_state();
         }
     }
 
@@ -2205,7 +2278,7 @@ impl SessionManager {
         pipeline_log!("session stopped");
     }
 
-    pub async fn toggle_paused(self: &Arc<Self>) {
+    pub async fn toggle_paused(self: &Arc<Self>) -> Result<(), String> {
         if self.is_ui_test() {
             let paused = self.is_paused.load(Ordering::SeqCst);
             self.is_paused.store(!paused, Ordering::SeqCst);
@@ -2215,12 +2288,13 @@ impl SessionManager {
                 self.controller.lock().unwrap().did_pause();
             }
             self.publish_state();
-            return;
+            return Ok(());
         }
         if self.is_paused() {
-            self.resume().await;
+            self.resume().await
         } else {
             self.pause().await;
+            Ok(())
         }
     }
 
@@ -2261,9 +2335,9 @@ impl SessionManager {
         pipeline_log!("session paused");
     }
 
-    pub async fn resume(self: &Arc<Self>) {
+    pub async fn resume(self: &Arc<Self>) -> Result<(), String> {
         if !self.can_resume_current_session() {
-            return;
+            return Ok(());
         }
         let _operation = self.begin_lifecycle_operation();
         let resume_generation = self.next_lifecycle_request();
@@ -2271,7 +2345,7 @@ impl SessionManager {
         if !self.is_lifecycle_request_current(resume_generation)
             || !self.can_resume_current_session()
         {
-            return;
+            return Ok(());
         }
         pipeline_log!("session resume requested");
         self.record_diagnostic_event(DiagnosticEvent::Lifecycle {
@@ -2283,33 +2357,40 @@ impl SessionManager {
             .store(resume_generation, Ordering::SeqCst);
         self.retag_active_settings(resume_generation);
         drop(lifecycle);
-        let resumed = self.establish_session(resume_generation).await;
-        match resumed {
+        let error = match self.establish_session(resume_generation).await {
             Ok(()) => {
                 pipeline_log!("session resumed");
-                return;
+                return Ok(());
             }
-            Err(error) if error == SESSION_START_CANCELLED => return,
-            Err(error) => {
-                let failure_epoch = resume_generation.wrapping_add(1);
-                let _lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
-                let status = self.controller.lock().unwrap().state.status.clone();
-                if !resume_failure_is_still_owned(
+            Err(error) if error == SESSION_START_CANCELLED => return Ok(()),
+            Err(error) => error,
+        };
+        let restored = restore_failed_resume(
+            Arc::clone(&self.lifecycle_lock),
+            || {
+                resume_failure_is_still_owned(
                     &error,
-                    failure_epoch,
+                    resume_generation.wrapping_add(1),
                     self.lifecycle_sequence.load(Ordering::SeqCst),
-                    &status,
+                    &self.controller.lock().unwrap().state.status,
                     self.active_generation.load(Ordering::SeqCst),
-                ) {
-                    return;
-                }
-            }
+                )
+            },
+            || {
+                self.set_active_settings(NO_GENERATION, paused_configuration);
+                self.is_paused.store(true, Ordering::SeqCst);
+                self.controller.lock().unwrap().did_pause();
+            },
+        )
+        .await;
+        if !restored {
+            return Ok(());
         }
-        self.set_active_settings(NO_GENERATION, paused_configuration);
-        self.is_paused.store(true, Ordering::SeqCst);
-        self.controller.lock().unwrap().did_pause();
-        self.publish_state();
+        // Deliver the restored paused state before rejecting the IPC action.
+        // A newer stop/resume can still win; publish only its current snapshot.
+        self.publish_state_now().await;
         pipeline_log!("session resume failed; remaining paused");
+        Err(error)
     }
 
     /// The compact audio switches are explicit live reconfiguration. Preserve
@@ -2480,11 +2561,27 @@ impl SessionManager {
         if current_profile.id == profile_id {
             return Ok(());
         }
+        let configuration_failure = self.configuration_failure_snapshot();
         let (_, profiles) = self.settings.profile_catalog()?;
         let profile = profiles
             .iter()
             .find(|profile| profile.id == profile_id)
             .ok_or_else(|| "The service profile does not exist.".to_string())?;
+        let apple_support = if profile.provider == ProviderKind::AppleSpeech {
+            if self.is_ui_test() {
+                return Err("apple_speech_ui_test_unavailable".into());
+            }
+            let support = crate::apple_speech_support::refresh().await?;
+            if !support.available {
+                return Err("apple_speech_unavailable".into());
+            }
+            if !self.is_lifecycle_request_current(switch_epoch) {
+                return Err("profile_switch_superseded".into());
+            }
+            Some(support)
+        } else {
+            None
+        };
         let live = action != ProfileSwitchAction::SelectOnly;
         // Validate before persistence: an incomplete profile must not replace
         // the working session. UI fixtures never resolve credentials.
@@ -2493,6 +2590,15 @@ impl SessionManager {
         } else {
             None
         };
+        if let (Some(support), Some(configuration)) = (&apple_support, &proposed) {
+            crate::apple_speech_support::validate_profile_source(
+                support,
+                profile,
+                configuration.source_language,
+                configuration.target_language,
+                true,
+            )?;
+        }
         if live {
             let target = self.settings.preferences().target_language;
             let current_rate = self
@@ -2529,41 +2635,73 @@ impl SessionManager {
                 },
             )?;
         }
+        // The persisted selection repairs only the failure observed under
+        // this lifecycle guard. Keep subtitles and never start an idle session.
+        self.configuration_saved(configuration_failure, true);
         self.publish_settings();
         if action == ProfileSwitchAction::Reconnect {
             drop(lifecycle);
-            self.reconnect_if_current(switch_epoch).await;
+            return self
+                .try_reconnect_if_current(switch_epoch)
+                .await
+                .map_err(|error| {
+                    if error == "language_switch_superseded" {
+                        "profile_switch_superseded".into()
+                    } else {
+                        error
+                    }
+                });
         }
         Ok(())
     }
 
     /// Quick-switches the source language, reconnecting when needed.
     /// Source changes preserve the single Turbo path for every provider.
-    pub async fn switch_source_language(self: &Arc<Self>, language: SourceLanguage) {
+    pub async fn switch_source_language(
+        self: &Arc<Self>,
+        language: SourceLanguage,
+    ) -> Result<(), String> {
         let switch_epoch = self.lifecycle_sequence.load(Ordering::SeqCst);
-        let lifecycle = match self.settings_mutation_guard(false).await {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
+        let lifecycle = self
+            .settings_mutation_guard(false)
+            .await
+            .map_err(|_| "source_switch_busy".to_string())?;
         if !self.is_lifecycle_request_current(switch_epoch) {
-            return;
+            return Err("source_switch_superseded".into());
         }
         let status = self.controller.lock().unwrap().state.status.clone();
         if !pipeline_settings_mutation_is_allowed(
             &status,
             self.lifecycle_operations.load(Ordering::SeqCst),
         ) {
-            return;
+            return Err("source_switch_busy".into());
         }
-        let profile = match self.settings.active_profile() {
-            Ok(profile) => profile,
-            Err(_) => return,
-        };
+        let configuration_failure = self.configuration_failure_snapshot();
+        let profile = self
+            .settings
+            .active_profile()
+            .map_err(|_| "source_switch_profile".to_string())?;
         let provider = profile.effective_provider();
         let prefs = self.settings.preferences();
+        if provider == ProviderKind::AppleSpeech {
+            // Validate once while holding the lifecycle guard. Refusals must
+            // reach IPC instead of looking like a successful language change.
+            let support = crate::apple_speech_support::refresh().await?;
+            let installed_required = self.has_active_session() || self.is_paused();
+            crate::apple_speech_support::validate_profile_source(
+                &support,
+                &profile,
+                language,
+                prefs.target_language,
+                installed_required,
+            )?;
+            if !self.is_lifecycle_request_current(switch_epoch) {
+                return Err("source_switch_superseded".into());
+            }
+        }
         let capabilities = profile.capabilities(prefs.target_language);
         if !capabilities.source_languages.contains(&language) {
-            return;
+            return Err("source_switch_unsupported".into());
         }
         let (target_language, next_mode, needs_reconnect) = {
             // Menus and settings share explicit source-selection semantics:
@@ -2575,7 +2713,7 @@ impl SessionManager {
                 .source_languages
                 .contains(&language)
             {
-                return;
+                return Err("source_switch_unsupported".into());
             }
             let mode =
                 translation_mode_after_source_switch(provider, language, prefs.translation_mode);
@@ -2600,8 +2738,9 @@ impl SessionManager {
             .is_err()
         {
             pipeline_log!("preferences unavailable label=source_switch_write_failed");
-            return;
+            return Err("source_switch_save_failed".into());
         }
+        self.configuration_saved(configuration_failure, prefs.source_language != language);
         // A pause/stop can claim a newer lifecycle epoch while waiting for
         // this guard. Keep the current session's immutable settings snapshot
         // in sync before releasing the guard so a later pause/resume cannot
@@ -2620,11 +2759,8 @@ impl SessionManager {
         // every window (including the overlay control) must see the new
         // selection right away.
         self.publish_settings();
-        if self.is_paused() {
-            return;
-        }
-        if !needs_reconnect {
-            return;
+        if self.is_paused() || !needs_reconnect {
+            return Ok(());
         }
 
         pipeline_log!(
@@ -2633,7 +2769,9 @@ impl SessionManager {
             target_language.raw_value()
         );
         drop(lifecycle);
-        self.reconnect_if_current(switch_epoch).await;
+        // Preferences already identify the selected language. A reconnect
+        // failure remains a session error and is also returned to its control.
+        self.try_reconnect_if_current(switch_epoch).await
     }
 
     /// Switches between recognition-only and a supported translation target.
@@ -2672,6 +2810,19 @@ impl SessionManager {
         if prefs.target_language == target {
             return Ok(());
         }
+        if profile.provider == ProviderKind::AppleSpeech {
+            let support = crate::apple_speech_support::refresh().await?;
+            crate::apple_speech_support::validate_profile_source(
+                &support,
+                &profile,
+                prefs.source_language,
+                target,
+                self.has_active_session() || self.is_paused(),
+            )?;
+            if !self.is_lifecycle_request_current(switch_epoch) {
+                return Err("language_switch_superseded".into());
+            }
+        }
         let selection = profile.normalize_preferences(ProviderPreferences {
             source_language: prefs.source_language,
             target_language: target,
@@ -2686,7 +2837,7 @@ impl SessionManager {
                 configuration.source_language = selection.source_language;
                 configuration.target_language = selection.target_language;
                 configuration.translation_mode = selection.translation_mode;
-                if configuration.provider.is_custom_speech()
+                if configuration.provider.is_standalone_asr()
                     && target.translates_audio()
                     && configuration.text_credentials.is_none()
                 {
@@ -2719,8 +2870,7 @@ impl SessionManager {
             return Ok(());
         }
         drop(lifecycle);
-        self.reconnect_if_current(switch_epoch).await;
-        Ok(())
+        self.try_reconnect_if_current(switch_epoch).await
     }
 
     /// Quick-switches the translation mode, reconnecting when needed.
@@ -2782,14 +2932,20 @@ impl SessionManager {
 
     /// Tears down and re-establishes the session, keeping subtitles.
     async fn reconnect_if_current(self: &Arc<Self>, expected_epoch: u64) {
+        let _ = self.try_reconnect_if_current(expected_epoch).await;
+    }
+
+    /// Profile and language controls need the actual reconnect outcome.
+    /// Other lifecycle callers retain session-state-only error handling.
+    async fn try_reconnect_if_current(self: &Arc<Self>, expected_epoch: u64) -> Result<(), String> {
         let _operation = self.begin_lifecycle_operation();
         let Some(reconnect_generation) = self.advance_lifecycle_request_if_current(expected_epoch)
         else {
-            return;
+            return Err("language_switch_superseded".into());
         };
         let lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
         if !self.is_lifecycle_request_current(reconnect_generation) {
-            return;
+            return Err("language_switch_superseded".into());
         }
         let old_generation = self.active_generation.swap(NO_GENERATION, Ordering::SeqCst);
         self.stop_health_checks().await;
@@ -2802,13 +2958,21 @@ impl SessionManager {
         }
         let lifecycle = Arc::clone(&self.lifecycle_lock).lock_owned().await;
         if !self.is_lifecycle_request_current(reconnect_generation) {
-            return;
+            return Err("language_switch_superseded".into());
         }
         self.active_generation
             .store(reconnect_generation, Ordering::SeqCst);
         self.retag_active_settings(reconnect_generation);
         drop(lifecycle);
-        let _ = self.establish_session(reconnect_generation).await;
+        self.establish_session(reconnect_generation)
+            .await
+            .map_err(|error| {
+                if error == SESSION_START_CANCELLED {
+                    "language_switch_superseded".into()
+                } else {
+                    error
+                }
+            })
     }
 
     /// Machine-readable status kind for the global shortcut gate.
@@ -3601,6 +3765,12 @@ impl SessionManager {
         {
             return false;
         }
+        let records_network_latency = self
+            .active_settings
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_none_or(|configuration| configuration.provider != ProviderKind::AppleSpeech);
         let mut maximum_latency_ms = 0;
         for &source in self.sources() {
             let Some(client) = self.client_for_generation(source, generation) else {
@@ -3620,11 +3790,12 @@ impl SessionManager {
                         {
                             return false;
                         }
-                        *self.health_latency.lock().unwrap() = Some(HealthCheckLatency {
-                            generation,
-                            task_id,
-                            milliseconds: maximum_latency_ms.max(elapsed_ms),
-                        });
+                        *self.health_latency.lock().unwrap() =
+                            records_network_latency.then_some(HealthCheckLatency {
+                                generation,
+                                task_id,
+                                milliseconds: maximum_latency_ms.max(elapsed_ms),
+                            });
                     }
                     maximum_latency_ms = maximum_latency_ms.max(elapsed_ms);
                 }
@@ -3773,7 +3944,7 @@ impl SessionManager {
                         return;
                     }
                     recovery_epoch = failure_epoch;
-                    if capture_error_requires_user_action(&error) {
+                    if session_error_requires_user_action(&error) {
                         terminal_failure = Some(error);
                         break;
                     }
@@ -6351,6 +6522,94 @@ mod lifecycle_tests {
         assert_eq!(controller.state.status, SessionStatus::Idle);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failed_resume_keeps_the_gate_through_restore_so_a_waiting_stop_wins() {
+        let lifecycle = Arc::new(TokioMutex::new(()));
+        let sequence = Arc::new(AtomicU64::new(72));
+        let controller = Arc::new(Mutex::new(TranslationSessionController::default()));
+        let paused = Arc::new(AtomicBool::new(false));
+        let error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+        controller.lock().unwrap().did_fail(error);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let restore = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let sequence = Arc::clone(&sequence);
+            let controller = Arc::clone(&controller);
+            let paused = Arc::clone(&paused);
+            let failed_controller = Arc::clone(&controller);
+            tokio::spawn(async move {
+                restore_failed_resume(
+                    lifecycle,
+                    move || {
+                        resume_failure_is_still_owned(
+                            error,
+                            72,
+                            sequence.load(Ordering::SeqCst),
+                            &failed_controller.lock().unwrap().state.status,
+                            NO_GENERATION,
+                        )
+                    },
+                    move || {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                        paused.store(true, Ordering::SeqCst);
+                        controller.lock().unwrap().did_pause();
+                    },
+                )
+                .await
+            })
+        };
+        entered_rx.await.unwrap();
+        let (claimed_tx, claimed_rx) = tokio::sync::oneshot::channel();
+        let stop = {
+            let lifecycle = Arc::clone(&lifecycle);
+            let sequence = Arc::clone(&sequence);
+            let controller = Arc::clone(&controller);
+            let paused = Arc::clone(&paused);
+            tokio::spawn(async move {
+                sequence.fetch_add(1, Ordering::SeqCst);
+                claimed_tx.send(lifecycle.try_lock().is_err()).unwrap();
+                let _stop_guard = lifecycle.lock_owned().await;
+                paused.store(false, Ordering::SeqCst);
+                controller.lock().unwrap().did_stop();
+            })
+        };
+        let stop_waited_for_restore = claimed_rx.await.unwrap();
+        release_tx.send(()).unwrap();
+        assert!(restore.await.unwrap());
+        stop.await.unwrap();
+        assert!(stop_waited_for_restore);
+        assert_eq!(controller.lock().unwrap().state.status, SessionStatus::Idle);
+        assert!(!paused.load(Ordering::SeqCst));
+        assert_eq!(sequence.load(Ordering::SeqCst), 73);
+    }
+
+    #[tokio::test]
+    async fn failed_resume_skips_restore_after_a_newer_stop_has_finished() {
+        let lifecycle = Arc::new(TokioMutex::new(()));
+        let controller = Mutex::new(TranslationSessionController::default());
+        let restored = AtomicBool::new(false);
+        assert!(
+            !restore_failed_resume(
+                lifecycle,
+                || {
+                    resume_failure_is_still_owned(
+                        "synthetic_failure",
+                        72,
+                        73,
+                        &controller.lock().unwrap().state.status,
+                        NO_GENERATION,
+                    )
+                },
+                || restored.store(true, Ordering::SeqCst),
+            )
+            .await
+        );
+        assert!(!restored.load(Ordering::SeqCst));
+        assert_eq!(controller.lock().unwrap().state.status, SessionStatus::Idle);
+    }
+
     #[test]
     fn manual_start_during_recovery_backoff_wins_the_epoch() {
         let recovery_failure_epoch = 72;
@@ -6657,17 +6916,20 @@ mod lifecycle_tests {
     }
 
     #[test]
-    fn recovery_permission_failures_keep_the_actual_error_and_require_manual_restart() {
+    fn recovery_configuration_and_permission_failures_keep_the_actual_error() {
         for error in [
             "System audio capture permission was denied.",
             "Microphone capture permission was denied.",
             "System audio capture was stopped by the user.",
+            "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE",
+            "audio3_error.setup.request.CLIENT_ERROR",
+            "audio3_error.setup.authentication.INVALID_API_KEY",
         ] {
             let mut controller = TranslationSessionController::default();
             controller.begin_connecting();
             apply_establish_failure_state(&mut controller, error.into(), true);
             assert_eq!(controller.state.status, SessionStatus::Error(error.into()));
-            assert!(capture_error_requires_user_action(error));
+            assert!(session_error_requires_user_action(error));
             assert!(!SessionStateEvent::from(&controller.state).is_active);
         }
         for error in [
@@ -6675,8 +6937,61 @@ mod lifecycle_tests {
             "System audio capture could not be started.",
             "transport_error",
             "Audio capture setup timed out.",
+            "audio3_error.setup.timeout.CLIENT_ERROR",
+            "audio3_error.recognition.service.SERVER_ERROR",
         ] {
-            assert!(!capture_error_requires_user_action(error));
+            assert!(!session_error_requires_user_action(error));
+        }
+    }
+
+    #[test]
+    fn persisted_configuration_repair_restores_idle_without_losing_subtitles() {
+        let error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+        let mut controller = TranslationSessionController::default();
+        seed_ui_test_live_subtitles(&mut controller, AudioInput::System);
+        controller.did_fail(error);
+        let subtitles = controller.state.subtitles.clone();
+        let expected = Some((42, error.to_string()));
+        assert!(!clear_stale_configuration_error(
+            &mut controller,
+            expected.as_ref(),
+            42,
+            false
+        ));
+        assert!(clear_stale_configuration_error(
+            &mut controller,
+            expected.as_ref(),
+            42,
+            true
+        ));
+        assert_eq!(controller.state.status, SessionStatus::Idle);
+        assert_eq!(controller.state.subtitles, subtitles);
+        assert!(!SessionStateEvent::from(&controller.state).is_active);
+    }
+
+    #[test]
+    fn configuration_repair_never_clears_newer_or_unrelated_failures() {
+        let old = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+        let expected = Some((42, old.to_string()));
+        for (status, epoch) in [
+            (SessionStatus::Error(old.into()), 43),
+            (
+                SessionStatus::Error("audio3_error.setup.authentication.INVALID_API_KEY".into()),
+                42,
+            ),
+            (SessionStatus::Error("transport_error".into()), 42),
+            (SessionStatus::Listening, 42),
+            (SessionStatus::Connecting, 42),
+        ] {
+            let mut controller = TranslationSessionController::default();
+            controller.state.status = status.clone();
+            assert!(!clear_stale_configuration_error(
+                &mut controller,
+                expected.as_ref(),
+                epoch,
+                true
+            ));
+            assert_eq!(controller.state.status, status);
         }
     }
 

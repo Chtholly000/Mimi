@@ -1,4 +1,7 @@
+import { speechLanguageGuidance } from "../../lib/speechLanguageGuidance";
 import { SettingsHelp } from "../settings/SettingsHelp";
+import { SessionErrorFeedback } from "../../components/SessionErrorFeedback";
+import { audio3ErrorRequiresConfiguration } from "../../lib/audio3Errors";
 import { useDesktopShortcuts } from "../../lib/useDesktopShortcuts";
 import { Select } from "../../components/Select";
 import { LanguageSelect } from "../../components/LanguageSelect";
@@ -6,7 +9,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon, type IconName } from "../../components/Icon";
 import { I18N, providerDisplayName } from "../../lib/i18n";
-import { profileErrorMessage } from "../../lib/connectionDiagnostics";
+import { languageActionErrorMessage, profileErrorMessage, sessionActionErrorMessage } from "../../lib/connectionDiagnostics";
 import { isTauri } from "../../lib/ipc";
 import {
   activeServiceProfile,
@@ -19,7 +22,6 @@ import {
   useStore,
 } from "../../lib/store";
 import {
-  SOURCE_LANGUAGE_DISPLAY_NAMES,
   TARGET_LANGUAGE_DISPLAY_NAMES,
   targetLanguageTranslatesAudio,
   type SettingsSnapshot,
@@ -29,7 +31,6 @@ import {
 import { subtitleDisplayShortcut } from "../../lib/subtitleDisplay";
 import type { SubtitleDisplayMode } from "../../lib/types";
 import {
-  actionErrorMessage,
   deriveTrayPresentation,
   hasSubtitleContent,
   type TrayActionPresentation,
@@ -63,6 +64,7 @@ export function TrayPanel() {
   // each selector returns only the primitive state rendered by the tray.
   const sessionStatusKind = useStore(selectSessionStatusKind);
   const sessionErrorMessage = useStore(selectSessionErrorMessage);
+  const errorRequiresConfiguration = useStore(state => state.session.status.kind === "error" && audio3ErrorRequiresConfiguration(state.session.status.message));
   const isPaused = useStore((state) => state.session.isPaused);
   const subtitleHasContent = useStore((state) =>
     hasSubtitleContent(state.session.subtitles),
@@ -101,7 +103,7 @@ export function TrayPanel() {
   const sourcePickerDisabled =
     anyActionPending ||
     !presentation.canChangeSourceLanguage ||
-    sourceLanguages.length === 1;
+    sourceLanguages.length <= 1;
 
   const performAction = (
     name: PendingAction,
@@ -113,16 +115,20 @@ export function TrayPanel() {
     setOperationError(null);
     void operation()
       .catch((error: unknown) => {
+        const current = useStore.getState().session;
+        if (name === "resume" && (!current.isActive || !current.isPaused)) return;
         setOperationError(
           name === "quit"
             ? I18N.tray.quitFailed
-            : name === "profile"
-              ? profileErrorMessage(error)
+            : name === "language"
+              ? languageActionErrorMessage(error, I18N.settings.profileActionFailed)
+              : name === "profile"
+                ? profileErrorMessage(error)
               : name === "dock"
                 ? I18N.settings.dockSaveFailed
                 : name === "intermediate"
                   ? I18N.settings.settingSaveFailed(I18N.settings.showIntermediateSubtitles)
-                  : actionErrorMessage(error, I18N.settings.profileActionFailed),
+                  : sessionActionErrorMessage(error, I18N.settings.sessionActionFailed),
         );
       })
       .finally(() => {
@@ -193,7 +199,7 @@ export function TrayPanel() {
       event.preventDefault();
       void hideTrayPanel().catch((error: unknown) => {
         setOperationError(
-          actionErrorMessage(error, I18N.settings.profileActionFailed),
+          sessionActionErrorMessage(error, I18N.settings.profileActionFailed),
         );
       });
     };
@@ -218,7 +224,7 @@ export function TrayPanel() {
           <span className="tray-status" aria-live="polite">
             <span className="tray-status__dot" aria-hidden="true" />
             <span>
-              {statusText(presentation.statusKind, sessionErrorMessage)}
+              {statusText(presentation.statusKind)}
             </span>
           </span>
         </span>
@@ -246,7 +252,13 @@ export function TrayPanel() {
         </span>
       </header>
 
-      <div
+      {sessionStatusKind === "error" && <SessionErrorFeedback
+        message={sessionErrorMessage ?? I18N.settings.sessionError}
+        onConfigure={() => performAction("settings", () => showSettings("service"))}
+        onRetry={errorRequiresConfiguration || presentation.primaryAction.action === "configure" ? undefined : () => runSessionAction("start")}
+        disabled={anyActionPending}
+      />}
+      {sessionStatusKind !== "error" && <div
         className="tray-session-actions"
         data-layout={presentation.secondaryAction ? "split" : "single"}
       >
@@ -265,7 +277,7 @@ export function TrayPanel() {
             secondary
           />
         )}
-      </div>
+      </div>}
 
       <div className="tray-card" aria-label={I18N.settings.subtitleTitle}>
         <div className="tray-setting-row tray-setting-row--profile" aria-busy={pendingAction === "profile"}>
@@ -293,17 +305,18 @@ export function TrayPanel() {
             <Icon name="languages" />
           </span>
           <span className="tray-setting-row__copy">
-            <span>{I18N.tray.sourceLanguage} <SettingsHelp text={I18N.settings.recognitionLanguageHelp} label={I18N.settings.helpLabel} /></span>
+            <span>{I18N.tray.sourceLanguage} <SettingsHelp text={speechLanguageGuidance(settings).help} label={I18N.settings.helpLabel} /></span>
             <small>{translationSummary(settings)}</small>
           </span>
           <span className="tray-select-wrap">
             <LanguageSelect label={I18N.tray.sourceLanguage} value={settings.sourceLanguage}
               disabled={sourcePickerDisabled}
-              options={sourceLanguages.map((language) => ({ value: language, label: SOURCE_LANGUAGE_DISPLAY_NAMES[language] }))}
+              options={sourceLanguages.map((language) => ({ value: language, label: speechLanguageGuidance(settings).optionLabel(language) }))}
               onChange={(value) => performAction("language", () => switchSourceLanguage(value as SourceLanguage))} />
           </span>
         </div>
 
+        {speechLanguageGuidance(settings).notice && <div className="recognition-language-notice">{speechLanguageGuidance(settings).notice}</div>}
         <span className="tray-card__divider" />
 
         <div className="tray-setting-row tray-setting-row--display" title={nativeShortcuts ? subtitleDisplayShortcut() : undefined}>
@@ -603,7 +616,6 @@ function ToolButton({
 
 function statusText(
   kind: TrayStatusKind,
-  sessionErrorMessage: string | null,
 ): string {
   switch (kind) {
     case "ready":
@@ -619,7 +631,7 @@ function statusText(
     case "stopping":
       return I18N.tray.stopping;
     case "error":
-      return sessionErrorMessage ?? I18N.settings.profileActionFailed;
+      return I18N.settings.sessionError;
   }
 }
 

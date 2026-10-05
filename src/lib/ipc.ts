@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { observeSessionWireReceived } from "./developmentTrace";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
+  AppleSpeechSupport,
   ProfileOptionsDraft,
   AudioInput,
   AudioSource,
@@ -40,6 +41,15 @@ export const isTauri =
 // ---------------------------------------------------------------------------
 // Commands (frontend -> Rust)
 // ---------------------------------------------------------------------------
+
+export function getAppleSpeechSupport(): Promise<AppleSpeechSupport> {
+  return isTauri ? invoke<AppleSpeechSupport>("get_apple_speech_support") : Promise.resolve({ available: false, languages: [] });
+}
+
+/** The explicit resource action may download a selected language; querying support never does. */
+export function prepareAppleSpeechLanguage(sourceLanguage: Exclude<SourceLanguage, "auto">): Promise<AppleSpeechSupport> {
+  return invoke<AppleSpeechSupport>("prepare_apple_speech_language", { sourceLanguage });
+}
 
 export function sessionStart(): Promise<void> {
   return invoke("session_start");
@@ -125,7 +135,12 @@ export function profileUpdate(
   name: string | undefined,
   options?: ProfileOptionsDraft,
 ): Promise<SettingsSnapshot> {
-  return invoke<SettingsSnapshot>("profile_update", { profileId, name, ...options });
+  const { customSpeechSourceLanguages, ...otherOptions } = options ?? {};
+  return invoke<SettingsSnapshot>("profile_update", {
+    profileId, name, ...otherOptions,
+    ...(options && Object.hasOwn(options, "customSpeechSourceLanguages")
+      ? { customSpeechLanguagesPatch: { languages: customSpeechSourceLanguages ?? null } } : {}),
+  });
 }
 
 export function profileSelect(profileId: string): Promise<SettingsSnapshot> {
@@ -352,7 +367,7 @@ export function appDesktopShortcutCommands(): Promise<DesktopShortcutCommands | 
 export interface ConnectionDiagnostic {
   credential: "present" | "missing" | "unavailable" | "localDevUnavailable" | "serviceUnavailable" | "accessDenied" | "invalid";
   service: "available" | "unavailable" | "notTested";
-  reason: null | "credentialsMissing" | "credentialsUnavailable" | "localDevCredentialsUnavailable" | "credentialsServiceUnavailable" | "credentialsAccessDenied" | "invalidConfiguration" | "authenticationRejected" | "serviceRejected" | "timeout" | "unreachable" | "textTranslationNotConfigured";
+  reason: null | "credentialsMissing" | "credentialsUnavailable" | "localDevCredentialsUnavailable" | "credentialsServiceUnavailable" | "credentialsAccessDenied" | "invalidConfiguration" | "unsupportedLanguage" | "localRecognitionOverloaded" | "localRecognitionTimeout" | "authenticationRejected" | "serviceRejected" | "timeout" | "unreachable" | "textTranslationNotConfigured" | "appleSpeechAssetsMissing" | "appleSpeechLanguageUnsupported" | "appleSpeechUnavailable" | "appleSpeechRecognitionFailed";
   elapsedMs?: number | null;
 }
 export type ConnectionCheckStage = "speech" | "text";

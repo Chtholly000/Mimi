@@ -12,6 +12,8 @@ import xAI from "../assets/providers/xai.png";
 import deepL from "../assets/providers/deepl-blue.svg";
 import deepLDark from "../assets/providers/deepl-white.svg";
 import deepLX from "../assets/providers/deeplx.svg";
+import apple from "../assets/providers/apple-black.svg";
+import appleDark from "../assets/providers/apple-white.svg";
 import "./provider-icon.css";
 
 type IconProvider = ServiceProvider | Exclude<TextTranslation, "followService">;
@@ -26,6 +28,7 @@ const PROVIDER_ASSETS: Record<Exclude<IconProvider, "openAICompatible" | "chatMo
   xAIRealtime: xAI,
   deepL,
   deepLX,
+  appleSpeech: apple,
 };
 
 interface ProviderIconProps {
@@ -36,7 +39,7 @@ interface ProviderIconProps {
 
 /** Decorative service marks; adjacent text labels the actual provider or route. */
 export function ProviderIcon({ provider, size = 36, className }: ProviderIconProps) {
-  const darkAsset = provider === "openAIRealtime" ? openAIDark : provider === "deepL" ? deepLDark : null;
+  const darkAsset = provider === "openAIRealtime" ? openAIDark : provider === "deepL" ? deepLDark : provider === "appleSpeech" ? appleDark : null;
   return (
     <span
       className={["provider-icon", className].filter(Boolean).join(" ")}

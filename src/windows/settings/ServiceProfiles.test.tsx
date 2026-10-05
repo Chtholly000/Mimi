@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { diagnosticCopy, profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { I18N, providerDisplayName, setStoredUiLanguage } from "../../lib/i18n";
-import { profileCredentialEditorState, profileRevealCredential, testProfileConnection } from "../../lib/ipc";
+import { getAppleSpeechSupport, prepareAppleSpeechLanguage, profileCredentialEditorState, profileRevealCredential, testProfileConnection } from "../../lib/ipc";
 import { SERVICE_PROVIDERS, sourceLanguagesForSettings, targetLanguagesForSettings } from "../../lib/providerCapabilities";
 import { SOURCE_LANGUAGE_DISPLAY_NAMES, TARGET_LANGUAGE_DISPLAY_NAMES } from "../../lib/types";
 import type { ServiceProfile, SettingsSnapshot } from "../../lib/types";
@@ -17,7 +17,7 @@ const actions = vi.hoisted(() => ({
 }));
 const boot = vi.hoisted(() => ({ initializationStatus: "ready" as "ready" | "loading" | "error", initializationError: null as "timeout" | "unavailable" | null, init: vi.fn() }));
 vi.mock("../../lib/store", () => ({ useStore: (select: (state: typeof actions & typeof boot & { settings: { windowsAudioSource: string }; session: { isActive: boolean; isPaused: boolean } }) => unknown) => select({ ...actions, ...boot, settings: { windowsAudioSource: "" }, session: { isActive: false, isPaused: false } }) }));
-vi.mock("../../lib/ipc", () => ({ isTauri: false, testProfileConnection: vi.fn(), profileRevealCredential: vi.fn(), profileCredentialEditorState: vi.fn(), setOverlayPointerCursor: vi.fn() }));
+vi.mock("../../lib/ipc", () => ({ isTauri: false, getAppleSpeechSupport: vi.fn(), prepareAppleSpeechLanguage: vi.fn(), testProfileConnection: vi.fn(), profileRevealCredential: vi.fn(), profileCredentialEditorState: vi.fn(), setOverlayPointerCursor: vi.fn() }));
 
 const profile: ServiceProfile = { id: "synthetic", name: "Alibaba", provider: "alibabaCloud", credentialState: "unavailable" };
 const settings: SettingsSnapshot = {
@@ -39,6 +39,8 @@ beforeEach(() => {
   vi.mocked(testProfileConnection).mockReset();
   vi.mocked(profileRevealCredential).mockReset();
   vi.mocked(profileCredentialEditorState).mockReset().mockResolvedValue({ savedFields: ["apiKey"] });
+  vi.mocked(getAppleSpeechSupport).mockReset().mockResolvedValue({ available: false, languages: [] });
+  vi.mocked(prepareAppleSpeechLanguage).mockReset();
   boot.initializationStatus = "ready"; boot.initializationError = null; boot.init.mockReset().mockResolvedValue(undefined);
   setStoredUiLanguage("en");
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
@@ -49,6 +51,126 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 async function render(snapshot = settings, sessionStatusKind: "idle" | "error" = "idle") { await act(async () => root.render(<><ServiceProfiles settings={snapshot} sessionIsActive={false} sessionStatusKind={sessionStatusKind} /><SettingsToastRegion /></>)); }
+
+const appleSupport = { available: true, languages: [{ sourceLanguage: "en" as const, locale: "en-US", installed: false }, { sourceLanguage: "ja" as const, locale: "ja-JP", installed: true }] };
+const appleProfile: ServiceProfile = { id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "missing", speechCredentialState: "missing", textCredentialState: "missing", textTranslation: "followService" };
+function appleSettings(): SettingsSnapshot {
+  return { ...settings, profiles: [appleProfile], activeProfileId: appleProfile.id, sourceLanguage: "en", targetLanguage: "original", languageCapabilities: { profileId: appleProfile.id, provider: "appleSpeech", textTranslation: "followService", targetLanguage: "original", sourceLanguages: ["en", "ja"], targetLanguages: ["original"] } };
+}
+
+it("offers Apple only after this Mac reports availability and does not create it on preview", async () => {
+  let resolve!: (value: typeof appleSupport) => void;
+  vi.mocked(getAppleSpeechSupport).mockReturnValue(new Promise(done => { resolve = done; }));
+  await render();
+  await click(I18N.settings.addProfile);
+  expect(host.querySelector('[data-provider="appleSpeech"]')).toBeNull();
+  await act(async () => resolve(appleSupport));
+  expect(host.querySelector('.provider-option[data-provider="appleSpeech"] img')).not.toBeNull();
+  await previewProvider("appleSpeech");
+  expect(actions.createProfile).not.toHaveBeenCalled();
+  expect(prepareAppleSpeechLanguage).not.toHaveBeenCalled();
+});
+
+it("keeps Apple hidden after a failed check and exposes a sanitized retry", async () => {
+  vi.mocked(getAppleSpeechSupport).mockRejectedValueOnce(new Error("private-native-detail"));
+  await render();
+  await click(I18N.settings.addProfile);
+  expect(host.querySelector('.provider-option[data-provider="appleSpeech"]')).toBeNull();
+  expect(host.textContent).toContain(I18N.settings.appleSpeechLoadFailed);
+  expect(document.body.textContent).not.toContain("private-native-detail");
+  vi.mocked(getAppleSpeechSupport).mockResolvedValue(appleSupport);
+  await click(I18N.settings.retryLoadingSettings);
+  expect(host.querySelector('.provider-option[data-provider="appleSpeech"]')).not.toBeNull();
+});
+
+it("keeps a saved Apple profile editable but unusable on an unsupported device", async () => {
+  await render({ ...settings, targetLanguage: "original", profiles: [profile, {
+    ...appleProfile, credentialState: "present", speechCredentialState: "present",
+  }] });
+  await act(async () => host.querySelectorAll<HTMLButtonElement>(".service-row__edit")[1].click());
+  expect(host.querySelector(".service-detail__name input")).not.toBeNull();
+  expect(host.textContent).toContain(I18N.settings.appleSpeechUnavailable);
+  expect(host.querySelector(".service-detail__actions")?.textContent).not.toContain(I18N.settings.useProfile);
+  expect(actions.selectProfile).not.toHaveBeenCalled();
+});
+
+it.each(["zh", "en", "ja"] as const)("shows local Apple resources and independent stage controls without speech credentials in %s", async language => {
+  setStoredUiLanguage(language);
+  vi.mocked(getAppleSpeechSupport).mockResolvedValue(appleSupport);
+  await render(appleSettings());
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  expect(host.querySelector('.apple-speech-settings input[type="password"]')).toBeNull();
+  expect(host.textContent).toContain("en-US");
+  expect(host.textContent).toContain(I18N.settings.appleSpeechNotInstalled);
+  expect(host.textContent).toContain(I18N.settings.checkSpeechRecognition);
+  expect(host.textContent).toContain(I18N.settings.checkTextTranslation);
+  expect(host.querySelectorAll(".service-proxies .network-proxy-settings").length).toBeLessThanOrEqual(1);
+  const sources = host.querySelector('#translation-languages [role="group"]');
+  expect(sources?.textContent).toContain(SOURCE_LANGUAGE_DISPLAY_NAMES.en);
+  expect(sources?.textContent).toContain(SOURCE_LANGUAGE_DISPLAY_NAMES.ja);
+  expect(sources?.textContent).not.toContain(SOURCE_LANGUAGE_DISPLAY_NAMES.auto);
+  expect(profileRevealCredential).not.toHaveBeenCalled();
+  expect(prepareAppleSpeechLanguage).not.toHaveBeenCalled();
+  expect(actions.saveSettings).not.toHaveBeenCalled();
+});
+
+it("prepares only the explicitly chosen Apple language and blocks duplicate preparation", async () => {
+  vi.mocked(getAppleSpeechSupport).mockResolvedValue(appleSupport);
+  let resolve!: (value: typeof appleSupport) => void;
+  vi.mocked(prepareAppleSpeechLanguage).mockReturnValue(new Promise(done => { resolve = done; }));
+  await render(appleSettings());
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  await click(I18N.settings.appleSpeechPrepare);
+  expect(prepareAppleSpeechLanguage).toHaveBeenCalledExactlyOnceWith("en");
+  expect(host.textContent).toContain(I18N.settings.appleSpeechPreparing);
+  expect(host.querySelector<HTMLButtonElement>(".service-back")?.disabled).toBe(true);
+  const prepareButton = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === I18N.settings.appleSpeechPreparing)!;
+  expect(prepareButton.disabled).toBe(true);
+  await act(async () => prepareButton.click());
+  expect(prepareAppleSpeechLanguage).toHaveBeenCalledOnce();
+  await act(async () => resolve({ ...appleSupport, languages: appleSupport.languages.map(item => ({ ...item, installed: true })) }));
+  expect(host.textContent).toContain(I18N.settings.appleSpeechInstalled);
+  expect(host.querySelector<HTMLButtonElement>(".service-back")?.disabled).toBe(false);
+  expect(actions.saveSettings).not.toHaveBeenCalled();
+  expect(actions.saveProfileCredentials).not.toHaveBeenCalled();
+});
+
+it("retains a failed Apple preparation as retryable feedback without exposing native errors", async () => {
+  vi.mocked(getAppleSpeechSupport).mockResolvedValue(appleSupport);
+  vi.mocked(prepareAppleSpeechLanguage).mockRejectedValue(new Error("private-native-path"));
+  await render(appleSettings());
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  await click(I18N.settings.appleSpeechPrepare);
+  expect(host.textContent).toContain(I18N.settings.appleSpeechPrepareFailed);
+  expect(document.body.textContent).not.toContain("private-native-path");
+  expect(host.querySelector<HTMLButtonElement>(".service-back")?.disabled).toBe(false);
+  expect([...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === I18N.settings.appleSpeechPrepare)?.disabled).toBe(false);
+});
+
+it("lets a user prepare another supported language without changing the active recognition language", async () => {
+  vi.mocked(getAppleSpeechSupport).mockResolvedValue(appleSupport);
+  vi.mocked(prepareAppleSpeechLanguage).mockResolvedValue({ ...appleSupport, languages: appleSupport.languages.map(item => ({ ...item, installed: true })) });
+  await render({ ...appleSettings(), sourceLanguage: "ja" });
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  expect(host.textContent).toContain("ja-JP");
+  await act(async () => host.querySelector<HTMLButtonElement>('.apple-speech-settings [role="combobox"]')!.click());
+  const english = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === SOURCE_LANGUAGE_DISPLAY_NAMES.en)!;
+  await act(async () => english.click());
+  expect(host.textContent).toContain("en-US");
+  await click(I18N.settings.appleSpeechPrepare);
+  expect(prepareAppleSpeechLanguage).toHaveBeenCalledExactlyOnceWith("en");
+  expect(actions.saveSettings).not.toHaveBeenCalled();
+});
+
+it("discards late Apple support failures after leaving the service surface", async () => {
+  let reject!: (error: Error) => void;
+  vi.mocked(getAppleSpeechSupport).mockReturnValue(new Promise((_, fail) => { reject = fail; }));
+  await render();
+  await act(async () => root.render(<><ServiceProfiles settings={settings} sessionIsActive={false} visible={false} /><SettingsToastRegion /></>));
+  await act(async () => reject(new Error("late-native-error")));
+  expect(host.textContent).not.toContain(I18N.settings.appleSpeechLoadFailed);
+  expect(host.querySelector(".settings-toast")).toBeNull();
+});
 it("shows a custom speech profile as ready for Original even when its independent translation key is missing", async () => {
   const custom: ServiceProfile = { ...profile, provider: "customDashScopeASR", credentialState: "missing", speechCredentialState: "present", textCredentialState: "missing", textTranslation: "deepL" };
   await render({ ...settings, targetLanguage: "original", profiles: [custom] });
@@ -62,10 +184,13 @@ it.each(["en", "zh", "ja"].flatMap(language => ["alibabaCloud", "googleGeminiLiv
   setStoredUiLanguage(language);
   const snapshot: SettingsSnapshot = { ...settings, credentialStorage: "localDevFile", profiles: [{ ...profile, provider, credentialStorage: "localDevFile", credentialState: "present" }] };
   await render(snapshot);
+  expect(host.querySelectorAll(".services-toolbar button.settings-button")).toHaveLength(1);
+  expect(host.querySelector(".services-toolbar button.settings-button")?.textContent).toBe(I18N.settings.addProfile);
   expect(host.querySelector(".services-toolbar__count .settings-help-control__description")?.textContent).toContain(diagnosticCopy().localDevReadOnly);
   expect(host.querySelector(".services-hint")).toBeNull();
   await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
   expect(host.textContent).toContain(diagnosticCopy().localDevReadOnly);
+  expect([...host.querySelectorAll("button")].some(button => button.textContent === I18N.settings.addProfile)).toBe(false);
   expect(host.querySelector('input[type="password"]')).toBeNull();
   expect(host.querySelector(".credential-form")).toBeNull();
   expect([...host.querySelectorAll(".service-stage h3")].map(node => node.textContent)).toEqual(provider === "alibabaCloud" ? [I18N.settings.speechRecognition, I18N.settings.textTranslationLabel] : [I18N.settings.voiceTranslation]);
@@ -193,7 +318,7 @@ it.each(["zh", "en", "ja"] as const)("previews a provider and leaves settings un
   await render();
   await click(I18N.settings.addProfile);
   const options = [...host.querySelectorAll<HTMLButtonElement>(".provider-option")];
-  expect(options.map(option => option.dataset.provider)).toEqual(SERVICE_PROVIDERS);
+  expect(options.map(option => option.dataset.provider)).toEqual(SERVICE_PROVIDERS.filter(provider => provider !== "appleSpeech"));
   expect(options.slice(-2).map(option => option.dataset.provider)).toEqual(["customDashScopeASR", "customOpenAIASR"]);
   expect(host.querySelector(".provider-picker small, .provider-picker p")).toBeNull();
   expect(host.querySelector(".provider-picker__heading .settings-help-control__description")?.textContent).toBe(I18N.settings.chooseProviderDescription);
@@ -203,7 +328,7 @@ it.each(["zh", "en", "ja"] as const)("previews a provider and leaves settings un
   expect(actions.createProfile).not.toHaveBeenCalled();
   await click(I18N.settings.cancel);
   expect(document.querySelector(".provider-picker__preview")).toBeNull();
-  expect(host.querySelectorAll(".provider-option")).toHaveLength(SERVICE_PROVIDERS.length);
+  expect(host.querySelectorAll(".provider-option")).toHaveLength(SERVICE_PROVIDERS.length - 1);
   await previewProvider("alibabaCloud");
   await click(I18N.settings.cancel);
   expect(document.querySelector('[role="alertdialog"], [role="dialog"]')).toBeNull();
@@ -488,10 +613,16 @@ it.each(["openAIRealtime", "volcanoEngine", "tencentCloud", "baiduTranslate"] as
   await render(snapshot);
   await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
   const groups = [...host.querySelectorAll("#translation-languages [role=group]")];
-  expect(groups.map(group => [...group.querySelectorAll("button span")].map(node => node.textContent))).toEqual([
+  expect([...groups[0].querySelectorAll("button span")].map(node => node.textContent)).toEqual(
     sourceLanguagesForSettings(snapshot).map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]),
-    targetLanguagesForSettings(snapshot).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]),
-  ]);
+  );
+  const targets = targetLanguagesForSettings(snapshot).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]);
+  if (targets.length > 6) {
+    await act(async () => host.querySelector<HTMLButtonElement>(`#translation-languages [role="combobox"][aria-label="${I18N.settings.translateTo}"]`)!.click());
+    expect([...document.querySelectorAll('[role="option"]')].map(option => option.textContent)).toEqual(targets);
+  } else {
+    expect([...groups[1].querySelectorAll("button span")].map(node => node.textContent)).toEqual(targets);
+  }
   expect(host.querySelector(".service-language-more")).toBeNull();
   expect(testProfileConnection).not.toHaveBeenCalled();
   expect(profileRevealCredential).not.toHaveBeenCalled();
@@ -501,9 +632,16 @@ it.each(["deepL", "deepLX", "openAICompatible", "chatMock"] as const)("keeps %s 
   const snapshot = { ...settings, profiles: [{ ...profile, textTranslation }] };
   await render(snapshot);
   await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
-  expect(host.querySelectorAll("#translation-languages [role=combobox]")).toHaveLength(0);
-  const groups = [...host.querySelectorAll("#translation-languages [role=group]")];
-  expect(groups[1].textContent).toBe(targetLanguagesForSettings(snapshot).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]).join(""));
+  const targets = targetLanguagesForSettings(snapshot).map(language => TARGET_LANGUAGE_DISPLAY_NAMES[language]);
+  if (textTranslation === "openAICompatible" || textTranslation === "chatMock") {
+    expect(host.querySelectorAll("#translation-languages [role=combobox]")).toHaveLength(2);
+    await act(async () => host.querySelector<HTMLButtonElement>(`#translation-languages [role="combobox"][aria-label="${I18N.settings.translateTo}"]`)!.click());
+    expect([...document.querySelectorAll('[role="option"]')].map(option => option.textContent)).toEqual(targets);
+  } else {
+    expect(host.querySelectorAll("#translation-languages [role=combobox]")).toHaveLength(0);
+    const groups = [...host.querySelectorAll("#translation-languages [role=group]")];
+    expect(groups[1].textContent).toBe(targets.join(""));
+  }
   expect(testProfileConnection).not.toHaveBeenCalled();
 });
 
@@ -1148,6 +1286,37 @@ it("checks saved OpenAI credentials after reveal, then checks an actual secret e
 });
 
 
+it.each([true, false])("saves a declaration and reports normalized recognition when event-first is %s", async eventFirst => {
+  const custom: ServiceProfile = { ...profile, provider: "customDashScopeASR", textTranslation: "openAICompatible", customSpeechSourceLanguages: ["en", "fr"] };
+  const before: SettingsSnapshot = { ...settings, profiles: [custom], sourceLanguage: "fr" };
+  const after: SettingsSnapshot = { ...before, sourceLanguage: "auto", profiles: [{ ...custom, customSpeechSourceLanguages: ["en"] }] };
+  let resolve!: (value: SettingsSnapshot) => void;
+  actions.updateProfile.mockImplementationOnce(() => new Promise(value => { resolve = value; }));
+  await render(before);
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  const button = (label: string) => [...host.querySelectorAll<HTMLButtonElement>(".custom-speech-languages button")].find(item => item.textContent === label)!;
+  await act(async () => button(I18N.settings.customSpeechLanguagesEdit).click());
+  await act(async () => [...host.querySelectorAll<HTMLButtonElement>(".custom-speech-languages__choices button")].find(item => item.textContent === "Frenchfr")!.click());
+  await act(async () => button(I18N.settings.customSpeechLanguagesSave).click());
+  expect(actions.updateProfile).toHaveBeenCalledExactlyOnceWith(custom.id, undefined, { customSpeechSourceLanguages: ["en"] });
+  if (eventFirst) await render(after);
+  expect(host.textContent).not.toContain(I18N.settings.recognitionLanguageAdjusted("French", I18N.settings.recognitionServiceDefault));
+  await act(async () => resolve(after));
+  if (!eventFirst) await render(after);
+  expect(host.textContent).toContain(I18N.settings.recognitionLanguageAdjusted("French", I18N.settings.recognitionServiceDefault));
+  expect(host.querySelector(".custom-speech-languages__expanded")).toBeNull();
+  expect(host.querySelector(".custom-speech-languages__summary")?.textContent).toBe(I18N.settings.customSpeechLanguagesCount(1));
+});
+
+it("keeps language declaration edits locked during an active session", async () => {
+  const snapshot: SettingsSnapshot = { ...settings, profiles: [{ ...profile, provider: "customOpenAIASR" }] };
+  await render(snapshot);
+  await act(async () => host.querySelector<HTMLButtonElement>(".service-row__edit")!.click());
+  await act(async () => root.render(<><ServiceProfiles settings={snapshot} sessionIsActive={true} sessionStatusKind="listening" /><SettingsToastRegion /></>));
+  expect(host.querySelector<HTMLButtonElement>(".custom-speech-languages .settings-button")?.disabled).toBe(true);
+  expect(actions.updateProfile).not.toHaveBeenCalled();
+});
+
 it.each([false, true])("switches saved services while live or paused without unlocking edits (paused=%s)", async paused => {
   const other = { ...profile, id: "other", name: "Other model", credentialState: "present" as const };
   const snapshot = { ...settings, profiles: [profile, other] };
@@ -1179,4 +1348,23 @@ it("keeps the current service and shows a sanitized recording restriction when s
   expect(host.querySelector('.service-row[data-active="true"]')).toBe(host.querySelector(".service-row"));
   expect(host.querySelector(".settings-toast")?.textContent).toContain(I18N.settings.profileSwitchRecordingRequiresStop);
   expect(host.querySelectorAll<HTMLButtonElement>(".service-row__main")[1].disabled).toBe(false);
+});
+
+
+it("reports reconnect failure after the selected profile is already saved without a success toast", async () => {
+  const other: ServiceProfile = { ...profile, id: "other", credentialState: "present" };
+  const snapshot = { ...settings, profiles: [profile, other] };
+  const saved = { ...snapshot, activeProfileId: other.id };
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  let reject!: (reason: string) => void;
+  actions.selectProfile.mockReturnValue(new Promise<SettingsSnapshot>((_resolve, failure) => { reject = failure; }));
+  await act(async () => root.render(<><ServiceProfiles settings={snapshot} sessionIsActive sessionStatusKind="listening" /><SettingsToastRegion /></>));
+  await act(async () => host.querySelectorAll<HTMLButtonElement>(".service-row__main")[1].click());
+  await render(saved, "error");
+  await act(async () => reject(error));
+  expect(host.querySelector('.service-row[data-active="true"]')).toBe(host.querySelectorAll(".service-row")[1]);
+  expect(host.querySelector('.settings-toast[data-tone="error"]')?.textContent).toContain(profileErrorMessage(error));
+  expect(host.querySelector('.settings-toast[data-tone="success"]')).toBeNull();
+  expect(host.textContent).not.toContain(error);
+  expect(actions.selectProfile).toHaveBeenCalledExactlyOnceWith(other.id);
 });

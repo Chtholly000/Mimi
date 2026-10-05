@@ -1,6 +1,22 @@
+import { audio3ErrorMessage } from "./audio3Errors";
 import { afterEach, expect, it } from "vitest";
 import { I18N, setStoredUiLanguage } from "./i18n";
-import { connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
+import { sessionActionErrorMessage, languageActionErrorMessage, connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
+
+it.each(["zh", "en", "ja"] as const)("gives Apple resource and language recovery in %s without exposing runtime labels", language => {
+  setStoredUiLanguage(language);
+  expect(credentialErrorMessage("apple_speech_assets_missing")).toBe(I18N.settings.appleSpeechAssetsMissing);
+  expect(profileErrorMessage("apple_speech_language_unsupported")).toBe(I18N.settings.appleSpeechLanguageUnsupported);
+  expect(profileErrorMessage("apple_speech_translation_language_unsupported")).toBe(I18N.settings.appleSpeechTranslationLanguageUnsupported);
+  expect(I18N.settings.appleSpeechAssetsMissing).toContain(I18N.settings.appleSpeechResources);
+  expect(I18N.settings.appleSpeechAssetsMissing).toContain(I18N.settings.appleSpeechPrepare);
+  expect(I18N.settings.appleSpeechAssetsMissing).toContain(I18N.settings.sourceLanguage);
+  expect(credentialErrorMessage("apple_speech_unavailable")).toBe(I18N.settings.appleSpeechUnavailable);
+  for (const suffix of ["setup_timeout", "start_failed", "recognition_failed", "audio_failed", "not_connected", "result_backlog", "invalid_result", "finalize_timeout"]) {
+    expect(credentialErrorMessage(`apple_speech_${suffix}`)).toBe(I18N.settings.appleSpeechRecognitionFailed);
+  }
+  expect(profileErrorMessage("apple_speech_prepare_failed: private-native-path")).not.toContain("private-native-path");
+});
 
 it("localizes exhausted translation recovery without showing internal labels", () => {
   for (const language of ["zh", "en", "ja"] as const) {
@@ -58,7 +74,7 @@ it("shows a short unavailable reason instead of a reachability disclaimer", () =
   expect(message).not.toContain("认证成功");
 });
 it("localizes every service failure reason and explains skipped preview-mode checks", () => {
-  const reasons = ["credentialsMissing", "credentialsUnavailable", "credentialsServiceUnavailable", "credentialsAccessDenied", "textTranslationNotConfigured", "invalidConfiguration", "authenticationRejected", "serviceRejected", "timeout", "unreachable"] as const;
+  const reasons = ["credentialsMissing", "credentialsUnavailable", "credentialsServiceUnavailable", "credentialsAccessDenied", "textTranslationNotConfigured", "invalidConfiguration", "unsupportedLanguage", "localRecognitionOverloaded", "localRecognitionTimeout", "authenticationRejected", "serviceRejected", "timeout", "unreachable", "appleSpeechAssetsMissing", "appleSpeechLanguageUnsupported", "appleSpeechUnavailable", "appleSpeechRecognitionFailed"] as const;
   for (const language of ["zh", "en", "ja"] as const) {
     setStoredUiLanguage(language);
     for (const reason of reasons) {
@@ -165,6 +181,46 @@ it.each(["en", "zh", "ja"] as const)("ordinary file errors do not recommend nati
   }
 });
 
+it.each(["en", "zh", "ja"] as const)("explains fixed Audio3 connection failures without exposing transport details in %s", language => {
+  setStoredUiLanguage(language);
+  const unreachable = [
+    "The speech recognition transport failed.",
+    "The speech recognition session is not connected.",
+    "The speech recognition connection closed.",
+  ];
+  const timeouts = [
+    "The speech recognition connection could not be established in time.",
+    "The speech recognition connection stopped responding.",
+  ];
+  for (const error of unreachable) expect(credentialErrorMessage(error)).toBe(diagnosticCopy().speechUnreachable);
+  for (const error of timeouts) expect(credentialErrorMessage(error)).toBe(diagnosticCopy().speechTimeout);
+  expect(diagnosticCopy().speechUnreachable).not.toBe(diagnosticCopy().unreachable);
+  for (const error of [...unreachable, ...timeouts]) {
+    expect(credentialErrorMessage(`${error} ws://synthetic-private-endpoint`)).toBeNull();
+  }
+  expect(credentialErrorMessage("IO error: connection refused at synthetic-private-endpoint")).toBeNull();
+});
+
+it.each(["zh", "en", "ja"] as const)("explains known language failures without exposing arbitrary IPC text in %s", locale => {
+  setStoredUiLanguage(locale);
+  const messages = {
+    source_switch_busy: I18N.settings.languageSwitchBusy,
+    target_switch_busy: I18N.settings.languageSwitchBusy,
+    source_switch_superseded: I18N.settings.languageSwitchSuperseded,
+    language_switch_superseded: I18N.settings.languageSwitchSuperseded,
+    source_switch_unsupported: I18N.settings.languageSwitchUnsupported,
+    target_switch_unsupported: I18N.settings.languageSwitchUnsupported,
+    source_switch_save_failed: I18N.settings.languageSaveFailed,
+    source_switch_profile: I18N.settings.languageSwitchProfileUnavailable,
+  };
+  for (const [label, expected] of Object.entries(messages)) {
+    expect(languageActionErrorMessage(label, "fallback")).toBe(expected);
+    expect(languageActionErrorMessage(new Error(label), "fallback")).toBe(expected);
+  }
+  expect(languageActionErrorMessage("Listening settings cannot be changed while a session is active.", "fallback")).toBe(I18N.settings.languageChangeRequiresStop);
+  expect(languageActionErrorMessage(new Error("custom_speech_unreachable"), "fallback")).toBe(I18N.settings.customSpeechUnreachable);
+  expect(languageActionErrorMessage("synthetic-private-provider-body", "fallback")).toBe("fallback");
+});
 
 it.each(["en", "zh", "ja"] as const)("localizes profile switch restrictions without raw payloads in %s", language => {
   setStoredUiLanguage(language);
@@ -172,4 +228,32 @@ it.each(["en", "zh", "ja"] as const)("localizes profile switch restrictions with
   expect(profileErrorMessage(new Error("profile_switch_busy"))).toBe(I18N.settings.profileSwitchBusy);
   expect(profileErrorMessage("profile_switch_superseded")).toBe(I18N.settings.profileSwitchBusy);
   expect(profileErrorMessage("profile_switch_recording_requires_stop: private-value")).toBe(I18N.settings.profileActionFailed);
+});
+
+
+it.each(["en", "zh", "ja"] as const)("keeps post-save reconnect failures actionable and private in %s", language => {
+  setStoredUiLanguage(language);
+  const labels = [
+    "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE",
+    "audio3_error.setup.authentication.INVALID_API_KEY",
+  ];
+  for (const label of labels) {
+    for (const error of [label, new Error(label)]) {
+      expect(profileErrorMessage(error)).toBe(audio3ErrorMessage(label));
+      expect(languageActionErrorMessage(error, "fallback")).toBe(audio3ErrorMessage(label));
+    }
+    expect(profileErrorMessage(`${label}: private-provider-body`)).toBe(I18N.settings.profileActionFailed);
+    expect(languageActionErrorMessage(`${label}: private-provider-body`, "fallback")).toBe("fallback");
+  }
+  expect(profileErrorMessage(new Error("The speech recognition transport failed."))).toBe(diagnosticCopy().speechUnreachable);
+});
+
+
+it.each(["en", "zh", "ja"] as const)("sanitizes paused-session recovery errors in %s", language => {
+  setStoredUiLanguage(language);
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  expect(sessionActionErrorMessage(new Error(error), "fallback")).toBe(audio3ErrorMessage(error));
+  expect(sessionActionErrorMessage("apple_speech_assets_missing", "fallback")).toBe(I18N.settings.appleSpeechAssetsMissing);
+  expect(sessionActionErrorMessage(`${error}: private-provider-body`, "fallback")).toBe("fallback");
+  expect(sessionActionErrorMessage(new Error("private-provider-body"), "fallback")).toBe("fallback");
 });

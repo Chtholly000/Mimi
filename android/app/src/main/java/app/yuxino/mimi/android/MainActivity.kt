@@ -186,13 +186,7 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    private fun languageLabel(code: String): String = getString(when (code) {
-        "zh" -> R.string.lang_zh
-        "en" -> R.string.lang_en
-        "ja" -> R.string.lang_ja
-        "ko" -> R.string.lang_ko
-        else -> R.string.lang_auto
-    })
+    private fun languageLabel(code: String): String = languageDisplayName(this, code)
 
     private fun showLanguages(source: Boolean) {
         if (!source && SettingsStore.originalTextOnly(this)) return
@@ -200,7 +194,7 @@ class MainActivity : AppCompatActivity() {
         val previousTarget = SettingsStore.targetLang(this)
         val selected = if (source) SettingsStore.sourceLang(this) else SettingsStore.targetLang(this)
         val provider = app.yuxino.mimi.android.provider.ServiceProvider.fromId(SettingsStore.provider(this))
-        val choices = if (source) provider.sources else provider.targets.filter { it != SettingsStore.sourceLang(this) }
+        val choices = if (source) provider.sources else provider.targetsForTranslation(SettingsStore.textTranslationProvider(this)).filter { it != SettingsStore.sourceLang(this) }
         val dialog = BottomSheetDialog(this)
         val content = layoutInflater.inflate(R.layout.language_sheet, FrameLayout(this), false)
         content.findViewById<TextView>(R.id.language_heading).setText(
@@ -252,7 +246,7 @@ class MainActivity : AppCompatActivity() {
     private fun saveLanguage(source: Boolean, code: String) {
         if (source) SettingsStore.setSourceLang(this, code) else SettingsStore.setTargetLang(this, code)
         val provider = app.yuxino.mimi.android.provider.ServiceProvider.fromId(SettingsStore.provider(this))
-        val (from, to) = provider.normalize(SettingsStore.sourceLang(this), SettingsStore.targetLang(this))
+        val (from, to) = provider.normalize(SettingsStore.sourceLang(this), SettingsStore.targetLang(this), SettingsStore.textTranslationProvider(this))
         SettingsStore.setSourceLang(this, from)
         SettingsStore.setTargetLang(this, to)
     }

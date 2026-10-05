@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { audio3ErrorMessage } from "../../lib/audio3Errors";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import { useStore } from "../../lib/store";
 import { SettingsView } from "./SettingsView";
@@ -191,4 +192,24 @@ it.each([null, undefined])("does not advertise the Linux command entry when comm
   await act(() => host.querySelector<HTMLButtonElement>("#settings-category-general")!.click());
   expect(host.querySelector(".settings-shortcut-setup")).toBeNull();
   expect(document.querySelector('[role="dialog"]')).toBeNull();
+});
+
+
+it.each(["en", "zh", "ja"] as const)("keeps the actual safe resume failure visible after native paused restoration in %s", async language => {
+  setStoredUiLanguage(language);
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  togglePaused.mockImplementationOnce(async () => {
+    useStore.setState({ session: { ...useStore.getState().session, isPaused: false, status: { kind: "connecting" } } });
+    await Promise.resolve();
+    useStore.setState({ session: { ...useStore.getState().session, isActive: true, isPaused: true, status: { kind: "listening" } } });
+    throw error;
+  });
+  await mount();
+  await act(async () => resumeButton()!.click());
+  expect(resumeButton()?.disabled).toBe(false);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(audio3ErrorMessage(error));
+  expect(host.textContent).not.toContain(error);
+  expect(useStore.getState().session.isPaused).toBe(true);
+  expect(start).not.toHaveBeenCalled();
+  expect(stop).not.toHaveBeenCalled();
 });

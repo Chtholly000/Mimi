@@ -503,3 +503,11 @@
   gap: 6px;
   font-size: 12px;
 }
+
+.overlay-control-panel .settings-toast {
+  --settings-border-strong: var(--control-border-strong);
+  --settings-panel-raised: var(--control-bg);
+  --settings-text: var(--control-text);
+  --settings-text-muted: var(--control-text-muted);
+  --settings-selection-soft: var(--control-surface-hover);
+}

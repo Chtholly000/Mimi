@@ -110,11 +110,40 @@ pub fn request(
         // that reported code to the model rather than reject a valid ASR final.
         other => other.raw_value(),
     };
+    // Configurable language names do not imply support by every custom model.
     let target = match target {
         TargetLanguage::SimplifiedChinese => "Simplified Chinese",
         TargetLanguage::English => "English",
         TargetLanguage::Japanese => "Japanese",
-        _ => return Err(OpenAICompatibleError::Language),
+        TargetLanguage::TraditionalChinese => "Traditional Chinese",
+        TargetLanguage::Korean => "Korean",
+        TargetLanguage::Russian => "Russian",
+        TargetLanguage::Spanish => "Spanish",
+        TargetLanguage::French => "French",
+        TargetLanguage::Portuguese => "Portuguese",
+        TargetLanguage::German => "German",
+        TargetLanguage::Italian => "Italian",
+        TargetLanguage::Thai => "Thai",
+        TargetLanguage::Vietnamese => "Vietnamese",
+        TargetLanguage::Indonesian => "Indonesian",
+        TargetLanguage::Malay => "Malay",
+        TargetLanguage::Arabic => "Arabic",
+        TargetLanguage::Hindi => "Hindi",
+        TargetLanguage::Hebrew => "Hebrew",
+        TargetLanguage::Urdu => "Urdu",
+        TargetLanguage::Bengali => "Bengali",
+        TargetLanguage::Polish => "Polish",
+        TargetLanguage::Dutch => "Dutch",
+        TargetLanguage::Turkish => "Turkish",
+        TargetLanguage::Khmer => "Khmer",
+        TargetLanguage::Czech => "Czech",
+        TargetLanguage::Swedish => "Swedish",
+        TargetLanguage::Hungarian => "Hungarian",
+        TargetLanguage::Danish => "Danish",
+        TargetLanguage::Finnish => "Finnish",
+        TargetLanguage::Tagalog => "Tagalog",
+        TargetLanguage::Persian => "Persian",
+        TargetLanguage::Original => return Err(OpenAICompatibleError::Language),
     };
     let text = text.trim();
     if text.is_empty() {

@@ -3,7 +3,7 @@ import type { SubtitleSnapshot } from "../../lib/types";
 import { emptyStateText, languageStatus, isWaitingForFinalTranslation, visibleLiveSubtitles } from "./overlayModel";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import { SOURCE_LANGUAGE_DISPLAY_NAMES } from "../../lib/types";
-import { useStore } from "../../lib/store";
+import { selectSessionErrorMessage, useStore } from "../../lib/store";
 
 const subtitles: SubtitleSnapshot = {
   source: { text: "Synthetic current source.", isFinal: false, utteranceId: "current" },
@@ -11,6 +11,18 @@ const subtitles: SubtitleSnapshot = {
   previewPair: { source: "Synthetic paired source.", translation: "Synthetic paired translation." },
   history: [],
 };
+
+it.each(["zh", "en", "ja"] as const)("shares actionable Apple error messages across overlay and session controls in %s", language => {
+  setStoredUiLanguage(language);
+  try {
+    const initial = useStore.getState();
+    for (const [message, expected] of [["apple_speech_assets_missing", I18N.settings.appleSpeechAssetsMissing], ["apple_speech_language_unsupported", I18N.settings.appleSpeechLanguageUnsupported], ["apple_speech_audio_failed", I18N.settings.appleSpeechRecognitionFailed]] as const) {
+      const session = { ...initial.session, isPaused: false, status: { kind: "error" as const, message } };
+      expect(emptyStateText(session, initial.settings)).toBe(expected);
+      expect(selectSessionErrorMessage({ ...initial, session })).toBe(expected);
+    }
+  } finally { setStoredUiLanguage("system"); }
+});
 
 it.each(["original", "translation", "bilingual"] as const)("keeps a single recognition lane for an exact expanded same-language pair in %s", (mode) => {
   const settings = { sourceLanguage: "fr", targetLanguage: "fr", subtitleDisplayMode: mode } as const;

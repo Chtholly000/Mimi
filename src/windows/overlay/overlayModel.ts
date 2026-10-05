@@ -20,7 +20,7 @@ import {
 } from "../../lib/types";
 
 const ATOMIC_SUBTITLE_PROVIDERS = [
-  "alibabaCloud", "deepLX", "customDashScopeASR", "customOpenAIASR",
+  "alibabaCloud", "deepLX", "customDashScopeASR", "customOpenAIASR", "appleSpeech",
 ] as const satisfies readonly ServiceProvider[];
 type AtomicSubtitleProvider = typeof ATOMIC_SUBTITLE_PROVIDERS[number];
 
@@ -446,7 +446,29 @@ export function visibleLiveSubtitles(
     };
   }
   const displayPair = subtitles.displayPair;
-  if (displayPair && settings.subtitleDisplayMode !== "original" && !isSameLanguageMode(settings, detectedLanguage)) {
+  const translatedView = settings.subtitleDisplayMode !== "original" && !isSameLanguageMode(settings, detectedLanguage);
+  const hasRealtimeDraft = !preferAtomicPreview && translatedView && (
+    (!subtitles.translation.isFinal && subtitles.translation.text.trim() !== "") ||
+    (settings.subtitleDisplayMode === "bilingual" && !subtitles.source.isFinal && subtitles.source.text.trim() !== "")
+  );
+  if (hasRealtimeDraft && displayPair && subtitles.displayPairFinal === true) {
+    // Realtime lanes advance independently. A confirmed lane still owned by
+    // the previous display pair must not accompany the next lane's draft.
+    // Keep the snapshot and its durable history unchanged; this is projection.
+    const currentLane = (line: SubtitleSnapshot["source"], previousText: string) =>
+      line.isFinal && line.text === previousText &&
+      (line.utteranceId ?? null) === (displayPair.utteranceId ?? null)
+        ? { text: "", isFinal: false }
+        : line;
+    subtitles = {
+      ...subtitles,
+      source: currentLane(subtitles.source, displayPair.source),
+      translation: currentLane(subtitles.translation, displayPair.translation),
+    };
+  }
+  // HTTP translation routes intentionally hold complete preview pairs. A
+  // realtime transcript draft must instead advance beyond the prior final.
+  if (displayPair && !hasRealtimeDraft && translatedView) {
     // A confirmed current pair is already readable in the bounded history lane.
     const last = subtitles.history.at(-1);
     if (last?.source === displayPair.source && last.translation === displayPair.translation && subtitles.previewPair == null) return [];

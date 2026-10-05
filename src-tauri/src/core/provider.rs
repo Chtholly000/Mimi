@@ -39,6 +39,8 @@ pub enum ProviderKind {
     CustomDashScopeASR,
     #[serde(rename = "customOpenAIASR")]
     CustomOpenAIASR,
+    #[serde(rename = "appleSpeech")]
+    AppleSpeech,
 }
 
 impl ProviderKind {
@@ -47,8 +49,8 @@ impl ProviderKind {
         route: TextTranslation,
         target: TargetLanguage,
     ) -> ProviderCapabilities {
-        if self.is_custom_speech() {
-            custom_speech_capabilities(self, route)
+        if self.is_standalone_asr() {
+            custom_speech_capabilities(self, route, target)
         } else if self == Self::AlibabaCloud {
             alibaba_capabilities(route, target)
         } else {
@@ -69,6 +71,7 @@ impl ProviderKind {
             Self::DeepLX => "deepLX",
             Self::CustomDashScopeASR => "customDashScopeASR",
             Self::CustomOpenAIASR => "customOpenAIASR",
+            Self::AppleSpeech => "appleSpeech",
         }
     }
 
@@ -85,6 +88,7 @@ impl ProviderKind {
             Self::DeepLX => "DeepLX (Audio 3.0 ASR)",
             Self::CustomDashScopeASR => "Custom DashScope ASR",
             Self::CustomOpenAIASR => "Custom OpenAI ASR",
+            Self::AppleSpeech => "Apple Speech",
         }
     }
 
@@ -94,9 +98,30 @@ impl ProviderKind {
                 TextTranslation::FollowService,
                 TargetLanguage::SimplifiedChinese,
             ),
-            Self::OpenAIRealtime | Self::AzureOpenAIRealtime | Self::XAIRealtime => {
+            Self::OpenAIRealtime => {
+                let mut capabilities =
+                    realtime_capabilities(vec![SourceLanguage::Automatic], 24_000);
+                capabilities.target_languages = TargetLanguage::ALL
+                    .into_iter()
+                    .filter(|target| {
+                        crate::core::protocols::openai_realtime::TRANSLATION_LANGUAGE_CODES
+                            .contains(&target.raw_value())
+                    })
+                    .collect();
+                capabilities
+            }
+            Self::AzureOpenAIRealtime => {
                 realtime_capabilities(vec![SourceLanguage::Automatic], 24_000)
             }
+            Self::XAIRealtime => realtime_capabilities(
+                SourceLanguage::ALL
+                    .into_iter()
+                    .filter(|source| {
+                        crate::core::protocols::xai_realtime::source_language_hint(*source).is_ok()
+                    })
+                    .collect(),
+                24_000,
+            ),
             Self::DeepLX => realtime_capabilities(
                 vec![
                     SourceLanguage::Automatic,
@@ -108,7 +133,15 @@ impl ProviderKind {
                 16_000,
             ),
             Self::GoogleGeminiLive => {
-                realtime_capabilities(vec![SourceLanguage::Automatic], 16_000)
+                let mut capabilities =
+                    realtime_capabilities(vec![SourceLanguage::Automatic], 16_000);
+                capabilities.target_languages = TargetLanguage::ALL
+                    .into_iter()
+                    .filter(|target| {
+                        crate::core::protocols::gemini_live::target_language_code(*target).is_ok()
+                    })
+                    .collect();
+                capabilities
             }
             Self::VolcanoEngine => realtime_capabilities(
                 vec![
@@ -127,8 +160,12 @@ impl ProviderKind {
                 ],
                 16_000,
             ),
-            Self::CustomDashScopeASR | Self::CustomOpenAIASR => {
-                custom_speech_capabilities(self, TextTranslation::FollowService)
+            Self::CustomDashScopeASR | Self::CustomOpenAIASR | Self::AppleSpeech => {
+                custom_speech_capabilities(
+                    self,
+                    TextTranslation::FollowService,
+                    TargetLanguage::Original,
+                )
             }
         }
     }
@@ -137,8 +174,12 @@ impl ProviderKind {
         matches!(self, Self::CustomDashScopeASR | Self::CustomOpenAIASR)
     }
 
+    pub const fn is_standalone_asr(self) -> bool {
+        self.is_custom_speech() || matches!(self, Self::AppleSpeech)
+    }
+
     pub const fn supports_text_translation(self) -> bool {
-        matches!(self, Self::AlibabaCloud | Self::DeepLX) || self.is_custom_speech()
+        matches!(self, Self::AlibabaCloud | Self::DeepLX) || self.is_standalone_asr()
     }
 
     pub const fn uses_api_key_only(self) -> bool {
@@ -156,9 +197,12 @@ impl ProviderKind {
 fn custom_speech_capabilities(
     provider: ProviderKind,
     route: TextTranslation,
+    target: TargetLanguage,
 ) -> ProviderCapabilities {
     let mut target_languages = vec![TargetLanguage::Original];
-    if route != TextTranslation::FollowService {
+    if route.uses_chat_completions() {
+        target_languages = TargetLanguage::ALL.to_vec();
+    } else if route != TextTranslation::FollowService {
         target_languages.extend([
             TargetLanguage::SimplifiedChinese,
             TargetLanguage::English,
@@ -166,13 +210,33 @@ fn custom_speech_capabilities(
         ]);
     }
     ProviderCapabilities {
-        source_languages: vec![
-            SourceLanguage::Automatic,
-            SourceLanguage::Chinese,
-            SourceLanguage::English,
-            SourceLanguage::Japanese,
-            SourceLanguage::Korean,
-        ],
+        // Custom options are encodable codes, not verified model support.
+        // Apple choices also intersect the OS inventory in the app layer.
+        source_languages: if target == TargetLanguage::Original
+            || route == TextTranslation::FollowService
+            || route.uses_chat_completions()
+        {
+            SourceLanguage::ALL
+                .into_iter()
+                .filter(|language| {
+                    provider != ProviderKind::AppleSpeech || *language != SourceLanguage::Automatic
+                })
+                .collect()
+        } else {
+            // DeepL/DeepLX currently encode only these explicit sources.
+            vec![
+                SourceLanguage::Automatic,
+                SourceLanguage::Chinese,
+                SourceLanguage::English,
+                SourceLanguage::Japanese,
+                SourceLanguage::Korean,
+            ]
+            .into_iter()
+            .filter(|language| {
+                provider != ProviderKind::AppleSpeech || *language != SourceLanguage::Automatic
+            })
+            .collect()
+        },
         target_languages,
         translation_modes: vec![TranslationMode::Turbo],
         input_sample_rate_hz: if provider == ProviderKind::CustomOpenAIASR {
@@ -190,10 +254,15 @@ fn alibaba_capabilities(route: TextTranslation, target: TargetLanguage) -> Provi
     if route == TextTranslation::DeepLX {
         return ProviderKind::DeepLX.capabilities();
     }
-    if matches!(
-        route,
-        TextTranslation::DeepL | TextTranslation::OpenAICompatible | TextTranslation::ChatMock
-    ) {
+    if route.uses_chat_completions() {
+        return ProviderCapabilities {
+            source_languages: SourceLanguage::ALL.to_vec(),
+            target_languages: TargetLanguage::ALL.to_vec(),
+            translation_modes: vec![TranslationMode::Turbo],
+            input_sample_rate_hz: 16_000,
+        };
+    }
+    if route == TextTranslation::DeepL {
         return ProviderCapabilities {
             source_languages: vec![
                 SourceLanguage::Automatic,
@@ -370,6 +439,8 @@ pub enum ServiceProfileError {
     NameTooLong,
     #[error("The text translation service name is invalid.")]
     InvalidTextTranslationName,
+    #[error("custom_speech_languages_invalid")]
+    InvalidCustomSpeechLanguages,
     #[error("Only custom speech services support a recognition display name.")]
     UnsupportedSpeechRecognitionName,
     #[error("The speech recognition service name is invalid.")]
@@ -399,6 +470,24 @@ pub struct TextTranslationName {
     pub name: String,
 }
 
+/// Optional IPC patch: an absent patch preserves metadata; `languages: null`
+/// clears a declaration, while an empty array deliberately keeps only default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomSpeechLanguagesPatch {
+    #[serde(deserialize_with = "deserialize_declared_languages")]
+    pub languages: Option<Vec<SourceLanguage>>,
+}
+
+fn deserialize_declared_languages<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<SourceLanguage>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<Vec<SourceLanguage>>::deserialize(deserializer)
+}
+
 impl TextTranslation {
     pub const fn uses_chat_completions(self) -> bool {
         matches!(self, Self::OpenAICompatible | Self::ChatMock)
@@ -412,6 +501,10 @@ pub struct ServiceProfile {
     pub id: String,
     pub name: String,
     pub provider: ProviderKind,
+    /// User-declared explicit ASR languages, not server discovery. None means
+    /// unknown; an empty list leaves only the protocol's default behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_speech_source_languages: Option<Vec<SourceLanguage>>,
     /// Optional non-secret display name for custom speech recognition.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub speech_recognition_name: Option<String>,
@@ -457,6 +550,7 @@ impl ServiceProfile {
             id,
             name,
             provider,
+            custom_speech_source_languages: None,
             speech_recognition_name: None,
             text_translation: None,
             text_translation_names: BTreeMap::new(),
@@ -470,6 +564,7 @@ impl ServiceProfile {
             id: DEFAULT_ALIBABA_PROFILE_ID.to_string(),
             name: ProviderKind::AlibabaCloud.display_name().to_string(),
             provider: ProviderKind::AlibabaCloud,
+            custom_speech_source_languages: None,
             speech_recognition_name: None,
             text_translation: None,
             text_translation_names: BTreeMap::new(),
@@ -496,6 +591,10 @@ impl ServiceProfile {
             profile.set_speech_recognition_name(name)?;
         }
         profile.text_translation = self.text_translation;
+        if self.custom_speech_source_languages.is_some() {
+            profile
+                .set_custom_speech_source_languages(self.custom_speech_source_languages.clone())?;
+        }
         for (&route, name) in &self.text_translation_names {
             profile.set_text_translation_name(route, name)?;
         }
@@ -510,6 +609,27 @@ impl ServiceProfile {
             .map(ProxyConfig::validate)
             .transpose()?;
         Ok(profile)
+    }
+
+    pub fn set_custom_speech_source_languages(
+        &mut self,
+        languages: Option<Vec<SourceLanguage>>,
+    ) -> Result<(), ServiceProfileError> {
+        if !self.provider.is_custom_speech()
+            || languages.as_ref().is_some_and(|languages| {
+                languages.len() >= SourceLanguage::ALL.len()
+                    || languages.contains(&SourceLanguage::Automatic)
+            })
+        {
+            return Err(ServiceProfileError::InvalidCustomSpeechLanguages);
+        }
+        self.custom_speech_source_languages = languages.map(|languages| {
+            SourceLanguage::ALL
+                .into_iter()
+                .filter(|language| languages.contains(language))
+                .collect()
+        });
+        Ok(())
     }
 
     pub fn set_speech_recognition_name(&mut self, name: &str) -> Result<(), ServiceProfileError> {
@@ -554,8 +674,15 @@ impl ServiceProfile {
     }
 
     pub fn capabilities(&self, target: TargetLanguage) -> ProviderCapabilities {
-        if self.provider.is_custom_speech() {
-            custom_speech_capabilities(self.provider, self.text_translation())
+        if self.provider.is_standalone_asr() {
+            let mut capabilities =
+                custom_speech_capabilities(self.provider, self.text_translation(), target);
+            if let Some(declared) = &self.custom_speech_source_languages {
+                capabilities.source_languages.retain(|language| {
+                    *language == SourceLanguage::Automatic || declared.contains(language)
+                });
+            }
+            capabilities
         } else if self.effective_provider() == ProviderKind::AlibabaCloud {
             alibaba_capabilities(self.text_translation(), target)
         } else {
@@ -596,6 +723,36 @@ impl Default for ServiceProfile {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn apple_source_catalog_respects_the_selected_text_encoder() {
+        for route in [TextTranslation::DeepL, TextTranslation::DeepLX] {
+            let translated =
+                ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::English);
+            assert!(translated
+                .source_languages
+                .contains(&SourceLanguage::English));
+            assert!(!translated
+                .source_languages
+                .contains(&SourceLanguage::French));
+            assert!(!translated
+                .source_languages
+                .contains(&SourceLanguage::Automatic));
+            let original =
+                ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::Original);
+            assert!(original.source_languages.contains(&SourceLanguage::French));
+        }
+        for route in [TextTranslation::OpenAICompatible, TextTranslation::ChatMock] {
+            let translated =
+                ProviderKind::AppleSpeech.capabilities_for_route(route, TargetLanguage::English);
+            assert!(translated
+                .source_languages
+                .contains(&SourceLanguage::French));
+            assert!(!translated
+                .source_languages
+                .contains(&SourceLanguage::Automatic));
+        }
+    }
+
     #[test]
     fn profile_proxy_fields_read_legacy_and_normalize_without_losing_preferences() {
         use crate::core::network_proxy::ProxyMode;
@@ -698,10 +855,7 @@ mod tests {
             3
         );
         for provider in [
-            ProviderKind::OpenAIRealtime,
             ProviderKind::AzureOpenAIRealtime,
-            ProviderKind::GoogleGeminiLive,
-            ProviderKind::XAIRealtime,
             ProviderKind::VolcanoEngine,
             ProviderKind::TencentCloud,
             ProviderKind::BaiduTranslate,
@@ -749,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn openai_compatible_route_stays_on_alibaba_and_has_bounded_language_catalog() {
+    fn openai_compatible_route_stays_on_alibaba_and_encodes_the_represented_catalog() {
         for provider in [ProviderKind::AlibabaCloud, ProviderKind::DeepLX] {
             let mut profile =
                 ServiceProfile::new("custom", "Custom translation", provider).unwrap();
@@ -765,25 +919,8 @@ mod tests {
                 profile
             );
             let caps = profile.capabilities(TargetLanguage::Original);
-            assert_eq!(
-                caps.source_languages,
-                vec![
-                    SourceLanguage::Automatic,
-                    SourceLanguage::Chinese,
-                    SourceLanguage::English,
-                    SourceLanguage::Japanese,
-                    SourceLanguage::Korean
-                ]
-            );
-            assert_eq!(
-                caps.target_languages,
-                vec![
-                    TargetLanguage::Original,
-                    TargetLanguage::SimplifiedChinese,
-                    TargetLanguage::English,
-                    TargetLanguage::Japanese
-                ]
-            );
+            assert_eq!(caps.source_languages, SourceLanguage::ALL);
+            assert_eq!(caps.target_languages, TargetLanguage::ALL);
             assert_eq!(caps.translation_modes, vec![TranslationMode::Turbo]);
         }
         let mut unsupported =
@@ -796,6 +933,170 @@ mod tests {
     }
 
     use serde_json::json;
+
+    #[test]
+    fn custom_speech_declarations_are_optional_canonical_and_not_discovery() {
+        let legacy: ServiceProfile = serde_json::from_value(json!({
+            "id": "custom", "name": "Synthetic", "provider": "customDashScopeASR"
+        }))
+        .unwrap();
+        assert_eq!(legacy.custom_speech_source_languages, None);
+        assert_eq!(
+            legacy
+                .capabilities(TargetLanguage::Original)
+                .source_languages,
+            SourceLanguage::ALL
+        );
+        for provider in [
+            ProviderKind::CustomDashScopeASR,
+            ProviderKind::CustomOpenAIASR,
+        ] {
+            let mut profile = ServiceProfile::new("custom", "Synthetic", provider).unwrap();
+            profile
+                .set_custom_speech_source_languages(Some(vec![
+                    SourceLanguage::German,
+                    SourceLanguage::English,
+                    SourceLanguage::German,
+                ]))
+                .unwrap();
+            assert_eq!(
+                profile.custom_speech_source_languages,
+                Some(vec![SourceLanguage::English, SourceLanguage::German])
+            );
+            assert_eq!(
+                profile
+                    .capabilities(TargetLanguage::Original)
+                    .source_languages,
+                vec![
+                    SourceLanguage::Automatic,
+                    SourceLanguage::English,
+                    SourceLanguage::German
+                ]
+            );
+            let restored: ServiceProfile =
+                serde_json::from_value(serde_json::to_value(&profile).unwrap()).unwrap();
+            assert_eq!(restored.validated().unwrap(), profile);
+            profile
+                .set_custom_speech_source_languages(Some(vec![]))
+                .unwrap();
+            assert_eq!(
+                profile
+                    .capabilities(TargetLanguage::Original)
+                    .source_languages,
+                vec![SourceLanguage::Automatic]
+            );
+            profile.set_custom_speech_source_languages(None).unwrap();
+            assert_eq!(
+                profile
+                    .capabilities(TargetLanguage::Original)
+                    .source_languages,
+                SourceLanguage::ALL
+            );
+        }
+    }
+
+    #[test]
+    fn custom_declarations_intersect_only_the_actual_text_route_constraints() {
+        let mut profile =
+            ServiceProfile::new("custom", "Synthetic", ProviderKind::CustomDashScopeASR).unwrap();
+        profile
+            .set_custom_speech_source_languages(Some(vec![
+                SourceLanguage::French,
+                SourceLanguage::German,
+            ]))
+            .unwrap();
+        for route in [TextTranslation::OpenAICompatible, TextTranslation::ChatMock] {
+            profile.text_translation = Some(route);
+            let prefs = ProviderPreferences {
+                source_language: SourceLanguage::German,
+                target_language: TargetLanguage::French,
+                translation_mode: TranslationMode::Turbo,
+            };
+            assert_eq!(profile.normalize_preferences(prefs), prefs);
+            assert_eq!(
+                profile
+                    .capabilities(TargetLanguage::French)
+                    .source_languages,
+                vec![
+                    SourceLanguage::Automatic,
+                    SourceLanguage::French,
+                    SourceLanguage::German
+                ]
+            );
+            assert_eq!(
+                profile
+                    .capabilities(TargetLanguage::French)
+                    .target_languages,
+                TargetLanguage::ALL
+            );
+        }
+        for route in [TextTranslation::DeepL, TextTranslation::DeepLX] {
+            profile.text_translation = Some(route);
+            assert_eq!(
+                profile
+                    .capabilities(TargetLanguage::English)
+                    .source_languages,
+                vec![SourceLanguage::Automatic]
+            );
+            assert_eq!(
+                profile
+                    .capabilities(TargetLanguage::Original)
+                    .source_languages,
+                vec![
+                    SourceLanguage::Automatic,
+                    SourceLanguage::French,
+                    SourceLanguage::German
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn custom_language_declaration_validation_rejects_builtins_auto_and_unbounded_lists() {
+        let mut builtin = ServiceProfile::alibaba_default();
+        assert_eq!(
+            builtin.set_custom_speech_source_languages(None),
+            Err(ServiceProfileError::InvalidCustomSpeechLanguages)
+        );
+        builtin.custom_speech_source_languages = Some(vec![SourceLanguage::English]);
+        assert_eq!(
+            builtin.validated(),
+            Err(ServiceProfileError::InvalidCustomSpeechLanguages)
+        );
+        let mut custom =
+            ServiceProfile::new("custom", "Synthetic", ProviderKind::CustomDashScopeASR).unwrap();
+        for languages in [
+            vec![SourceLanguage::Automatic],
+            vec![SourceLanguage::English; 100],
+        ] {
+            assert_eq!(
+                custom.set_custom_speech_source_languages(Some(languages)),
+                Err(ServiceProfileError::InvalidCustomSpeechLanguages)
+            );
+            assert_eq!(custom.custom_speech_source_languages, None);
+        }
+        assert!(serde_json::from_value::<CustomSpeechLanguagesPatch>(
+            json!({"languages": ["not-a-language"]})
+        )
+        .is_err());
+        assert!(serde_json::from_value::<CustomSpeechLanguagesPatch>(json!({})).is_err());
+        assert!(serde_json::from_value::<CustomSpeechLanguagesPatch>(
+            json!({"languages": null, "unexpected": true})
+        )
+        .is_err());
+        assert_eq!(
+            serde_json::from_value::<CustomSpeechLanguagesPatch>(json!({"languages": null}))
+                .unwrap()
+                .languages,
+            None
+        );
+        assert_eq!(
+            serde_json::from_value::<CustomSpeechLanguagesPatch>(json!({"languages": []}))
+                .unwrap()
+                .languages,
+            Some(vec![])
+        );
+    }
 
     #[test]
     fn historical_profiles_and_supported_text_routes_round_trip() {
@@ -867,11 +1168,17 @@ mod tests {
                 TextTranslation::DeepL,
                 TextTranslation::DeepLX,
                 TextTranslation::OpenAICompatible,
+                TextTranslation::ChatMock,
             ] {
                 profile.text_translation = Some(translation);
                 assert_eq!(profile.validated().unwrap().effective_provider(), provider);
                 let caps = profile.capabilities(TargetLanguage::English);
                 assert_eq!(caps.input_sample_rate_hz, sample_rate);
+                if translation.uses_chat_completions() {
+                    assert_eq!(caps.source_languages, SourceLanguage::ALL);
+                    assert_eq!(caps.target_languages, TargetLanguage::ALL);
+                    continue;
+                }
                 assert_eq!(caps.source_languages.len(), 5);
                 assert_eq!(
                     caps.target_languages,
@@ -891,7 +1198,7 @@ mod tests {
                 translation_mode: TranslationMode::Turbo,
             });
             assert_eq!(normalized.target_language, TargetLanguage::Original);
-            assert_eq!(normalized.source_language, SourceLanguage::Automatic);
+            assert_eq!(normalized.source_language, SourceLanguage::French);
         }
     }
 
@@ -905,14 +1212,11 @@ mod tests {
 
         let openai = ProviderKind::OpenAIRealtime.capabilities();
         assert_eq!(openai.source_languages, vec![SourceLanguage::Automatic]);
-        assert_eq!(
-            openai.target_languages,
-            vec![
-                TargetLanguage::SimplifiedChinese,
-                TargetLanguage::English,
-                TargetLanguage::Japanese
-            ]
-        );
+        assert_eq!(openai.target_languages.len(), 13);
+        assert!(openai.target_languages.contains(&TargetLanguage::French));
+        assert!(!openai
+            .target_languages
+            .contains(&TargetLanguage::TraditionalChinese));
         assert_eq!(openai.translation_modes, vec![TranslationMode::Turbo]);
         assert_eq!(openai.input_sample_rate_hz, 24_000);
 
@@ -925,7 +1229,14 @@ mod tests {
             ProviderKind::XAIRealtime,
         ] {
             let capabilities = provider.capabilities();
-            assert_eq!(capabilities.target_languages.len(), 3);
+            assert_eq!(
+                capabilities.target_languages.len(),
+                if provider == ProviderKind::GoogleGeminiLive {
+                    30
+                } else {
+                    3
+                }
+            );
             assert_eq!(capabilities.translation_modes, vec![TranslationMode::Turbo]);
         }
         assert_eq!(

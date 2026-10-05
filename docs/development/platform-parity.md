@@ -23,6 +23,7 @@ update both implementations and their platform-specific tests in the same change
   Existing combined-entry settings remain OpenAI compatible, and credentials never move
   between choices. Localhost means the device running Mimi, while translation models are
   still called online through the signed-in ChatMock account.
+- OpenAI-compatible/ChatMock text translation accepts the represented source and target language codes on both platforms, including Traditional Chinese. These are configurable request values, not a discovery result or guarantee of model support. Existing Chinese/English/Japanese prompts are unchanged; shared fixtures cover the additional mappings. DeepL/DeepLX retain their separate implemented catalogs.
 - Endpoint prefixes are preserved. An OpenAI-compatible base receives `/chat/completions`;
   use an explicit `/v1` base for ChatMock. Complete endpoints remain unchanged. HTTPS is
   the default; each platform's explicit local transport boundary remains enforced.
@@ -58,11 +59,18 @@ update both implementations and their platform-specific tests in the same change
 
 ## Deliberate platform differences
 
+Desktop's custom Audio3 adapter recognizes the exact `UNSUPPORTED_LANGUAGE`
+`task-failed` code as a configuration error and offers speech settings instead of
+blind retry. Android's DashScope adapter currently uses the separate realtime
+`session.update` protocol, so this Audio3 transport change has no Android decoder
+counterpart. Shared subtitle and independent text-translation policy are unchanged.
+
 | Area | Desktop | Android |
 | --- | --- | --- |
 | Independent text services | DeepL, DeepLX, ChatMock, OpenAI compatible; original-only with custom ASR | Same text choices after Alibaba realtime ASR; original-only supported |
 | Text service display names | Optional names per profile and independent route; shown in settings and subtitle service label | Existing provider labels |
-| Recognition selection | Eight built-in services plus custom DashScope/OpenAI ASR | Eight built-in adapters; independent text currently pairs with Alibaba ASR |
+| Recognition selection | Eight built-in services plus custom DashScope/OpenAI ASR and Apple Speech on supported Apple silicon Macs running macOS 26+; optional per-profile user declaration narrows custom recognition languages | Eight built-in adapters; independent text currently pairs with Alibaba ASR; no custom speech profile/declaration editor |
+| Apple local recognition | Runtime language availability, explicit language-asset preparation, no speech API key; independent text translation keeps its own service and credentials | Not available; no Apple API or asset-management dependency |
 | Built-in Alibaba pipeline | Desktop Audio 3.0/Qwen-MT scheduling | Existing integrated realtime translation adapter |
 | Translation scheduling | Speculative drafts plus serial prioritized finals and provider recovery | Final-only serial HTTP; same shared final bounds/retry decisions, native execution and cancellation |
 | Independent text HTTP bounds | HQ source fields up to 65,536 UTF-8 bytes; response bodies up to 1 MiB; decoded text uses native adapter bounds | Source/result text up to 4,096 UTF-16 code units; response bodies up to 64 KiB |

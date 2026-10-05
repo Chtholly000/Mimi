@@ -15,6 +15,8 @@ update with progress, then lets you install it. Windows reopens Mimi after
 installation; macOS and Linux AppImage offer a separate Restart and Finish Update action.
 Versions older than v1.3.8 need one manual installation to enable in-app updates.
 
+See [speech-service setup and language parameters](speech-language-setup.md) for custom WebSocket examples, automatic detection versus hints, and each integration’s current language range.
+
 ### Platform support
 
 - macOS 13+ (Apple silicon and Intel): Choose the `_aarch64.dmg` for Apple silicon or `_x64.dmg` for Intel. Intel packages are available from v1.4.4; build and signing checks passed, but Intel hardware capture and permission behavior remain unverified. DMG installers are not Apple-notarized. If first launch is blocked, choose Open Anyway in System Settings → Privacy & Security. See the permission notes below when upgrading from an older build.
@@ -59,6 +61,19 @@ in Settings, the overlay control panel, or the tray. Switch instantly with
 ⌘⇧B on macOS or Ctrl+Shift+B on Windows/Linux X11. On Wayland, bind `mimi --cycle-subtitle-display` in desktop settings. This changes what you see
 without restarting translation. Bilingual mode pairs confirmed sentences and
 previews the recognized original while a translation is pending.
+
+When Show subtitles earlier is enabled, the overlay shows drafts that may still
+change. Turn it off to wait for confirmed results; uninterrupted speech can take
+longer to appear. This display choice does not turn a draft into saved history.
+
+## Recognition errors
+
+Recognition errors stay visible in the subtitle window alongside existing
+subtitles. Open the floating control panel for the full explanation and recovery
+actions. A recognized configuration error offers Speech & Translation settings;
+temporary connection or service errors offer Retry. Correcting or switching the
+affected configuration returns the failed session to idle without starting audio.
+Start Live Subtitles again when ready.
 
 ## More docs
 

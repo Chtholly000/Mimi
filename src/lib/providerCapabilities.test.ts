@@ -1,9 +1,12 @@
+import contract from "../../shared/translation-contracts.json";
 import audio3 from "../../src-tauri/src/core/protocols/audio3.rs?raw";
 import qwenMt from "../../src-tauri/src/core/protocols/qwen_mt.rs?raw";
 import { describe, expect, it } from "vitest";
 import { AUDIO3_RECOGNITION_LANGUAGE_CODES, QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES, type SettingsSnapshot } from "./types";
 import {
   SERVICE_PROVIDERS,
+  capabilitiesForProvider,
+  OPENAI_TRANSLATION_TARGETS,
   effectiveProviderForProfile,
   textTranslationForProfile,
   activeServiceProfile,
@@ -64,6 +67,27 @@ const BASE_SETTINGS: SettingsSnapshot = {
   networkProxy: { mode: "system", url: null },
 };
 
+it("uses only this Mac's stamped Apple languages without inventing automatic detection or a fallback", () => {
+  const apple = { id: "apple", provider: "appleSpeech", name: "Apple Speech", credentialState: "missing", speechCredentialState: "present", textTranslation: "openAICompatible" } as const;
+  const base = { ...BASE_SETTINGS, profiles: [apple], activeProfileId: apple.id };
+  expect(sourceLanguagesForSettings(base)).toEqual([]);
+  const languageCapabilities = { profileId: apple.id, provider: apple.provider, textTranslation: apple.textTranslation, targetLanguage: "zh", sourceLanguages: ["en", "fr"], targetLanguages: ["original", "zh", "en", "ja"] } as const;
+  expect(sourceLanguagesForSettings({ ...base, languageCapabilities })).toEqual(["en", "fr"]);
+  expect(sourceLanguagesForSettings({ ...base, languageCapabilities: { ...languageCapabilities, sourceLanguages: ["auto"] } })).toEqual([]);
+  expect(sourceLanguagesForSettings({ ...base, languageCapabilities: { ...languageCapabilities, sourceLanguages: [] } })).toEqual([]);
+  expect(sourceLanguagesForSettings({ ...base, languageCapabilities: { ...languageCapabilities, profileId: "old" } })).toEqual([]);
+  expect(credentialStateForTarget(apple, "original")).toBe("present");
+  expect(credentialStateForTarget(apple, "zh")).toBe("missing");
+});
+
+it.each(["deepL", "deepLX"] as const)("intersects Apple sources with the %s text encoder while keeping original-only choices", route => {
+  const profile = { id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "present", textTranslation: route } as const;
+  const languageCapabilities = { profileId: profile.id, provider: profile.provider, textTranslation: route, targetLanguage: "en", sourceLanguages: ["en", "fr"], targetLanguages: ["original", "zh", "en", "ja"] } as const;
+  const settings = { ...BASE_SETTINGS, profiles: [profile], activeProfileId: profile.id, targetLanguage: "en" as const, languageCapabilities };
+  expect(sourceLanguagesForSettings(settings)).toEqual(["en"]);
+  expect(sourceLanguagesForSettings({ ...settings, targetLanguage: "original", languageCapabilities: { ...languageCapabilities, targetLanguage: "original" } })).toEqual(["en", "fr"]);
+});
+
 describe("provider capabilities", () => {
   it("keeps language controls and only Turbo for manual Alibaba input", () => {
     const settings = { ...BASE_SETTINGS, sourceLanguage: "ja" as const };
@@ -84,7 +108,7 @@ describe("provider capabilities", () => {
 
     expect(activeServiceProfile(settings)?.provider).toBe("openAIRealtime");
     expect(sourceLanguagesForSettings(settings)).toEqual(["auto"]);
-    expect(targetLanguagesForSettings(settings)).toEqual(["zh", "en", "ja"]);
+    expect(targetLanguagesForSettings(settings)).toEqual(OPENAI_TRANSLATION_TARGETS);
     expect(translationModesForSettings(settings)).toEqual(["turbo"]);
     expect(effectiveTranslationModeForSettings(settings)).toBe("turbo");
   });
@@ -97,7 +121,7 @@ describe("provider capabilities", () => {
         activeProfileId: "openai",
         sourceLanguage: "auto",
       }),
-    ).toEqual(["zh", "en", "ja"]);
+    ).toEqual(OPENAI_TRANSLATION_TARGETS);
   });
 
   it.each([
@@ -136,7 +160,7 @@ describe("provider capabilities", () => {
   });
 
   it("lists every provider exactly once with custom recognition protocols after built-in services", () => {
-    expect(new Set(SERVICE_PROVIDERS).size).toBe(10);
+    expect(new Set(SERVICE_PROVIDERS).size).toBe(11);
     expect(SERVICE_PROVIDERS).toEqual([
       "alibabaCloud",
       "openAIRealtime",
@@ -146,6 +170,7 @@ describe("provider capabilities", () => {
       "tencentCloud",
       "baiduTranslate",
       "xAIRealtime",
+      "appleSpeech",
       "customDashScopeASR",
       "customOpenAIASR",
     ]);
@@ -287,8 +312,8 @@ it("keeps inactive profile routes isolated, including migrated legacy DeepLX pro
     expect(capabilitiesForProfile({ ...profile, textTranslation: "deepL" }).sourceLanguages).toEqual(["auto", "ja", "en", "ko", "zh"]);
     expect(capabilitiesForProfile({ ...profile, textTranslation: "deepL" }).targetLanguages).toEqual(["original", "zh", "en", "ja"]);
     expect(capabilitiesForProfile({ ...profile, textTranslation: "deepLX" }).targetLanguages).toEqual(["zh", "en", "ja"]);
-    expect(capabilitiesForProfile({ ...profile, textTranslation: "openAICompatible" }).sourceLanguages).toEqual(["auto", "ja", "en", "ko", "zh"]);
-    expect(capabilitiesForProfile({ ...profile, textTranslation: "openAICompatible" }).targetLanguages).toEqual(["original", "zh", "en", "ja"]);
+    expect(capabilitiesForProfile({ ...profile, textTranslation: "openAICompatible" }).sourceLanguages).toEqual(["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES]);
+    expect(capabilitiesForProfile({ ...profile, textTranslation: "openAICompatible" }).targetLanguages).toEqual(["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES]);
     expect(capabilitiesForProfile({ ...profile, textTranslation: "followService" }).targetLanguages).toHaveLength(32);
   }
 });
@@ -355,4 +380,41 @@ it("keeps the selectable language catalogs aligned with the Rust realtime models
   const table = qwenMt.match(/pub const QWEN_MT_LITE_LANGUAGE_CODES:[\s\S]*?=\s*&\[([\s\S]*?)\];/)?.[1];
   expect(table).toBeDefined();
   expect(Array.from(table!.matchAll(/"([a-z_]+)"/g), match => match[1])).toEqual(QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES);
+});
+
+it("uses the same official language catalogs as the Rust and Android encoders", () => {
+  for (const entry of contract.speechLanguageCatalogs) {
+    const provider = SERVICE_PROVIDERS.find(provider => provider === entry.provider)!;
+    const capabilities = capabilitiesForProvider(provider);
+    expect(capabilities.sourceLanguages, entry.id).toEqual(entry.expected.sourceLanguages);
+    expect(capabilities.targetLanguages, entry.id).toEqual(entry.expected.targetLanguages);
+  }
+});
+it.each(["customDashScopeASR", "customOpenAIASR"] as const)("exposes protocol codes for %s without bypassing the independent text encoder", provider => {
+  const profile = { id: "custom", name: "Custom", provider, credentialState: "present", textTranslation: "deepL" } as const;
+  expect(capabilitiesForProfile(profile, "original").sourceLanguages).toEqual(["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES]);
+  expect(capabilitiesForProfile(profile, "zh").sourceLanguages).not.toContain("fr");
+});
+
+
+it.each(["customDashScopeASR", "customOpenAIASR"] as const)("filters %s by declaration and text encoder without inferring model support", provider => {
+  const profile = { id: "custom", name: "Any model", provider, credentialState: "present" as const, customSpeechSourceLanguages: ["en", "fr"] as const };
+  const declared = { ...profile, customSpeechSourceLanguages: [...profile.customSpeechSourceLanguages] };
+  for (const textTranslation of ["openAICompatible", "chatMock"] as const) {
+    expect(capabilitiesForProfile({ ...declared, textTranslation }).sourceLanguages).toEqual(["auto", "en", "fr"]);
+    expect(capabilitiesForProfile({ ...declared, textTranslation }).targetLanguages).toEqual(["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES]);
+  }
+  expect(capabilitiesForProfile({ ...declared, textTranslation: "deepL" }).sourceLanguages).toEqual(["auto", "en"]);
+  expect(capabilitiesForProfile({ ...declared, customSpeechSourceLanguages: [] }).sourceLanguages).toEqual(["auto"]);
+});
+
+it.each([undefined, null, ["en", "fr"] as const])("does not let a stale native custom list hide expanded or cleared declarations: %j", declaration => {
+  const profile = { id: "custom", name: "Custom", provider: "customDashScopeASR" as const, credentialState: "present" as const, textTranslation: "openAICompatible" as const,
+    customSpeechSourceLanguages: declaration ? [...declaration] : declaration };
+  const snapshot: SettingsSnapshot = { ...BASE_SETTINGS, activeProfileId: profile.id, profiles: [profile], languageCapabilities: {
+    profileId: profile.id, provider: profile.provider, textTranslation: profile.textTranslation, targetLanguage: "zh",
+    sourceLanguages: ["auto", "en"], targetLanguages: ["original", "zh", "en", "ja"],
+  } };
+  expect(sourceLanguagesForSettings(snapshot)).toEqual(declaration ? ["auto", "en", "fr"] : ["auto", ...AUDIO3_RECOGNITION_LANGUAGE_CODES]);
+  expect(targetLanguagesForSettings(snapshot)).toEqual(["original", ...QWEN_MT_LITE_TRANSLATION_LANGUAGE_CODES]);
 });

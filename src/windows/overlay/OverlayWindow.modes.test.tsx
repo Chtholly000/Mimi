@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { audio3ErrorMessage } from "../../lib/audio3Errors";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
 import { shareUnchangedSubtitleHistory } from "../../lib/sessionSnapshot";
 import { useStore } from "../../lib/store";
@@ -619,4 +620,18 @@ it("shows same-language confirmations once and permits a final original while tr
   await publish(useStore.getState().session.subtitles, { detectedLanguage: "zh" });
   await mode("translation");
   expect(visibleLanes()).toEqual(["同语言确认。"]);
+});
+
+
+it.each([false, true])("keeps resume errors safe and ignores a newer successful resume=%s", async superseded => {
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  let reject!: (reason: string) => void;
+  useStore.setState({ togglePaused: () => new Promise<void>((_resolve, failure) => { reject = failure; }) });
+  await mount(empty);
+  await publish(empty, { isPaused: true });
+  await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${I18N.overlay.resume}"]`)!.click());
+  if (superseded) await publish(empty, { isPaused: false });
+  await act(async () => reject(error));
+  expect(host.querySelector(".overlay-action-feedback")?.textContent ?? null).toBe(superseded ? null : audio3ErrorMessage(error));
+  expect(host.textContent).not.toContain(error);
 });

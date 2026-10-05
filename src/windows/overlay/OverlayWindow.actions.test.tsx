@@ -58,7 +58,7 @@ it("shows the independent translation mark and opens settings with guarded failu
   expect(host.querySelector('[role="alert"]')).toBeNull();
 });
 
-it("keeps the service visible when paused or locked and hides it with immersive or collapsed chrome", async () => {
+it("keeps the service visible through errors and restores immersive or collapsed chrome after recovery", async () => {
   await act(async () => root.render(<OverlayWindow />));
   for (const change of [{ isPaused: true }, { isActive: false, status: { kind: "error" as const, message: "unavailable" } }]) {
     await act(async () => useStore.setState(state => ({ session: { ...state.session, ...change } })));
@@ -67,6 +67,8 @@ it("keeps the service visible when paused or locked and hides it with immersive 
   await act(async () => useStore.setState(state => ({ settings: { ...state.settings, isOverlayLocked: true } })));
   expect(host.querySelector(".overlay-service")).not.toBeNull();
   await act(async () => useStore.setState(state => ({ settings: { ...state.settings, subtitleBlendsWithBackground: true } })));
+  expect(host.querySelector(".overlay-service")).not.toBeNull();
+  await act(async () => useStore.setState(state => ({ session: { ...state.session, status: { kind: "listening" }, isActive: true } })));
   expect(host.querySelector(".overlay-service")).toBeNull();
   await act(async () => useStore.setState(state => ({ settings: { ...state.settings, subtitleBlendsWithBackground: false }, session: { ...state.session, isOverlayCollapsed: true } })));
   expect(host.querySelector(".overlay-service")).toBeNull();

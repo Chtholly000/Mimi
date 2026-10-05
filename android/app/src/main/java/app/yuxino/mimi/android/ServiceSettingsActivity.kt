@@ -159,7 +159,7 @@ class ServiceSettingsActivity : AppCompatActivity() {
         if(!valid) return
         val config=ServiceConfiguration(provider,values,endpointInput.text.toString().trim(),modelInput.text.toString().trim())
         val (source, target) = runCatching {
-            provider.normalize(SettingsStore.sourceLang(this), SettingsStore.targetLang(this))
+            provider.normalize(SettingsStore.sourceLang(this), SettingsStore.targetLang(this), textTranslation?.provider ?: TextTranslationProvider.BUILTIN)
         }.getOrElse { status.text = getString(R.string.guide_storage_unavailable); return }
         // Validate URL/signing requirements locally without contacting a provider or logging secrets.
         try {

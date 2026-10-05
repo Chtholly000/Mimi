@@ -161,9 +161,11 @@ impl SafeFailure {
             _ => return unknown,
         };
         let category = match parts.next() {
-            Some("timeout") => "timeout",
+            Some("timeout" | "local_timeout") => "timeout",
+            Some("local_overload") => "backlog",
             Some("authentication") => "authentication",
             Some("request") => "request_rejected",
+            Some("unsupported_language") => "configuration",
             Some("service") => "service_error",
             Some("rate_limit") => "rate_limit",
             Some("task_failed") => "unknown",
@@ -171,6 +173,9 @@ impl SafeFailure {
         };
         let code = match parts.next() {
             Some("CLIENT_ERROR") => "CLIENT_ERROR",
+            Some("UNSUPPORTED_LANGUAGE") => "UNSUPPORTED_LANGUAGE",
+            Some("LOCAL_ASR_OVERLOADED") => "LOCAL_ASR_OVERLOADED",
+            Some("LOCAL_ASR_TIMEOUT") => "LOCAL_ASR_TIMEOUT",
             Some("SERVER_ERROR") => "SERVER_ERROR",
             Some("INVALID_API_KEY") => "INVALID_API_KEY",
             Some("UNAUTHORIZED") => "UNAUTHORIZED",
@@ -444,6 +449,16 @@ pub fn render(facts: DiagnosticFacts) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_recognition_language_is_safe_configuration_diagnostic() {
+        let failure =
+            SafeFailure::from_error("audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE");
+        let value = serde_json::to_value(failure).unwrap();
+        assert_eq!(value["phase"], "asr_setup");
+        assert_eq!(value["category"], "configuration");
+        assert_eq!(value["code"], "UNSUPPORTED_LANGUAGE");
+    }
 
     #[test]
     fn recording_permission_and_user_stop_have_distinct_content_free_diagnostics() {

@@ -172,6 +172,6 @@ internal fun createProtocol(config: ServiceConfiguration, source: String, target
         ServiceProvider.VOLCANO -> VolcanoProtocol(config, source, target)
         ServiceProvider.TENCENT -> TencentProtocol(config, source, target)
         ServiceProvider.BAIDU -> BaiduProtocol(config, source, target)
-        ServiceProvider.XAI -> GrokProtocol(config, target)
+        ServiceProvider.XAI -> GrokProtocol(config, target, source)
         else -> error("unsupported_adapter")
     }

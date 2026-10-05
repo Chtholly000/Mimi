@@ -24,3 +24,8 @@ it.each([
   expect(capsuleLabels({ sourceLanguage: "fr", targetLanguage: "zh_tw" }, null, locale))
     .toEqual({ source, target, phase: null });
 });
+
+it("does not claim automatic language detection for an arbitrary custom endpoint", () => {
+  const settings = { sourceLanguage: "auto", targetLanguage: "original", activeProfileId: "custom", profiles: [{ id: "custom", name: "Custom", provider: "customOpenAIASR", credentialState: "present" }] } as const;
+  expect(capsuleLabels({ ...settings, profiles: [...settings.profiles] }, null, "zh").source).toBe("服务默认");
+});

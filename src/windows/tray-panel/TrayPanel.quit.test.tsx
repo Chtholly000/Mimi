@@ -3,10 +3,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
-import { profileErrorMessage } from "../../lib/connectionDiagnostics";
+import { sessionActionErrorMessage, profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { useStore } from "../../lib/store";
 import { TrayPanel } from "./TrayPanel";
-import { SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
+import { AUDIO3_RECOGNITION_LANGUAGE_CODES, SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
 import { sourceLanguagesForSettings } from "../../lib/providerCapabilities";
 import permissions from "../../../src-tauri/permissions/app.toml?raw";
 
@@ -101,6 +101,25 @@ function languageSettings(draft: Partial<SettingsSnapshot> = {}): SettingsSnapsh
 function sourcePicker() {
   return host.querySelector<HTMLButtonElement>('.tray-setting-row--language [role="combobox"]')!;
 }
+
+it.each(["zh", "en", "ja"] as const)("keeps Apple source choices and explicit-language help consistent in the %s tray", async locale => {
+  setStoredUiLanguage(locale);
+  const switchSourceLanguage = vi.fn().mockResolvedValue(undefined);
+  const settings = languageSettings({ sourceLanguage: "en", targetLanguage: "original", activeProfileId: "apple",
+    profiles: [{ id: "apple", name: "Apple Speech", provider: "appleSpeech", credentialState: "missing" }],
+    languageCapabilities: { profileId: "apple", provider: "appleSpeech", textTranslation: "followService", targetLanguage: "original",
+      sourceLanguages: ["en", "fr"], targetLanguages: ["original"] } });
+  useStore.setState({ ...initial, settings, switchSourceLanguage }, true);
+  await act(async () => root.render(<TrayPanel />));
+  const help = host.querySelector('.tray-setting-row--language .settings-help-control__description')!;
+  expect(help.textContent).toBe(I18N.settings.appleSpeechLanguageHelp);
+  expect(help.textContent).not.toBe(I18N.settings.recognitionHintHelp);
+  await act(async () => sourcePicker().click());
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(options.map(option => option.textContent)).toEqual([SOURCE_LANGUAGE_DISPLAY_NAMES.en, SOURCE_LANGUAGE_DISPLAY_NAMES.fr]);
+  await act(async () => options[1].click());
+  expect(switchSourceLanguage).toHaveBeenCalledExactlyOnceWith("fr");
+});
 async function filter(query: string) {
   const search = document.querySelector<HTMLInputElement>("input.mimi-select__search")!;
   expect(search.getAttribute("aria-label")).toBe(I18N.settings.searchLanguages);
@@ -139,7 +158,7 @@ it("offers 31 Original-mode sources and selects Norwegian after Chinese", async 
   expect(switchSourceLanguage).toHaveBeenCalledExactlyOnceWith("no");
 });
 
-it.each(["deepL", "deepLX", "openAICompatible"] as const)("keeps %s route limits and uses a non-searchable five-language tray picker", async route => {
+it.each(["deepL", "deepLX"] as const)("keeps %s route limits and uses a non-searchable five-language tray picker", async route => {
   const settings = languageSettings();
   settings.profiles = [{ ...settings.profiles[0], textTranslation: route }];
   useStore.setState({ ...initial, settings }, true);
@@ -151,6 +170,26 @@ it.each(["deepL", "deepLX", "openAICompatible"] as const)("keeps %s route limits
     .map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]));
   expect(document.querySelector("input.mimi-select__search")).toBeNull();
   expect(options.map(option => option.textContent)).not.toContain(SOURCE_LANGUAGE_DISPLAY_NAMES.fr);
+});
+
+it.each(["openAICompatible", "chatMock"] as const)("searches all 31 sources with the %s text route and sends the selected code from the tray", async route => {
+  const settings = languageSettings();
+  settings.profiles = [{ ...settings.profiles[0], textTranslation: route }];
+  const switchSourceLanguage = vi.fn().mockResolvedValue(undefined);
+  useStore.setState({ ...initial, settings, switchSourceLanguage }, true);
+  await act(async () => root.render(<TrayPanel />));
+  await act(async () => sourcePicker().click());
+  const options = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(options).toHaveLength(31);
+  expect(options.map(option => option.textContent)).toEqual(["auto" as const, ...AUDIO3_RECOGNITION_LANGUAGE_CODES]
+    .map(language => SOURCE_LANGUAGE_DISPLAY_NAMES[language]));
+  expect(document.querySelector("input.mimi-select__search")).not.toBeNull();
+  await filter("Norwegian");
+  const filtered = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(filtered.map(option => option.textContent)).toEqual([SOURCE_LANGUAGE_DISPLAY_NAMES.no]);
+  await act(async () => filtered[0].click());
+  expect(switchSourceLanguage).toHaveBeenCalledExactlyOnceWith("no");
+  expect(document.querySelector('[role="listbox"]')).toBeNull();
 });
 
 it("uses native options without search when small and falls back after a stale target stamp", async () => {
@@ -195,6 +234,30 @@ it("keeps the interim switch usable while running, reports failure and saves a r
   expect(toggle().getAttribute("aria-checked")).toBe("false");
   expect(useStore.getState().session.isActive).toBe(true);
   expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it("shows custom service default and unknown support beside the tray picker", async () => {
+  const settings = languageSettings({ targetLanguage: "original", sourceLanguage: "auto" });
+  settings.profiles = [{ ...settings.profiles[0], provider: "customOpenAIASR" }];
+  useStore.setState({ ...initial, settings }, true);
+  await act(async () => root.render(<TrayPanel />));
+  expect(host.querySelector('.tray-setting-row--language [role="combobox"]')?.textContent).toContain(I18N.settings.recognitionServiceDefault);
+  expect(host.querySelector('.recognition-language-notice')?.textContent).toBe(I18N.settings.recognitionCustomNotice);
+  expect(host.textContent).toContain(I18N.settings.recognitionOpenAIParameter);
+});
+
+
+it("localizes a rejected tray language switch without exposing the IPC label", async () => {
+  const switchSourceLanguage = vi.fn().mockRejectedValue(new Error("source_switch_save_failed"));
+  useStore.setState({ ...initial, settings: languageSettings(), switchSourceLanguage }, true);
+  await act(async () => root.render(<TrayPanel />));
+  await act(async () => sourcePicker().click());
+  await filter("fr");
+  await act(async () => document.querySelector<HTMLElement>('[role="option"]')!.click());
+  expect(switchSourceLanguage).toHaveBeenCalledExactlyOnceWith("fr");
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(I18N.settings.languageSaveFailed);
+  expect(host.textContent).not.toContain("source_switch_save_failed");
+  expect(sourcePicker().textContent).toBe(SOURCE_LANGUAGE_DISPLAY_NAMES.auto);
 });
 
 function profileSettings(): SettingsSnapshot {
@@ -277,4 +340,38 @@ it("grants saved-profile selection to both panels without exposing credential or
       expect(scope).not.toContain(`"${command}"`);
     }
   }
+});
+
+
+it("keeps a persisted tray profile selected when its reconnect fails", async () => {
+  const settings = profileSettings();
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  const selectProfile = vi.fn(async (activeProfileId: string) => {
+    useStore.setState({ settings: { ...settings, activeProfileId } });
+    throw error;
+  });
+  useStore.setState({ ...initial, settings, selectProfile }, true);
+  await act(async () => root.render(<TrayPanel />));
+  const next = await profileOption("My recognition model");
+  await act(async () => next.click());
+  expect(profilePicker().textContent).toBe("My recognition model");
+  expect(profilePicker().disabled).toBe(false);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(profileErrorMessage(error));
+  expect(host.textContent).not.toContain(error);
+  expect(selectProfile).toHaveBeenCalledExactlyOnceWith("custom");
+});
+
+
+it.each([false, true])("keeps tray resume feedback safe and ignores a later successful resume=%s", async superseded => {
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  let reject!: (reason: string) => void;
+  const togglePaused = vi.fn(() => new Promise<void>((_resolve, failure) => { reject = failure; }));
+  useStore.setState({ ...initial, togglePaused, settings: profileSettings(), session: { ...initial.session,
+    status: { kind: "listening" }, isActive: true, isPaused: true } }, true);
+  await act(async () => root.render(<TrayPanel />));
+  await act(async () => host.querySelector<HTMLButtonElement>('[data-action="resume"]')!.click());
+  if (superseded) await act(async () => useStore.setState({ session: { ...useStore.getState().session, isPaused: false } }));
+  await act(async () => reject(error));
+  expect(host.querySelector('[role="alert"]')?.textContent ?? null).toBe(superseded ? null : sessionActionErrorMessage(error, "fallback"));
+  expect(host.textContent).not.toContain(error);
 });

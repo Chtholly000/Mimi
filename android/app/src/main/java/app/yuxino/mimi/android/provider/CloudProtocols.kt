@@ -104,7 +104,7 @@ internal class GeminiProtocol(private val config: ServiceConfiguration, private 
     override fun setup() = textFrame(obj("setup" to obj("model" to "models/${config.model.ifBlank { config.provider.model }}",
         "inputAudioTranscription" to obj(), "outputAudioTranscription" to obj(),
         "generationConfig" to obj("responseModalities" to JSONArray(listOf("AUDIO")),
-            "translationConfig" to obj("targetLanguageCode" to if(target == "zh") "zh-Hans" else target, "echoTargetLanguage" to true)))))
+            "translationConfig" to obj("targetLanguageCode" to geminiTargetCode(target), "echoTargetLanguage" to true)))))
     override fun audio(data: ByteArray): WireFrame { require(data.size == frameBytes); return textFrame(obj("realtimeInput" to obj("audio" to obj("data" to encoded(data), "mimeType" to "audio/pcm;rate=16000")))) }
     override fun finish() = textFrame(obj("realtimeInput" to obj("audioStreamEnd" to true)))
     override fun text(value: String): List<ServiceEvent> {
@@ -197,4 +197,9 @@ internal class AzureProtocol(private val config: ServiceConfiguration, private v
         } else if(update.draft.isNotEmpty()) events += ServiceEvent.Translation(update.draft)
         return events
     }
+}
+
+internal fun geminiTargetCode(target: String): String {
+    require(target in ServiceProvider.GEMINI.targets) { "unsupported_language" }
+    return when(target) { "zh" -> "zh-Hans"; "zh_tw" -> "zh-Hant"; "tl" -> "fil"; else -> target }
 }

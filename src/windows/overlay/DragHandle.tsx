@@ -11,6 +11,8 @@ interface DragHandleProps {
   width?: number;
   disabled?: boolean;
   busy?: boolean;
+  /** Keep movement available when a temporary error surface cannot collapse. */
+  collapseDisabled?: boolean;
 }
 
 /**
@@ -24,10 +26,12 @@ export function DragHandle({
   width = 120,
   disabled = false,
   busy = false,
+  collapseDisabled = false,
 }: DragHandleProps) {
   const handleWidth = compact ? 42 : width;
   const height = compact ? 30 : 18;
   const blocked = disabled || busy;
+  const toggleBlocked = blocked || collapseDisabled;
 
   const handleMouseDown = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (blocked || event.button !== 0) return;
@@ -36,7 +40,7 @@ export function DragHandle({
     if (event.detail === 2) {
       // The second press toggles instead of dragging. This also covers the
       // plain-Vite preview, where `startDragging` is a no-op.
-      onToggleCollapsed();
+      if (!collapseDisabled) onToggleCollapsed();
       return;
     }
     if (!isTauri) return;
@@ -48,27 +52,27 @@ export function DragHandle({
 
   return (
     <div className="flex shrink-0">
-      <Tooltip label={I18N.overlay.dragTooltip}>
+      <Tooltip label={collapseDisabled ? I18N.overlay.moveSubtitle : I18N.overlay.dragTooltip}>
         {(descriptionId, hovered) => <button
           type="button"
           data-testid="drag-handle"
-          aria-label={compact ? I18N.overlay.expandSubtitle : I18N.overlay.collapseSubtitle}
+          aria-label={collapseDisabled ? I18N.overlay.moveSubtitle : compact ? I18N.overlay.expandSubtitle : I18N.overlay.collapseSubtitle}
           aria-describedby={descriptionId}
           aria-busy={busy || undefined}
           disabled={blocked}
           onMouseDown={handleMouseDown}
           onKeyDown={(event) => {
-            if (blocked) return;
             if (event.key !== "Enter" && event.key !== " ") return;
             // Cancel native activation even if a modifier is released before
             // Space: its keyup would otherwise synthesize an unmodified click.
             event.preventDefault();
+            if (toggleBlocked) return;
             if (!event.repeat && !event.nativeEvent.isComposing && !event.altKey && !event.ctrlKey && !event.metaKey) onToggleCollapsed();
           }}
           onClick={(event) => {
             // Assistive activation emits a click without a pointer press.
             // Modified Space can also synthesize one after keyup.
-            if (!blocked && event.detail === 0 && !event.altKey && !event.ctrlKey && !event.metaKey) onToggleCollapsed();
+            if (!toggleBlocked && event.detail === 0 && !event.altKey && !event.ctrlKey && !event.metaKey) onToggleCollapsed();
           }}
           className="relative flex items-center justify-center rounded-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
           style={{ width: handleWidth, height, border: 0, padding: 0, background: "transparent",

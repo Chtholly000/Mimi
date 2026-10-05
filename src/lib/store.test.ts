@@ -3,6 +3,7 @@ import { isTauri } from "./ipc";
 import {
   selectHasRecognizingSourceDraft,
   selectSessionErrorMessage,
+  selectSessionErrorSummary,
   selectSessionStatusKind,
   useStore,
 } from "./store";
@@ -212,14 +213,14 @@ describe("local preview store", () => {
       ...current,
       session: {
         ...current.session,
-        status: { kind: "error" as const, message: "first failure" },
+        status: { kind: "error" as const, message: "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE" },
       },
     };
     const replacement = {
       ...first,
       session: {
         ...first.session,
-        status: { kind: "error" as const, message: "second failure" },
+        status: { kind: "error" as const, message: "audio3_error.setup.timeout.CLIENT_ERROR" },
       },
     };
 
@@ -270,7 +271,6 @@ describe("local preview store", () => {
   });
 });
 
-
 it.each(["chatMock", "openAICompatible"] as const)("preview accepts keyless %s without changing speech credentials", async (textTranslation) => {
   const original = useStore.getState();
   const profile = { ...original.settings.profiles[0], provider: "alibabaCloud" as const, credentialState: "present" as const, textTranslation: "followService" as const };
@@ -305,6 +305,58 @@ it.each([false, true])("quick-switches Original and translation while preserving
     useStore.setState({ session, settings: { ...useStore.getState().settings,
       profiles: [{ id: "ali", name: "OpenAI", provider: "openAIRealtime", credentialState: "present" }] } });
     await expect(useStore.getState().switchTargetLanguage("original")).rejects.toThrow("target_switch_unsupported");
+  } finally { useStore.setState(original, true); }
+});
+
+it("never renders an arbitrary provider error body as a session reason", () => {
+  const state = useStore.getState();
+  const message = selectSessionErrorMessage({ session: { ...state.session, status: { kind: "error", message: "private provider content sk-example" } } });
+  expect(message).toBeTruthy();
+  expect(message).not.toContain("private");
+  expect(message).not.toContain("sk-example");
+});
+
+it("keeps arbitrary provider content out of the compact error cause", () => {
+  const state = useStore.getState();
+  const failed = { session: { ...state.session, status: { kind: "error" as const, message: "provider-private-content synthetic-key" } } };
+  expect(selectSessionErrorSummary(failed)).toBe(selectSessionErrorMessage(failed));
+  expect(selectSessionErrorSummary(failed)).not.toMatch(/provider-private-content|synthetic-key/);
+  expect(selectSessionErrorSummary({ session: { ...state.session, status: { kind: "listening" } } })).toBeNull();
+});
+it("keeps custom declarations independent and normalizes only the active source in the browser preview", async () => {
+  const original = useStore.getState();
+  const profile = { id: "custom", name: "Custom", provider: "customDashScopeASR" as const, credentialState: "missing" as const, textTranslation: "openAICompatible" as const };
+  try {
+    useStore.setState({ settings: { ...original.settings, profiles: [profile], activeProfileId: profile.id, sourceLanguage: "fr", targetLanguage: "zh" } });
+    const narrowed = await useStore.getState().updateProfile(profile.id, undefined, { customSpeechSourceLanguages: ["en", "en"] });
+    expect(narrowed.sourceLanguage).toBe("auto");
+    expect(narrowed.profiles[0].customSpeechSourceLanguages).toEqual(["en"]);
+    await useStore.getState().updateProfile(profile.id, "Renamed");
+    expect(useStore.getState().settings.profiles[0].customSpeechSourceLanguages).toEqual(["en"]);
+    const cleared = await useStore.getState().updateProfile(profile.id, undefined, { customSpeechSourceLanguages: null });
+    expect(cleared.profiles[0].customSpeechSourceLanguages).toBeNull();
+    useStore.setState({ settings: original.settings });
+    await expect(useStore.getState().updateProfile(original.settings.activeProfileId, undefined, { customSpeechSourceLanguages: [] })).rejects.toThrow("provider-mismatch");
+  } finally { useStore.setState(original, true); }
+});
+
+
+it("rejects stale or busy recognition choices without changing preferences or subtitle state", async () => {
+  const original = useStore.getState();
+  try {
+    const settings = { ...original.settings, sourceLanguage: "auto" as const, languageCapabilities: undefined,
+      profiles: [{ id: "test", name: "Test", provider: "openAIRealtime" as const, credentialState: "present" as const }], activeProfileId: "test" };
+    useStore.setState({ settings, session: original.session });
+    await expect(useStore.getState().switchSourceLanguage("fr")).rejects.toThrow("source_switch_unsupported");
+    expect(useStore.getState().settings).toBe(settings);
+    expect(useStore.getState().session).toBe(original.session);
+    for (const kind of ["connecting", "stopping"] as const) {
+      const session = { ...original.session, status: { kind } };
+      useStore.setState({ session });
+      await expect(useStore.getState().switchSourceLanguage("auto")).rejects.toThrow("source_switch_busy");
+      expect(useStore.getState().settings).toBe(settings);
+      expect(useStore.getState().session).toBe(session);
+    }
   } finally { useStore.setState(original, true); }
 });
 

@@ -12,7 +12,9 @@ use crate::clients::qwen_mt_client::QwenMTClient;
 use crate::clients::recognition_client::{RecognitionClient, RecognitionClientError};
 use crate::core::committer::ASRDraftCommitter;
 use crate::core::configuration::LiveTranslationConfiguration;
-use crate::core::credentials::{ProviderCredentials, TextTranslationCredentials};
+#[cfg(test)]
+use crate::core::credentials::ProviderCredentials;
+use crate::core::credentials::TextTranslationCredentials;
 use crate::core::diagnostics::{
     TranslationLatency, TranslationLatencyKind, TranslationRecovery, TranslationRecoveryReason,
 };
@@ -547,22 +549,9 @@ impl HighQualityTranslationClient {
         configuration: &LiveTranslationConfiguration,
         events: ProviderEventSender,
     ) -> Result<Self, QwenMTClientError> {
-        let ProviderCredentials::CustomSpeech {
-            endpoint,
-            model,
-            api_key,
-        } = &configuration.credentials
-        else {
-            return Err(QwenMTClientError::RequestFailed {
-                status_code: 0,
-                message: "Invalid speech recognition configuration.".into(),
-            });
-        };
         let source = configuration.source_language;
         let target = configuration.target_language;
-        let asr =
-            RecognitionClient::custom(configuration.provider, endpoint, model, api_key, source)
-                .map_err(recognition_error)?;
+        let asr = RecognitionClient::standalone(configuration).map_err(recognition_error)?;
         let mt = if !target.translates_audio() {
             TextTranslationClient::Disabled
         } else {

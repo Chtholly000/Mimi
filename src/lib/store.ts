@@ -1,4 +1,5 @@
-import { audio3ErrorMessage } from "./audio3Errors";
+import { audio3ErrorMessage, audio3ErrorSummary } from "./audio3Errors";
+import { localizedSessionErrorSummary } from "./sessionErrorPresentation";
 import { audioSourceErrorMessage } from "./windowsAudioSource";
 import { applicationAudioError } from "./applicationAudio";
 import { audioInputErrorMessage } from "./audioInput";
@@ -44,12 +45,13 @@ import {
   trayPanelHide,
   type SettingsNavigationTarget,
 } from "./ipc";
-import { setStoredUiLanguage } from "./i18n";
+import { I18N, setStoredUiLanguage } from "./i18n";
 import {
   capabilitiesForProvider,
   capabilitiesForProfile,
   isChatCompletionsTranslation,
   isCustomSpeechProvider,
+  isStandaloneAsrProvider,
   effectiveProviderForProfile,
   textTranslationForProfile,
   sourceLanguagesForSettings,
@@ -64,6 +66,7 @@ import {
   SnapshotBootstrapTimeoutError,
   SnapshotResponseGate,
 } from "./settingsState";
+import { AUDIO3_RECOGNITION_LANGUAGE_CODES } from "./types";
 import type {
   ProfileOptionsDraft,
   AudioInput,
@@ -194,8 +197,14 @@ export function selectSessionStatusKind(state: SessionStoreSlice) {
 
 export function selectSessionErrorMessage(state: SessionStoreSlice) {
   return state.session.status.kind === "error"
-    ? credentialErrorMessage(state.session.status.message) ?? applicationAudioError(state.session.status.message) ?? audioInputErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? audio3ErrorMessage(state.session.status.message) ?? state.session.status.message
+    ? credentialErrorMessage(state.session.status.message) ?? applicationAudioError(state.session.status.message) ?? audioInputErrorMessage(state.session.status.message) ?? audioSourceErrorMessage(state.session.status.message) ?? audio3ErrorMessage(state.session.status.message) ?? I18N.settings.sessionError
     : null;
+}
+
+export function selectSessionErrorSummary(state: SessionStoreSlice) {
+  const message = selectSessionErrorMessage(state);
+  if (message === null || state.session.status.kind !== "error") return null;
+  return audio3ErrorSummary(state.session.status.message) ?? localizedSessionErrorSummary(message);
 }
 
 export function selectHasRecognizingSourceDraft(state: SessionStoreSlice) {
@@ -380,12 +389,8 @@ export const useStore = create<StoreState>()((set, get) => ({
 
   switchSourceLanguage: async (language) => {
     const current = get();
-    if (
-      sessionSettingsAreChanging(current.session) ||
-      !sourceLanguagesForSettings(current.settings).includes(language)
-    ) {
-      return;
-    }
+    if (sessionSettingsAreChanging(current.session)) throw new Error("source_switch_busy");
+    if (!sourceLanguagesForSettings(current.settings).includes(language)) throw new Error("source_switch_unsupported");
     if (isTauri) {
       await sessionSwitchSourceLanguage(language);
       return;
@@ -475,7 +480,12 @@ export const useStore = create<StoreState>()((set, get) => ({
           throw new Error(label);
         }
       }
-      set({ settings: mergeSettingsSnapshot(previous, draft) });
+      const settings = mergeSettingsSnapshot(previous, draft);
+      if (draft.targetLanguage !== undefined) {
+        const sources = sourceLanguagesForSettings(settings);
+        if (!sources.includes(settings.sourceLanguage)) settings.sourceLanguage = sources[0] ?? settings.sourceLanguage;
+      }
+      set({ settings });
       return;
     }
     await settingsSaveCoordinator.save(previous, draft, settingsSave, (settings) =>
@@ -527,6 +537,13 @@ export const useStore = create<StoreState>()((set, get) => ({
       return snapshot;
     }
     const current = get().settings;
+    const hasDeclaration = options !== undefined && Object.hasOwn(options, "customSpeechSourceLanguages");
+    const declaration = options?.customSpeechSourceLanguages ?? null;
+    if (hasDeclaration) {
+      const profile = current.profiles.find(profile => profile.id === profileId);
+      if (!profile || !isCustomSpeechProvider(profile.provider)) throw new Error("provider-mismatch");
+      if (declaration !== null && (declaration.length > 30 || declaration.includes("auto"))) throw new Error("custom-speech-languages-invalid");
+    }
     const snapshot: SettingsSnapshot = {
       ...current,
       profiles: current.profiles.map((profile) =>
@@ -539,10 +556,15 @@ export const useStore = create<StoreState>()((set, get) => ({
             else delete textTranslationNames[textTranslationName.route];
           }
           return { ...profile, ...(name === undefined ? {} : { name: name.trim() }), ...proxies, textTranslationNames,
+            ...(hasDeclaration ? { customSpeechSourceLanguages: declaration === null ? null : AUDIO3_RECOGNITION_LANGUAGE_CODES.filter(code => declaration.includes(code)) } : {}),
             ...(speechRecognitionName === undefined ? {} : { speechRecognitionName: speechRecognitionName.trim() || undefined }) };
         })() : profile,
       ),
     };
+    if (hasDeclaration && current.activeProfileId === profileId) {
+      const sources = sourceLanguagesForSettings(snapshot);
+      if (!sources.includes(snapshot.sourceLanguage)) snapshot.sourceLanguage = sources[0]!;
+    }
     set({ settings: snapshot });
     return snapshot;
   },
@@ -564,9 +586,9 @@ export const useStore = create<StoreState>()((set, get) => ({
     const selected = current.profiles.find((profile) => profile.id === profileId);
     if (!selected) throw new Error("profile-not-found");
     const snapshot = settingsAfterMockProfileSelection(current, effectiveProviderForProfile(selected));
-    if (isCustomSpeechProvider(selected.provider)) {
+    if (isStandaloneAsrProvider(selected.provider)) {
       const capabilities = capabilitiesForProfile(selected, current.targetLanguage);
-      snapshot.sourceLanguage = capabilities.sourceLanguages.includes(current.sourceLanguage) ? current.sourceLanguage : capabilities.sourceLanguages[0]!;
+      snapshot.sourceLanguage = capabilities.sourceLanguages.includes(current.sourceLanguage) ? current.sourceLanguage : capabilities.sourceLanguages[0] ?? current.sourceLanguage;
       snapshot.targetLanguage = capabilities.targetLanguages.includes(current.targetLanguage) ? current.targetLanguage : capabilities.targetLanguages[0]!;
     }
     snapshot.activeProfileId = profileId;
@@ -613,8 +635,8 @@ export const useStore = create<StoreState>()((set, get) => ({
     const current = get().settings;
     if (credentials.kind === "alibabaTranslation") {
       const profile = current.profiles.find((profile) => profile.id === profileId);
-      if (!profile || (!isCustomSpeechProvider(profile.provider) && !["alibabaCloud", "deepLX"].includes(profile.provider))) throw new Error("provider-mismatch");
-      if (isCustomSpeechProvider(profile.provider) ? credentials.apiKey.trim() : !credentials.apiKey.trim() && profile.credentialState !== "present") throw new Error("credential-empty");
+      if (!profile || (!isStandaloneAsrProvider(profile.provider) && !["alibabaCloud", "deepLX"].includes(profile.provider))) throw new Error("provider-mismatch");
+      if (isStandaloneAsrProvider(profile.provider) ? credentials.apiKey.trim() : !credentials.apiKey.trim() && profile.credentialState !== "present") throw new Error("credential-empty");
       if (credentials.textTranslation === "deepLX" && !credentials.endpoint.trim() && textTranslationForProfile(profile) !== "deepLX") throw new Error("credential-empty");
       if (credentials.textTranslation === "deepL" && !credentials.token.trim() && textTranslationForProfile(profile) !== "deepL") throw new Error("credential-empty");
       if (isChatCompletionsTranslation(credentials.textTranslation) && textTranslationForProfile(profile) !== credentials.textTranslation && (!credentials.endpoint.trim() || !credentials.model.trim())) throw new Error("credential-empty");
@@ -629,7 +651,7 @@ export const useStore = create<StoreState>()((set, get) => ({
       ...current,
       profiles: current.profiles.map((profile) =>
         profile.id === profileId
-          ? { ...profile, credentialState: "present", ...(credentials.kind === "alibabaTranslation" ? { textTranslation: credentials.textTranslation, ...(isCustomSpeechProvider(profile.provider) ? { textCredentialState: "present" as const, credentialState: profile.speechCredentialState ?? "missing" } : {}) } : {}), ...(credentials.kind === "customSpeech" ? { speechCredentialState: "present" as const, credentialState: textTranslationForProfile(profile) === "followService" || profile.textCredentialState === "present" ? "present" as const : "missing" as const } : {}) }
+          ? { ...profile, credentialState: "present", ...(credentials.kind === "alibabaTranslation" ? { textTranslation: credentials.textTranslation, ...(isStandaloneAsrProvider(profile.provider) ? { textCredentialState: "present" as const, credentialState: profile.speechCredentialState ?? "missing" } : {}) } : {}), ...(credentials.kind === "customSpeech" ? { speechCredentialState: "present" as const, credentialState: textTranslationForProfile(profile) === "followService" || profile.textCredentialState === "present" ? "present" as const : "missing" as const } : {}) }
           : profile,
       ),
     };
@@ -654,7 +676,7 @@ export const useStore = create<StoreState>()((set, get) => ({
       ...current,
       profiles: current.profiles.map((profile) =>
         profile.id === profileId
-          ? { ...profile, credentialState: "missing", ...(isCustomSpeechProvider(profile.provider) ? { speechCredentialState: "missing" as const, textCredentialState: "missing" as const } : {}) }
+          ? { ...profile, credentialState: "missing", ...(isCustomSpeechProvider(profile.provider) ? { speechCredentialState: "missing" as const, textCredentialState: "missing" as const } : profile.provider === "appleSpeech" ? { textCredentialState: "missing" as const } : {}) }
           : profile,
       ),
     };

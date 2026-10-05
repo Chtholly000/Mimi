@@ -4,13 +4,15 @@
 //! translation model. mimi constrains the agent with translation-only
 //! instructions and only surfaces the input/output transcripts.
 
-use crate::core::models::TargetLanguage;
+use crate::core::models::{SourceLanguage, TargetLanguage};
 use base64::Engine;
 use serde_json::{json, Value};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum XAIRealtimeProtocolError {
+    #[error("xAI Grok Voice does not accept this source language hint.")]
+    InvalidSourceLanguage,
     #[error("xAI Grok Voice requires a translated output language.")]
     InvalidTargetLanguage,
     #[error("xAI Grok Voice expected {expected_bytes} audio bytes, got {actual_bytes}.")]
@@ -53,10 +55,33 @@ impl XAIRealtimeEndpoint {
     }
 }
 
+/// Only unambiguous documented codes represented by Mimi. Regional es/pt/ar
+/// variants are not guessed from a generic language preference.
+pub fn source_language_hint(
+    source: SourceLanguage,
+) -> Result<Option<&'static str>, XAIRealtimeProtocolError> {
+    match source {
+        SourceLanguage::Automatic => Ok(None),
+        SourceLanguage::Chinese
+        | SourceLanguage::English
+        | SourceLanguage::Japanese
+        | SourceLanguage::Korean
+        | SourceLanguage::Vietnamese
+        | SourceLanguage::Indonesian
+        | SourceLanguage::Hindi
+        | SourceLanguage::French
+        | SourceLanguage::German
+        | SourceLanguage::Russian
+        | SourceLanguage::Italian => Ok(Some(source.raw_value())),
+        _ => Err(XAIRealtimeProtocolError::InvalidSourceLanguage),
+    }
+}
+
 pub struct XAIRealtimeRequestEncoder;
 
 impl XAIRealtimeRequestEncoder {
     pub fn session_update(
+        source_language: SourceLanguage,
         target_language: TargetLanguage,
         event_id: Option<&str>,
     ) -> Result<Value, XAIRealtimeProtocolError> {
@@ -99,6 +124,9 @@ impl XAIRealtimeRequestEncoder {
                 }
             }
         });
+        if let Some(hint) = source_language_hint(source_language)? {
+            value["session"]["audio"]["input"]["transcription"]["language_hint"] = json!(hint);
+        }
         if let Some(event_id) = event_id {
             value["event_id"] = json!(event_id);
         }
@@ -404,7 +432,8 @@ mod tests {
             )
         }) {
             assert_eq!(
-                XAIRealtimeRequestEncoder::session_update(target, None).unwrap_err(),
+                XAIRealtimeRequestEncoder::session_update(SourceLanguage::Automatic, target, None)
+                    .unwrap_err(),
                 XAIRealtimeProtocolError::InvalidTargetLanguage
             );
         }
@@ -422,6 +451,7 @@ mod tests {
     #[test]
     fn setup_is_explicitly_a_translation_only_server_vad_voice_agent() {
         let value = XAIRealtimeRequestEncoder::session_update(
+            SourceLanguage::Automatic,
             TargetLanguage::SimplifiedChinese,
             Some("mimi-xai-setup-3"),
         )

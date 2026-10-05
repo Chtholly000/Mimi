@@ -7,7 +7,9 @@ use crate::core::models::{
     SourceLanguage, SubtitleColor, SubtitleDisplayMode, TargetLanguage, TranslationMode,
 };
 use crate::core::network_proxy::ProxyConfig;
-use crate::core::provider::{ProviderKind, ServiceProfile, TextTranslation, TextTranslationName};
+use crate::core::provider::{
+    CustomSpeechLanguagesPatch, ProviderKind, ServiceProfile, TextTranslation, TextTranslationName,
+};
 use crate::session_manager::{SessionManager, SessionStateEvent};
 use crate::settings_store::{CredentialState, PulseStyle, SettingsStore, SubtitleAlignment};
 use crate::windows::{
@@ -63,6 +65,7 @@ pub struct ServiceProfilePayload {
     pub text_translation_names: std::collections::BTreeMap<TextTranslation, String>,
     pub speech_network_proxy: Option<ProxyConfig>,
     pub text_network_proxy: Option<ProxyConfig>,
+    pub custom_speech_source_languages: Option<Vec<SourceLanguage>>,
 }
 
 impl ServiceProfilePayload {
@@ -77,6 +80,7 @@ impl ServiceProfilePayload {
         Self {
             speech_network_proxy: profile.speech_network_proxy,
             text_network_proxy: profile.text_network_proxy,
+            custom_speech_source_languages: profile.custom_speech_source_languages,
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
@@ -95,6 +99,7 @@ impl ServiceProfilePayload {
         Self {
             speech_network_proxy: profile.speech_network_proxy,
             text_network_proxy: profile.text_network_proxy,
+            custom_speech_source_languages: profile.custom_speech_source_languages,
             id: profile.id,
             name: profile.name,
             provider: profile.provider,
@@ -103,11 +108,11 @@ impl ServiceProfilePayload {
             credential_storage: "keychain",
             speech_credential_state: profile
                 .provider
-                .is_custom_speech()
+                .is_standalone_asr()
                 .then_some(CredentialState::Unavailable),
             text_credential_state: profile
                 .provider
-                .is_custom_speech()
+                .is_standalone_asr()
                 .then_some(CredentialState::Unavailable),
             text_translation,
             text_translation_names: profile.text_translation_names,
@@ -128,7 +133,16 @@ pub struct LanguageCapabilitiesPayload {
 
 impl LanguageCapabilitiesPayload {
     fn from_profile(profile: &ServiceProfile, target: TargetLanguage) -> Self {
-        let capabilities = profile.capabilities(target);
+        let mut capabilities = profile.capabilities(target);
+        if profile.provider == ProviderKind::AppleSpeech {
+            let support = crate::apple_speech_support::cached();
+            capabilities.source_languages.retain(|source| {
+                support
+                    .languages
+                    .iter()
+                    .any(|language| language.source_language == *source)
+            });
+        }
         Self {
             profile_id: profile.id.clone(),
             provider: profile.provider,
@@ -233,6 +247,41 @@ mod tests {
     }
 
     #[test]
+    fn custom_language_metadata_and_filtered_snapshot_survive_unavailable_credentials() {
+        let store = SettingsStore::in_memory(Box::new(PartiallyUnavailableSecretStore), false);
+        let mut profile =
+            ServiceProfile::new("custom", "Synthetic", ProviderKind::CustomOpenAIASR).unwrap();
+        profile
+            .set_custom_speech_source_languages(Some(vec![SourceLanguage::French]))
+            .unwrap();
+        profile.text_translation = Some(TextTranslation::OpenAICompatible);
+        let capabilities =
+            LanguageCapabilitiesPayload::from_profile(&profile, TargetLanguage::German);
+        assert_eq!(
+            capabilities.source_languages,
+            vec![SourceLanguage::Automatic, SourceLanguage::French]
+        );
+        assert_eq!(capabilities.target_languages, TargetLanguage::ALL);
+        for payload in [
+            ServiceProfilePayload::from_profile(&store, profile.clone()),
+            ServiceProfilePayload::unavailable(profile),
+        ] {
+            let json = serde_json::to_value(payload).unwrap();
+            assert_eq!(
+                json["customSpeechSourceLanguages"],
+                serde_json::json!(["fr"])
+            );
+            for secret_field in ["endpoint", "apiKey", "token", "model"] {
+                assert!(json.get(secret_field).is_none());
+            }
+        }
+        let unknown = ServiceProfilePayload::unavailable(
+            ServiceProfile::new("old", "Legacy", ProviderKind::CustomDashScopeASR).unwrap(),
+        );
+        assert!(serde_json::to_value(unknown).unwrap()["customSpeechSourceLanguages"].is_null());
+    }
+
+    #[test]
     fn language_capability_snapshot_is_stamped_and_tracks_the_atomic_profile_route() {
         let store = SettingsStore::in_memory(Box::new(PartiallyUnavailableSecretStore), false);
         store
@@ -272,8 +321,8 @@ mod tests {
         assert_eq!(deep_l.target_languages.len(), 4);
         profile.text_translation = Some(TextTranslation::OpenAICompatible);
         let custom = LanguageCapabilitiesPayload::from_profile(&profile, TargetLanguage::Original);
-        assert_eq!(custom.source_languages.len(), 5);
-        assert_eq!(custom.target_languages.len(), 4);
+        assert_eq!(custom.source_languages, SourceLanguage::ALL);
+        assert_eq!(custom.target_languages, TargetLanguage::ALL);
         let custom = serde_json::to_value(custom).unwrap();
         assert_eq!(custom["provider"], "alibabaCloud");
         assert_eq!(custom["textTranslation"], "openAICompatible");
@@ -461,6 +510,20 @@ mod tests {
     }
 
     #[test]
+    fn apple_asset_management_is_settings_only() {
+        for command in ["get_apple_speech_support", "prepare_apple_speech_language"] {
+            let permissions = include_str!("../permissions/app.toml");
+            let permitted: Vec<_> = permissions
+                .split("[[permission]]")
+                .filter(|entry| entry.contains(&format!("\"{command}\"")))
+                .collect();
+            assert_eq!(permitted.len(), 1);
+            assert!(permitted[0].contains("identifier = \"app-settings\""));
+            assert!(include_str!("lib.rs").contains(&format!("commands::{command},")));
+        }
+    }
+
+    #[test]
     fn live_audio_capture_switches_are_scoped_to_settings_and_control_panel() {
         let permissions = include_str!("../permissions/app.toml");
         for command in [
@@ -622,6 +685,7 @@ mod tests {
             profiles: vec![ServiceProfilePayload {
                 speech_network_proxy: None,
                 text_network_proxy: None,
+                custom_speech_source_languages: None,
                 id: "alibaba-default".into(),
                 name: "Alibaba Cloud".into(),
                 provider: ProviderKind::AlibabaCloud,
@@ -1063,7 +1127,59 @@ pub struct SettingsDraft {
 /// main-thread path.
 #[tauri::command]
 pub async fn settings_get(state: State<'_, AppState>) -> Result<SettingsSnapshotPayload, String> {
+    if !app_is_ui_test()
+        && !crate::apple_speech_support::is_loaded()
+        && state
+            .settings
+            .active_profile()
+            .is_ok_and(|profile| profile.provider == ProviderKind::AppleSpeech)
+    {
+        // Query runtime support once for an already selected local recognizer.
+        // Failure leaves an empty language list and is surfaced by its editor.
+        let _ = crate::apple_speech_support::refresh().await;
+    }
     Ok(SettingsSnapshotPayload::from_store(&state.settings))
+}
+
+#[tauri::command]
+pub async fn get_apple_speech_support(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::apple_speech_support::AppleSpeechSupport, String> {
+    if app_is_ui_test() {
+        return Ok(Default::default());
+    }
+    let result = crate::apple_speech_support::refresh().await;
+    emit_settings_snapshot(&app, &state.settings)?;
+    result
+}
+
+#[tauri::command]
+pub async fn prepare_apple_speech_language(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    source_language: SourceLanguage,
+) -> Result<crate::apple_speech_support::AppleSpeechSupport, String> {
+    if app_is_ui_test() {
+        return Err("apple_speech_ui_test_unavailable".into());
+    }
+    {
+        let _lifecycle = state.session.settings_mutation_guard(true).await?;
+        ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    }
+    // The explicit settings action is the only path allowed to request assets.
+    let result = crate::apple_speech_support::prepare_source(source_language).await;
+    emit_settings_snapshot(&app, &state.settings)?;
+    result
+}
+
+async fn ensure_apple_provider_available(provider: ProviderKind) -> Result<(), String> {
+    if provider == ProviderKind::AppleSpeech
+        && (app_is_ui_test() || !crate::apple_speech_support::refresh().await?.available)
+    {
+        return Err("apple_speech_unavailable".into());
+    }
+    Ok(())
 }
 
 /// Lets the frontend select a deterministic updater adapter during native UI
@@ -1193,6 +1309,20 @@ async fn apply_settings_draft(
                 error
             }
         })?;
+    if draft.source_language.is_some() || draft.target_language.is_some() {
+        let profile = state.settings.active_profile()?;
+        if profile.provider == ProviderKind::AppleSpeech {
+            let prefs = state.settings.preferences();
+            let support = crate::apple_speech_support::refresh().await?;
+            crate::apple_speech_support::validate_profile_source(
+                &support,
+                &profile,
+                draft.source_language.unwrap_or(prefs.source_language),
+                draft.target_language.unwrap_or(prefs.target_language),
+                false,
+            )?;
+        }
+    }
     apply_settings_draft_guarded(app, state, draft)
 }
 
@@ -1211,6 +1341,8 @@ fn apply_settings_draft_guarded(
     if draft.show_in_dock.is_some() {
         return Err("dock-preference-unsupported".into());
     }
+    let configuration_failure = state.session.configuration_failure_snapshot();
+    let previous_preferences = state.settings.preferences();
     let changes_ui_language = draft.ui_language.is_some();
     let enables_background_blend = draft.subtitle_blends_with_background == Some(true);
     ensure_settings_draft_allowed(&draft, state.session.has_active_session())?;
@@ -1355,6 +1487,12 @@ fn apply_settings_draft_guarded(
     )?;
     #[cfg(not(target_os = "macos"))]
     save_preferences()?;
+    let saved_preferences = state.settings.preferences();
+    state.session.configuration_saved(
+        configuration_failure,
+        previous_preferences.source_language != saved_preferences.source_language
+            || previous_preferences.network_proxy != saved_preferences.network_proxy,
+    );
     sync_overlay_minimum(app);
     // Source changes can clear recording even when the draft omits it. Use
     // the saved value so a combined draft cannot retain old-source audio.
@@ -1513,6 +1651,7 @@ pub async fn profile_create(
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    ensure_apple_provider_available(provider).await?;
     state.settings.create_profile(provider, &name)?;
     emit_settings_snapshot(&app, &state.settings)
 }
@@ -1528,9 +1667,16 @@ pub async fn profile_update(
     text_network_proxy: Option<ProxyConfig>,
     text_translation_name: Option<TextTranslationName>,
     speech_recognition_name: Option<String>,
+    custom_speech_languages_patch: Option<CustomSpeechLanguagesPatch>,
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    let previous_profile = state.settings.active_profile()?;
+    let changes_active_speech_route = previous_profile.id == profile_id
+        && speech_network_proxy
+            .as_ref()
+            .is_some_and(|proxy| previous_profile.speech_network_proxy.as_ref() != Some(proxy));
+    let configuration_failure = state.session.configuration_failure_snapshot();
     state.settings.update_profile_options(
         &profile_id,
         name.as_deref(),
@@ -1538,7 +1684,11 @@ pub async fn profile_update(
         text_network_proxy,
         text_translation_name,
         speech_recognition_name.as_deref(),
+        custom_speech_languages_patch,
     )?;
+    state
+        .session
+        .configuration_saved(configuration_failure, changes_active_speech_route);
     emit_settings_snapshot(&app, &state.settings)
 }
 
@@ -1560,7 +1710,12 @@ pub async fn profile_delete(
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    let was_active = state.settings.active_profile()?.id == profile_id;
+    let configuration_failure = state.session.configuration_failure_snapshot();
     state.settings.delete_profile(&profile_id)?;
+    state
+        .session
+        .configuration_saved(configuration_failure, was_active);
     emit_settings_snapshot(&app, &state.settings)
 }
 
@@ -1573,7 +1728,31 @@ pub async fn profile_save_credentials(
 ) -> Result<SettingsSnapshotPayload, String> {
     let _lifecycle = state.session.settings_mutation_guard(true).await?;
     ensure_profile_mutation_allowed(state.session.has_active_session())?;
+    let mut profile = state.settings.active_profile()?;
+    let is_active_profile = profile.id == profile_id;
+    let configuration_failure = state.session.configuration_failure_snapshot();
+    if profile.provider == ProviderKind::AppleSpeech && is_active_profile {
+        if let ProviderCredentials::AlibabaTranslation {
+            text_translation, ..
+        } = &credentials
+        {
+            let prefs = state.settings.preferences();
+            profile.text_translation = Some(*text_translation);
+            if !profile
+                .capabilities(prefs.target_language)
+                .source_languages
+                .contains(&prefs.source_language)
+            {
+                return Err("apple_speech_translation_language_unsupported".into());
+            }
+        }
+    }
     state.settings.save_credentials(&profile_id, &credentials)?;
+    // An explicit successful service save is a repair action; do not read
+    // credentials a second time merely to compare private values.
+    state
+        .session
+        .configuration_saved(configuration_failure, is_active_profile);
     emit_settings_snapshot(&app, &state.settings)
 }
 
@@ -1648,8 +1827,7 @@ pub async fn session_stop(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn session_toggle_paused(state: State<'_, AppState>) -> Result<(), String> {
-    state.session.toggle_paused().await;
-    Ok(())
+    state.session.toggle_paused().await
 }
 
 #[tauri::command]
@@ -1698,8 +1876,7 @@ pub async fn session_switch_source_language(
     // The session manager broadcasts settings-changed immediately after the
     // preference write, so no window keeps a stale selection while the
     // reconnect (which this awaits) is still in flight.
-    state.session.switch_source_language(language).await;
-    Ok(())
+    state.session.switch_source_language(language).await
 }
 
 #[tauri::command]
@@ -1833,7 +2010,9 @@ pub fn overlay_move_start(
     window: tauri::WebviewWindow,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    OverlayWindowManager::move_start(&app, &state.overlay);
+    if !OverlayWindowManager::move_start(&app, &state.overlay) {
+        return Ok(());
+    }
     if window.start_dragging().is_err() {
         OverlayWindowManager::move_cancel(&state.overlay);
         return Err("Could not start overlay drag.".to_string());
