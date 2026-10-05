@@ -1227,3 +1227,22 @@ it("keeps the current service and shows a sanitized recording restriction when s
   expect(host.querySelector(".settings-toast")?.textContent).toContain(I18N.settings.profileSwitchRecordingRequiresStop);
   expect(host.querySelectorAll<HTMLButtonElement>(".service-row__main")[1].disabled).toBe(false);
 });
+
+
+it("reports reconnect failure after the selected profile is already saved without a success toast", async () => {
+  const other: ServiceProfile = { ...profile, id: "other", credentialState: "present" };
+  const snapshot = { ...settings, profiles: [profile, other] };
+  const saved = { ...snapshot, activeProfileId: other.id };
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  let reject!: (reason: string) => void;
+  actions.selectProfile.mockReturnValue(new Promise<SettingsSnapshot>((_resolve, failure) => { reject = failure; }));
+  await act(async () => root.render(<><ServiceProfiles settings={snapshot} sessionIsActive sessionStatusKind="listening" /><SettingsToastRegion /></>));
+  await act(async () => host.querySelectorAll<HTMLButtonElement>(".service-row__main")[1].click());
+  await render(saved, "error");
+  await act(async () => reject(error));
+  expect(host.querySelector('.service-row[data-active="true"]')).toBe(host.querySelectorAll(".service-row")[1]);
+  expect(host.querySelector('.settings-toast[data-tone="error"]')?.textContent).toContain(profileErrorMessage(error));
+  expect(host.querySelector('.settings-toast[data-tone="success"]')).toBeNull();
+  expect(host.textContent).not.toContain(error);
+  expect(actions.selectProfile).toHaveBeenCalledExactlyOnceWith(other.id);
+});

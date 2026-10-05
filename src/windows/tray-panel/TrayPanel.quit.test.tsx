@@ -322,3 +322,22 @@ it("grants saved-profile selection to both panels without exposing credential or
     }
   }
 });
+
+
+it("keeps a persisted tray profile selected when its reconnect fails", async () => {
+  const settings = profileSettings();
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  const selectProfile = vi.fn(async (activeProfileId: string) => {
+    useStore.setState({ settings: { ...settings, activeProfileId } });
+    throw error;
+  });
+  useStore.setState({ ...initial, settings, selectProfile }, true);
+  await act(async () => root.render(<TrayPanel />));
+  const next = await profileOption("My recognition model");
+  await act(async () => next.click());
+  expect(profilePicker().textContent).toBe("My recognition model");
+  expect(profilePicker().disabled).toBe(false);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(profileErrorMessage(error));
+  expect(host.textContent).not.toContain(error);
+  expect(selectProfile).toHaveBeenCalledExactlyOnceWith("custom");
+});

@@ -2593,7 +2593,16 @@ impl SessionManager {
         self.publish_settings();
         if action == ProfileSwitchAction::Reconnect {
             drop(lifecycle);
-            self.reconnect_if_current(switch_epoch).await;
+            return self
+                .try_reconnect_if_current(switch_epoch)
+                .await
+                .map_err(|error| {
+                    if error == "language_switch_superseded" {
+                        "profile_switch_superseded".into()
+                    } else {
+                        error
+                    }
+                });
         }
         Ok(())
     }
@@ -2849,8 +2858,8 @@ impl SessionManager {
         let _ = self.try_reconnect_if_current(expected_epoch).await;
     }
 
-    /// The language control needs the actual reconnect outcome. Existing
-    /// lifecycle callers retain their session-state-only error handling.
+    /// Profile and language controls need the actual reconnect outcome.
+    /// Other lifecycle callers retain session-state-only error handling.
     async fn try_reconnect_if_current(
         self: &Arc<Self>,
         expected_epoch: u64,

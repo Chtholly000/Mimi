@@ -457,3 +457,22 @@ it.each(["language_switch_superseded", "custom_speech_unreachable"])("keeps skip
   expect(host.querySelector('[role="alert"]')?.textContent).toBe(error === "language_switch_superseded" ? I18N.settings.languageSwitchSuperseded : I18N.settings.customSpeechUnreachable);
   expect(host.textContent).not.toContain(error);
 });
+
+
+it("keeps the persisted profile visible when its reconnect fails", async () => {
+  configureProfiles();
+  const error = "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE";
+  let reject!: (reason: string) => void;
+  props.onSelectProfile = vi.fn(() => new Promise<void>((_resolve, failure) => { reject = failure; }));
+  await mount();
+  await chooseProfile("My recognition model");
+  configure({ activeProfileId: "custom" });
+  await mount();
+  await act(async () => reject(error));
+  expect(picker(I18N.settings.currentProfile).textContent).toBe("My recognition model");
+  expect(picker(I18N.settings.currentProfile).disabled).toBe(false);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(profileErrorMessage(error));
+  expect(host.textContent).not.toContain(error);
+  expect(props.onDismiss).not.toHaveBeenCalled();
+  expect(props.onSelectProfile).toHaveBeenCalledExactlyOnceWith("custom");
+});

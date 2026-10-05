@@ -1,3 +1,4 @@
+import { audio3ErrorMessage } from "./audio3Errors";
 import { afterEach, expect, it } from "vitest";
 import { I18N, setStoredUiLanguage } from "./i18n";
 import { languageActionErrorMessage, connectionDiagnosticMessage, credentialErrorMessage, credentialUnavailableHelp, profileErrorMessage, diagnosticCopy, diagnosticPlatform } from "./connectionDiagnostics";
@@ -212,4 +213,22 @@ it.each(["en", "zh", "ja"] as const)("localizes profile switch restrictions with
   expect(profileErrorMessage(new Error("profile_switch_busy"))).toBe(I18N.settings.profileSwitchBusy);
   expect(profileErrorMessage("profile_switch_superseded")).toBe(I18N.settings.profileSwitchBusy);
   expect(profileErrorMessage("profile_switch_recording_requires_stop: private-value")).toBe(I18N.settings.profileActionFailed);
+});
+
+
+it.each(["en", "zh", "ja"] as const)("keeps post-save reconnect failures actionable and private in %s", language => {
+  setStoredUiLanguage(language);
+  const labels = [
+    "audio3_error.setup.unsupported_language.UNSUPPORTED_LANGUAGE",
+    "audio3_error.setup.authentication.INVALID_API_KEY",
+  ];
+  for (const label of labels) {
+    for (const error of [label, new Error(label)]) {
+      expect(profileErrorMessage(error)).toBe(audio3ErrorMessage(label));
+      expect(languageActionErrorMessage(error, "fallback")).toBe(audio3ErrorMessage(label));
+    }
+    expect(profileErrorMessage(`${label}: private-provider-body`)).toBe(I18N.settings.profileActionFailed);
+    expect(languageActionErrorMessage(`${label}: private-provider-body`, "fallback")).toBe("fallback");
+  }
+  expect(profileErrorMessage(new Error("The speech recognition transport failed."))).toBe(diagnosticCopy().speechUnreachable);
 });
