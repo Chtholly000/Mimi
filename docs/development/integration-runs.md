@@ -842,7 +842,8 @@ translation check (108 ms) and public 9.518 s `afplay` → ScreenCaptureKit syst
 audio → Apple → Hy chain: native diagnostics showed paired current English/Chinese
 subtitles and correct final two-shields/three-potions quantities. The latest MT
 request was 446 ms, not end-to-end latency. Cloud processing, recording and history
-were off; the session stopped through the UI. Only the control window was selected,
-so rendered-overlay visual acceptance remains pending. Model hashes, timings,
+were off; the session stopped through the UI. A post-stop check visibly reported
+unavailable/cannot-connect in 3 ms without a raw error. Only the control window was
+selected, so rendered-overlay visual acceptance remains pending. Model hashes, timings,
 prompt controls and failure cases are in
 [the report](../research/2026-10-05-local-hy-mt2.md).
