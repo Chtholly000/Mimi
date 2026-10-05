@@ -3,10 +3,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
+import { profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { useStore } from "../../lib/store";
 import { TrayPanel } from "./TrayPanel";
 import { SOURCE_LANGUAGE_DISPLAY_NAMES, type SettingsSnapshot } from "../../lib/types";
 import { sourceLanguagesForSettings } from "../../lib/providerCapabilities";
+import permissions from "../../../src-tauri/permissions/app.toml?raw";
 
 let host: HTMLDivElement;
 let root: Root;
@@ -193,4 +195,86 @@ it("keeps the interim switch usable while running, reports failure and saves a r
   expect(toggle().getAttribute("aria-checked")).toBe("false");
   expect(useStore.getState().session.isActive).toBe(true);
   expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+function profileSettings(): SettingsSnapshot {
+  return languageSettings({ profiles: [
+    { id: "ali", name: "Alibaba Cloud", provider: "alibabaCloud", credentialState: "present" },
+    { id: "custom", name: "My recognition model", provider: "openAIRealtime", credentialState: "present" },
+  ] });
+}
+function profilePicker() {
+  return host.querySelector<HTMLButtonElement>('.tray-setting-row--profile [role="combobox"]')!;
+}
+async function profileOption(name: string) {
+  await act(async () => profilePicker().click());
+  return [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === name)!;
+}
+
+it.each(["idle", "listening", "paused", "error"] as const)("switches saved profiles from the %s tray and follows the saved selection", async kind => {
+  const settings = profileSettings();
+  const selectProfile = vi.fn(async (activeProfileId: string) => {
+    const snapshot = { ...settings, activeProfileId };
+    useStore.setState({ settings: snapshot });
+    return snapshot;
+  });
+  useStore.setState({ ...initial, settings, selectProfile, session: { ...initial.session,
+    status: kind === "error" ? { kind, message: "synthetic-session-error" } : { kind: kind === "paused" ? "listening" : kind },
+    isActive: kind === "listening" || kind === "paused", isPaused: kind === "paused" } }, true);
+  await act(async () => root.render(<TrayPanel />));
+  expect(profilePicker().disabled).toBe(false);
+  const current = await profileOption("Alibaba Cloud");
+  await act(async () => current.click());
+  expect(selectProfile).not.toHaveBeenCalled();
+  const next = await profileOption("My recognition model");
+  await act(async () => next.click());
+  expect(selectProfile).toHaveBeenCalledExactlyOnceWith("custom");
+  expect(profilePicker().textContent).toBe("My recognition model");
+  expect(useStore.getState().session.isPaused).toBe(kind === "paused");
+});
+
+it.each(["connecting", "stopping"] as const)("blocks tray profile switching while %s", async kind => {
+  const selectProfile = vi.fn();
+  useStore.setState({ ...initial, settings: profileSettings(), selectProfile,
+    session: { ...initial.session, status: { kind } } }, true);
+  await act(async () => root.render(<TrayPanel />));
+  expect(profilePicker().disabled).toBe(true);
+  await act(async () => profilePicker().click());
+  expect(document.querySelector('[role="listbox"]')).toBeNull();
+  expect(selectProfile).not.toHaveBeenCalled();
+});
+
+it("blocks duplicate tray profile switches, sanitizes errors and keeps the previous selection for retry", async () => {
+  let reject!: (reason: Error) => void;
+  const settings = profileSettings();
+  const selectProfile = vi.fn()
+    .mockImplementationOnce(() => new Promise<SettingsSnapshot>((_resolve, failure) => { reject = failure; }))
+    .mockResolvedValue(settings);
+  useStore.setState({ ...initial, settings, selectProfile }, true);
+  await act(async () => root.render(<TrayPanel />));
+  const next = await profileOption("My recognition model");
+  await act(async () => { next.click(); next.click(); });
+  expect(selectProfile).toHaveBeenCalledExactlyOnceWith("custom");
+  expect(profilePicker().disabled).toBe(true);
+  expect(sourcePicker().disabled).toBe(true);
+  expect(host.querySelector('.tray-setting-row--profile')?.getAttribute("aria-busy")).toBe("true");
+  await act(async () => reject(new Error("private-profile-switch-error")));
+  expect(profilePicker().textContent).toBe("Alibaba Cloud");
+  expect(profilePicker().disabled).toBe(false);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(profileErrorMessage("private-profile-switch-error"));
+  expect(host.textContent).not.toContain("private-profile-switch-error");
+  const retry = await profileOption("My recognition model");
+  await act(async () => retry.click());
+  expect(selectProfile).toHaveBeenCalledTimes(2);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it("grants saved-profile selection to both panels without exposing credential or profile editing commands", () => {
+  for (const identifier of ["app-tray-panel", "app-overlay-control"]) {
+    const scope = permissions.split("[[permission]]").find(entry => entry.includes(`identifier = "${identifier}"`))!;
+    expect(scope).toContain('"profile_select"');
+    for (const command of ["profile_create", "profile_update", "profile_delete", "profile_save_credentials", "profile_reveal_credential"]) {
+      expect(scope).not.toContain(`"${command}"`);
+    }
+  }
 });

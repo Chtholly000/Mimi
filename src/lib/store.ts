@@ -548,7 +548,8 @@ export const useStore = create<StoreState>()((set, get) => ({
   },
 
   selectProfile: async (profileId) => {
-    ensureProfileMutationsAllowed(get().session);
+    if (profileId === get().settings.activeProfileId) return get().settings;
+    if (sessionSettingsAreChanging(get().session)) throw new Error("profile_switch_busy");
     if (isTauri) {
       const revision = settingsResponseGate.capture();
       const snapshot = await profileSelect(profileId);

@@ -307,3 +307,26 @@ it.each([false, true])("quick-switches Original and translation while preserving
     await expect(useStore.getState().switchTargetLanguage("original")).rejects.toThrow("target_switch_unsupported");
   } finally { useStore.setState(original, true); }
 });
+
+
+it.each([false, true])("selects a saved preview profile preserving subtitles, capture choice and pause=%s", async isPaused => {
+  const original = useStore.getState();
+  const other = { ...original.settings.profiles[0], id: "other" };
+  const session = { ...original.session, isActive: !isPaused, isPaused, status: { kind: "listening" as const } };
+  try {
+    useStore.setState({ session, settings: { ...original.settings, profiles: [...original.settings.profiles, other], audioInput: "both", recordSessionAudio: true } });
+    await useStore.getState().selectProfile(other.id);
+    expect(useStore.getState().settings).toMatchObject({ activeProfileId: other.id, audioInput: "both", recordSessionAudio: true });
+    expect(useStore.getState().session).toBe(session);
+    await expect(useStore.getState().updateProfile(other.id, "Change")).rejects.toThrow("session-active");
+  } finally { useStore.setState(original, true); }
+});
+
+it.each(["connecting", "stopping"] as const)("rejects preview profile selection while %s", async kind => {
+  const original = useStore.getState();
+  try {
+    useStore.setState({ session: { ...original.session, status: { kind } } });
+    await expect(useStore.getState().selectProfile("other")).rejects.toThrow("profile_switch_busy");
+    expect(useStore.getState().settings).toBe(original.settings);
+  } finally { useStore.setState(original, true); }
+});

@@ -2380,7 +2380,7 @@ impl SettingsStore {
         self.configuration_for_profile(&profile)
     }
 
-    /// Reads only the requested profile's Keychain credentials. A connection
+    /// Reads only the requested profile's private credentials. A connection
     /// check must not select it or change the current listening session.
     pub fn configuration_for_profile(
         &self,
@@ -2396,6 +2396,18 @@ impl SettingsStore {
         profile: &ServiceProfile,
     ) -> Result<LiveTranslationConfiguration, String> {
         self.configuration_for_profile_options(profile, true)
+    }
+
+    /// Resolves the exact listening configuration that selecting this profile
+    /// would save, without selecting it. Unlike a connection probe, Original
+    /// remains recognition-only and does not require text credentials.
+    pub fn configuration_for_profile_selection(
+        &self,
+        profile: &ServiceProfile,
+    ) -> Result<LiveTranslationConfiguration, String> {
+        let mut prefs = self.preferences();
+        normalize_preferences_value(&mut prefs, profile);
+        self.configuration_with_profile_preferences(profile, prefs)
     }
 
     /// Build an ephemeral speech/integrated-service check. Complete drafts do
@@ -2755,6 +2767,14 @@ impl SettingsStore {
             prefs.target_language = normalized.target_language;
             prefs.translation_mode = normalized.translation_mode;
         }
+        self.configuration_with_profile_preferences(profile, prefs)
+    }
+
+    fn configuration_with_profile_preferences(
+        &self,
+        profile: &ServiceProfile,
+        prefs: Preferences,
+    ) -> Result<LiveTranslationConfiguration, String> {
         let credentials = self.credentials_for_profile(profile)?.ok_or_else(|| {
             crate::core::credentials::ProviderCredentialsError::Missing(
                 profile.effective_provider(),
@@ -3268,6 +3288,126 @@ mod animation_switch_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn profile_selection_configuration_matches_saved_selection_without_mutating_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake));
+        let next = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Synthetic next")
+            .unwrap();
+        store.save_api_key(&next.id, "synthetic-next").unwrap();
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.source_language = SourceLanguage::Japanese;
+                prefs.target_language = TargetLanguage::French;
+                prefs.audio_input = AudioInput::Both;
+                prefs.retain_session_history = true;
+                prefs.record_session_audio = true;
+            })
+            .unwrap();
+        let previous = store.preferences();
+        let active = store.active_profile().unwrap();
+        let catalog = std::fs::read(&store.catalog_path).unwrap();
+        let persisted = std::fs::read(&store.prefs_path).unwrap();
+
+        let proposed = store.configuration_for_profile_selection(&next).unwrap();
+        assert_eq!(proposed.source_language, SourceLanguage::Automatic);
+        assert_eq!(proposed.target_language, TargetLanguage::SimplifiedChinese);
+        assert_eq!(store.preferences(), previous);
+        assert_eq!(store.active_profile().unwrap(), active);
+        assert_eq!(std::fs::read(&store.catalog_path).unwrap(), catalog);
+        assert_eq!(std::fs::read(&store.prefs_path).unwrap(), persisted);
+
+        store.select_profile(&next.id).unwrap();
+        assert_eq!(store.configuration().unwrap(), proposed);
+        let selected = store.preferences();
+        assert_eq!(selected.audio_input, AudioInput::Both);
+        assert!(selected.retain_session_history);
+        assert!(selected.record_session_audio);
+    }
+
+    #[test]
+    fn incomplete_profile_selection_leaves_current_preferences_and_catalog_untouched() {
+        let directory = tempfile::tempdir().unwrap();
+        let fake = FakeSecretStore::default();
+        let store = SettingsStore::at_path(directory.path().into(), Box::new(fake));
+        store
+            .save_api_key(DEFAULT_ALIBABA_PROFILE_ID, "synthetic-current")
+            .unwrap();
+        let next = store
+            .create_profile(ProviderKind::OpenAIRealtime, "Unconfigured")
+            .unwrap();
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.source_language = SourceLanguage::Japanese
+            })
+            .unwrap();
+        let current_configuration = store.configuration().unwrap();
+        let previous = store.preferences();
+        let active = store.active_profile().unwrap();
+        let catalog = std::fs::read(&store.catalog_path).unwrap();
+        let persisted = std::fs::read(&store.prefs_path).unwrap();
+
+        assert!(store.configuration_for_profile_selection(&next).is_err());
+        assert_eq!(store.configuration().unwrap(), current_configuration);
+        assert_eq!(store.preferences(), previous);
+        assert_eq!(store.active_profile().unwrap(), active);
+        assert_eq!(std::fs::read(&store.catalog_path).unwrap(), catalog);
+        assert_eq!(std::fs::read(&store.prefs_path).unwrap(), persisted);
+    }
+
+    #[test]
+    fn profile_selection_preserves_original_without_reading_custom_text_credentials() {
+        let fake = FakeSecretStore::default();
+        let store = settings(&fake);
+        let next = store
+            .create_profile(ProviderKind::CustomOpenAIASR, "Recognition only")
+            .unwrap();
+        store
+            .save_credentials(
+                &next.id,
+                &custom_speech_request(
+                    "wss://speech.example/realtime",
+                    "synthetic-model",
+                    "synthetic-key",
+                ),
+            )
+            .unwrap();
+        store
+            .save_credentials(
+                &next.id,
+                &translation_request(TextTranslation::DeepL, "", "", "synthetic-text:fx"),
+            )
+            .unwrap();
+        let next = store.profile(&next.id).unwrap();
+        let destination = SettingsStore::destination_account(&next);
+        store
+            .secret_cache
+            .lock()
+            .unwrap()
+            .remove(&cache_key(PROFILE_KEYCHAIN_SERVICE, &destination));
+        fake.make_unavailable(PROFILE_KEYCHAIN_SERVICE, &destination);
+        let previous_reads = fake.load_count(PROFILE_KEYCHAIN_SERVICE, &destination);
+        store
+            .save_preferences_for_active_profile(|prefs| {
+                prefs.target_language = TargetLanguage::Original
+            })
+            .unwrap();
+
+        let proposed = store.configuration_for_profile_selection(&next).unwrap();
+        assert_eq!(proposed.target_language, TargetLanguage::Original);
+        assert_eq!(proposed.text_credentials, None);
+        assert_eq!(
+            fake.load_count(PROFILE_KEYCHAIN_SERVICE, &destination),
+            previous_reads
+        );
+        assert_eq!(
+            store.active_profile().unwrap().id,
+            DEFAULT_ALIBABA_PROFILE_ID
+        );
+    }
+
     #[test]
     fn unsaved_text_probe_never_needs_asr_or_mutates_profile_preferences_or_secrets() {
         use crate::core::configuration::TextTranslationProbeCredentials;

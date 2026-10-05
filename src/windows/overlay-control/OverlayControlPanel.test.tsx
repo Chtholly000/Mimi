@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { I18N, setStoredUiLanguage } from "../../lib/i18n";
+import { profileErrorMessage } from "../../lib/connectionDiagnostics";
 import { useStore } from "../../lib/store";
 import { OverlayControlPanel } from "./OverlayControlPanel";
 import { overlayControlPanelModel } from "./overlayControlModel";
@@ -30,6 +31,7 @@ beforeEach(() => {
     isPaused: false, canPauseSession: true, isWaitingForFinalTranslation: false, isChangingSession: false,
     onDismiss: vi.fn(), onSwitchSourceLanguage: vi.fn().mockResolvedValue(undefined),
     onTogglePaused: vi.fn().mockResolvedValue(undefined),
+    onSelectProfile: vi.fn().mockResolvedValue(undefined),
     onSetSkipTranslation: vi.fn().mockResolvedValue(undefined),
     onSetIntermediateSubtitles: vi.fn().mockResolvedValue(undefined),
     onSetSubtitleDividers: vi.fn().mockResolvedValue(undefined),
@@ -67,7 +69,7 @@ async function searchSource(query: string) {
 it.each(["zh", "en", "ja"] as const)("keeps %s language, display and application choices compact without a mode grid", async (language) => {
   setStoredUiLanguage(language);
   await mount();
-  expect(host.querySelectorAll('[role="combobox"]')).toHaveLength(3);
+  expect(host.querySelectorAll('[role="combobox"]')).toHaveLength(4);
   expect(host.querySelectorAll('.application-audio-picker')).toHaveLength(1);
   expect(host.querySelector('fieldset, .overlay-control-options, .overlay-control-group')).toBeNull();
   expect(host.querySelectorAll('[role="switch"]')).toHaveLength(6);
@@ -304,6 +306,64 @@ it("retains the saved subtitle preference after failure, blocks duplicate saves 
   expect(host.textContent).not.toContain("private synthetic error");
   await act(async () => toggle().click());
   expect(props.onSetIntermediateSubtitles).toHaveBeenCalledTimes(2);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(props.onDismiss).not.toHaveBeenCalled();
+});
+
+function configureProfiles() {
+  configure({ profiles: [
+    { id: "ali", name: "Alibaba Cloud", provider: "alibabaCloud", credentialState: "present" },
+    { id: "custom", name: "My recognition model", provider: "openAIRealtime", credentialState: "present" },
+  ], activeProfileId: "ali" });
+}
+
+async function chooseProfile(name: string) {
+  await act(async () => picker(I18N.settings.currentProfile).click());
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === name)!;
+  await act(async () => option.click());
+}
+
+it.each([false, true])("switches saved profiles in the floating panel with paused=%s and keeps it open", async isPaused => {
+  configureProfiles();
+  props.isPaused = isPaused;
+  await mount();
+  expect(picker(I18N.settings.currentProfile).disabled).toBe(false);
+  await chooseProfile("Alibaba Cloud");
+  expect(props.onSelectProfile).not.toHaveBeenCalled();
+  await chooseProfile("My recognition model");
+  expect(props.onSelectProfile).toHaveBeenCalledExactlyOnceWith("custom");
+  expect(props.onDismiss).not.toHaveBeenCalled();
+  expect(props.onTogglePaused).not.toHaveBeenCalled();
+  configure({ activeProfileId: "custom" });
+  await mount();
+  expect(picker(I18N.settings.currentProfile).textContent).toBe("My recognition model");
+});
+
+it("blocks profile changes during transitions, retains the saved profile on failure and supports sanitized retry", async () => {
+  configureProfiles();
+  props.isChangingSession = true;
+  await mount();
+  expect(picker(I18N.settings.currentProfile).disabled).toBe(true);
+  props.isChangingSession = false;
+  let reject!: (reason: Error) => void;
+  props.onSelectProfile = vi.fn()
+    .mockImplementationOnce(() => new Promise<void>((_resolve, failure) => { reject = failure; }))
+    .mockResolvedValue(undefined);
+  await mount();
+  await act(async () => picker(I18N.settings.currentProfile).click());
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent === "My recognition model")!;
+  await act(async () => { option.click(); option.click(); });
+  expect(props.onSelectProfile).toHaveBeenCalledExactlyOnceWith("custom");
+  expect(picker(I18N.settings.currentProfile).disabled).toBe(true);
+  expect(picker(I18N.settings.subtitleDisplay).disabled).toBe(true);
+  expect(host.querySelector('.overlay-control-picker--profile')?.getAttribute("aria-busy")).toBe("true");
+  await act(async () => reject(new Error("private-profile-switch-failure")));
+  expect(picker(I18N.settings.currentProfile).textContent).toBe("Alibaba Cloud");
+  expect(picker(I18N.settings.currentProfile).disabled).toBe(false);
+  expect(host.querySelector('[role="alert"]')?.textContent).toBe(profileErrorMessage("private-profile-switch-failure"));
+  expect(host.textContent).not.toContain("private-profile-switch-failure");
+  await chooseProfile("My recognition model");
+  expect(props.onSelectProfile).toHaveBeenCalledTimes(2);
   expect(host.querySelector('[role="alert"]')).toBeNull();
   expect(props.onDismiss).not.toHaveBeenCalled();
 });
